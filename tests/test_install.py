@@ -866,6 +866,62 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(receipt_path(state_home).exists())
             self.assertTrue(all(not os.path.lexists(path) for path in destination_paths(codex_home).values()))
 
+    def test_uninstall_preserves_user_retarget_when_damaged_source_is_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            outside_file = root / "outside.toml"
+            outside_file.write_text("user-owned\n", encoding="utf-8")
+            outside_alias = root / "outside-alias.toml"
+            outside_alias.symlink_to(outside_file)
+            damaged_source = (
+                repo
+                / "plugins"
+                / "codex-dev-flow"
+                / "assets"
+                / "agents"
+                / "devflow-reviewer.toml"
+            )
+            damaged_source.unlink()
+            damaged_source.symlink_to(outside_file)
+            untouched_destination = destination_paths(codex_home)["devflow-implementer"]
+            untouched_source = (
+                repo
+                / "plugins"
+                / "codex-dev-flow"
+                / "assets"
+                / "agents"
+                / "devflow-implementer.toml"
+            )
+            untouched_source.unlink()
+            untouched_source.symlink_to(outside_file)
+            retargeted = destination_paths(codex_home)["devflow-reviewer"]
+            retargeted.unlink()
+            retargeted.symlink_to(outside_alias)
+            runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+
+            result = uninstall(repo, codex_home, state_home, runner)
+
+            self.assertEqual(len(result.removed_links), 4)
+            self.assertTrue(damaged_source.is_symlink())
+            self.assertEqual(damaged_source.read_text(encoding="utf-8"), "user-owned\n")
+            self.assertTrue(untouched_source.is_symlink())
+            self.assertFalse(os.path.lexists(untouched_destination))
+            self.assertTrue(retargeted.is_symlink())
+            self.assertEqual(os.readlink(retargeted), str(outside_alias))
+            self.assertEqual(retargeted.read_text(encoding="utf-8"), "user-owned\n")
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_receipt_temp_cleanup_failure_reports_exact_residual_and_rolls_back(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
