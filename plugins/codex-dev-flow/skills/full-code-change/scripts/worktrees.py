@@ -228,9 +228,25 @@ def _branch_delete_preflight(repo: Path, branch: str) -> None:
     common_directory = common_directory.resolve()
     reasons: list[str] = []
     ref_path = common_directory / "refs" / "heads" / branch
+    ref_lock_path = ref_path.with_name(f"{ref_path.name}.lock")
     reflog_path = common_directory / "logs" / "refs" / "heads" / branch
     config_path = common_directory / "config"
+    config_lock_path = common_directory / "config.lock"
     packed_refs_path = common_directory / "packed-refs"
+    packed_refs_lock_path = common_directory / "packed-refs.lock"
+    packed_reference = f"refs/heads/{branch}".encode("utf-8")
+    packed_ref_present = False
+    branch_config = _git(
+        repo,
+        "config",
+        "--get-regexp",
+        rf"^branch\.{re.escape(branch)}\.",
+        check=False,
+    )
+    branch_config_present = branch_config.returncode == 0
+    if branch_config.returncode not in (0, 1):
+        details = branch_config.stderr.strip() or branch_config.stdout.strip() or "cannot inspect branch configuration"
+        reasons.append(details)
     for target in (common_directory, ref_path.parent, reflog_path.parent, config_path.parent):
         _check_existing_write_chain(common_directory, target, reasons)
     for path in (config_path, packed_refs_path):
@@ -239,6 +255,17 @@ def _branch_delete_preflight(repo: Path, branch: str) -> None:
                 reasons.append(f"Git branch-deletion file is unavailable: {path}")
             elif not os.access(path, os.W_OK):
                 reasons.append(f"Git branch-deletion file is not writable: {path}")
+    if packed_refs_path.is_file() and not packed_refs_path.is_symlink():
+        packed_ref_present = any(
+            line.partition(b" ")[2] == packed_reference
+            for line in packed_refs_path.read_bytes().splitlines()
+        )
+    if _path_exists(ref_lock_path):
+        reasons.append(f"Git branch-deletion lock already exists: {ref_lock_path}")
+    if packed_ref_present and _path_exists(packed_refs_lock_path):
+        reasons.append(f"Git branch-deletion lock already exists: {packed_refs_lock_path}")
+    if branch_config_present and _path_exists(config_lock_path):
+        reasons.append(f"Git branch-deletion lock already exists: {config_lock_path}")
     if reasons:
         raise WorktreeError("; ".join(dict.fromkeys(reasons)))
 
@@ -327,11 +354,11 @@ def _branch_parts(branch: str) -> tuple[str, str]:
     return parts[1], parts[2]
 
 
-def _status(repo: Path) -> tuple[bool, str]:
+def _status(repo: Path) -> tuple[bool, bool, str]:
     result = _git(repo, "status", "--porcelain", check=False)
     if result.returncode:
-        return False, result.stderr.strip() or result.stdout.strip() or "cannot read Git status"
-    return not result.stdout, result.stdout
+        return False, False, result.stderr.strip() or result.stdout.strip() or "cannot read Git status"
+    return True, not result.stdout, result.stdout
 
 
 def _commit_for(repo: Path, reference: str) -> tuple[str | None, str | None]:
@@ -373,6 +400,7 @@ def _post_removal_error(
     path: Path,
     branch: str,
     reasons: list[str],
+    restored: bool = False,
 ) -> WorktreeError:
     try:
         registered = _registered_worktrees(repo)
@@ -380,7 +408,7 @@ def _post_removal_error(
         registered = {}
         reasons.append(f"cannot inspect residual worktree registration: {error}")
     if registered.get(path) == branch:
-        residual_path = f"worktree restored at {path}"
+        residual_path = f"worktree {'restored' if restored else 'remains registered'} at {path}"
     elif _path_exists(path):
         residual_path = f"worktree path exists but is not registered at {path}"
     else:
@@ -390,12 +418,13 @@ def _post_removal_error(
     else:
         residual_branch = f"branch is absent at refs/heads/{branch}"
     if _path_exists(path):
-        status_ok, status_details = _status(path)
-        residual_status = (
-            "residual worktree status is usable"
-            if status_ok
-            else f"residual worktree status is unavailable: {status_details.strip()}"
-        )
+        status_readable, status_clean, status_details = _status(path)
+        if not status_readable:
+            residual_status = f"residual worktree status is unavailable: {status_details.strip()}"
+        elif status_clean:
+            residual_status = "residual worktree status is clean"
+        else:
+            residual_status = f"residual worktree status is dirty: {status_details.strip()}"
     else:
         residual_status = "residual worktree status is unavailable because its path is absent"
     reasons.extend((residual_path, residual_branch, residual_status))
@@ -405,31 +434,18 @@ def _post_removal_error(
 
 
 def _post_remove_failure(repo: Path, path: Path, branch: str, reasons: list[str]) -> WorktreeError:
-    try:
-        registered = _registered_worktrees(repo)
-    except WorktreeError as error:
-        registered = {}
-        reasons.append(f"cannot inspect residual worktree registration: {error}")
     path_present = _path_exists(path)
-    attached_branch = registered.get(path)
     branch_present = _branch_exists(repo, branch)
-    status_ok, status_details = _status(path) if path_present else (False, "worktree path is absent")
-    if path_present and attached_branch == branch and branch_present and status_ok:
-        reasons.append("worktree removal failed before changing registration, path, branch, or usable status")
-        return _finish_error(path, branch, reasons, attached_branch)
+    restored = False
     if not path_present and branch_present:
         try:
             state_root = _state_home()
         except OSError as error:
             reasons.append(f"cannot determine worktree recovery root: {error}")
         else:
-            _, restore_detail = _restore_worktree(repo, path, branch, state_root)
+            restored, restore_detail = _restore_worktree(repo, path, branch, state_root)
             reasons.append(restore_detail)
-    if path_present and not status_ok:
-        reasons.append(f"residual worktree status is unavailable: {status_details.strip()}")
-    elif path_present and status_details:
-        reasons.append(f"residual worktree status: {status_details.strip()}")
-    return _post_removal_error(repo, path, branch, reasons)
+    return _post_removal_error(repo, path, branch, reasons, restored)
 
 
 def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) -> None:
@@ -463,9 +479,11 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
         attached_branch = registered[target]
         if attached_branch != branch:
             reasons.append(f"worktree is attached to {attached_branch!r}, not {branch!r}")
-        clean_task, task_status = _status(target)
-        if not clean_task:
-            reasons.append(f"task worktree is dirty or unavailable: {task_status.strip()}")
+        task_status_readable, clean_task, task_status = _status(target)
+        if not task_status_readable:
+            reasons.append(f"task worktree status is unavailable: {task_status.strip()}")
+        elif not clean_task:
+            reasons.append(f"task worktree is dirty: {task_status.strip()}")
     branch_attachments = [registered_path for registered_path, registered_branch in registered.items() if registered_branch == branch]
     if len(branch_attachments) != 1 or branch_attachments[0] != target:
         reasons.append(f"branch {branch!r} is attached to {branch_attachments!r}, not only to {target}")
@@ -487,9 +505,11 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
         reasons.append(f"branch tip {branch} is not an ancestor of integration checkout HEAD")
     if branch_commit and upstream_commit and not _is_ancestor(canonical_repo, branch_commit, upstream_commit):
         reasons.append(f"branch tip {branch} is not an ancestor of its configured upstream")
-    clean_integration, integration_status = _status(canonical_repo)
-    if not clean_integration:
-        reasons.append(f"integration checkout is dirty or unavailable: {integration_status.strip()}")
+    integration_status_readable, clean_integration, integration_status = _status(canonical_repo)
+    if not integration_status_readable:
+        reasons.append(f"integration checkout status is unavailable: {integration_status.strip()}")
+    elif not clean_integration:
+        reasons.append(f"integration checkout is dirty: {integration_status.strip()}")
     if reasons:
         raise _finish_error(target, branch, reasons, attached_branch)
     try:
@@ -506,8 +526,8 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
         details = deleted.stderr.strip() or deleted.stdout.strip() or "git branch -d failed"
         if canonical_state is None:
             canonical_state = _state_home()
-        _, restore_detail = _restore_worktree(canonical_repo, target, branch, canonical_state)
-        raise _post_removal_error(canonical_repo, target, branch, [details, restore_detail])
+        restored, restore_detail = _restore_worktree(canonical_repo, target, branch, canonical_state)
+        raise _post_removal_error(canonical_repo, target, branch, [details, restore_detail], restored)
 
 
 def _default_parser() -> argparse.ArgumentParser:
