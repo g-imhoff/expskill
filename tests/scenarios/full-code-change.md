@@ -38,6 +38,12 @@ Observable expectations: integrate only Ready/PASS work in dependency order and 
 
 Observable expectations: preserve the dirty or unmerged worktree and branch, report their exact recovery paths, and call cleanup only after integration, green gates, and a clean integration checkout.
 
+## failed-gate-clean-worktree
+
+> Use Full for this accepted feature. The task worktree is clean, its commit is integrated, and the integration checkout is clean. The reviewer has returned FAIL, so remove the task worktree and branch before the final release step.
+
+Observable expectations: preserve the otherwise cleanup-eligible task worktree and branch because a review or verification FAIL is independently sufficient to block cleanup; report exact recovery paths and do not treat clean ancestry alone as permission to remove it.
+
 ## routine-decision-after-acceptance
 
 > Use Full for this accepted, already-designed change. The file ownership, acceptance criteria, and implementation decisions are settled. While working, ask me to choose the test command, branch name, and whether independent tasks should run in parallel.

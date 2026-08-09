@@ -116,6 +116,38 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertNotIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
 
+    def test_option_like_base_uses_the_resolved_commit(self) -> None:
+        base_commit = self._git("rev-parse", "HEAD")
+        self._git("update-ref", "refs/tags/--force", base_commit)
+        (self.repo / "README.md").write_text("second\n", encoding="utf-8")
+        self._git("add", "README.md")
+        self._git("commit", "-m", "second")
+        record = self._helper().create_worktree(
+            self.repo,
+            "--force",
+            "run-1",
+            "task-one",
+            self.state_home,
+        )
+        self.assertEqual(self._git("rev-parse", "HEAD", cwd=record.path), base_commit)
+
+    def test_state_hash_symlink_redirection_is_refused_without_git_state_changes(self) -> None:
+        canonical_repo = Path(self._git("rev-parse", "--show-toplevel")).resolve()
+        repository_hash = hashlib.sha256(str(canonical_repo).encode("utf-8")).hexdigest()
+        worktree_root = self.state_home / "codex-dev-flow" / "worktrees"
+        worktree_root.mkdir(parents=True)
+        (worktree_root / repository_hash).symlink_to(self.repo, target_is_directory=True)
+        target = self._expected_path("run-1", "task-one")
+        before_status = self._git("status", "--porcelain")
+        with self.assertRaises(Exception) as context:
+            self._helper().create_worktree(self.repo, "HEAD", "run-1", "task-one", self.state_home)
+        self.assertIn(str(target), str(context.exception))
+        self.assertFalse(target.exists())
+        self.assertFalse((self.repo / "run").exists())
+        self.assertEqual(self._git("status", "--porcelain"), before_status)
+        self.assertNotIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
+        self.assertNotIn(str(target), self._git("worktree", "list", "--porcelain"))
+
     def test_duplicate_path_and_branch_are_refused_and_first_worktree_survives(self) -> None:
         record = self._create()
         with self.assertRaises(Exception) as context:
@@ -164,6 +196,39 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue((self.repo / "integration.txt").exists())
         self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
 
+    def test_invalid_integration_repository_preserves_supplied_recovery_context(self) -> None:
+        record = self._create()
+        invalid_repository = self.root / "not-a-repository"
+        invalid_repository.mkdir()
+        before_branches = self._git("branch", "--format=%(refname:short)")
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(invalid_repository, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertEqual(self._git("branch", "--format=%(refname:short)"), before_branches)
+        self.assertTrue(record.path.exists())
+        self.assertIn(f"worktree {record.path}", self._git("worktree", "list", "--porcelain"))
+
+    def test_branch_delete_precondition_failure_preserves_everything(self) -> None:
+        record = self._create()
+        (record.path / "feature.txt").write_text("task commit\n", encoding="utf-8")
+        self._git("add", "feature.txt", cwd=record.path)
+        self._git("commit", "-m", "task commit", cwd=record.path)
+        task_tip = self._git("rev-parse", "HEAD", cwd=record.path)
+        self._git("branch", "integrated", task_tip)
+        original_state_home = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(self.state_home)
+        self.addCleanup(self._restore_state_home, original_state_home)
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(self.repo, record.path, record.branch, "integrated")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertTrue(record.path.exists())
+        self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
+        self.assertIn(f"worktree {record.path}", self._git("worktree", "list", "--porcelain"))
+
     def test_registered_worktree_outside_owned_root_is_refused(self) -> None:
         helper = self._helper()
         outside = self.root / "outside-worktree"
@@ -197,6 +262,10 @@ class WorktreeTests(unittest.TestCase):
         record = self._create()
         similar_branch = "devflow/run-1/task-one-follow-up"
         self._git("branch", similar_branch, "HEAD")
+        (record.path / "feature.txt").write_text("integrated task\n", encoding="utf-8")
+        self._git("add", "feature.txt", cwd=record.path)
+        self._git("commit", "-m", "integrated task", cwd=record.path)
+        self._git("merge", "--no-ff", record.branch, "-m", "integrate task")
         original_state_home = os.environ.get("XDG_STATE_HOME")
         os.environ["XDG_STATE_HOME"] = str(self.state_home)
         self.addCleanup(self._restore_state_home, original_state_home)

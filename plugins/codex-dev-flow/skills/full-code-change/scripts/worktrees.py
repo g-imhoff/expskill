@@ -74,15 +74,57 @@ def _owned_path(repo: Path, run_id: str, task: str, state_home: Path) -> Path:
     )
 
 
+def _path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _ensure_safe_owned_path(state_root: Path, target: Path) -> None:
+    canonical_root = Path(state_root).resolve()
+    candidate = Path(target)
+    try:
+        relative = candidate.relative_to(canonical_root)
+    except ValueError as error:
+        raise WorktreeError(f"target is outside canonical state root: {candidate}") from error
+    current = canonical_root
+    if _path_exists(current):
+        if current.is_symlink() or not current.is_dir():
+            raise WorktreeError(f"unsafe state path component {current} for target {candidate}")
+    else:
+        current.mkdir(parents=True, exist_ok=True)
+        if current.is_symlink() or not current.is_dir():
+            raise WorktreeError(f"unsafe state path component {current} for target {candidate}")
+    components = relative.parts
+    for component in components[:-1]:
+        current = current / component
+        if _path_exists(current):
+            if current.is_symlink() or not current.is_dir():
+                raise WorktreeError(f"unsafe state path component {current} for target {candidate}")
+        else:
+            current.mkdir()
+            if current.is_symlink() or not current.is_dir():
+                raise WorktreeError(f"unsafe state path component {current} for target {candidate}")
+    if _path_exists(candidate) and candidate.is_symlink():
+        raise WorktreeError(f"unsafe state path component {candidate} for target {candidate}")
+    if candidate.exists() and not candidate.is_dir():
+        raise WorktreeError(f"unsafe state path component {candidate} for target {candidate}")
+    if candidate.resolve() != candidate:
+        raise WorktreeError(f"target resolves outside its exact owned path: {candidate}")
+
+
 def _branch_exists(repo: Path, branch: str) -> bool:
     return _git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
 
 
-def _base_exists(repo: Path, base: str) -> bool:
-    return (
-        _git(repo, "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}", check=False).returncode
-        == 0
-    )
+def _resolve_commit(repo: Path, reference: str) -> tuple[str | None, str | None]:
+    if not isinstance(reference, str) or not reference:
+        return None, f"unknown ref {reference!r}"
+    result = _git(repo, "rev-parse", "--verify", "--end-of-options", f"{reference}^{{commit}}", check=False)
+    if result.returncode:
+        return None, result.stderr.strip() or result.stdout.strip() or f"unknown ref {reference}"
+    commit = result.stdout.strip()
+    if not commit:
+        return None, f"unknown ref {reference}"
+    return commit, None
 
 
 def create_worktree(repo: Path, base: str, run_id: str, task: str, state_home: Path) -> WorktreeRecord:
@@ -90,15 +132,19 @@ def create_worktree(repo: Path, base: str, run_id: str, task: str, state_home: P
     _validate_slug(run_id, "run_id")
     _validate_slug(task, "task")
     branch = f"devflow/{run_id}/{task}"
-    target = _owned_path(canonical_repo, run_id, task, state_home)
-    if target.exists() or target.is_symlink():
+    canonical_state = _state_home(state_home)
+    target = _owned_path(canonical_repo, run_id, task, canonical_state)
+    if _path_exists(target):
         raise WorktreeError(f"worktree target already exists: {target}; branch remains preserved: {branch}")
     if _branch_exists(canonical_repo, branch):
         raise WorktreeError(f"branch already exists: {branch}; target remains preserved: {target}")
-    if not isinstance(base, str) or not base or not _base_exists(canonical_repo, base):
-        raise WorktreeError(f"invalid base {base!r}; target remains absent: {target}; branch remains absent: {branch}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    result = _git(canonical_repo, "worktree", "add", "-b", branch, str(target), base, check=False)
+    base_commit, base_error = _resolve_commit(canonical_repo, base)
+    if base_error:
+        raise WorktreeError(f"invalid base {base!r}: {base_error}; target remains absent: {target}; branch remains absent: {branch}")
+    _ensure_safe_owned_path(canonical_state / "codex-dev-flow" / "worktrees", target)
+    if _path_exists(target):
+        raise WorktreeError(f"worktree target already exists: {target}; branch remains preserved: {branch}")
+    result = _git(canonical_repo, "worktree", "add", "-b", branch, str(target), base_commit, check=False)
     if result.returncode:
         details = result.stderr.strip() or result.stdout.strip() or "git worktree add failed"
         raise WorktreeError(f"cannot create worktree {target} on branch {branch}: {details}")
@@ -146,10 +192,13 @@ def _status(repo: Path) -> tuple[bool, str]:
 
 
 def _commit_for(repo: Path, reference: str) -> tuple[str | None, str | None]:
-    result = _git(repo, "rev-parse", "--verify", "--end-of-options", f"{reference}^{{commit}}", check=False)
-    if result.returncode:
-        return None, result.stderr.strip() or result.stdout.strip() or f"unknown ref {reference}"
-    return result.stdout.strip(), None
+    return _resolve_commit(repo, reference)
+
+
+def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    return (
+        _git(repo, "merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode == 0
+    )
 
 
 def _finish_error(path: Path, branch: str, reasons: list[str], attached_branch: str | None = None) -> WorktreeError:
@@ -162,19 +211,72 @@ def _finish_error(path: Path, branch: str, reasons: list[str], attached_branch: 
     )
 
 
+def _restore_worktree(repo: Path, path: Path, branch: str, state_root: Path) -> tuple[bool, str]:
+    try:
+        _ensure_safe_owned_path(state_root / "codex-dev-flow" / "worktrees", path)
+    except (OSError, WorktreeError) as error:
+        return False, f"cannot restore worktree path {path}: {error}"
+    if _path_exists(path):
+        return False, f"cannot restore worktree path {path}: path already exists"
+    restored = _git(repo, "worktree", "add", str(path), branch, check=False)
+    if restored.returncode:
+        details = restored.stderr.strip() or restored.stdout.strip() or "git worktree add failed"
+        return False, f"cannot restore worktree path {path}: {details}"
+    return True, f"worktree restored at {path}"
+
+
+def _post_removal_error(
+    repo: Path,
+    path: Path,
+    branch: str,
+    reasons: list[str],
+) -> WorktreeError:
+    try:
+        registered = _registered_worktrees(repo)
+    except WorktreeError as error:
+        registered = {}
+        reasons.append(f"cannot inspect residual worktree registration: {error}")
+    if registered.get(path) == branch:
+        residual_path = f"worktree restored at {path}"
+    elif _path_exists(path):
+        residual_path = f"worktree path exists but is not registered at {path}"
+    else:
+        residual_path = f"worktree path is absent at {path}"
+    if _branch_exists(repo, branch):
+        residual_branch = f"branch remains at refs/heads/{branch}"
+    else:
+        residual_branch = f"branch is absent at refs/heads/{branch}"
+    reasons.extend((residual_path, residual_branch))
+    return WorktreeError(
+        f"cannot finish worktree after removal: {'; '.join(reasons)}; recovery worktree path {path}; recovery branch {branch}"
+    )
+
+
 def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) -> None:
-    canonical_repo = _canonical_repository(repo)
-    target = Path(path).expanduser().resolve()
+    supplied_path = Path(path).expanduser()
+    try:
+        canonical_repo = _canonical_repository(repo)
+    except (OSError, WorktreeError) as error:
+        raise _finish_error(supplied_path, branch, [str(error)]) from error
+    try:
+        target = supplied_path.resolve()
+    except OSError as error:
+        raise _finish_error(supplied_path, branch, [f"cannot resolve supplied worktree path: {error}"]) from error
     reasons: list[str] = []
     attached_branch: str | None = None
+    canonical_state: Path | None = None
     try:
         run_id, task = _branch_parts(branch)
-        expected = _owned_path(canonical_repo, run_id, task, _state_home())
+        canonical_state = _state_home()
+        expected = _owned_path(canonical_repo, run_id, task, canonical_state)
         if target != expected:
             reasons.append(f"path is outside its exact owned target {expected}")
     except (ValueError, OSError) as error:
         reasons.append(str(error))
-    registered = _registered_worktrees(canonical_repo)
+    try:
+        registered = _registered_worktrees(canonical_repo)
+    except (OSError, WorktreeError) as error:
+        raise _finish_error(target, branch, [str(error)]) from error
     if target not in registered:
         reasons.append("path is not a registered worktree of this repository")
     else:
@@ -184,23 +286,22 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
         clean_task, task_status = _status(target)
         if not clean_task:
             reasons.append(f"task worktree is dirty or unavailable: {task_status.strip()}")
+    branch_attachments = [registered_path for registered_path, registered_branch in registered.items() if registered_branch == branch]
+    if len(branch_attachments) != 1 or branch_attachments[0] != target:
+        reasons.append(f"branch {branch!r} is attached to {branch_attachments!r}, not only to {target}")
     branch_commit, branch_error = _commit_for(canonical_repo, f"refs/heads/{branch}")
     integrated_commit, integrated_error = _commit_for(canonical_repo, integrated_ref)
+    integration_head, integration_head_error = _commit_for(canonical_repo, "HEAD")
     if branch_error:
         reasons.append(f"branch tip is unavailable: {branch_error}")
     if integrated_error:
         reasons.append(f"integrated ref is unavailable: {integrated_error}")
-    if branch_commit and integrated_commit:
-        ancestor = _git(
-            canonical_repo,
-            "merge-base",
-            "--is-ancestor",
-            branch_commit,
-            integrated_commit,
-            check=False,
-        )
-        if ancestor.returncode:
-            reasons.append(f"branch tip {branch} is not an ancestor of {integrated_ref}")
+    if integration_head_error:
+        reasons.append(f"integration checkout HEAD is unavailable: {integration_head_error}")
+    if branch_commit and integrated_commit and not _is_ancestor(canonical_repo, branch_commit, integrated_commit):
+        reasons.append(f"branch tip {branch} is not an ancestor of {integrated_ref}")
+    if branch_commit and integration_head and not _is_ancestor(canonical_repo, branch_commit, integration_head):
+        reasons.append(f"branch tip {branch} is not an ancestor of integration checkout HEAD")
     clean_integration, integration_status = _status(canonical_repo)
     if not clean_integration:
         reasons.append(f"integration checkout is dirty or unavailable: {integration_status.strip()}")
@@ -213,7 +314,10 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
     deleted = _git(canonical_repo, "branch", "-d", "--", branch, check=False)
     if deleted.returncode:
         details = deleted.stderr.strip() or deleted.stdout.strip() or "git branch -d failed"
-        raise _finish_error(target, branch, [details], attached_branch)
+        if canonical_state is None:
+            canonical_state = _state_home()
+        _, restore_detail = _restore_worktree(canonical_repo, target, branch, canonical_state)
+        raise _post_removal_error(canonical_repo, target, branch, [details, restore_detail])
 
 
 def _default_parser() -> argparse.ArgumentParser:
