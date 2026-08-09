@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
-from scripts.install import InstallError, install, uninstall
+from scripts.install import InstallError, install, main, uninstall
 
 
+ROOT = Path(__file__).resolve().parents[1]
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
@@ -16,12 +21,19 @@ PROFILE_NAMES = (
     "devflow-test-engineer",
     "devflow-verifier",
 )
+PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
 
 
 class FakeResult:
-    def __init__(self, returncode: int, payload: object | None = None, stderr: str = "") -> None:
+    def __init__(
+        self,
+        returncode: int = 0,
+        payload: object = None,
+        stderr: str = "",
+        stdout: str | None = None,
+    ) -> None:
         self.returncode = returncode
-        self.stdout = "" if payload is None else json.dumps(payload)
+        self.stdout = json.dumps(payload) if stdout is None else stdout
         self.stderr = stderr
 
 
@@ -38,64 +50,156 @@ class FakeRunner:
 
 
 def seed_repository(path: Path) -> Path:
-    agents = path / "plugins" / "codex-dev-flow" / "assets" / "agents"
-    agents.mkdir(parents=True)
-    for name in PROFILE_NAMES:
-        (agents / f"{name}.toml").write_text(
-            "\n".join(
-                (
-                    f'name = "{name}"',
-                    f'description = "{name}"',
-                    'model = "gpt-5.6-luna"',
-                    'model_reasoning_effort = "max"',
-                    'sandbox_mode = "workspace-write"',
-                    'developer_instructions = "Bounded profile."',
-                    "",
-                )
-            ),
-            encoding="utf-8",
-        )
+    shutil.copytree(ROOT / ".agents", path / ".agents")
+    source_plugin = ROOT / "plugins" / "codex-dev-flow"
+    destination_plugin = path / "plugins" / "codex-dev-flow"
+    shutil.copytree(source_plugin / ".codex-plugin", destination_plugin / ".codex-plugin")
+    shutil.copytree(source_plugin / "assets", destination_plugin / "assets")
+    (path / "scripts").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "validate.py", path / "scripts" / "validate.py")
     return path
 
 
-def marketplace_response(already_added: bool) -> FakeResult:
-    return FakeResult(0, {"alreadyAdded": already_added})
+def destination_paths(codex_home: Path) -> dict[str, Path]:
+    canonical_home = codex_home.resolve()
+    return {
+        name: canonical_home / "agents" / f"{name}.toml"
+        for name in PROFILE_NAMES
+    }
 
 
-def plugin_response(already_installed: bool) -> FakeResult:
-    return FakeResult(0, {"alreadyInstalled": already_installed})
+def marketplace_list_response(
+    repository: Path | None = None,
+    source: Path | None = None,
+) -> FakeResult:
+    marketplaces: list[dict[str, object]] = []
+    if repository is not None:
+        selected_source = repository if source is None else source
+        marketplaces.append(
+            {
+                "name": "codex-dev-flow",
+                "root": str(selected_source),
+                "marketplaceSource": {
+                    "sourceType": "local",
+                    "source": str(selected_source),
+                },
+            }
+        )
+    return FakeResult(0, {"marketplaces": marketplaces})
+
+
+def marketplace_add_response(repository: Path, already_added: bool = False) -> FakeResult:
+    return FakeResult(
+        0,
+        {
+            "marketplaceName": "codex-dev-flow",
+            "installedRoot": str(repository),
+            "alreadyAdded": already_added,
+        },
+    )
+
+
+def plugin_entry(repository: Path, source: Path | None = None) -> dict[str, object]:
+    plugin_source = repository if source is None else source
+    return {
+        "pluginId": PLUGIN_SELECTOR,
+        "name": "codex-dev-flow",
+        "marketplaceName": "codex-dev-flow",
+        "version": "0.1.0",
+        "installed": True,
+        "enabled": True,
+        "source": {
+            "source": "local",
+            "path": str(plugin_source / "plugins" / "codex-dev-flow"),
+        },
+        "marketplaceSource": {
+            "sourceType": "local",
+            "source": str(plugin_source),
+        },
+        "installPolicy": "AVAILABLE",
+        "authPolicy": "ON_INSTALL",
+    }
+
+
+def plugin_list_response(
+    repository: Path | None = None,
+    source: Path | None = None,
+) -> FakeResult:
+    installed: list[dict[str, object]] = []
+    if repository is not None:
+        installed.append(plugin_entry(repository, source))
+    return FakeResult(0, {"installed": installed, "available": []})
+
+
+def plugin_add_response(repository: Path) -> FakeResult:
+    return FakeResult(
+        0,
+        {
+            "pluginId": PLUGIN_SELECTOR,
+            "name": "codex-dev-flow",
+            "marketplaceName": "codex-dev-flow",
+            "version": "0.1.0",
+            "installedPath": str(
+                repository / "codex" / "plugins" / "cache" / "codex-dev-flow" / "codex-dev-flow" / "0.1.0"
+            ),
+            "authPolicy": "ON_INSTALL",
+        },
+    )
 
 
 def removal_response() -> FakeResult:
     return FakeResult(0, {"removed": True})
 
 
-def marketplace_list_response(repository: Path) -> FakeResult:
-    return FakeResult(
-        0,
-        {
-            "marketplaces": [
-                {
-                    "name": "codex-dev-flow",
-                    "root": str(repository),
-                    "marketplaceSource": {
-                        "sourceType": "local",
-                        "source": str(repository),
-                    },
-                }
-            ]
-        },
-    )
+def install_results(
+    repository: Path,
+    marketplace_present: bool = False,
+    plugin_present: bool = False,
+    marketplace_source: Path | None = None,
+    plugin_source: Path | None = None,
+) -> list[FakeResult]:
+    return [
+        marketplace_list_response(
+            repository if marketplace_present else None,
+            marketplace_source,
+        ),
+        marketplace_add_response(repository, marketplace_present),
+        plugin_list_response(
+            repository if plugin_present else None,
+            plugin_source,
+        ),
+        plugin_add_response(repository),
+    ]
 
 
-def destination_paths(codex_home: Path) -> dict[str, Path]:
-    return {
-        name: codex_home / "agents" / f"{name}.toml"
-        for name in PROFILE_NAMES
-    }
+def receipt_path(state_home: Path) -> Path:
+    return state_home.resolve() / "codex-dev-flow" / "install.json"
+
+
+def load_receipt(state_home: Path) -> dict[str, object]:
+    return json.loads(receipt_path(state_home).read_text(encoding="utf-8"))
 
 
 class InstallerTests(unittest.TestCase):
+    def test_dry_run_prints_canonical_repository_and_only_planned_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            codex_home = Path(temporary) / "codex"
+            before = tuple(codex_home.parent.iterdir())
+            output = StringIO()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+                with redirect_stdout(output):
+                    result = main(["--dry-run"])
+
+            self.assertEqual(result, 0)
+            lines = output.getvalue().splitlines()
+            self.assertEqual(len(lines), 7)
+            self.assertEqual(
+                lines[-2],
+                f"codex plugin marketplace add {ROOT.resolve()} --json",
+            )
+            self.assertEqual(lines[-1], "codex plugin add codex-dev-flow@codex-dev-flow --json")
+            self.assertEqual(before, tuple(codex_home.parent.iterdir()))
+
     def test_regular_file_conflict_refuses_without_partial_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -115,7 +219,7 @@ class InstallerTests(unittest.TestCase):
                 ["devflow-reviewer.toml"],
             )
             self.assertEqual(runner.calls, [])
-            self.assertFalse((state_home / "codex-dev-flow" / "install.json").exists())
+            self.assertFalse(receipt_path(state_home).exists())
 
     def test_install_links_every_profile_and_registers_plugin_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -123,9 +227,7 @@ class InstallerTests(unittest.TestCase):
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            runner = FakeRunner(
-                [marketplace_response(False), plugin_response(False)]
-            )
+            runner = FakeRunner(install_results(repo))
 
             result = install(repo, codex_home, state_home, runner)
             destinations = destination_paths(codex_home)
@@ -133,6 +235,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(
                 runner.calls,
                 [
+                    ("codex", "plugin", "marketplace", "list", "--json"),
                     (
                         "codex",
                         "plugin",
@@ -141,11 +244,12 @@ class InstallerTests(unittest.TestCase):
                         str(repo.resolve()),
                         "--json",
                     ),
+                    ("codex", "plugin", "list", "--json"),
                     (
                         "codex",
                         "plugin",
                         "add",
-                        "codex-dev-flow@codex-dev-flow",
+                        PLUGIN_SELECTOR,
                         "--json",
                     ),
                 ],
@@ -156,70 +260,63 @@ class InstallerTests(unittest.TestCase):
             )
             for name, destination in destinations.items():
                 self.assertTrue(destination.is_symlink(), name)
-                self.assertEqual(destination.resolve(), repo.resolve() / "plugins" / "codex-dev-flow" / "assets" / "agents" / f"{name}.toml")
+                expected = repo.resolve() / "plugins" / "codex-dev-flow" / "assets" / "agents" / f"{name}.toml"
+                self.assertEqual(destination.resolve(), expected)
 
-            receipt_path = state_home / "codex-dev-flow" / "install.json"
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt = load_receipt(state_home)
             self.assertEqual(receipt["repository_root"], str(repo.resolve()))
             self.assertTrue(receipt["marketplace_added"])
             self.assertTrue(receipt["plugin_installed"])
             self.assertEqual(
-                {
-                    entry["destination"] for entry in receipt["links"]
-                },
+                {entry["destination"] for entry in receipt["links"]},
                 {str(path) for path in destinations.values()},
             )
-            self.assertEqual(runner.results, [])
 
-    def test_second_install_is_a_no_op_for_owned_links(self) -> None:
+    def test_preexisting_marketplace_and_fresh_plugin_records_only_plugin_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            first_runner = FakeRunner(
-                [marketplace_response(False), plugin_response(False)]
-            )
-            install(repo, codex_home, state_home, first_runner)
-            receipt_path = state_home / "codex-dev-flow" / "install.json"
-            before = receipt_path.read_bytes()
+            runner = FakeRunner(install_results(repo, marketplace_present=True))
 
-            second_runner = FakeRunner(
-                [marketplace_response(True), plugin_response(True)]
-            )
+            install(repo, codex_home, state_home, runner)
+
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+
+    def test_preexisting_exact_plugin_is_not_claimed_as_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(install_results(repo, True, True))
+
+            install(repo, codex_home, state_home, runner)
+
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["marketplace_added"])
+            self.assertFalse(receipt["plugin_installed"])
+
+    def test_second_install_repairs_owned_plugin_without_reclaiming_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            first_runner = FakeRunner(install_results(repo))
+            install(repo, codex_home, state_home, first_runner)
+
+            second_runner = FakeRunner(install_results(repo, True, True))
             result = install(repo, codex_home, state_home, second_runner)
 
             self.assertEqual(result.created_links, ())
-            self.assertEqual(
-                second_runner.calls,
-                [
-                    (
-                        "codex",
-                        "plugin",
-                        "marketplace",
-                        "add",
-                        str(repo.resolve()),
-                        "--json",
-                    ),
-                    (
-                        "codex",
-                        "plugin",
-                        "add",
-                        "codex-dev-flow@codex-dev-flow",
-                        "--json",
-                    ),
-                ],
-            )
-            for destination in destination_paths(codex_home).values():
-                self.assertTrue(destination.is_symlink())
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            self.assertEqual(receipt["marketplace_added"], True)
-            self.assertEqual(receipt["plugin_installed"], True)
-            self.assertEqual(
-                {entry["destination"] for entry in receipt["links"]},
-                {str(path) for path in destination_paths(codex_home).values()},
-            )
-            self.assertEqual(before, receipt_path.read_bytes())
+            receipt = load_receipt(state_home)
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+            self.assertEqual(len(second_runner.calls), 4)
 
     def test_unrelated_and_broken_symlink_conflicts_refuse(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -243,11 +340,23 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(runner.calls, [])
             self.assertTrue(unrelated.is_symlink())
             self.assertTrue(os.path.lexists(broken))
-            self.assertEqual(
-                sorted(path.name for path in agents.iterdir()),
-                ["devflow-explorer.toml", "devflow-verifier.toml"],
-            )
-            self.assertFalse((state_home / "codex-dev-flow" / "install.json").exists())
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_marketplace_name_conflict_is_rejected_before_any_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            other = seed_repository(root / "other")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner([marketplace_list_response(repo, other)])
+
+            with self.assertRaisesRegex(InstallError, "marketplace"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(runner.calls, [("codex", "plugin", "marketplace", "list", "--json")])
+            self.assertFalse((codex_home / "agents").exists())
+            self.assertFalse(receipt_path(state_home).exists())
 
     def test_plugin_failure_rolls_back_links_created_by_this_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -257,7 +366,9 @@ class InstallerTests(unittest.TestCase):
             state_home = root / "state"
             runner = FakeRunner(
                 [
-                    marketplace_response(False),
+                    marketplace_list_response(),
+                    marketplace_add_response(repo),
+                    plugin_list_response(),
                     FakeResult(1, {"error": "plugin unavailable"}, "plugin failed"),
                     removal_response(),
                 ]
@@ -267,8 +378,40 @@ class InstallerTests(unittest.TestCase):
                 install(repo, codex_home, state_home, runner)
 
             self.assertEqual(
+                runner.calls[-1],
+                (
+                    "codex",
+                    "plugin",
+                    "marketplace",
+                    "remove",
+                    "codex-dev-flow",
+                    "--json",
+                ),
+            )
+            self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_successful_marketplace_add_with_malformed_json_rolls_back_owned_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(),
+                    FakeResult(0, stdout="not-json"),
+                    removal_response(),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
                 runner.calls,
                 [
+                    ("codex", "plugin", "marketplace", "list", "--json"),
                     (
                         "codex",
                         "plugin",
@@ -280,8 +423,44 @@ class InstallerTests(unittest.TestCase):
                     (
                         "codex",
                         "plugin",
-                        "add",
-                        "codex-dev-flow@codex-dev-flow",
+                        "marketplace",
+                        "remove",
+                        "codex-dev-flow",
+                        "--json",
+                    ),
+                ],
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
+
+    def test_successful_plugin_add_with_malformed_json_rolls_back_plugin_marketplace_and_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(),
+                    marketplace_add_response(repo),
+                    plugin_list_response(),
+                    FakeResult(0, stdout="not-json"),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                runner.calls[-2:],
+                [
+                    (
+                        "codex",
+                        "plugin",
+                        "remove",
+                        PLUGIN_SELECTOR,
                         "--json",
                     ),
                     (
@@ -295,7 +474,181 @@ class InstallerTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
-            self.assertFalse((state_home / "codex-dev-flow" / "install.json").exists())
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_receipt_replace_failure_reports_and_rolls_back_external_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                install_results(repo) + [removal_response(), removal_response()]
+            )
+
+            with mock.patch("scripts.install.os.replace", side_effect=OSError("receipt disk full")):
+                with self.assertRaisesRegex(InstallError, "receipt disk full"):
+                    install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                runner.calls[-2:],
+                [
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "codex-dev-flow",
+                        "--json",
+                    ),
+                ],
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_rollback_attempts_every_compensation_and_reports_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(),
+                    marketplace_add_response(repo),
+                    plugin_list_response(),
+                    FakeResult(0, stdout="not-json"),
+                    FakeResult(1, {"error": "plugin cleanup failed"}, "plugin cleanup failed"),
+                    FakeResult(1, {"error": "market cleanup failed"}, "market cleanup failed"),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON") as context:
+                install(repo, codex_home, state_home, runner)
+
+            self.assertIn("plugin cleanup failed", str(context.exception))
+            self.assertIn("market cleanup failed", str(context.exception))
+            self.assertEqual(len(runner.calls), 6)
+
+    def test_owned_link_unlink_failure_is_reported_without_swallowing_residual_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(),
+                    marketplace_add_response(repo),
+                    plugin_list_response(),
+                    FakeResult(0, stdout="not-json"),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+            target = codex_home / "agents" / "devflow-reviewer.toml"
+            original_unlink = Path.unlink
+
+            def fail_target(path: Path, *args: object, **kwargs: object) -> None:
+                if path == target:
+                    raise OSError("owned link busy")
+                original_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", fail_target):
+                with self.assertRaisesRegex(InstallError, "owned link busy"):
+                    install(repo, codex_home, state_home, runner)
+
+            self.assertTrue(os.path.lexists(target))
+            self.assertEqual(len(runner.calls), 6)
+
+    def test_intermediate_assets_symlink_escape_refuses_before_runner_or_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            escaped = root / "escaped-assets"
+            shutil.copytree(repo / "plugins" / "codex-dev-flow" / "assets", escaped)
+            assets = repo / "plugins" / "codex-dev-flow" / "assets"
+            shutil.rmtree(assets)
+            assets.symlink_to(escaped, target_is_directory=True)
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner([])
+
+            with self.assertRaisesRegex(InstallError, "symlink"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(runner.calls, [])
+            self.assertFalse((codex_home / "agents").exists())
+
+    def test_writable_wrong_model_reviewer_refuses_before_runner_or_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            reviewer = repo / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-reviewer.toml"
+            reviewer.write_text(
+                reviewer.read_text(encoding="utf-8").replace(
+                    'model = "gpt-5.6-sol"', 'model = "gpt-5.6-luna"'
+                ).replace(
+                    'model_reasoning_effort = "xhigh"', 'model_reasoning_effort = "max"'
+                ).replace(
+                    'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
+                ),
+                encoding="utf-8",
+            )
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner([])
+
+            with self.assertRaisesRegex(InstallError, "repository validation"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(runner.calls, [])
+            self.assertFalse((codex_home / "agents").exists())
+
+    def test_crafted_receipt_cannot_authorize_outside_codex_home_link_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            outside_home = root / "outside"
+            outside_home.mkdir()
+            outside_target = outside_home / "owned.toml"
+            outside_target.symlink_to(
+                repo / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-explorer.toml"
+            )
+            state_home = root / "state"
+            receipt_directory = state_home / "codex-dev-flow"
+            receipt_directory.mkdir(parents=True)
+            (receipt_directory / "install.json").write_text(
+                json.dumps(
+                    {
+                        "repository_root": str(repo.resolve()),
+                        "links": [
+                            {
+                                "source": str(
+                                    repo.resolve()
+                                    / "plugins"
+                                    / "codex-dev-flow"
+                                    / "assets"
+                                    / "agents"
+                                    / "devflow-explorer.toml"
+                                ),
+                                "destination": str(outside_target),
+                            }
+                        ],
+                        "marketplace_added": False,
+                        "plugin_installed": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = FakeRunner([])
+
+            with self.assertRaisesRegex(InstallError, "receipt"):
+                uninstall(repo, codex_home, state_home, runner)
+
+            self.assertTrue(outside_target.is_symlink())
+            self.assertEqual(runner.calls, [])
 
     def test_uninstall_removes_only_links_still_owned_by_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -303,23 +656,22 @@ class InstallerTests(unittest.TestCase):
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            install_runner = FakeRunner(
-                [marketplace_response(False), plugin_response(False)]
-            )
+            install_runner = FakeRunner(install_results(repo))
             install(repo, codex_home, state_home, install_runner)
             destinations = destination_paths(codex_home)
-            missing = destinations["devflow-explorer"]
-            missing.unlink()
+            destinations["devflow-explorer"].unlink()
             retargeted = destinations["devflow-implementer"]
             retargeted.unlink()
-            retargeted.symlink_to(root / "unrelated.toml")
-            (root / "unrelated.toml").write_text("preserved\n", encoding="utf-8")
+            target = root / "unrelated.toml"
+            target.write_text("preserved\n", encoding="utf-8")
+            retargeted.symlink_to(target)
             replaced = destinations["devflow-reviewer"]
             replaced.unlink()
             replaced.write_text("user replacement\n", encoding="utf-8")
             uninstall_runner = FakeRunner(
                 [
-                    marketplace_list_response(repo.resolve()),
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
                     removal_response(),
                     removal_response(),
                 ]
@@ -330,20 +682,9 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(
                 uninstall_runner.calls,
                 [
-                    (
-                        "codex",
-                        "plugin",
-                        "marketplace",
-                        "list",
-                        "--json",
-                    ),
-                    (
-                        "codex",
-                        "plugin",
-                        "remove",
-                        "codex-dev-flow@codex-dev-flow",
-                        "--json",
-                    ),
+                    ("codex", "plugin", "list", "--json"),
+                    ("codex", "plugin", "marketplace", "list", "--json"),
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
                     (
                         "codex",
                         "plugin",
@@ -358,96 +699,174 @@ class InstallerTests(unittest.TestCase):
                 {path.destination.name for path in result.removed_links},
                 {"devflow-test-engineer.toml", "devflow-verifier.toml"},
             )
-            self.assertFalse(destinations["devflow-test-engineer"].exists())
-            self.assertFalse(destinations["devflow-verifier"].exists())
-            self.assertFalse(os.path.lexists(missing))
             self.assertTrue(retargeted.is_symlink())
-            self.assertEqual(retargeted.resolve(), (root / "unrelated.toml").resolve())
             self.assertTrue(replaced.is_file())
-            self.assertFalse((state_home / "codex-dev-flow" / "install.json").exists())
+            self.assertFalse(receipt_path(state_home).exists())
 
-    def test_uninstall_preserves_retargeted_links_and_preexisting_marketplace(self) -> None:
+    def test_uninstall_preserves_retargeted_plugin_and_preexisting_marketplace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            install_runner = FakeRunner(
-                [marketplace_response(True), plugin_response(False)]
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            other = seed_repository(root / "other")
+            runner = FakeRunner(
+                [
+                    plugin_list_response(repo, other),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                ]
             )
-            install(repo, codex_home, state_home, install_runner)
-            retargeted = codex_home / "agents" / "devflow-reviewer.toml"
-            retargeted.unlink()
-            target = root / "user-owned.toml"
-            target.write_text("user-owned\n", encoding="utf-8")
-            retargeted.symlink_to(target)
-            uninstall_runner = FakeRunner([removal_response()])
 
-            uninstall(repo, codex_home, state_home, uninstall_runner)
+            uninstall(repo, codex_home, state_home, runner)
 
             self.assertEqual(
-                uninstall_runner.calls,
+                runner.calls,
                 [
+                    ("codex", "plugin", "list", "--json"),
+                    ("codex", "plugin", "marketplace", "list", "--json"),
                     (
                         "codex",
                         "plugin",
+                        "marketplace",
                         "remove",
-                        "codex-dev-flow@codex-dev-flow",
+                        "codex-dev-flow",
                         "--json",
-                    )
+                    ),
                 ],
             )
-            self.assertTrue(retargeted.is_symlink())
-            self.assertEqual(retargeted.resolve(), target.resolve())
-            self.assertFalse(
-                any(
-                    call[-2:] == ("remove", "--json")
-                    and "marketplace" in call
-                    for call in uninstall_runner.calls
-                )
-            )
-            self.assertFalse((state_home / "codex-dev-flow" / "install.json").exists())
 
-    def test_malformed_command_json_refuses_without_partial_links(self) -> None:
+    def test_uninstall_converges_when_owned_external_state_is_already_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            runner = FakeRunner([FakeResult(0)])
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            runner = FakeRunner([plugin_list_response(), marketplace_list_response()])
 
-            with self.assertRaisesRegex(InstallError, "JSON"):
-                install(repo, codex_home, state_home, runner)
+            uninstall(repo, codex_home, state_home, runner)
 
-            self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
-            self.assertFalse((state_home / "codex-dev-flow" / "install.json").exists())
+            receipt = load_receipt(state_home) if receipt_path(state_home).exists() else None
+            self.assertIsNone(receipt)
+            self.assertEqual(
+                runner.calls,
+                [
+                    ("codex", "plugin", "list", "--json"),
+                    ("codex", "plugin", "marketplace", "list", "--json"),
+                ],
+            )
 
-    def test_receipt_repository_mismatch_refuses_without_mutation(self) -> None:
+    def test_uninstall_persists_plugin_flag_before_marketplace_failure_and_retries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            receipt_dir = state_home / "codex-dev-flow"
-            receipt_dir.mkdir(parents=True)
-            (receipt_dir / "install.json").write_text(
-                json.dumps(
-                    {
-                        "repository_root": str(root / "another-repo"),
-                        "links": [],
-                        "marketplace_added": True,
-                        "plugin_installed": True,
-                    }
-                ),
-                encoding="utf-8",
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            first_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    FakeResult(1, {"error": "marketplace unavailable"}, "marketplace unavailable"),
+                ]
             )
-            runner = FakeRunner([])
 
-            with self.assertRaisesRegex(InstallError, "receipt"):
-                install(repo, codex_home, state_home, runner)
+            with self.assertRaisesRegex(InstallError, "marketplace unavailable"):
+                uninstall(repo, codex_home, state_home, first_runner)
 
-            self.assertEqual(runner.calls, [])
-            self.assertFalse((codex_home / "agents").exists())
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["plugin_installed"])
+            self.assertTrue(receipt["marketplace_added"])
+            retry_runner = FakeRunner([marketplace_list_response(repo), removal_response()])
+            uninstall(repo, codex_home, state_home, retry_runner)
+            self.assertEqual(
+                retry_runner.calls,
+                [
+                    ("codex", "plugin", "marketplace", "list", "--json"),
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "codex-dev-flow",
+                        "--json",
+                    ),
+                ],
+            )
+
+    def test_uninstall_persists_link_progress_after_external_success_and_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            target = destination_paths(codex_home)["devflow-reviewer"]
+            original_unlink = Path.unlink
+            failed = {"value": True}
+
+            def fail_once(path: Path, *args: object, **kwargs: object) -> None:
+                if path == target and failed["value"]:
+                    failed["value"] = False
+                    raise OSError("link busy")
+                original_unlink(path, *args, **kwargs)
+
+            first_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+            with mock.patch.object(Path, "unlink", fail_once):
+                with self.assertRaisesRegex(InstallError, "link busy"):
+                    uninstall(repo, codex_home, state_home, first_runner)
+
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["plugin_installed"])
+            self.assertFalse(receipt["marketplace_added"])
+            retry_runner = FakeRunner([])
+            uninstall(repo, codex_home, state_home, retry_runner)
+            self.assertEqual(retry_runner.calls, [])
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_uninstall_retries_final_receipt_removal_without_replaying_external_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            receipt = receipt_path(state_home)
+            original_unlink = Path.unlink
+            failed = {"value": True}
+
+            def fail_receipt_once(path: Path, *args: object, **kwargs: object) -> None:
+                if path == receipt and failed["value"]:
+                    failed["value"] = False
+                    raise OSError("receipt busy")
+                original_unlink(path, *args, **kwargs)
+
+            runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+            with mock.patch.object(Path, "unlink", fail_receipt_once):
+                with self.assertRaisesRegex(InstallError, "receipt busy"):
+                    uninstall(repo, codex_home, state_home, runner)
+
+            retry_runner = FakeRunner([])
+            uninstall(repo, codex_home, state_home, retry_runner)
+            self.assertEqual(retry_runner.calls, [])
+            self.assertFalse(receipt.exists())
 
 
 if __name__ == "__main__":
