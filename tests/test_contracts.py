@@ -14,6 +14,7 @@ from scripts.validate import validate_repository
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "codex-dev-flow"
 ROUTER_ROOT = PLUGIN_ROOT / "skills" / "route-code-change"
+QUICK_ROOT = PLUGIN_ROOT / "skills" / "quick-code-change"
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "devflow-test-engineer": ("gpt-5.6-luna", "max", "workspace-write"),
@@ -295,6 +296,38 @@ class ContractTests(unittest.TestCase):
 
     def test_route_skill_body_stays_under_200_words(self) -> None:
         contents = (ROUTER_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        _, _, body = contents.split("---", 2)
+        self.assertLess(len(body.split()), 200)
+
+    def test_quick_skill_frontmatter_matches_directory_and_explicit_route(self) -> None:
+        self.assertTrue((QUICK_ROOT / "SKILL.md").is_file())
+        frontmatter = self.load_skill_frontmatter(QUICK_ROOT)
+        self.assertEqual(frontmatter["name"], QUICK_ROOT.name)
+        description = frontmatter["description"]
+        self.assertTrue(description)
+        self.assertIn("explicitly selected Quick route", description)
+        self.assertIn("router handoff", description)
+
+    def test_quick_skill_ui_metadata_disables_implicit_invocation(self) -> None:
+        self.assertTrue((QUICK_ROOT / "agents" / "openai.yaml").is_file())
+        metadata = _parse_yaml_mapping(
+            (QUICK_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            metadata,
+            {
+                "interface": {
+                    "display_name": "Quick Code Change",
+                    "short_description": "Implement a bounded change with independent gates",
+                    "default_prompt": "Use $quick-code-change for this accepted Quick change.",
+                },
+                "policy": {"allow_implicit_invocation": False},
+            },
+        )
+
+    def test_quick_skill_body_stays_under_200_words(self) -> None:
+        self.assertTrue((QUICK_ROOT / "SKILL.md").is_file())
+        contents = (QUICK_ROOT / "SKILL.md").read_text(encoding="utf-8")
         _, _, body = contents.split("---", 2)
         self.assertLess(len(body.split()), 200)
 
