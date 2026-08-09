@@ -5,17 +5,17 @@ description: Use only after an explicitly selected Quick route or exact router h
 
 # Quick Code Change
 
-Use only after accepted Quick selection or exact `$route-code-change` handoff.
+Use only after explicit Quick selection or exact `$route-code-change` handoff.
 
-GPT-5.6 Sol Max orchestrator makes one concise plan, preserves unrelated dirty work, implements in current working tree, and runs focused checks. Do not create worktree or delegate planning/implementation. Use test-first behavior for features and fixes; pure executable configuration without executable unit boundary uses smallest meaningful validation.
+GPT-5.6 Sol Max plans concisely, preserves dirty work, implements in the current tree, and runs focused checks. Do not create a worktree or delegate implementation. Test behavior first; validate executable configuration meaningfully.
 
-Next, concurrently dispatch exactly these independent gates:
+For each review, resolve bundled `../../scripts/read_only_agent.py`. Store the request, repository policy, scoped diff, and check evidence in a prompt file outside the repository. Start concurrently:
 
-- `devflow-reviewer`: send accepted request, applicable repository policy, scoped diff, and concise focused-check evidence; remain read-only; return actionable findings plus `Ready` or `Not ready`.
-- `devflow-verifier`: send accepted criteria and exact relevant commands; record pre/post tracked state and exit evidence; make no tracked-source edits.
+- `python3 ../../scripts/read_only_agent.py reviewer --repo <git-root> --prompt-file <file>` from the resolved path; use its status and stdout.
+- `devflow-verifier`: send criteria and exact commands; record tracked state and exit evidence; make no tracked-source edits.
 
-Adjudicate evidence. Fix confirmed findings in orchestrator. After fixes, rerun both gates concurrently; stale results cannot certify changed code. Never replace a gate with self-review or one agent.
+Adjudicate evidence and fix confirmed findings. After changes, rerun both gates concurrently; stale evidence cannot certify code. Never substitute self-review or one agent.
 
 Do not commit without explicit user authorization. Continue autonomously before the threshold; when a required important product decision falls outside acceptance or the same blocker survives three occurrences, ask for help.
 
-Final handoff states implementation evidence, focused checks, independent review result, independent verification result, tracked/commit state, and remaining concerns. Claim success only when review is `Ready` and verification is `PASS`.
+Final handoff states implementation, checks, gates, tracked/commit state, and concerns. Success requires `Ready` review and `PASS` verification.
