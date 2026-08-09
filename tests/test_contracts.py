@@ -49,6 +49,14 @@ class ContractTests(unittest.TestCase):
         shutil.rmtree(root / "plugins" / "codex-dev-flow" / "skills", ignore_errors=True)
         self.assertEqual(validate_repository(root), ())
 
+    def test_skills_file_is_rejected(self) -> None:
+        root = self.copy_repository()
+        skills_path = root / "plugins" / "codex-dev-flow" / "skills"
+        shutil.rmtree(skills_path, ignore_errors=True)
+        skills_path.write_text("not a directory\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertIn(f"skills path must be a directory: {skills_path}", errors)
+
     def test_plugin_and_marketplace_identities_are_exact(self) -> None:
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)

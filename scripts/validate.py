@@ -213,6 +213,8 @@ def _validate_plugin_manifest(
 
 def _validate_skills(skills_root: Path, errors: list[str]) -> None:
     if not skills_root.is_dir():
+        if skills_root.exists():
+            errors.append(f"skills path must be a directory: {skills_root}")
         return
     names: list[str] = []
     for skill_root in sorted(skills_root.iterdir(), key=lambda path: path.name):
