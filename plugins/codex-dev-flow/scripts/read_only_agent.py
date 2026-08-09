@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -72,6 +74,31 @@ def read_profile(role: str, plugin_root: Path) -> dict[str, str]:
     return profile
 
 
+def discover_external_skills(repository: Path) -> tuple[Path, ...]:
+    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    codex_home_value = os.environ.get("CODEX_HOME")
+    codex_home = Path(codex_home_value).expanduser() if codex_home_value else home / ".codex"
+    codex_skills = codex_home / "skills"
+    skill_paths: set[Path] = set()
+    for root in (home / ".agents" / "skills", codex_skills, repository / ".agents" / "skills"):
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir(), key=lambda path: path.name):
+            if root == codex_skills and child.name == ".system":
+                continue
+            skill_path = child / "SKILL.md"
+            if child.is_dir() and skill_path.is_file():
+                skill_paths.add(skill_path.resolve())
+    return tuple(sorted(skill_paths, key=str))
+
+
+def skills_config_override(skill_paths: tuple[Path, ...]) -> str:
+    entries = ",".join(
+        f"{{path={json.dumps(str(path))},enabled=false}}" for path in skill_paths
+    )
+    return f"skills.config=[{entries}]"
+
+
 def run_agent(role: str, repository: Path, prompt_file: Path) -> int:
     plugin_root = Path(__file__).resolve().parents[1]
     canonical_repository = resolve_repository(repository)
@@ -85,8 +112,25 @@ def run_agent(role: str, repository: Path, prompt_file: Path) -> int:
         "exec",
         "--ignore-user-config",
         "--ephemeral",
+        "--ignore-rules",
         "--sandbox",
         "read-only",
+        "-c",
+        'approval_policy="never"',
+        "--disable",
+        "plugins",
+        "--disable",
+        "remote_plugin",
+        "--disable",
+        "skill_search",
+        "--disable",
+        "apps",
+        "--disable",
+        "hooks",
+        "--disable",
+        "multi_agent",
+        "-c",
+        'web_search="disabled"',
         "--model",
         profile["model"],
         "-c",
@@ -96,6 +140,9 @@ def run_agent(role: str, repository: Path, prompt_file: Path) -> int:
         "-C",
         str(canonical_repository),
     ]
+    external_skills = discover_external_skills(canonical_repository)
+    if external_skills:
+        argv.extend(("-c", skills_config_override(external_skills)))
     try:
         result = subprocess.run(
             argv,

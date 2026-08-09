@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shutil
 import tempfile
 import tomllib
@@ -111,6 +112,36 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(marketplace["plugins"][0]["name"], "codex-dev-flow")
         self.assertEqual(marketplace["plugins"][0]["source"]["path"], "./plugins/codex-dev-flow")
         self.assertEqual(marketplace["plugins"][0]["category"], "Developer Tools")
+
+    def test_codex_cachebuster_versions_are_valid(self) -> None:
+        for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
+            with self.subTest(version=version):
+                root = self.copy_repository()
+                manifest_path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["version"] = version
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                self.assertEqual(validate_repository(root), ())
+
+    def test_invalid_codex_cachebuster_versions_are_rejected(self) -> None:
+        invalid_versions = (
+            "0.1.1",
+            "0.1.0+other.cache",
+            "0.1.0+codex.",
+            "0.1.0+codex.a..b",
+            "0.1.0+codex.a b",
+            "0.1.0+codex.a/b",
+            "0.1.0+codex.a_b",
+        )
+        for version in invalid_versions:
+            with self.subTest(version=version):
+                root = self.copy_repository()
+                manifest_path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["version"] = version
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any("version" in error for error in errors))
 
     def test_agent_profiles_match_exact_roster_and_required_fields(self) -> None:
         agents_root = PLUGIN_ROOT / "assets" / "agents"
@@ -338,6 +369,13 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("`devflow-reviewer`", body)
         self.assertIn("`devflow-verifier`", body)
         self.assertIn("concurrent", body.lower())
+        self.assertRegex(
+            body,
+            re.compile(
+                r"agent_type[^\n]+devflow-verifier[^\n]+fork_turns[^\n]+none",
+                re.IGNORECASE,
+            ),
+        )
 
     def test_full_skill_frontmatter_matches_directory_and_explicit_route(self) -> None:
         self.assertTrue((FULL_ROOT / "SKILL.md").is_file())
@@ -379,7 +417,23 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("`devflow-reviewer`", body)
         for profile in ("devflow-test-engineer", "devflow-implementer", "devflow-verifier"):
             self.assertIn(f"`{profile}`", body)
+            self.assertRegex(
+                body,
+                re.compile(
+                    rf"agent_type[^\n]+{profile}[^\n]+fork_turns[^\n]+none",
+                    re.IGNORECASE,
+                ),
+            )
         self.assertIn("concurrent", body.lower())
+
+    def test_repository_docs_do_not_reference_retired_workflow(self) -> None:
+        references = []
+        retired_name = "super" + "powers"
+        for docs_root in (ROOT / "docs" / "plans", ROOT / "docs" / "specs"):
+            for path in docs_root.glob("*.md"):
+                if retired_name in path.read_text(encoding="utf-8").lower():
+                    references.append(path.relative_to(ROOT))
+        self.assertEqual(references, [])
 
 
 if __name__ == "__main__":

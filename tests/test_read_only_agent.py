@@ -32,6 +32,8 @@ class ReadOnlyAgentTests(unittest.TestCase):
         self.prompt = self.temporary / "prompt.md"
         self.prompt.write_text("Inspect the bounded change.\n", encoding="utf-8")
         self.capture = self.temporary / "capture.json"
+        self.home = self.temporary / "home"
+        self.codex_home = self.temporary / "codex-home"
         self.codex = self.temporary / "bin" / "codex"
         self.codex.parent.mkdir()
         self.codex.write_text(
@@ -65,6 +67,8 @@ sys.exit(int(os.environ.get("READ_ONLY_AGENT_EXIT", "0")))
             {
                 "PATH": f"{self.codex.parent}{os.pathsep}{environment['PATH']}",
                 "READ_ONLY_AGENT_CAPTURE": str(self.capture),
+                "HOME": str(self.home),
+                "CODEX_HOME": str(self.codex_home),
             }
         )
         environment.update(overrides)
@@ -115,8 +119,25 @@ sys.exit(int(os.environ.get("READ_ONLY_AGENT_EXIT", "0")))
             "exec",
             "--ignore-user-config",
             "--ephemeral",
+            "--ignore-rules",
             "--sandbox",
             "read-only",
+            "-c",
+            'approval_policy="never"',
+            "--disable",
+            "plugins",
+            "--disable",
+            "remote_plugin",
+            "--disable",
+            "skill_search",
+            "--disable",
+            "apps",
+            "--disable",
+            "hooks",
+            "--disable",
+            "multi_agent",
+            "-c",
+            'web_search="disabled"',
             "--model",
             model,
             "-c",
@@ -126,6 +147,13 @@ sys.exit(int(os.environ.get("READ_ONLY_AGENT_EXIT", "0")))
             "-C",
             str(self.repository.resolve()),
         ]
+
+    def create_skill(self, root: Path, name: str) -> Path:
+        skill = root / name
+        skill.mkdir(parents=True)
+        skill_file = skill / "SKILL.md"
+        skill_file.write_text(f"# {name}\n", encoding="utf-8")
+        return skill_file.resolve()
 
     def test_reviewer_uses_exact_isolated_argv_and_never_evaluates_prompt_in_a_shell(self) -> None:
         marker = self.temporary / "shell-evaluated"
@@ -153,6 +181,53 @@ sys.exit(int(os.environ.get("READ_ONLY_AGENT_EXIT", "0")))
         self.assertEqual(captured["stdin"], "Inspect the bounded change.\n")
         self.assertEqual(result.stdout, "final response\n")
         self.assertEqual(result.stderr, "codex diagnostic\n")
+
+    def test_external_skill_paths_are_disabled_once_in_deterministic_order(self) -> None:
+        personal = self.create_skill(self.home / ".agents" / "skills", "personal")
+        codex = self.create_skill(self.codex_home / "skills", "codex")
+        project = self.create_skill(self.repository / ".agents" / "skills", "project")
+        duplicate = self.codex_home / "skills" / "duplicate"
+        duplicate.parent.mkdir(parents=True, exist_ok=True)
+        duplicate.symlink_to(personal.parent, target_is_directory=True)
+
+        result = self.run_agent("reviewer")
+
+        self.assertEqual(result.returncode, 0)
+        captured = self.captured_invocation()
+        expected_paths = sorted({str(personal), str(codex), str(project)})
+        expected_override = "skills.config=[" + ",".join(
+            f'{{path={json.dumps(path)},enabled=false}}' for path in expected_paths
+        ) + "]"
+        self.assertEqual(captured["argv"].count("-c"), 5)
+        self.assertIn(expected_override, captured["argv"])
+
+    def test_codex_system_skills_remain_available(self) -> None:
+        system = self.create_skill(self.codex_home / "skills" / ".system", "builtin")
+        personal = self.create_skill(self.codex_home / "skills", "personal")
+
+        result = self.run_agent("explorer")
+
+        self.assertEqual(result.returncode, 0)
+        captured = self.captured_invocation()
+        skill_overrides = [
+            argument for argument in captured["argv"] if argument.startswith("skills.config=")
+        ]
+        self.assertEqual(len(skill_overrides), 1)
+        self.assertIn(str(personal), skill_overrides[0])
+        self.assertNotIn(str(system), skill_overrides[0])
+
+    def test_empty_codex_home_uses_the_home_codex_skills_root(self) -> None:
+        personal = self.create_skill(self.home / ".codex" / "skills", "personal")
+
+        result = self.run_agent("reviewer", environment=self.environment(CODEX_HOME=""))
+
+        self.assertEqual(result.returncode, 0)
+        captured = self.captured_invocation()
+        skill_overrides = [
+            argument for argument in captured["argv"] if argument.startswith("skills.config=")
+        ]
+        self.assertEqual(len(skill_overrides), 1)
+        self.assertIn(str(personal), skill_overrides[0])
 
     def test_unknown_role_refuses_before_codex_runs(self) -> None:
         result = self.run_agent("implementer")
