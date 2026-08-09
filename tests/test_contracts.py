@@ -24,6 +24,11 @@ EXPECTED_AGENTS = {
     "devflow-reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
     "devflow-verifier": ("gpt-5.6-luna", "max", "workspace-write"),
 }
+EXPECTED_SKILLS = {
+    "full-code-change",
+    "quick-code-change",
+    "route-code-change",
+}
 
 
 def _parse_yaml_scalar(raw_value: str) -> object:
@@ -87,10 +92,12 @@ class ContractTests(unittest.TestCase):
     def test_repository_contract_is_valid(self) -> None:
         self.assertEqual(validate_repository(ROOT), ())
 
-    def test_clean_checkout_without_skills_directory_is_valid(self) -> None:
+    def test_missing_skills_directory_is_rejected(self) -> None:
         root = self.copy_repository()
-        shutil.rmtree(root / "plugins" / "codex-dev-flow" / "skills", ignore_errors=True)
-        self.assertEqual(validate_repository(root), ())
+        skills_path = root / "plugins" / "codex-dev-flow" / "skills"
+        shutil.rmtree(skills_path)
+        errors = validate_repository(root)
+        self.assertIn(f"skills directory is missing: {skills_path}", errors)
 
     def test_skills_file_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -99,6 +106,43 @@ class ContractTests(unittest.TestCase):
         skills_path.write_text("not a directory\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertIn(f"skills path must be a directory: {skills_path}", errors)
+
+    def test_missing_required_skill_is_rejected(self) -> None:
+        root = self.copy_repository()
+        missing = root / "plugins" / "codex-dev-flow" / "skills" / "quick-code-change"
+        shutil.rmtree(missing)
+        errors = validate_repository(root)
+        self.assertTrue(any("quick-code-change" in error and "missing" in error for error in errors))
+
+    def test_unexpected_skill_is_rejected(self) -> None:
+        root = self.copy_repository()
+        unexpected = root / "plugins" / "codex-dev-flow" / "skills" / "surprise"
+        unexpected.mkdir()
+        (unexpected / "SKILL.md").write_text(
+            "---\nname: surprise\ndescription: Unexpected skill\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        errors = validate_repository(root)
+        self.assertTrue(any("surprise" in error and "unexpected" in error for error in errors))
+
+    def test_required_skill_file_is_rejected(self) -> None:
+        root = self.copy_repository()
+        skill_path = root / "plugins" / "codex-dev-flow" / "skills" / "quick-code-change"
+        shutil.rmtree(skill_path)
+        skill_path.write_text("not a directory\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(any("quick-code-change" in error and "directory" in error for error in errors))
+
+    def test_required_skill_without_skill_markdown_is_rejected(self) -> None:
+        root = self.copy_repository()
+        skill_path = root / "plugins" / "codex-dev-flow" / "skills" / "quick-code-change"
+        (skill_path / "SKILL.md").unlink()
+        errors = validate_repository(root)
+        self.assertTrue(any("quick-code-change" in error and "SKILL.md" in error for error in errors))
+
+    def test_repository_contains_exact_required_skill_roster(self) -> None:
+        skills_root = PLUGIN_ROOT / "skills"
+        self.assertEqual({path.name for path in skills_root.iterdir()}, EXPECTED_SKILLS)
 
     def test_plugin_and_marketplace_identities_are_exact(self) -> None:
         manifest = self.load_manifest(ROOT)

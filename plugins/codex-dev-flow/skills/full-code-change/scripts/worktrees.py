@@ -355,10 +355,23 @@ def _branch_parts(branch: str) -> tuple[str, str]:
 
 
 def _status(repo: Path) -> tuple[bool, bool, str]:
-    result = _git(repo, "status", "--porcelain", check=False)
-    if result.returncode:
-        return False, False, result.stderr.strip() or result.stdout.strip() or "cannot read Git status"
-    return True, not result.stdout, result.stdout
+    commands = (
+        ("tracked", ("status", "--porcelain", "--untracked-files=no"), ""),
+        ("untracked", ("ls-files", "--others", "--exclude-standard"), "?? "),
+        ("ignored", ("ls-files", "--others", "--ignored", "--exclude-standard"), "!! "),
+    )
+    details: list[str] = []
+    for label, arguments, prefix in commands:
+        result = _git(repo, *arguments, check=False)
+        if result.returncode:
+            error = result.stderr.strip() or result.stdout.strip() or f"cannot inspect {label} content"
+            return False, False, error
+        if label == "tracked":
+            details.extend(result.stdout.splitlines())
+        else:
+            details.extend(f"{prefix}{path}" for path in result.stdout.splitlines())
+    output = "\n".join(details)
+    return True, not details, output
 
 
 def _commit_for(repo: Path, reference: str) -> tuple[str | None, str | None]:

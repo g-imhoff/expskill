@@ -65,6 +65,61 @@ class WorktreeTests(unittest.TestCase):
     def _create(self, run_id: str = "run-1", task: str = "task-one") -> object:
         return self._helper().create_worktree(self.repo, "HEAD", run_id, task, self.state_home)
 
+    def _finish_cli(self, record: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "python3",
+                "-S",
+                str(HELPER_PATH),
+                "finish",
+                "--repo",
+                str(self.repo),
+                "--path",
+                str(record.path),
+                "--branch",
+                record.branch,
+                "--integrated-ref",
+                "main",
+            ],
+            env={**os.environ, "XDG_STATE_HOME": str(self.state_home)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def _assert_refused_file_survives(self, record: object, file_path: Path, contents: bytes) -> None:
+        before_registration = self._git("worktree", "list", "--porcelain")
+
+        result = self._finish_cli(record)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(record.path), result.stderr)
+        self.assertIn(record.branch, result.stderr)
+        self.assertEqual(file_path.read_bytes(), contents)
+        self.assertTrue(record.path.is_dir())
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
+
+    def test_ignored_file_refuses_finish_and_preserves_recovery_paths(self) -> None:
+        (self.repo / ".gitignore").write_text("private.env\n", encoding="utf-8")
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "ignore private environment")
+        record = self._create()
+        private_file = record.path / "private.env"
+        contents = b"secret remains\n"
+        private_file.write_bytes(contents)
+
+        self._assert_refused_file_survives(record, private_file, contents)
+
+    def test_hidden_untracked_file_refuses_finish_and_preserves_recovery_paths(self) -> None:
+        self._git("config", "status.showUntrackedFiles", "no")
+        record = self._create()
+        unknown_file = record.path / "unknown.txt"
+        contents = b"unknown remains\n"
+        unknown_file.write_bytes(contents)
+
+        self._assert_refused_file_survives(record, unknown_file, contents)
+
     def test_create_uses_external_hashed_path_and_exact_branch(self) -> None:
         record = self._create()
         expected_path = self._expected_path("run-1", "task-one")
@@ -485,15 +540,12 @@ class WorktreeTests(unittest.TestCase):
             directory.chmod(0o700)
 
     def _create_integrated_task_with_sentinel(self) -> object:
-        (self.repo / ".gitignore").write_text("ignored-sentinel\n", encoding="utf-8")
-        self._git("add", ".gitignore")
-        self._git("commit", "-m", "ignore sentinel")
         record = self._create()
         (record.path / "feature.txt").write_text("integrated task\n", encoding="utf-8")
-        self._git("add", "feature.txt", cwd=record.path)
+        (record.path / "ignored-sentinel").write_bytes(b"keep me\n")
+        self._git("add", "feature.txt", "ignored-sentinel", cwd=record.path)
         self._git("commit", "-m", "integrated task", cwd=record.path)
         self._git("merge", "--no-ff", record.branch, "-m", "integrate task")
-        (record.path / "ignored-sentinel").write_bytes(b"keep me\n")
         original_state_home = os.environ.get("XDG_STATE_HOME")
         os.environ["XDG_STATE_HOME"] = str(self.state_home)
         self.addCleanup(self._restore_state_home, original_state_home)

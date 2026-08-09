@@ -22,6 +22,11 @@ PROFILE_NAMES = (
     "devflow-verifier",
 )
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
+MANIFEST_VERSION = json.loads(
+    (ROOT / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json").read_text(
+        encoding="utf-8"
+    )
+)["version"]
 
 
 class FakeResult:
@@ -55,6 +60,7 @@ def seed_repository(path: Path) -> Path:
     destination_plugin = path / "plugins" / "codex-dev-flow"
     shutil.copytree(source_plugin / ".codex-plugin", destination_plugin / ".codex-plugin")
     shutil.copytree(source_plugin / "assets", destination_plugin / "assets")
+    shutil.copytree(source_plugin / "skills", destination_plugin / "skills")
     (path / "scripts").mkdir(parents=True)
     shutil.copy2(ROOT / "scripts" / "validate.py", path / "scripts" / "validate.py")
     return path
@@ -131,16 +137,22 @@ def plugin_list_response(
     return FakeResult(0, {"installed": installed, "available": []})
 
 
-def plugin_add_response(repository: Path) -> FakeResult:
+def plugin_add_response(repository: Path, version: str = MANIFEST_VERSION) -> FakeResult:
     return FakeResult(
         0,
         {
             "pluginId": PLUGIN_SELECTOR,
             "name": "codex-dev-flow",
             "marketplaceName": "codex-dev-flow",
-            "version": "0.1.0",
+            "version": version,
             "installedPath": str(
-                repository / "codex" / "plugins" / "cache" / "codex-dev-flow" / "codex-dev-flow" / "0.1.0"
+                repository
+                / "codex"
+                / "plugins"
+                / "cache"
+                / "codex-dev-flow"
+                / "codex-dev-flow"
+                / version
             ),
             "authPolicy": "ON_INSTALL",
         },
@@ -181,6 +193,49 @@ def load_receipt(state_home: Path) -> dict[str, object]:
 
 
 class InstallerTests(unittest.TestCase):
+    def test_install_accepts_checked_in_manifest_cachebuster(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(install_results(repo))
+
+            result = install(repo, codex_home, state_home, runner)
+
+            self.assertTrue(result.plugin_installed)
+            self.assertTrue(receipt_path(state_home).is_file())
+
+    def test_install_rejects_different_valid_cachebuster_and_rolls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            results = install_results(repo)
+            results[-1] = plugin_add_response(repo, "0.1.0+codex.different")
+            runner = FakeRunner(results + [removal_response(), removal_response()])
+
+            with self.assertRaisesRegex(InstallError, "wrong version"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                runner.calls[-2:],
+                [
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "codex-dev-flow",
+                        "--json",
+                    ),
+                ],
+            )
+            self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_dry_run_prints_canonical_repository_and_only_planned_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             codex_home = Path(temporary) / "codex"
