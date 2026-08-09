@@ -79,7 +79,7 @@ def _path_exists(path: Path) -> bool:
 
 
 def _ensure_safe_owned_path(state_root: Path, target: Path) -> None:
-    canonical_root = Path(state_root).resolve()
+    canonical_root = Path(state_root).absolute()
     candidate = Path(target)
     try:
         relative = candidate.relative_to(canonical_root)
@@ -127,6 +127,144 @@ def _resolve_commit(repo: Path, reference: str) -> tuple[str | None, str | None]
     return commit, None
 
 
+def _configured_upstream_commit(repo: Path, branch: str) -> tuple[str | None, str | None]:
+    remote = _git(repo, "config", "--get", f"branch.{branch}.remote", check=False)
+    merge = _git(repo, "config", "--get", f"branch.{branch}.merge", check=False)
+    if remote.returncode == 1 and merge.returncode == 1:
+        return None, None
+    if remote.returncode or merge.returncode:
+        return None, f"branch {branch} has an incomplete configured upstream"
+    upstream, error = _resolve_commit(repo, f"{branch}@{{upstream}}")
+    if error:
+        return None, f"configured upstream for {branch} is unavailable: {error}"
+    return upstream, None
+
+
+def _directory_access_error(directory: Path, require_write: bool) -> str | None:
+    if not directory.is_dir() or directory.is_symlink():
+        return f"directory is unavailable: {directory}"
+    required = os.R_OK | os.X_OK
+    if require_write:
+        required |= os.W_OK
+    if not os.access(directory, required):
+        access = "read, execute, and write" if require_write else "read and execute"
+        return f"directory lacks {access} access: {directory}"
+    return None
+
+
+def _scan_removal_tree(directory: Path, reasons: list[str]) -> None:
+    try:
+        entries = list(directory.iterdir())
+    except OSError as error:
+        reasons.append(f"cannot inspect removal directory {directory}: {error}")
+        return
+    access_error = _directory_access_error(directory, bool(entries))
+    if access_error:
+        reasons.append(access_error)
+        return
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        try:
+            is_directory = entry.is_dir()
+        except OSError as error:
+            reasons.append(f"cannot inspect removal entry {entry}: {error}")
+            continue
+        if is_directory:
+            _scan_removal_tree(entry, reasons)
+
+
+def _worktree_admin_path(path: Path) -> Path | None:
+    git_file = path / ".git"
+    try:
+        contents = git_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in contents:
+        if line.startswith("gitdir: "):
+            admin = Path(line[8:])
+            if not admin.is_absolute():
+                admin = git_file.parent / admin
+            return admin.resolve()
+    return None
+
+
+def _check_existing_write_chain(root: Path, target: Path, reasons: list[str]) -> None:
+    try:
+        relative = target.relative_to(root)
+    except ValueError:
+        reasons.append(f"Git path is outside its common directory: {target}")
+        return
+    current = root
+    if _path_exists(current):
+        if current.is_symlink() or not current.is_dir():
+            reasons.append(f"Git common directory is unavailable: {current}")
+            return
+        access_error = _directory_access_error(current, True)
+        if access_error:
+            reasons.append(access_error)
+    else:
+        reasons.append(f"Git common directory is unavailable: {current}")
+        return
+    for component in relative.parts:
+        current = current / component
+        if not _path_exists(current):
+            break
+        if current.is_symlink() or not current.is_dir():
+            reasons.append(f"Git branch-deletion path is unavailable: {current}")
+            break
+        access_error = _directory_access_error(current, True)
+        if access_error:
+            reasons.append(access_error)
+
+
+def _branch_delete_preflight(repo: Path, branch: str) -> None:
+    common_result = _git(repo, "rev-parse", "--git-common-dir", check=False)
+    if common_result.returncode or not common_result.stdout.strip():
+        raise WorktreeError("cannot resolve Git common directory for branch deletion")
+    common_directory = Path(common_result.stdout.strip())
+    if not common_directory.is_absolute():
+        common_directory = repo / common_directory
+    common_directory = common_directory.resolve()
+    reasons: list[str] = []
+    ref_path = common_directory / "refs" / "heads" / branch
+    reflog_path = common_directory / "logs" / "refs" / "heads" / branch
+    config_path = common_directory / "config"
+    packed_refs_path = common_directory / "packed-refs"
+    for target in (common_directory, ref_path.parent, reflog_path.parent, config_path.parent):
+        _check_existing_write_chain(common_directory, target, reasons)
+    for path in (config_path, packed_refs_path):
+        if _path_exists(path):
+            if path.is_symlink() or not path.is_file():
+                reasons.append(f"Git branch-deletion file is unavailable: {path}")
+            elif not os.access(path, os.W_OK):
+                reasons.append(f"Git branch-deletion file is not writable: {path}")
+    if reasons:
+        raise WorktreeError("; ".join(dict.fromkeys(reasons)))
+
+
+def _removal_preflight(repo: Path, path: Path) -> None:
+    reasons: list[str] = []
+    parent_error = _directory_access_error(path.parent, True)
+    if parent_error:
+        reasons.append(parent_error)
+    if path.is_dir() and not path.is_symlink():
+        _scan_removal_tree(path, reasons)
+    else:
+        reasons.append(f"worktree path is not an accessible directory: {path}")
+    admin = _worktree_admin_path(path)
+    if admin is not None:
+        admin_parent_error = _directory_access_error(admin.parent, True)
+        if admin_parent_error:
+            reasons.append(admin_parent_error)
+        if admin.is_dir() and not admin.is_symlink():
+            _scan_removal_tree(admin, reasons)
+        else:
+            reasons.append(f"worktree administrative path is not an accessible directory: {admin}")
+    if reasons:
+        raise WorktreeError("; ".join(dict.fromkeys(reasons)))
+
+
 def create_worktree(repo: Path, base: str, run_id: str, task: str, state_home: Path) -> WorktreeRecord:
     canonical_repo = _canonical_repository(repo)
     _validate_slug(run_id, "run_id")
@@ -141,7 +279,12 @@ def create_worktree(repo: Path, base: str, run_id: str, task: str, state_home: P
     base_commit, base_error = _resolve_commit(canonical_repo, base)
     if base_error:
         raise WorktreeError(f"invalid base {base!r}: {base_error}; target remains absent: {target}; branch remains absent: {branch}")
-    _ensure_safe_owned_path(canonical_state / "codex-dev-flow" / "worktrees", target)
+    try:
+        _ensure_safe_owned_path(canonical_state, target)
+    except (OSError, WorktreeError) as error:
+        raise WorktreeError(
+            f"cannot prepare worktree target {target} on branch {branch}: {error}"
+        ) from error
     if _path_exists(target):
         raise WorktreeError(f"worktree target already exists: {target}; branch remains preserved: {branch}")
     result = _git(canonical_repo, "worktree", "add", "-b", branch, str(target), base_commit, check=False)
@@ -213,7 +356,7 @@ def _finish_error(path: Path, branch: str, reasons: list[str], attached_branch: 
 
 def _restore_worktree(repo: Path, path: Path, branch: str, state_root: Path) -> tuple[bool, str]:
     try:
-        _ensure_safe_owned_path(state_root / "codex-dev-flow" / "worktrees", path)
+        _ensure_safe_owned_path(state_root, path)
     except (OSError, WorktreeError) as error:
         return False, f"cannot restore worktree path {path}: {error}"
     if _path_exists(path):
@@ -246,10 +389,47 @@ def _post_removal_error(
         residual_branch = f"branch remains at refs/heads/{branch}"
     else:
         residual_branch = f"branch is absent at refs/heads/{branch}"
-    reasons.extend((residual_path, residual_branch))
+    if _path_exists(path):
+        status_ok, status_details = _status(path)
+        residual_status = (
+            "residual worktree status is usable"
+            if status_ok
+            else f"residual worktree status is unavailable: {status_details.strip()}"
+        )
+    else:
+        residual_status = "residual worktree status is unavailable because its path is absent"
+    reasons.extend((residual_path, residual_branch, residual_status))
     return WorktreeError(
         f"cannot finish worktree after removal: {'; '.join(reasons)}; recovery worktree path {path}; recovery branch {branch}"
     )
+
+
+def _post_remove_failure(repo: Path, path: Path, branch: str, reasons: list[str]) -> WorktreeError:
+    try:
+        registered = _registered_worktrees(repo)
+    except WorktreeError as error:
+        registered = {}
+        reasons.append(f"cannot inspect residual worktree registration: {error}")
+    path_present = _path_exists(path)
+    attached_branch = registered.get(path)
+    branch_present = _branch_exists(repo, branch)
+    status_ok, status_details = _status(path) if path_present else (False, "worktree path is absent")
+    if path_present and attached_branch == branch and branch_present and status_ok:
+        reasons.append("worktree removal failed before changing registration, path, branch, or usable status")
+        return _finish_error(path, branch, reasons, attached_branch)
+    if not path_present and branch_present:
+        try:
+            state_root = _state_home()
+        except OSError as error:
+            reasons.append(f"cannot determine worktree recovery root: {error}")
+        else:
+            _, restore_detail = _restore_worktree(repo, path, branch, state_root)
+            reasons.append(restore_detail)
+    if path_present and not status_ok:
+        reasons.append(f"residual worktree status is unavailable: {status_details.strip()}")
+    elif path_present and status_details:
+        reasons.append(f"residual worktree status: {status_details.strip()}")
+    return _post_removal_error(repo, path, branch, reasons)
 
 
 def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) -> None:
@@ -292,25 +472,35 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
     branch_commit, branch_error = _commit_for(canonical_repo, f"refs/heads/{branch}")
     integrated_commit, integrated_error = _commit_for(canonical_repo, integrated_ref)
     integration_head, integration_head_error = _commit_for(canonical_repo, "HEAD")
+    upstream_commit, upstream_error = _configured_upstream_commit(canonical_repo, branch)
     if branch_error:
         reasons.append(f"branch tip is unavailable: {branch_error}")
     if integrated_error:
         reasons.append(f"integrated ref is unavailable: {integrated_error}")
     if integration_head_error:
         reasons.append(f"integration checkout HEAD is unavailable: {integration_head_error}")
+    if upstream_error:
+        reasons.append(upstream_error)
     if branch_commit and integrated_commit and not _is_ancestor(canonical_repo, branch_commit, integrated_commit):
         reasons.append(f"branch tip {branch} is not an ancestor of {integrated_ref}")
     if branch_commit and integration_head and not _is_ancestor(canonical_repo, branch_commit, integration_head):
         reasons.append(f"branch tip {branch} is not an ancestor of integration checkout HEAD")
+    if branch_commit and upstream_commit and not _is_ancestor(canonical_repo, branch_commit, upstream_commit):
+        reasons.append(f"branch tip {branch} is not an ancestor of its configured upstream")
     clean_integration, integration_status = _status(canonical_repo)
     if not clean_integration:
         reasons.append(f"integration checkout is dirty or unavailable: {integration_status.strip()}")
     if reasons:
         raise _finish_error(target, branch, reasons, attached_branch)
+    try:
+        _branch_delete_preflight(canonical_repo, branch)
+        _removal_preflight(canonical_repo, target)
+    except (OSError, WorktreeError) as error:
+        raise _finish_error(target, branch, [str(error)], attached_branch) from error
     removed = _git(canonical_repo, "worktree", "remove", str(target), check=False)
     if removed.returncode:
         details = removed.stderr.strip() or removed.stdout.strip() or "git worktree remove failed"
-        raise _finish_error(target, branch, [details], attached_branch)
+        raise _post_remove_failure(canonical_repo, target, branch, [details])
     deleted = _git(canonical_repo, "branch", "-d", "--", branch, check=False)
     if deleted.returncode:
         details = deleted.stderr.strip() or deleted.stdout.strip() or "git branch -d failed"
