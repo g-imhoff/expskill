@@ -332,6 +332,13 @@ class ContractTests(unittest.TestCase):
         _, _, body = contents.split("---", 2)
         self.assertLess(len(body.split()), 200)
 
+    def test_quick_pressure_keeps_reviewer_isolated_and_verifier_custom_routing(self) -> None:
+        body = (QUICK_ROOT / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
+        self.assertIn("scripts/read_only_agent.py reviewer", body)
+        self.assertNotIn("`devflow-reviewer`", body)
+        self.assertIn("`devflow-verifier`", body)
+        self.assertIn("concurrent", body.lower())
+
     def test_full_skill_frontmatter_matches_directory_and_explicit_route(self) -> None:
         self.assertTrue((FULL_ROOT / "SKILL.md").is_file())
         frontmatter = self.load_skill_frontmatter(FULL_ROOT)
@@ -363,6 +370,16 @@ class ContractTests(unittest.TestCase):
         contents = (FULL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         _, _, body = contents.split("---", 2)
         self.assertLess(len(body.split()), 500)
+
+    def test_full_pressure_isolates_read_only_roles_and_preserves_writer_verifier_routing(self) -> None:
+        body = (FULL_ROOT / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
+        self.assertIn("scripts/read_only_agent.py explorer", body)
+        self.assertIn("scripts/read_only_agent.py reviewer", body)
+        self.assertNotIn("`devflow-explorer`", body)
+        self.assertNotIn("`devflow-reviewer`", body)
+        for profile in ("devflow-test-engineer", "devflow-implementer", "devflow-verifier"):
+            self.assertIn(f"`{profile}`", body)
+        self.assertIn("concurrent", body.lower())
 
 
 if __name__ == "__main__":
