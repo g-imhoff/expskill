@@ -1,0 +1,20 @@
+{
+  "name": "codex-dev-flow",
+  "interface": {
+    "displayName": "Codex Dev Flow"
+  },
+  "plugins": [
+    {
+      "name": "codex-dev-flow",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-dev-flow"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
