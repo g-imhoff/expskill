@@ -32,7 +32,7 @@ Each request is active. The expected route is Quick, with one concrete reason ti
 
 > Build tenant-level rate limiting across the API gateway, shared client SDK, admin dashboard, and integration tests. The product notes conflict on whether limits apply per user or per organization, and the data migration and rollout checks are not defined. Please determine the implementation and proceed.
 
-The request is active. Recommend Full because the unresolved semantics can change the solution, multiple meaningful streams can proceed independently, and coordinated acceptance evidence is needed. Ask the user to choose Quick or Full before any tool call or mutation.
+The request is active. The oracle requires exactly one concrete reason tied to one Full predicate: recommend Full because the unresolved per-user versus per-organization semantics can materially change the solution. Ask the user to choose Quick or Full before any tool call or mutation.
 
 ## Explicit route selections
 
