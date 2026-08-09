@@ -7,11 +7,14 @@ import tomllib
 import unittest
 from pathlib import Path
 
+import yaml
+
 from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "codex-dev-flow"
+ROUTER_ROOT = PLUGIN_ROOT / "skills" / "route-code-change"
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "devflow-test-engineer": ("gpt-5.6-luna", "max", "workspace-write"),
@@ -40,6 +43,14 @@ class ContractTests(unittest.TestCase):
 
     def load_marketplace(self, root: Path) -> dict[str, object]:
         return json.loads((root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+
+    def load_skill_frontmatter(self, skill_root: Path) -> dict[str, object]:
+        contents = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+        self.assertTrue(contents.startswith("---\n"))
+        _, frontmatter, _ = contents.split("---", 2)
+        parsed = yaml.safe_load(frontmatter)
+        self.assertIsInstance(parsed, dict)
+        return parsed
 
     def test_repository_contract_is_valid(self) -> None:
         self.assertEqual(validate_repository(ROOT), ())
@@ -231,6 +242,32 @@ class ContractTests(unittest.TestCase):
         self.assertGreaterEqual(len(errors), 2)
         self.assertTrue(any("reviewer" in error for error in errors))
         self.assertTrue(any("explorer" in error for error in errors))
+
+    def test_route_skill_frontmatter_matches_directory(self) -> None:
+        frontmatter = self.load_skill_frontmatter(ROUTER_ROOT)
+        self.assertEqual(frontmatter["name"], ROUTER_ROOT.name)
+        self.assertTrue(frontmatter["description"])
+
+    def test_route_skill_ui_metadata_enables_implicit_invocation(self) -> None:
+        metadata = yaml.safe_load(
+            (ROUTER_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            metadata,
+            {
+                "interface": {
+                    "display_name": "Route Code Change",
+                    "short_description": "Choose the proportionate development route",
+                    "default_prompt": "Use $route-code-change to route this coding change.",
+                },
+                "policy": {"allow_implicit_invocation": True},
+            },
+        )
+
+    def test_route_skill_body_stays_under_200_words(self) -> None:
+        contents = (ROUTER_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        _, _, body = contents.split("---", 2)
+        self.assertLess(len(body.split()), 200)
 
 
 if __name__ == "__main__":
