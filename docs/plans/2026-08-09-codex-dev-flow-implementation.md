@@ -4,7 +4,7 @@
 
 **Goal:** Build, install, and certify a private Codex plugin that routes code changes through Quick or Full workflows with model-pinned custom agents, then remove the project-local workflow machinery it replaces in Expand.
 
-**Architecture:** The private repository is a local Codex marketplace containing one skills-only plugin. An idempotent Python installer registers that marketplace and links repository-owned custom-agent TOML files into the user's Codex agent directory. Deterministic Python helpers validate package contracts and keep Full-route Git worktrees outside product repositories.
+**Architecture:** The private repository is a local Codex marketplace containing one skills-only plugin. An idempotent Python installer registers that marketplace and links repository-owned custom-agent TOML files into the user's Codex agent directory. Deterministic Python helpers validate package contracts, run reviewer and explorer roles as isolated read-only Codex processes, and keep Full-route Git worktrees outside product repositories.
 
 **Tech Stack:** Codex plugin and skill manifests, custom-agent TOML, Python 3.11+ standard library, `unittest`, Git, Codex CLI 0.147+, GitHub CLI.
 
@@ -29,6 +29,7 @@
 - `.agents/plugins/marketplace.json`: private local marketplace entry for the plugin.
 - `plugins/codex-dev-flow/.codex-plugin/plugin.json`: plugin identity and skills path.
 - `plugins/codex-dev-flow/assets/agents/*.toml`: source-of-truth custom-agent profiles installed by symlink.
+- `plugins/codex-dev-flow/scripts/read_only_agent.py`: isolated reviewer/explorer process runner whose role contracts come from the checked-in profiles.
 - `plugins/codex-dev-flow/skills/route-code-change/`: implicit code-change router and UI metadata.
 - `plugins/codex-dev-flow/skills/quick-code-change/`: explicit Quick workflow and UI metadata.
 - `plugins/codex-dev-flow/skills/full-code-change/`: explicit Full workflow, UI metadata, and worktree helper.
@@ -266,7 +267,7 @@ Expected RED: at least one sample substitutes self-review, commits without autho
 
 - [ ] **Step 5: Create and implement `quick-code-change`**
 
-Initialize it with implicit invocation disabled in `agents/openai.yaml`. Define the Sol Max orchestrator's short plan and implementation, then concurrent dispatch of exactly `devflow-reviewer` and `devflow-verifier`. Require fixes to return to the orchestrator, both gates to repeat after changes, no automatic commit, and a three-occurrence blocker threshold.
+Initialize it with implicit invocation disabled in `agents/openai.yaml`. Define the Sol Max orchestrator's short plan and implementation, then concurrent execution of exactly one isolated reviewer process and one `devflow-verifier`. Require fixes to return to the orchestrator, both gates to repeat after changes, no automatic commit, and a three-occurrence blocker threshold.
 
 - [ ] **Step 6: Forward-test and validate Quick**
 
@@ -320,7 +321,7 @@ Expected RED: at least one sample violates a Full invariant.
 
 - [ ] **Step 5: Create and implement `full-code-change`**
 
-Initialize it with implicit invocation disabled. Define acceptance-gated design, dependency-aware planning, Luna test-engineer dispatch before implementation, one Luna implementer per coherent task, external worktrees, concurrent Sol XHigh review and Luna verification per task, same-agent fix loops, dependency-order integration, final concurrent review and verification, and safe worktree finishing.
+Initialize it with implicit invocation disabled. Define acceptance-gated design, dependency-aware planning, isolated Luna Max exploration for bounded unknowns, Luna test-engineer dispatch before implementation, one Luna implementer per coherent task, external worktrees, concurrent isolated Sol XHigh review and Luna verification per task, fix loops, dependency-order integration, final concurrent review and verification, and safe worktree finishing.
 
 The test engineer works in its own external worktree and commits the accepted shared tests while they fail for the expected missing behavior. Its Sol review checks the test contract and its Luna verification confirms the failure is behavioral rather than environmental. The orchestrator integrates that test commit before creating implementation task branches. Task verifiers run the shared subset owned by their brief; the integrated final verification requires the complete suite to become green.
 
@@ -368,7 +369,7 @@ Run `python3 scripts/install.py`. Confirm marketplace registration JSON reports 
 
 - [ ] **Step 3: Certify a genuinely fresh Codex session**
 
-Start a new non-interactive Codex task against a disposable Git repository. Explicitly invoke `$route-code-change`, select Quick, and make a tiny tested change. Confirm the fresh session can dispatch `devflow-reviewer` and `devflow-verifier`, no agent files appear in the disposable repository, the reviewer makes no tracked changes, and the verifier reports exact command evidence.
+Start a new non-interactive Codex task against a disposable Git repository. Explicitly invoke `$route-code-change`, select Quick, and make a tiny tested change. Confirm the fresh session can start the isolated reviewer process and dispatch `devflow-verifier`, no prompt, transcript, agent, or temporary files appear in the disposable repository, the reviewer runs with ignored user configuration and an OS-enforced read-only sandbox, and the verifier reports exact command evidence.
 
 - [ ] **Step 4: Run one Full failure-preservation scenario**
 
@@ -376,7 +377,7 @@ Use a disposable repository with one deliberately failing task. Confirm the exte
 
 - [ ] **Step 5: Run one Sol XHigh whole-repository review and Luna Max verification concurrently**
 
-Give the reviewer the design, plan, full diff, and concise gate evidence. Give the verifier the exact repository commands. Return Critical and Important findings to the owning Luna implementer, then repeat both gates.
+Give the isolated reviewer process the design, plan, full diff, and concise gate evidence. Give the verifier the exact repository commands. Return Critical and Important findings to the owning Luna implementer, then repeat both gates.
 
 - [ ] **Step 6: Commit and push the certified plugin**
 

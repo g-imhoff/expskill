@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Codex Dev Flow provides an opt-in development workflow that keeps the primary agent conversational while delegating bounded work to model-pinned subagents. It replaces project-local workflow agents and orchestration files with one private, reusable Codex plugin.
+Codex Dev Flow provides an opt-in development workflow that keeps the primary agent conversational while delegating bounded work to model-pinned agents and isolated processes. It replaces project-local workflow agents and orchestration files with one private, reusable Codex plugin.
 
 The workflow applies only to requests that change code or its executable configuration. It does not activate for reports, academic writing, general research, explanations, or read-only analysis.
 
@@ -10,7 +10,7 @@ The workflow applies only to requests that change code or its executable configu
 
 The private `g-imhoff/codex-dev-flow` repository is a local Codex marketplace. Its installable plugin lives under `plugins/codex-dev-flow/`. One idempotent installer registers the marketplace and links the plugin's custom agent profiles into `~/.codex/agents/`.
 
-Codex plugins do not natively register custom subagent profiles. The linked profiles remain owned by this repository, use names prefixed with `devflow-`, and are never copied into product repositories. Installation stops rather than overwriting a conflicting user-owned profile.
+Codex plugins do not natively register custom subagent profiles. The linked profiles remain owned by this repository, use names prefixed with `devflow-`, and are never copied into product repositories. Reviewer and explorer profiles supply checked-in role contracts to a bundled isolated-process runner; the workflow does not spawn those profiles directly. Installation stops rather than overwriting a conflicting user-owned profile.
 
 The installer does not modify a product repository. A new Codex task is required after installation or profile changes so Codex can rediscover the plugin skills and custom agents.
 
@@ -18,14 +18,15 @@ The installer does not modify a product repository. A new Codex task is required
 
 The primary orchestrator is always GPT-5.6 Sol with max reasoning. It owns the conversation, route recommendation, accepted design, plan, coordination, integration, and final decisions.
 
-Every token-heavy subagent uses GPT-5.6 Luna with max reasoning:
+Every token-heavy writer and verifier subagent uses GPT-5.6 Luna with max reasoning:
 
-- `devflow-explorer` performs bounded read-only codebase investigation.
 - `devflow-test-engineer` owns the overall test strategy and shared or cross-cutting acceptance tests.
 - `devflow-implementer` owns one implementation task and its task-local tests.
 - `devflow-verifier` runs independent checks and may create build or temporary artifacts, but never edits tracked source files.
 
-The independent `devflow-reviewer` uses GPT-5.6 Sol with xhigh reasoning in a read-only sandbox. It reviews one coherent task or the integrated change. Its input is limited to the accepted contract, task brief, scoped diff, relevant repository policy, and concise verification evidence.
+The bundled runner starts explorers as independent Codex processes with user configuration ignored, GPT-5.6 Luna, max reasoning, and an OS-enforced read-only sandbox.
+
+The independent reviewer process uses GPT-5.6 Sol with xhigh reasoning, ignored user configuration, and an OS-enforced read-only sandbox. It reviews one coherent task or the integrated change. Its input is limited to the accepted contract, task brief, scoped diff, relevant repository policy, and concise verification evidence.
 
 No workflow profile uses Terra or another model. The orchestrator never delegates a large execution loop to Sol. The reviewer never implements fixes.
 
@@ -50,11 +51,11 @@ Full is recommended only when at least one of these conditions makes the larger 
 
 The Sol Max orchestrator performs a short plan, implementation, and focused checks in the current working tree. It does not create a commit unless the user asks.
 
-After implementation, it starts `devflow-reviewer` and `devflow-verifier` concurrently. The reviewer inspects the bounded change while the verifier independently executes the relevant checks. Findings return to the orchestrator, which fixes them and repeats both gates.
+After implementation, it starts an isolated reviewer process and `devflow-verifier` concurrently. The reviewer inspects the bounded change while the verifier independently executes the relevant checks. Findings return to the orchestrator, which fixes them and repeats both gates.
 
 ## Full route
 
-The Sol Max orchestrator explores the request, presents a proposition and decision recap, and waits for explicit acceptance. After acceptance, it continues autonomously unless a new important product decision appears or the same blocker survives three attempts.
+The Sol Max orchestrator explores the request, using isolated explorer processes for bounded unknowns, presents a proposition and decision recap, and waits for explicit acceptance. After acceptance, it continues autonomously unless a new important product decision appears or the same blocker survives three attempts.
 
 It creates a dependency graph of coherent, review-sized tasks. It maximizes useful parallelism without creating artificial microtasks. Each task has one writer, an explicit file scope, acceptance criteria, dependencies, and a commit boundary.
 
@@ -62,7 +63,7 @@ The Luna Max test engineer defines the behavior matrix before implementation. It
 
 Independent tasks use separate Git worktrees and branches outside the product repository. Worktrees live under the user's state directory so repository-wide scanners do not traverse nested checkouts. Parallel writers never share a branch or overlapping file ownership.
 
-Each completed task receives a concurrent Sol XHigh review and Luna Max verification. Confirmed findings return to the original implementer. The same reviewer and verifier recheck the corrected task.
+Each completed task receives a concurrent isolated Sol XHigh review and Luna Max verification. Confirmed findings return to the original implementer. Fresh reviewer and verifier gates check the corrected task.
 
 The orchestrator integrates accepted commits in dependency order. The integrated change then receives one whole-change Sol XHigh review and one full Luna Max verification concurrently. The orchestrator adjudicates their evidence and reports the outcome.
 
@@ -70,7 +71,7 @@ Temporary worktrees and branches are removed only after their commits are integr
 
 ## Agent contracts
 
-Subagents receive the minimum task-local context needed to work independently. They read repository instructions that apply to their scope, preserve unrelated changes, and return concise evidence rather than raw logs.
+Subagents and isolated read-only processes receive the minimum task-local context needed to work independently. They read repository instructions that apply to their scope, preserve unrelated changes, and return concise evidence rather than raw logs.
 
 The test engineer describes which production regression would make each test fail. Tests assert observable behavior and cover relevant negative, rollback, concurrency, migration, and compatibility paths.
 
@@ -93,6 +94,7 @@ The repository validates:
 - plugin and marketplace schemas;
 - every skill's metadata and structure;
 - every custom-agent model, effort, sandbox, name, and instruction contract;
+- isolated reviewer/explorer argv, profile validation, failure propagation, and repository-state boundaries;
 - installer idempotency, conflict refusal, and uninstall ownership;
 - route classification against representative Quick, Full, and non-coding prompts;
 - orchestration behavior with baseline and skill-enabled forward tests;
