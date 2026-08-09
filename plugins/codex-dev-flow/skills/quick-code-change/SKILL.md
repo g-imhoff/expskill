@@ -16,6 +16,6 @@ Next, concurrently dispatch exactly these independent gates:
 
 Adjudicate evidence. Fix confirmed findings in orchestrator. After fixes, rerun both gates concurrently; stale results cannot certify changed code. Never replace a gate with self-review or one agent.
 
-Do not commit without explicit user authorization. Continue autonomously. Ask only when a required important product decision falls outside the accepted request or the same blocker survives three occurrences.
+Do not commit without explicit user authorization. Continue autonomously before the threshold; when a required important product decision falls outside acceptance or the same blocker survives three occurrences, ask for help.
 
 Final handoff states implementation evidence, focused checks, independent review result, independent verification result, tracked/commit state, and remaining concerns. Claim success only when review is `Ready` and verification is `PASS`.
