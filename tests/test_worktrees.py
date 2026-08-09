@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -331,6 +332,101 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
         self.assertIn(f"worktree {record.path}", self._git("worktree", "list", "--porcelain"))
 
+    def test_loose_branch_lock_is_refused_before_mutation(self) -> None:
+        record = self._create_integrated_task_with_sentinel()
+        common_directory = (self.repo / self._git("rev-parse", "--git-common-dir")).resolve()
+        lock_path = common_directory / "refs" / "heads" / f"{record.branch}.lock"
+        lock_path.write_bytes(b"existing lock\n")
+        before_registration = self._git("worktree", "list", "--porcelain")
+        before_tip = self._git("rev-parse", f"refs/heads/{record.branch}")
+        before_git_file = (record.path / ".git").read_bytes()
+        before_tracked_file = (record.path / "feature.txt").read_bytes()
+        before_sentinel = (record.path / "ignored-sentinel").read_bytes()
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertEqual(self._git("rev-parse", f"refs/heads/{record.branch}"), before_tip)
+        self.assertEqual((record.path / ".git").read_bytes(), before_git_file)
+        self.assertEqual((record.path / "feature.txt").read_bytes(), before_tracked_file)
+        self.assertTrue((record.path / "ignored-sentinel").exists())
+        self.assertEqual((record.path / "ignored-sentinel").read_bytes(), before_sentinel)
+
+    def test_packed_refs_lock_is_refused_before_mutation(self) -> None:
+        record = self._create_integrated_task_with_sentinel()
+        common_directory = (self.repo / self._git("rev-parse", "--git-common-dir")).resolve()
+        self._git("pack-refs", "--all")
+        self.assertFalse((common_directory / "refs" / "heads" / record.branch).exists())
+        lock_path = common_directory / "packed-refs.lock"
+        lock_path.write_bytes(b"existing lock\n")
+        before_registration = self._git("worktree", "list", "--porcelain")
+        before_tip = self._git("rev-parse", f"refs/heads/{record.branch}")
+        before_git_file = (record.path / ".git").read_bytes()
+        before_tracked_file = (record.path / "feature.txt").read_bytes()
+        before_sentinel = (record.path / "ignored-sentinel").read_bytes()
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertEqual(self._git("rev-parse", f"refs/heads/{record.branch}"), before_tip)
+        self.assertEqual((record.path / ".git").read_bytes(), before_git_file)
+        self.assertEqual((record.path / "feature.txt").read_bytes(), before_tracked_file)
+        self.assertTrue((record.path / "ignored-sentinel").exists())
+        self.assertEqual((record.path / "ignored-sentinel").read_bytes(), before_sentinel)
+
+    def test_config_lock_for_branch_configuration_is_refused_before_mutation(self) -> None:
+        record = self._create_integrated_task_with_sentinel()
+        common_directory = (self.repo / self._git("rev-parse", "--git-common-dir")).resolve()
+        self._git("branch", "--set-upstream-to", "main", record.branch)
+        lock_path = common_directory / "config.lock"
+        lock_path.write_bytes(b"existing lock\n")
+        before_registration = self._git("worktree", "list", "--porcelain")
+        before_tip = self._git("rev-parse", f"refs/heads/{record.branch}")
+        before_config = (common_directory / "config").read_bytes()
+        before_git_file = (record.path / ".git").read_bytes()
+        before_tracked_file = (record.path / "feature.txt").read_bytes()
+        before_sentinel = (record.path / "ignored-sentinel").read_bytes()
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertEqual(self._git("rev-parse", f"refs/heads/{record.branch}"), before_tip)
+        self.assertEqual((common_directory / "config").read_bytes(), before_config)
+        self.assertEqual((record.path / ".git").read_bytes(), before_git_file)
+        self.assertEqual((record.path / "feature.txt").read_bytes(), before_tracked_file)
+        self.assertTrue((record.path / "ignored-sentinel").exists())
+        self.assertEqual((record.path / "ignored-sentinel").read_bytes(), before_sentinel)
+
+    def test_failed_remove_reports_registered_dirty_worktree_without_claiming_restoration(self) -> None:
+        record = self._create_integrated_task_with_sentinel()
+        helper = self._helper()
+        original_git = helper._git
+        before_registration = self._git("worktree", "list", "--porcelain")
+
+        def fail_remove(cwd: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            if arguments[:2] == ("worktree", "remove"):
+                (record.path / "dirty-after-remove.txt").write_text("dirty\n", encoding="utf-8")
+                return subprocess.CompletedProcess(["git"], 1, "", "injected worktree remove failure")
+            return original_git(cwd, *arguments, check=check)
+
+        with mock.patch.object(helper, "_git", side_effect=fail_remove):
+            with self.assertRaises(Exception) as context:
+                helper.finish_worktree(self.repo, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(f"worktree remains registered at {record.path}", message)
+        self.assertIn("residual worktree status is dirty:", message)
+        self.assertNotIn("restored", message)
+        self.assertNotIn("status is unavailable", message)
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertEqual((record.path / "dirty-after-remove.txt").read_text(encoding="utf-8"), "dirty\n")
+        self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
+
     def test_registered_worktree_outside_owned_root_is_refused(self) -> None:
         helper = self._helper()
         outside = self.root / "outside-worktree"
@@ -387,6 +483,21 @@ class WorktreeTests(unittest.TestCase):
     def _restore_directory_mode(self, directory: Path) -> None:
         if directory.exists():
             directory.chmod(0o700)
+
+    def _create_integrated_task_with_sentinel(self) -> object:
+        (self.repo / ".gitignore").write_text("ignored-sentinel\n", encoding="utf-8")
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "ignore sentinel")
+        record = self._create()
+        (record.path / "feature.txt").write_text("integrated task\n", encoding="utf-8")
+        self._git("add", "feature.txt", cwd=record.path)
+        self._git("commit", "-m", "integrated task", cwd=record.path)
+        self._git("merge", "--no-ff", record.branch, "-m", "integrate task")
+        (record.path / "ignored-sentinel").write_bytes(b"keep me\n")
+        original_state_home = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(self.state_home)
+        self.addCleanup(self._restore_state_home, original_state_home)
+        return record
 
 
 if __name__ == "__main__":
