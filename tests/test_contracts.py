@@ -104,7 +104,7 @@ class ContractTests(unittest.TestCase):
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)
         self.assertEqual(manifest["name"], "codex-dev-flow")
-        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.0")
         self.assertEqual(manifest["repository"], "https://github.com/g-imhoff/codex-dev-flow")
         self.assertEqual(manifest["skills"], "./skills/")
         self.assertEqual(manifest["interface"]["category"], "Developer Tools")
@@ -363,19 +363,19 @@ class ContractTests(unittest.TestCase):
         _, _, body = contents.split("---", 2)
         self.assertLess(len(body.split()), 200)
 
-    def test_quick_pressure_keeps_reviewer_isolated_and_verifier_custom_routing(self) -> None:
+    def test_quick_pressure_dispatches_context_free_reviewer_and_verifier(self) -> None:
         body = (QUICK_ROOT / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
-        self.assertIn("scripts/read_only_agent.py reviewer", body)
-        self.assertNotIn("`devflow-reviewer`", body)
-        self.assertIn("`devflow-verifier`", body)
+        for profile in ("devflow-reviewer", "devflow-verifier"):
+            self.assertIn(f"`{profile}`", body)
+            self.assertRegex(
+                body,
+                re.compile(
+                    rf"agent_type[^\n]+{profile}[^\n]+fork_turns[^\n]+none",
+                    re.IGNORECASE,
+                ),
+            )
         self.assertIn("concurrent", body.lower())
-        self.assertRegex(
-            body,
-            re.compile(
-                r"agent_type[^\n]+devflow-verifier[^\n]+fork_turns[^\n]+none",
-                re.IGNORECASE,
-            ),
-        )
+        self.assertNotIn("read_only_agent.py", body)
 
     def test_full_skill_frontmatter_matches_directory_and_explicit_route(self) -> None:
         self.assertTrue((FULL_ROOT / "SKILL.md").is_file())
@@ -409,13 +409,15 @@ class ContractTests(unittest.TestCase):
         _, _, body = contents.split("---", 2)
         self.assertLess(len(body.split()), 500)
 
-    def test_full_pressure_isolates_read_only_roles_and_preserves_writer_verifier_routing(self) -> None:
+    def test_full_pressure_dispatches_every_profile_with_context_free_routing(self) -> None:
         body = (FULL_ROOT / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
-        self.assertIn("scripts/read_only_agent.py explorer", body)
-        self.assertIn("scripts/read_only_agent.py reviewer", body)
-        self.assertNotIn("`devflow-explorer`", body)
-        self.assertNotIn("`devflow-reviewer`", body)
-        for profile in ("devflow-test-engineer", "devflow-implementer", "devflow-verifier"):
+        for profile in (
+            "devflow-explorer",
+            "devflow-test-engineer",
+            "devflow-implementer",
+            "devflow-reviewer",
+            "devflow-verifier",
+        ):
             self.assertIn(f"`{profile}`", body)
             self.assertRegex(
                 body,
@@ -425,6 +427,22 @@ class ContractTests(unittest.TestCase):
                 ),
             )
         self.assertIn("concurrent", body.lower())
+        self.assertNotIn("read_only_agent.py", body)
+
+    def test_unsupported_read_only_agent_runner_is_removed(self) -> None:
+        self.assertFalse((PLUGIN_ROOT / "scripts" / "read_only_agent.py").exists())
+        self.assertFalse((ROOT / "tests" / "test_read_only_agent.py").exists())
+
+    def test_repository_docs_describe_context_free_named_agent_isolation(self) -> None:
+        for relative_path in (
+            "docs/specs/2026-08-09-codex-dev-flow-design.md",
+            "docs/plans/2026-08-09-codex-dev-flow-implementation.md",
+        ):
+            body = (ROOT / relative_path).read_text(encoding="utf-8")
+            with self.subTest(path=relative_path):
+                self.assertIn("context-free", body)
+                self.assertNotIn("read_only_agent.py", body)
+                self.assertNotRegex(body, re.compile(r"isolated (?:read-only )?(?:Codex )?process", re.I))
 
     def test_repository_docs_do_not_reference_retired_workflow(self) -> None:
         references = []
