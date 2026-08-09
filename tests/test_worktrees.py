@@ -148,6 +148,108 @@ class WorktreeTests(unittest.TestCase):
         self.assertNotIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
         self.assertNotIn(str(target), self._git("worktree", "list", "--porcelain"))
 
+    def test_stale_upstream_preserves_worktree_metadata_and_ignored_files(self) -> None:
+        (self.repo / ".gitignore").write_text("ignored-sentinel\n", encoding="utf-8")
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "ignore sentinel")
+        record = self._create()
+        stale_upstream = "stale-upstream"
+        self._git("branch", stale_upstream, "HEAD")
+        (record.path / "feature.txt").write_text("integrated\n", encoding="utf-8")
+        self._git("add", "feature.txt", cwd=record.path)
+        self._git("commit", "-m", "integrated task", cwd=record.path)
+        self._git("merge", "--no-ff", record.branch, "-m", "integrate task")
+        self._git("branch", "--set-upstream-to", stale_upstream, record.branch)
+        sentinel = record.path / "ignored-sentinel"
+        sentinel.write_bytes(b"keep me\n")
+        git_metadata = (record.path / ".git").read_bytes()
+        tracked_files = {
+            relative: (record.path / relative).read_bytes()
+            for relative in ("README.md", ".gitignore", "feature.txt")
+        }
+        before_registration = self._git("worktree", "list", "--porcelain")
+        original_state_home = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(self.state_home)
+        self.addCleanup(self._restore_state_home, original_state_home)
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertTrue(record.path.exists())
+        self.assertEqual((record.path / ".git").read_bytes(), git_metadata)
+        self.assertTrue(sentinel.exists())
+        self.assertEqual(sentinel.read_bytes(), b"keep me\n")
+        for relative, contents in tracked_files.items():
+            self.assertEqual((record.path / relative).read_bytes(), contents)
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertEqual(self._git("status", "--porcelain", cwd=record.path), "")
+        self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
+
+    def test_non_writable_ignored_directory_is_rejected_before_worktree_remove(self) -> None:
+        (self.repo / ".gitignore").write_text("ignored-directory/\n", encoding="utf-8")
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "ignore directory")
+        record = self._create()
+        ignored_directory = record.path / "ignored-directory"
+        ignored_directory.mkdir()
+        ignored_file = ignored_directory / "sentinel.txt"
+        ignored_file.write_bytes(b"do not remove\n")
+        ignored_directory.chmod(0o500)
+        self.addCleanup(self._restore_directory_mode, ignored_directory)
+        before_registration = self._git("worktree", "list", "--porcelain")
+        git_metadata = (record.path / ".git").read_bytes()
+        original_state_home = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(self.state_home)
+        self.addCleanup(self._restore_state_home, original_state_home)
+        with self.assertRaises(Exception) as context:
+            self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
+        message = str(context.exception)
+        self.assertIn(str(record.path), message)
+        self.assertIn(record.branch, message)
+        self.assertTrue(record.path.exists())
+        self.assertTrue(ignored_file.exists())
+        self.assertEqual((record.path / ".git").read_bytes(), git_metadata)
+        self.assertEqual(self._git("worktree", "list", "--porcelain"), before_registration)
+        self.assertEqual(self._git("status", "--porcelain", cwd=record.path), "")
+        self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
+
+    def test_non_directory_state_component_returns_worktree_error_and_cli_status(self) -> None:
+        component = self.state_home / "codex-dev-flow"
+        component.parent.mkdir(parents=True)
+        component.write_bytes(b"not a directory\n")
+        target = self._expected_path("run-1", "task-one")
+        helper = self._helper()
+        with self.assertRaises(helper.WorktreeError) as context:
+            helper.create_worktree(self.repo, "HEAD", "run-1", "task-one", self.state_home)
+        message = str(context.exception)
+        self.assertIn(str(target), message)
+        self.assertIn("devflow/run-1/task-one", message)
+        result = subprocess.run(
+            [
+                "python3",
+                "-S",
+                str(HELPER_PATH),
+                "create",
+                "--repo",
+                str(self.repo),
+                "--base",
+                "HEAD",
+                "--run-id",
+                "run-1",
+                "--task",
+                "task-one",
+            ],
+            env={**os.environ, "XDG_STATE_HOME": str(self.state_home)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(target), result.stderr)
+        self.assertIn("devflow/run-1/task-one", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_duplicate_path_and_branch_are_refused_and_first_worktree_survives(self) -> None:
         record = self._create()
         with self.assertRaises(Exception) as context:
@@ -281,6 +383,10 @@ class WorktreeTests(unittest.TestCase):
             os.environ.pop("XDG_STATE_HOME", None)
         else:
             os.environ["XDG_STATE_HOME"] = original
+
+    def _restore_directory_mode(self, directory: Path) -> None:
+        if directory.exists():
+            directory.chmod(0o700)
 
 
 if __name__ == "__main__":
