@@ -20,6 +20,11 @@ PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
 PLACEHOLDER = "[TODO:"
+EXPECTED_SKILLS = {
+    "full-code-change",
+    "quick-code-change",
+    "route-code-change",
+}
 
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
@@ -220,10 +225,18 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
     if not skills_root.is_dir():
         if skills_root.exists():
             errors.append(f"skills path must be a directory: {skills_root}")
+        else:
+            errors.append(f"skills directory is missing: {skills_root}")
         return
+    entries = {path.name: path for path in skills_root.iterdir()}
+    for name in sorted(EXPECTED_SKILLS - entries.keys()):
+        errors.append(f"required skill {name!r} is missing")
+    for name in sorted(entries.keys() - EXPECTED_SKILLS):
+        errors.append(f"unexpected skill entry {name!r}")
     names: list[str] = []
-    for skill_root in sorted(skills_root.iterdir(), key=lambda path: path.name):
-        if not skill_root.is_dir() or skill_root.name.startswith("."):
+    for skill_root in sorted(entries.values(), key=lambda path: path.name):
+        if not skill_root.is_dir():
+            errors.append(f"skill {skill_root.name!r} must be a directory")
             continue
         skill_path = skill_root / "SKILL.md"
         if not skill_path.is_file():

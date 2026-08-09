@@ -20,7 +20,6 @@ except ModuleNotFoundError:
 MARKETPLACE_NAME = "codex-dev-flow"
 PLUGIN_NAME = "codex-dev-flow"
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
-PLUGIN_VERSION = "0.1.0"
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
@@ -495,14 +494,26 @@ def _plugin_state(payload: Mapping[str, Any], repository_root: Path) -> str:
     return "absent"
 
 
-def _validate_plugin_add(payload: Mapping[str, Any]) -> None:
+def _validated_manifest_version(repository_root: Path) -> str:
+    manifest_path = repository_root / "plugins" / PLUGIN_NAME / ".codex-plugin" / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"validated plugin manifest could not be read: {manifest_path}: {error}") from error
+    version = manifest.get("version")
+    if not isinstance(version, str):
+        raise InstallError(f"validated plugin manifest has no version: {manifest_path}")
+    return version
+
+
+def _validate_plugin_add(payload: Mapping[str, Any], expected_version: str) -> None:
     if payload.get("pluginId") != PLUGIN_SELECTOR:
         raise InstallError("plugin add JSON identified the wrong plugin")
     if payload.get("name") != PLUGIN_NAME:
         raise InstallError("plugin add JSON identified the wrong plugin name")
     if payload.get("marketplaceName") != MARKETPLACE_NAME:
         raise InstallError("plugin add JSON identified the wrong marketplace")
-    if payload.get("version") != PLUGIN_VERSION:
+    if payload.get("version") != expected_version:
         raise InstallError("plugin add JSON identified the wrong version")
     if not isinstance(payload.get("installedPath"), str) or not payload["installedPath"]:
         raise InstallError("plugin add JSON did not report an installed path")
@@ -611,6 +622,7 @@ def install(
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
     links = preflight_links(canonical_root, codex_home)
+    plugin_version = _validated_manifest_version(canonical_root)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_receipt(receipt_path_value, canonical_root, links)
     marketplace_payload = _run_json(
@@ -645,7 +657,7 @@ def install(
         _require_success(plugin_add_command, plugin_add_result)
         plugin_new = plugin_state == "absent"
         plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
-        _validate_plugin_add(plugin_add_json)
+        _validate_plugin_add(plugin_add_json, plugin_version)
         previous_links = () if receipt is None else receipt.links
         merged_links = list(previous_links)
         known_destinations = {link.destination for link in merged_links}
