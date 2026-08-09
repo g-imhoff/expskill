@@ -165,6 +165,10 @@ def _lexical_absolute(path: Path) -> Path:
     return Path(os.path.normpath(os.path.abspath(os.fspath(path))))
 
 
+def _has_dot_components(path: Path) -> bool:
+    return any(component in {".", ".."} for component in path.parts)
+
+
 def _same_owned_link(destination: Path, source: Path) -> bool:
     if not destination.is_symlink():
         return False
@@ -195,7 +199,7 @@ def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, 
     source_directory = canonical_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
     return tuple(
         ProfileLink(
-            source=(source_directory / f"{name}.toml").resolve(strict=False),
+            source=_lexical_absolute(source_directory / f"{name}.toml"),
             destination=agents_directory / f"{name}.toml",
         )
         for name in PROFILE_NAMES
@@ -239,10 +243,9 @@ def _receipt_links(
         destination = Path(destination_value).expanduser()
         if not source.is_absolute() or not destination.is_absolute():
             raise InstallError(f"receipt links must be absolute paths: {receipt_path}")
-        try:
-            canonical_source = source.resolve(strict=False)
-        except (OSError, RuntimeError) as error:
-            raise InstallError(f"receipt source cannot be resolved: {source}") from error
+        if _has_dot_components(source) or _has_dot_components(destination):
+            raise InstallError(f"receipt link contains traversal: {receipt_path}")
+        canonical_source = _lexical_absolute(source)
         lexical_destination = _lexical_absolute(destination)
         pair = (canonical_source, lexical_destination)
         if pair not in expected:
@@ -540,6 +543,18 @@ def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
     return failures
 
 
+def _same_recorded_link(destination: Path, source: Path) -> bool:
+    if not destination.is_symlink():
+        return False
+    try:
+        stored_target = Path(os.readlink(destination))
+    except OSError:
+        return False
+    if not stored_target.is_absolute():
+        stored_target = destination.parent / stored_target
+    return _lexical_absolute(stored_target) == _lexical_absolute(source)
+
+
 def _remove_command(
     run: Runner | Callable[[Sequence[str]], object], command: list[str]
 ) -> str | None:
@@ -694,7 +709,7 @@ def _remove_owned_links(
         if not _lexists(link.destination):
             current = _persist_receipt(receipt_path, current, links=tuple(item for item in current.links if item != link))
             continue
-        if not _same_owned_link(link.destination, link.source):
+        if not _same_recorded_link(link.destination, link.source):
             current = _persist_receipt(receipt_path, current, links=tuple(item for item in current.links if item != link))
             continue
         try:
