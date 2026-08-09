@@ -44,6 +44,11 @@ class ContractTests(unittest.TestCase):
     def test_repository_contract_is_valid(self) -> None:
         self.assertEqual(validate_repository(ROOT), ())
 
+    def test_clean_checkout_without_skills_directory_is_valid(self) -> None:
+        root = self.copy_repository()
+        shutil.rmtree(root / "plugins" / "codex-dev-flow" / "skills", ignore_errors=True)
+        self.assertEqual(validate_repository(root), ())
+
     def test_plugin_and_marketplace_identities_are_exact(self) -> None:
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)
@@ -158,7 +163,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         skills_root = root / "plugins" / "codex-dev-flow" / "skills"
         for directory in (skills_root / "first", skills_root / "second"):
-            directory.mkdir()
+            directory.mkdir(parents=True)
             (directory / "SKILL.md").write_text(
                 "---\nname: duplicate-skill\ndescription: A test skill\n---\n\nBody.\n",
                 encoding="utf-8",
