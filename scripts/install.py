@@ -187,6 +187,21 @@ def _expected_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...
     )
 
 
+def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+    canonical_root = _canonical_repository_root(repo_root)
+    canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
+    agents_directory = canonical_codex_home / "agents"
+    _validate_agent_directory(agents_directory)
+    source_directory = canonical_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
+    return tuple(
+        ProfileLink(
+            source=(source_directory / f"{name}.toml").resolve(strict=False),
+            destination=agents_directory / f"{name}.toml",
+        )
+        for name in PROFILE_NAMES
+    )
+
+
 def preflight_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
     links = _expected_links(repo_root, codex_home)
     for link in links:
@@ -297,6 +312,8 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
         "repository_root": str(receipt.repository_root),
     }
     temporary_path: Path | None = None
+    write_error: InstallError | None = None
+    write_cause: OSError | None = None
     try:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{RECEIPT_FILENAME}.", suffix=".tmp", dir=receipt_directory
@@ -310,13 +327,21 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
         os.replace(temporary_path, receipt_path)
         temporary_path = None
     except OSError as error:
-        raise InstallError(f"cannot write receipt: {receipt_path}: {error}") from error
+        write_cause = error
+        write_error = InstallError(f"cannot write receipt: {receipt_path}: {error}")
     finally:
         if temporary_path is not None:
             try:
                 temporary_path.unlink()
-            except OSError:
-                pass
+            except OSError as error:
+                cleanup_failure = f"temporary receipt cleanup failed: {temporary_path}: {error}"
+                if write_error is None:
+                    write_error = InstallError(cleanup_failure)
+                    write_cause = error
+                else:
+                    write_error = InstallError(f"{write_error}; {cleanup_failure}")
+    if write_error is not None:
+        raise write_error from write_cause
 
 
 def _invoke_runner(run: Runner | Callable[[Sequence[str]], object], command: list[str]) -> _CommandResult:
@@ -689,7 +714,7 @@ def uninstall(
     run: Runner | Callable[[Sequence[str]], object],
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
-    links = _expected_links(canonical_root, codex_home)
+    links = _allowlisted_links(canonical_root, codex_home)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_receipt(receipt_path_value, canonical_root, links)
     if receipt is None:
@@ -706,13 +731,13 @@ def uninstall(
             ["codex", "plugin", "marketplace", "list", "--json"],
         )
         marketplace_state = _marketplace_matches(canonical_root, marketplace_payload)
-    if plugin_state == "owned":
+    if plugin_state in {"owned", "absent"}:
         plugin_remove = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
         plugin_remove_result = _run_command(run, plugin_remove)
         _require_success(plugin_remove, plugin_remove_result)
         _parse_json(plugin_remove, plugin_remove_result)
         current = _persist_receipt(receipt_path_value, current, plugin_installed=False)
-    elif plugin_state in {"absent", "foreign"}:
+    elif plugin_state == "foreign":
         current = _persist_receipt(receipt_path_value, current, plugin_installed=False)
     if marketplace_state == "owned":
         marketplace_remove = [
