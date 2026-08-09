@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -11,6 +12,9 @@ from typing import Any
 MARKETPLACE_NAME = "codex-dev-flow"
 PLUGIN_NAME = "codex-dev-flow"
 PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION_PATTERN = re.compile(
+    rf"{re.escape(PLUGIN_VERSION)}(?:\+codex\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
+)
 REPOSITORY_URL = "https://github.com/g-imhoff/codex-dev-flow"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
@@ -183,9 +187,10 @@ def _validate_plugin_manifest(
 ) -> None:
     if manifest.get("name") != PLUGIN_NAME:
         errors.append(f"plugin name must be {PLUGIN_NAME!r}, got {manifest.get('name')!r}")
-    if manifest.get("version") != PLUGIN_VERSION:
+    version = manifest.get("version")
+    if not isinstance(version, str) or PLUGIN_VERSION_PATTERN.fullmatch(version) is None:
         errors.append(
-            f"plugin version must be {PLUGIN_VERSION!r}, got {manifest.get('version')!r}"
+            f"plugin version must be {PLUGIN_VERSION!r} or a Codex cachebuster, got {version!r}"
         )
     if manifest.get("repository") != REPOSITORY_URL:
         errors.append(

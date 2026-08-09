@@ -12,6 +12,8 @@ The private `g-imhoff/codex-dev-flow` repository is a local Codex marketplace. I
 
 Codex plugins do not natively register custom subagent profiles. The linked profiles remain owned by this repository, use names prefixed with `devflow-`, and are never copied into product repositories. Reviewer and explorer profiles supply checked-in role contracts to a bundled isolated-process runner; the workflow does not spawn those profiles directly. Installation stops rather than overwriting a conflicting user-owned profile.
 
+The standalone runner suppresses installed plugins, the remote plugin catalog, personal and project skills, skill search, apps, hooks, multi-agent tools, and web search. Built-in `.system` skills remain available.
+
 The installer does not modify a product repository. A new Codex task is required after installation or profile changes so Codex can rediscover the plugin skills and custom agents.
 
 ## Model policy
@@ -23,6 +25,8 @@ Every token-heavy writer and verifier subagent uses GPT-5.6 Luna with max reason
 - `devflow-test-engineer` owns the overall test strategy and shared or cross-cutting acceptance tests.
 - `devflow-implementer` owns one implementation task and its task-local tests.
 - `devflow-verifier` runs independent checks and may create build or temporary artifacts, but never edits tracked source files.
+
+Every custom named agent uses a context-free fork. The dispatch supplies the matching `agent_type` and `fork_turns: "none"` without model or reasoning overrides, so the checked-in profile applies on the first dispatch and every repeated gate.
 
 The bundled runner starts explorers as independent Codex processes with user configuration ignored, GPT-5.6 Luna, max reasoning, and an OS-enforced read-only sandbox.
 
@@ -88,6 +92,8 @@ Implementation or verification failures return to the agent that owns the releva
 No agent deletes unmerged work, overwrites an unknown custom-agent profile, rewrites history, or performs an external write that the user did not authorize.
 
 ## Validation
+
+The checked-in base plugin version is `0.1.0`. Local Codex cachebusters may append `+codex.<token>`, where the token is valid dot-separated SemVer build metadata.
 
 The repository validates:
 

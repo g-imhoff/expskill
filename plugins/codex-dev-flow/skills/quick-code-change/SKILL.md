@@ -12,7 +12,7 @@ GPT-5.6 Sol Max plans concisely, preserves dirty work, implements in the current
 For each review, resolve bundled `../../scripts/read_only_agent.py`. Store the request, repository policy, scoped diff, and check evidence in a prompt file outside the repository. Start concurrently:
 
 - `python3 ../../scripts/read_only_agent.py reviewer --repo <git-root> --prompt-file <file>` from the resolved path; use its status and stdout.
-- `devflow-verifier`: send criteria and exact commands; record tracked state and exit evidence; make no tracked-source edits.
+- Dispatch `devflow-verifier` with `agent_type: "devflow-verifier", fork_turns: "none"`; omit model and reasoning overrides. Send criteria and exact commands; record tracked state and exit evidence; make no tracked-source edits.
 
 Adjudicate evidence and fix confirmed findings. After changes, rerun both gates concurrently; stale evidence cannot certify code. Never substitute self-review or one agent.
 

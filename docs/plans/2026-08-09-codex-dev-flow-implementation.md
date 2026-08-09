@@ -1,6 +1,6 @@
 # Codex Dev Flow Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build, install, and certify a private Codex plugin that routes code changes through Quick or Full workflows with model-pinned custom agents, then remove the project-local workflow machinery it replaces in Expand.
 
@@ -21,6 +21,9 @@
 - No generic repository-cleaning feature, Claude support, GitHub PR automation, or target-repository workflow report is added.
 - Unknown agent-profile paths and unmerged work are preserved rather than overwritten or deleted.
 - Do not add third-party runtime dependencies.
+- Standalone reviewer and explorer processes suppress plugin, personal, and project skill context while retaining built-in `.system` skills.
+- Custom named agents always use the matching `agent_type` with `fork_turns: "none"` and no model or reasoning override.
+- The base plugin version is `0.1.0`; local Codex cachebusters may append `+codex.<token>`.
 
 ---
 
