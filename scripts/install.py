@@ -11,9 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+try:
+    from scripts.validate import validate_repository
+except ModuleNotFoundError:
+    from validate import validate_repository
+
 
 MARKETPLACE_NAME = "codex-dev-flow"
+PLUGIN_NAME = "codex-dev-flow"
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
+PLUGIN_VERSION = "0.1.0"
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
@@ -79,10 +86,34 @@ def _canonical_repository_root(repo_root: Path, require_directory: bool = True) 
     return canonical
 
 
+def _validate_repository(repository_root: Path) -> None:
+    errors = validate_repository(repository_root)
+    if errors:
+        raise InstallError("repository validation failed: " + "; ".join(errors))
+
+
+def _assert_no_symlink_components(root: Path, relative: Sequence[str]) -> None:
+    current = root
+    for component in relative:
+        current = current / component
+        if current.is_symlink():
+            raise InstallError(f"repository profile path contains a symlink: {current}")
+
+
 def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
-    agents_root = repository_root / "plugins" / "codex-dev-flow" / "assets" / "agents"
-    if not agents_root.is_dir() or agents_root.is_symlink():
+    _assert_no_symlink_components(
+        repository_root,
+        ("plugins", PLUGIN_NAME, "assets", "agents"),
+    )
+    agents_root = repository_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
+    if not agents_root.is_dir():
         raise InstallError(f"agent source directory is missing: {agents_root}")
+    try:
+        resolved_agents_root = agents_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise InstallError(f"agent source directory cannot be resolved: {agents_root}: {error}") from error
+    if resolved_agents_root != agents_root:
+        raise InstallError(f"agent source directory resolves outside the repository: {agents_root}")
     discovered = tuple(sorted(agents_root.glob("devflow-*.toml"), key=lambda path: path.name))
     expected_names = {f"{name}.toml" for name in PROFILE_NAMES}
     discovered_names = {path.name for path in discovered}
@@ -106,6 +137,12 @@ def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
             source = path.resolve(strict=True)
         except (OSError, RuntimeError) as error:
             raise InstallError(f"agent source cannot be resolved: {path}: {error}") from error
+        try:
+            source.relative_to(agents_root)
+        except ValueError as error:
+            raise InstallError(f"agent source resolves outside the agent directory: {path}") from error
+        if source.parent != agents_root:
+            raise InstallError(f"agent source resolves outside the exact agent directory: {path}")
         sources.append(source)
     return tuple(sources)
 
@@ -124,6 +161,10 @@ def _validate_agent_directory(agents_directory: Path) -> None:
         current = current.parent
 
 
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
 def _same_owned_link(destination: Path, source: Path) -> bool:
     if not destination.is_symlink():
         return False
@@ -133,16 +174,21 @@ def _same_owned_link(destination: Path, source: Path) -> bool:
         return False
 
 
-def preflight_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+def _expected_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
     canonical_root = _canonical_repository_root(repo_root)
+    _validate_repository(canonical_root)
     sources = _profile_sources(canonical_root)
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
-    links = tuple(
+    return tuple(
         ProfileLink(source=source, destination=agents_directory / source.name)
         for source in sources
     )
+
+
+def preflight_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+    links = _expected_links(repo_root, codex_home)
     for link in links:
         if not _lexists(link.destination):
             continue
@@ -156,11 +202,17 @@ def _receipt_path(state_home: Path) -> Path:
     return canonical_state_home / RECEIPT_DIRECTORY / RECEIPT_FILENAME
 
 
-def _receipt_links(value: object, receipt_path: Path, repository_root: Path) -> tuple[ProfileLink, ...]:
+def _receipt_links(
+    value: object,
+    receipt_path: Path,
+    expected_links: Sequence[ProfileLink],
+) -> tuple[ProfileLink, ...]:
     if not isinstance(value, list):
         raise InstallError(f"receipt links are malformed: {receipt_path}")
+    expected = {(link.source, link.destination): link for link in expected_links}
     links: list[ProfileLink] = []
-    destinations: set[Path] = set()
+    seen_pairs: set[tuple[Path, Path]] = set()
+    seen_destinations: set[Path] = set()
     for entry in value:
         if not isinstance(entry, dict):
             raise InstallError(f"receipt links are malformed: {receipt_path}")
@@ -176,18 +228,23 @@ def _receipt_links(value: object, receipt_path: Path, repository_root: Path) -> 
             canonical_source = source.resolve(strict=False)
         except (OSError, RuntimeError) as error:
             raise InstallError(f"receipt source cannot be resolved: {source}") from error
-        try:
-            canonical_source.relative_to(repository_root)
-        except ValueError as error:
-            raise InstallError(f"receipt source is outside the repository: {source}") from error
-        if destination in destinations:
-            raise InstallError(f"receipt destination is duplicated: {destination}")
-        destinations.add(destination)
-        links.append(ProfileLink(source=canonical_source, destination=destination))
+        lexical_destination = _lexical_absolute(destination)
+        pair = (canonical_source, lexical_destination)
+        if pair not in expected:
+            raise InstallError(f"receipt link is outside the selected repository or Codex home: {receipt_path}")
+        if pair in seen_pairs or lexical_destination in seen_destinations:
+            raise InstallError(f"receipt link is duplicated: {receipt_path}")
+        seen_pairs.add(pair)
+        seen_destinations.add(lexical_destination)
+        links.append(expected[pair])
     return tuple(links)
 
 
-def _read_receipt(receipt_path: Path, repository_root: Path) -> _Receipt | None:
+def _read_receipt(
+    receipt_path: Path,
+    repository_root: Path,
+    expected_links: Sequence[ProfileLink],
+) -> _Receipt | None:
     if not _lexists(receipt_path):
         return None
     if receipt_path.is_symlink() or not receipt_path.is_file():
@@ -213,7 +270,7 @@ def _read_receipt(receipt_path: Path, repository_root: Path) -> _Receipt | None:
     plugin_installed = payload.get("plugin_installed")
     if not isinstance(marketplace_added, bool) or not isinstance(plugin_installed, bool):
         raise InstallError(f"receipt ownership flags are malformed: {receipt_path}")
-    links = _receipt_links(payload.get("links"), receipt_path, repository_root)
+    links = _receipt_links(payload.get("links"), receipt_path, expected_links)
     return _Receipt(
         repository_root=recorded_root,
         links=links,
@@ -302,16 +359,23 @@ def _invoke_runner(run: Runner | Callable[[Sequence[str]], object], command: lis
     return _CommandResult(returncode, stdout, stderr)
 
 
-def _checked_json(
+def _run_command(
     run: Runner | Callable[[Sequence[str]], object], command: list[str]
-) -> dict[str, Any]:
-    result = _invoke_runner(run, command)
-    if result.returncode != 0:
-        details = result.stderr.strip() or result.stdout.strip()
-        suffix = f": {details}" if details else ""
-        raise InstallError(
-            f"command failed with exit code {result.returncode}: {' '.join(command)}{suffix}"
-        )
+) -> _CommandResult:
+    return _invoke_runner(run, command)
+
+
+def _require_success(command: list[str], result: _CommandResult) -> None:
+    if result.returncode == 0:
+        return
+    details = result.stderr.strip() or result.stdout.strip()
+    suffix = f": {details}" if details else ""
+    raise InstallError(
+        f"command failed with exit code {result.returncode}: {' '.join(command)}{suffix}"
+    )
+
+
+def _parse_json(command: list[str], result: _CommandResult) -> dict[str, Any]:
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -321,89 +385,182 @@ def _checked_json(
     return payload
 
 
-def _marketplace_is_new(payload: Mapping[str, Any]) -> bool:
-    marker = payload.get("alreadyAdded")
-    if isinstance(marker, bool):
-        return not marker
-    marker = payload.get("already_added")
-    if isinstance(marker, bool):
-        return not marker
-    raise InstallError("marketplace add JSON did not report alreadyAdded")
+def _run_json(
+    run: Runner | Callable[[Sequence[str]], object], command: list[str]
+) -> dict[str, Any]:
+    result = _run_command(run, command)
+    _require_success(command, result)
+    return _parse_json(command, result)
 
 
-def _plugin_is_new(payload: Mapping[str, Any], receipt_exists: bool) -> bool:
-    marker = payload.get("alreadyInstalled")
-    if isinstance(marker, bool):
-        return not marker
-    marker = payload.get("already_installed")
-    if isinstance(marker, bool):
-        return not marker
+def _canonical_source(value: object) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return Path(value).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _marketplace_state(payload: Mapping[str, Any], repository_root: Path) -> str:
+    marketplaces = payload.get("marketplaces")
+    if not isinstance(marketplaces, list):
+        raise InstallError("marketplace list JSON did not contain marketplaces")
+    found = False
+    for marketplace in marketplaces:
+        if not isinstance(marketplace, dict):
+            raise InstallError("marketplace list JSON contained a non-object entry")
+        if marketplace.get("name") != MARKETPLACE_NAME:
+            continue
+        found = True
+        candidates = [_canonical_source(marketplace.get("root"))]
+        marketplace_source = marketplace.get("marketplaceSource")
+        if isinstance(marketplace_source, dict):
+            candidates.append(_canonical_source(marketplace_source.get("source")))
+        if any(candidate == repository_root for candidate in candidates):
+            return "owned"
+    return "foreign" if found else "absent"
+
+
+def _validate_marketplace_add(payload: Mapping[str, Any], repository_root: Path) -> None:
+    if payload.get("marketplaceName") != MARKETPLACE_NAME:
+        raise InstallError("marketplace add JSON identified the wrong marketplace")
+    installed_root = _canonical_source(payload.get("installedRoot"))
+    if installed_root != repository_root:
+        raise InstallError("marketplace add JSON identified the wrong repository")
+    if not isinstance(payload.get("alreadyAdded"), bool):
+        raise InstallError("marketplace add JSON did not report alreadyAdded")
+
+
+def _plugin_entries(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     installed = payload.get("installed")
-    if isinstance(installed, bool):
-        return installed and not receipt_exists
-    return False
+    if not isinstance(installed, list):
+        raise InstallError("plugin list JSON did not contain installed plugins")
+    entries: list[dict[str, Any]] = []
+    for entry in installed:
+        if not isinstance(entry, dict):
+            raise InstallError("plugin list JSON contained a non-object entry")
+        entries.append(entry)
+    return entries
 
 
-def _create_links(links: tuple[ProfileLink, ...]) -> tuple[ProfileLink, ...]:
-    created: list[ProfileLink] = []
+def _plugin_presence(payload: Mapping[str, Any]) -> str:
+    for entry in _plugin_entries(payload):
+        if entry.get("pluginId") == PLUGIN_SELECTOR:
+            return "present"
+    return "absent"
+
+
+def _plugin_state(payload: Mapping[str, Any], repository_root: Path) -> str:
+    for entry in _plugin_entries(payload):
+        if entry.get("pluginId") != PLUGIN_SELECTOR:
+            continue
+        if entry.get("marketplaceName") != MARKETPLACE_NAME:
+            return "foreign"
+        marketplace_source = entry.get("marketplaceSource")
+        source = None
+        if isinstance(marketplace_source, dict):
+            source = _canonical_source(marketplace_source.get("source"))
+        if source == repository_root:
+            return "owned"
+        return "foreign"
+    return "absent"
+
+
+def _validate_plugin_add(payload: Mapping[str, Any]) -> None:
+    if payload.get("pluginId") != PLUGIN_SELECTOR:
+        raise InstallError("plugin add JSON identified the wrong plugin")
+    if payload.get("name") != PLUGIN_NAME:
+        raise InstallError("plugin add JSON identified the wrong plugin name")
+    if payload.get("marketplaceName") != MARKETPLACE_NAME:
+        raise InstallError("plugin add JSON identified the wrong marketplace")
+    if payload.get("version") != PLUGIN_VERSION:
+        raise InstallError("plugin add JSON identified the wrong version")
+    if not isinstance(payload.get("installedPath"), str) or not payload["installedPath"]:
+        raise InstallError("plugin add JSON did not report an installed path")
+
+
+def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> None:
     if links:
         try:
             links[0].destination.parent.mkdir(parents=True, exist_ok=True)
         except OSError as error:
-            raise InstallError(f"cannot create agent destination directory: {links[0].destination.parent}: {error}") from error
-    try:
-        for link in links:
-            if _lexists(link.destination):
-                if not _same_owned_link(link.destination, link.source):
-                    raise InstallError(f"refusing conflicting agent destination: {link.destination}")
-                continue
-            try:
-                link.destination.symlink_to(link.source)
-            except OSError as error:
-                raise InstallError(f"cannot create agent link: {link.destination}: {error}") from error
-            created.append(link)
-    except Exception:
-        _rollback_links(created)
-        raise
-    return tuple(created)
+            raise InstallError(
+                f"cannot create agent destination directory: {links[0].destination.parent}: {error}"
+            ) from error
+    for link in links:
+        if _lexists(link.destination):
+            if not _same_owned_link(link.destination, link.source):
+                raise InstallError(f"refusing conflicting agent destination: {link.destination}")
+            continue
+        try:
+            link.destination.symlink_to(link.source)
+        except OSError as error:
+            raise InstallError(f"cannot create agent link: {link.destination}: {error}") from error
+        created.append(link)
 
 
-def _rollback_links(links: Sequence[ProfileLink]) -> None:
+def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
+    failures: list[str] = []
     for link in reversed(tuple(links)):
+        if not _lexists(link.destination):
+            continue
         if not _same_owned_link(link.destination, link.source):
+            failures.append(f"link preserved because ownership changed: {link.destination}")
             continue
         try:
             link.destination.unlink()
-        except OSError:
-            continue
+        except OSError as error:
+            failures.append(f"link {link.destination}: {error}")
+    return failures
 
 
-def _remove_external_state(
-    run: Runner | Callable[[Sequence[str]], object], plugin: bool, marketplace: bool
-) -> None:
-    if plugin:
-        _checked_json(
-            run,
-            ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"],
-        )
-    if marketplace:
-        _checked_json(
-            run,
-            ["codex", "plugin", "marketplace", "remove", MARKETPLACE_NAME, "--json"],
-        )
+def _remove_command(
+    run: Runner | Callable[[Sequence[str]], object], command: list[str]
+) -> str | None:
+    try:
+        result = _run_command(run, command)
+    except InstallError as error:
+        return str(error)
+    if result.returncode != 0:
+        details = result.stderr.strip() or result.stdout.strip()
+        suffix = f": {details}" if details else ""
+        return f"command failed with exit code {result.returncode}: {' '.join(command)}{suffix}"
+    try:
+        _parse_json(command, result)
+    except InstallError as error:
+        return str(error)
+    return None
 
 
 def _cleanup_after_install_failure(
+    original: Exception,
     run: Runner | Callable[[Sequence[str]], object],
     created_links: Sequence[ProfileLink],
     plugin_new: bool,
     marketplace_new: bool,
 ) -> None:
-    _rollback_links(created_links)
-    try:
-        _remove_external_state(run, plugin_new, marketplace_new)
-    except InstallError:
-        pass
+    failures: list[str] = []
+    if plugin_new:
+        failure = _remove_command(
+            run,
+            ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"],
+        )
+        if failure:
+            failures.append(f"plugin rollback: {failure}")
+    if marketplace_new:
+        failure = _remove_command(
+            run,
+            ["codex", "plugin", "marketplace", "remove", MARKETPLACE_NAME, "--json"],
+        )
+        if failure:
+            failures.append(f"marketplace rollback: {failure}")
+    failures.extend(f"link rollback: {failure}" for failure in _rollback_links(created_links))
+    if failures:
+        raise InstallError(f"{original}; residual state or rollback failures: {'; '.join(failures)}") from original
+    if isinstance(original, InstallError):
+        raise original
+    raise InstallError(str(original)) from original
 
 
 def install(
@@ -414,31 +571,41 @@ def install(
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
     links = preflight_links(canonical_root, codex_home)
-    receipt_path = _receipt_path(state_home)
-    receipt = _read_receipt(receipt_path, canonical_root)
-    state_directory_existed = _lexists(receipt_path.parent)
-    created_links: tuple[ProfileLink, ...] = ()
+    receipt_path_value = _receipt_path(state_home)
+    receipt = _read_receipt(receipt_path_value, canonical_root, links)
+    marketplace_payload = _run_json(
+        run,
+        ["codex", "plugin", "marketplace", "list", "--json"],
+    )
+    marketplace_state = _marketplace_state(marketplace_payload, canonical_root)
+    if marketplace_state == "foreign":
+        raise InstallError("marketplace name conflict from another repository")
+    created_links: list[ProfileLink] = []
     marketplace_new = False
     plugin_new = False
     try:
-        created_links = _create_links(links)
-        marketplace_payload = _checked_json(
-            run,
-            [
-                "codex",
-                "plugin",
-                "marketplace",
-                "add",
-                str(canonical_root),
-                "--json",
-            ],
-        )
-        marketplace_new = _marketplace_is_new(marketplace_payload)
-        plugin_payload = _checked_json(
-            run,
-            ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"],
-        )
-        plugin_new = _plugin_is_new(plugin_payload, receipt is not None)
+        _create_links(links, created_links)
+        marketplace_add_command = [
+            "codex",
+            "plugin",
+            "marketplace",
+            "add",
+            str(canonical_root),
+            "--json",
+        ]
+        marketplace_add_result = _run_command(run, marketplace_add_command)
+        _require_success(marketplace_add_command, marketplace_add_result)
+        marketplace_new = marketplace_state == "absent"
+        marketplace_add_json = _parse_json(marketplace_add_command, marketplace_add_result)
+        _validate_marketplace_add(marketplace_add_json, canonical_root)
+        plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+        plugin_state = _plugin_presence(plugin_payload)
+        plugin_add_command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
+        plugin_add_result = _run_command(run, plugin_add_command)
+        _require_success(plugin_add_command, plugin_add_result)
+        plugin_new = plugin_state == "absent"
+        plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
+        _validate_plugin_add(plugin_add_json)
         previous_links = () if receipt is None else receipt.links
         merged_links = list(previous_links)
         known_destinations = {link.destination for link in merged_links}
@@ -452,58 +619,67 @@ def install(
             marketplace_added=(receipt.marketplace_added if receipt else False) or marketplace_new,
             plugin_installed=(receipt.plugin_installed if receipt else False) or plugin_new,
         )
-        _write_receipt(receipt_path, merged_receipt)
+        _write_receipt(receipt_path_value, merged_receipt)
     except Exception as error:
-        _cleanup_after_install_failure(run, created_links, plugin_new, marketplace_new)
-        if not state_directory_existed and _lexists(receipt_path.parent):
-            try:
-                receipt_path.parent.rmdir()
-            except OSError:
-                pass
-        if isinstance(error, InstallError):
-            raise
-        raise InstallError(str(error)) from error
+        _cleanup_after_install_failure(
+            error,
+            run,
+            created_links,
+            plugin_new,
+            marketplace_new,
+        )
     return InstallResult(
         links=links,
-        created_links=created_links,
+        created_links=tuple(created_links),
         marketplace_added=marketplace_new,
         plugin_installed=plugin_new,
     )
 
 
-def _marketplace_matches(repository_root: Path, payload: Mapping[str, Any]) -> bool:
-    marketplaces = payload.get("marketplaces")
-    if not isinstance(marketplaces, list):
-        raise InstallError("marketplace list JSON did not contain marketplaces")
-    for marketplace in marketplaces:
-        if not isinstance(marketplace, dict) or marketplace.get("name") != MARKETPLACE_NAME:
-            continue
-        sources: list[object] = [marketplace.get("root")]
-        marketplace_source = marketplace.get("marketplaceSource")
-        if isinstance(marketplace_source, dict):
-            sources.append(marketplace_source.get("source"))
-        for source in sources:
-            if not isinstance(source, str):
-                continue
-            try:
-                if Path(source).expanduser().resolve(strict=False) == repository_root:
-                    return True
-            except (OSError, RuntimeError):
-                continue
-    return False
+def _marketplace_matches(repository_root: Path, payload: Mapping[str, Any]) -> str:
+    return _marketplace_state(payload, repository_root)
 
 
-def _remove_owned_links(links: Sequence[ProfileLink]) -> tuple[ProfileLink, ...]:
+def _persist_receipt(
+    receipt_path: Path,
+    receipt: _Receipt,
+    *,
+    links: Sequence[ProfileLink] | None = None,
+    marketplace_added: bool | None = None,
+    plugin_installed: bool | None = None,
+) -> _Receipt:
+    updated = _Receipt(
+        repository_root=receipt.repository_root,
+        links=tuple(receipt.links if links is None else links),
+        marketplace_added=receipt.marketplace_added if marketplace_added is None else marketplace_added,
+        plugin_installed=receipt.plugin_installed if plugin_installed is None else plugin_installed,
+    )
+    _write_receipt(receipt_path, updated)
+    return updated
+
+
+def _remove_owned_links(
+    receipt_path: Path,
+    receipt: _Receipt,
+) -> tuple[_Receipt, tuple[ProfileLink, ...], list[str]]:
+    current = receipt
     removed: list[ProfileLink] = []
-    for link in links:
+    failures: list[str] = []
+    for link in receipt.links:
+        if not _lexists(link.destination):
+            current = _persist_receipt(receipt_path, current, links=tuple(item for item in current.links if item != link))
+            continue
         if not _same_owned_link(link.destination, link.source):
+            current = _persist_receipt(receipt_path, current, links=tuple(item for item in current.links if item != link))
             continue
         try:
             link.destination.unlink()
         except OSError as error:
-            raise InstallError(f"cannot remove owned agent link: {link.destination}: {error}") from error
+            failures.append(f"link {link.destination}: {error}")
+            continue
         removed.append(link)
-    return tuple(removed)
+        current = _persist_receipt(receipt_path, current, links=tuple(item for item in current.links if item != link))
+    return current, tuple(removed), failures
 
 
 def uninstall(
@@ -512,39 +688,62 @@ def uninstall(
     state_home: Path,
     run: Runner | Callable[[Sequence[str]], object],
 ) -> InstallResult:
-    canonical_root = _canonical_repository_root(repo_root, require_directory=False)
-    receipt_path = _receipt_path(state_home)
-    receipt = _read_receipt(receipt_path, canonical_root)
+    canonical_root = _canonical_repository_root(repo_root)
+    links = _expected_links(canonical_root, codex_home)
+    receipt_path_value = _receipt_path(state_home)
+    receipt = _read_receipt(receipt_path_value, canonical_root, links)
     if receipt is None:
-        return InstallResult()
-    marketplace_matches = False
+        return InstallResult(links=links)
+    current = receipt
+    plugin_state: str | None = None
+    marketplace_state: str | None = None
+    if receipt.plugin_installed:
+        plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+        plugin_state = _plugin_state(plugin_payload, canonical_root)
     if receipt.marketplace_added:
-        marketplace_payload = _checked_json(
+        marketplace_payload = _run_json(
             run,
             ["codex", "plugin", "marketplace", "list", "--json"],
         )
-        marketplace_matches = _marketplace_matches(canonical_root, marketplace_payload)
-    if receipt.plugin_installed:
-        _checked_json(
-            run,
-            ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"],
-        )
-    if marketplace_matches:
-        _checked_json(
-            run,
-            ["codex", "plugin", "marketplace", "remove", MARKETPLACE_NAME, "--json"],
-        )
-    removed_links = _remove_owned_links(receipt.links)
-    if receipt_path.is_symlink() or not receipt_path.is_file():
-        raise InstallError(f"receipt path is not a regular file: {receipt_path}")
+        marketplace_state = _marketplace_matches(canonical_root, marketplace_payload)
+    if plugin_state == "owned":
+        plugin_remove = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
+        plugin_remove_result = _run_command(run, plugin_remove)
+        _require_success(plugin_remove, plugin_remove_result)
+        _parse_json(plugin_remove, plugin_remove_result)
+        current = _persist_receipt(receipt_path_value, current, plugin_installed=False)
+    elif plugin_state in {"absent", "foreign"}:
+        current = _persist_receipt(receipt_path_value, current, plugin_installed=False)
+    if marketplace_state == "owned":
+        marketplace_remove = [
+            "codex",
+            "plugin",
+            "marketplace",
+            "remove",
+            MARKETPLACE_NAME,
+            "--json",
+        ]
+        marketplace_remove_result = _run_command(run, marketplace_remove)
+        _require_success(marketplace_remove, marketplace_remove_result)
+        _parse_json(marketplace_remove, marketplace_remove_result)
+        current = _persist_receipt(receipt_path_value, current, marketplace_added=False)
+    elif marketplace_state in {"absent", "foreign"}:
+        current = _persist_receipt(receipt_path_value, current, marketplace_added=False)
+    current, removed_links, link_failures = _remove_owned_links(receipt_path_value, current)
+    if link_failures:
+        raise InstallError("owned link cleanup failed: " + "; ".join(link_failures))
+    if current.links:
+        raise InstallError("owned link cleanup did not converge")
+    if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
+        raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
-        receipt_path.unlink()
+        receipt_path_value.unlink()
     except OSError as error:
-        raise InstallError(f"cannot remove receipt: {receipt_path}: {error}") from error
+        raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
     return InstallResult(
-        links=receipt.links,
+        links=links,
         removed_links=removed_links,
-        marketplace_added=marketplace_matches,
+        marketplace_added=receipt.marketplace_added,
         plugin_installed=receipt.plugin_installed,
     )
 
@@ -567,7 +766,8 @@ def _print_dry_run(repo_root: Path, codex_home: Path) -> None:
     links = preflight_links(repo_root, codex_home)
     for link in links:
         print(f"link {link.destination} -> {link.source}")
-    print(f"codex plugin marketplace add {links[0].source.parents[4]} --json")
+    repository = links[0].source.parent.parent.parent.parent.parent
+    print(f"codex plugin marketplace add {repository} --json")
     print(f"codex plugin add {PLUGIN_SELECTOR} --json")
 
 
