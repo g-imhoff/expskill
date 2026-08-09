@@ -1,0 +1,19 @@
+{
+  "name": "codex-dev-flow",
+  "version": "0.1.0",
+  "description": "A private marketplace plugin for proportionate, model-pinned development workflows.",
+  "repository": "https://github.com/g-imhoff/codex-dev-flow",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Dev Flow",
+    "shortDescription": "Use Codex Dev Flow in Codex.",
+    "longDescription": "Codex Dev Flow adds a local Codex plugin scaffold.",
+    "developerName": "Local developer",
+    "category": "Developer Tools",
+    "capabilities": [],
+    "defaultPrompt": "Help me use Codex Dev Flow."
+  }
+}
