@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
-
-import yaml
 
 from scripts.validate import validate_repository
 
@@ -22,6 +21,38 @@ EXPECTED_AGENTS = {
     "devflow-reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
     "devflow-verifier": ("gpt-5.6-luna", "max", "workspace-write"),
 }
+
+
+def _parse_yaml_scalar(raw_value: str) -> object:
+    if raw_value == "true":
+        return True
+    if raw_value == "false":
+        return False
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in {'"', "'"}:
+        return ast.literal_eval(raw_value)
+    return raw_value
+
+
+def _parse_yaml_mapping(contents: str) -> dict[str, object]:
+    result: dict[str, object] = {}
+    stack: list[tuple[int, dict[str, object]]] = [(-1, result)]
+    for line in contents.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        key, separator, raw_value = line.strip().partition(":")
+        if not separator or not key:
+            raise ValueError(f"unsupported YAML line: {line!r}")
+        while stack[-1][0] >= indentation:
+            stack.pop()
+        parent = stack[-1][1]
+        if raw_value.strip():
+            parent[key] = _parse_yaml_scalar(raw_value.strip())
+            continue
+        child: dict[str, object] = {}
+        parent[key] = child
+        stack.append((indentation, child))
+    return result
 
 
 class ContractTests(unittest.TestCase):
@@ -45,12 +76,10 @@ class ContractTests(unittest.TestCase):
         return json.loads((root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
 
     def load_skill_frontmatter(self, skill_root: Path) -> dict[str, object]:
-        contents = (skill_root / "SKILL.md").read_text(encoding="utf-8")
-        self.assertTrue(contents.startswith("---\n"))
-        _, frontmatter, _ = contents.split("---", 2)
-        parsed = yaml.safe_load(frontmatter)
-        self.assertIsInstance(parsed, dict)
-        return parsed
+        lines = (skill_root / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], "---")
+        end = lines.index("---", 1)
+        return _parse_yaml_mapping("\n".join(lines[1:end]))
 
     def test_repository_contract_is_valid(self) -> None:
         self.assertEqual(validate_repository(ROOT), ())
@@ -249,7 +278,7 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(frontmatter["description"])
 
     def test_route_skill_ui_metadata_enables_implicit_invocation(self) -> None:
-        metadata = yaml.safe_load(
+        metadata = _parse_yaml_mapping(
             (ROUTER_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
         )
         self.assertEqual(
