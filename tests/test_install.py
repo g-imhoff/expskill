@@ -563,6 +563,66 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(os.path.lexists(target))
             self.assertEqual(len(runner.calls), 6)
 
+    def test_install_rollback_preserves_retargeted_link_after_source_symlink_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            outside_file = root / "outside.toml"
+            outside_file.write_text("user-owned\n", encoding="utf-8")
+            outside_alias = root / "outside-alias.toml"
+            outside_alias.symlink_to(outside_file)
+            damaged_source = (
+                repo
+                / "plugins"
+                / "codex-dev-flow"
+                / "assets"
+                / "agents"
+                / "devflow-reviewer.toml"
+            )
+            retargeted = codex_home / "agents" / "devflow-reviewer.toml"
+            fake_runner = FakeRunner(
+                [
+                    marketplace_list_response(),
+                    marketplace_add_response(repo),
+                    plugin_list_response(),
+                    FakeResult(0, stdout="not-json"),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+
+            def run(command: list[str]) -> FakeResult:
+                result = fake_runner(command)
+                if tuple(command) == ("codex", "plugin", "add", PLUGIN_SELECTOR, "--json"):
+                    damaged_source.unlink()
+                    damaged_source.symlink_to(outside_file)
+                    retargeted.unlink()
+                    retargeted.symlink_to(outside_alias)
+                return result
+
+            with self.assertRaisesRegex(InstallError, "preserved because ownership changed") as context:
+                install(repo, codex_home, state_home, run)
+
+            self.assertIn(str(retargeted), str(context.exception))
+            self.assertTrue(retargeted.is_symlink())
+            self.assertEqual(os.readlink(retargeted), str(outside_alias))
+            self.assertEqual(retargeted.read_text(encoding="utf-8"), "user-owned\n")
+            self.assertTrue(damaged_source.is_symlink())
+            self.assertEqual(
+                fake_runner.calls[-2:],
+                [
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                    ("codex", "plugin", "marketplace", "remove", "codex-dev-flow", "--json"),
+                ],
+            )
+            self.assertEqual(
+                tuple(path.name for path in (codex_home / "agents").iterdir()),
+                ("devflow-reviewer.toml",),
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_intermediate_assets_symlink_escape_refuses_before_runner_or_destinations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
