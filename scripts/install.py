@@ -533,7 +533,7 @@ def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
     for link in reversed(tuple(links)):
         if not _lexists(link.destination):
             continue
-        if not _same_owned_link(link.destination, link.source):
+        if not _same_recorded_link(link.destination, link.source):
             failures.append(f"link preserved because ownership changed: {link.destination}")
             continue
         try:
