@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
+import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -325,8 +327,117 @@ EXPECTED_POLICY_ROUTES = {
 }
 
 
+def _lstat(path: Path) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except OSError:
+        return None
+
+
+def _is_symlink(path: Path) -> bool:
+    metadata = _lstat(path)
+    return metadata is not None and stat.S_ISLNK(metadata.st_mode)
+
+
+def _symlink_component(root: Path, relative: str) -> Path | None:
+    current = root
+    if _is_symlink(current):
+        return current
+    for component in Path(relative).parts:
+        current /= component
+        if _is_symlink(current):
+            return current
+    return None
+
+
+def _validate_plugin_root(plugin_root: Path, errors: list[str]) -> bool:
+    if _is_symlink(plugin_root):
+        errors.append(f"plugin root must not be a symlink: {plugin_root}")
+        return False
+    metadata = _lstat(plugin_root)
+    if metadata is None:
+        errors.append(f"plugin directory is missing: {plugin_root}")
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"plugin root must be a directory: {plugin_root}")
+        return False
+    try:
+        resolved = plugin_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        errors.append(f"plugin root cannot be resolved: {plugin_root}: {error}")
+        return False
+    if resolved != plugin_root:
+        errors.append(f"plugin root resolves outside its lexical path: {plugin_root}")
+        return False
+    return True
+
+
+def _required_package_path(
+    plugin_root: Path,
+    relative: str,
+    label: str,
+    kind: str,
+    errors: list[str],
+    missing_label: str | None = None,
+) -> Path | None:
+    path = plugin_root / relative
+    symlink = _symlink_component(plugin_root, relative)
+    if symlink is not None:
+        errors.append(f"{label} contains a symlink: {symlink}")
+        return None
+    try:
+        canonical_root = plugin_root.resolve(strict=True)
+        resolved = path.resolve(strict=False)
+        resolved.relative_to(canonical_root)
+    except ValueError:
+        errors.append(f"{label} resolves outside the plugin root: {path}")
+        return None
+    except (OSError, RuntimeError) as error:
+        errors.append(f"{label} cannot be resolved: {path}: {error}")
+        return None
+    metadata = _lstat(path)
+    if metadata is None:
+        errors.append(f"{missing_label or label} is missing: {path}")
+        return None
+    if kind == "directory" and not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"{label} must be a directory: {path}")
+        return None
+    if kind == "file" and not stat.S_ISREG(metadata.st_mode):
+        errors.append(f"{label} must be a regular file: {path}")
+        return None
+    return path
+
+
+def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
+    """Enumerate package entries without traversing symlink directories."""
+
+    pending = [plugin_root]
+    entries: list[tuple[Path, os.stat_result]] = []
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as iterator:
+                children = sorted(iterator, key=lambda entry: entry.name)
+                for child in children:
+                    try:
+                        metadata = child.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    child_path = Path(child.path)
+                    entries.append((child_path, metadata))
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(child_path)
+        except OSError:
+            continue
+    return entries
+
+
 def validate_repository(root: Path) -> tuple[str, ...]:
-    repository_root = Path(root)
+    repository_root = Path(root).expanduser()
+    try:
+        repository_root = repository_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
     marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
     marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
@@ -334,14 +445,25 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         _validate_marketplace(marketplace, repository_root, errors)
 
     plugin_root = repository_root / "plugins" / PLUGIN_NAME
-    manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
-    manifest = _load_json_object(manifest_path, "plugin.json", errors)
-    if manifest is not None:
-        _validate_plugin_manifest(manifest, plugin_root, errors)
+    if _validate_plugin_root(plugin_root, errors):
+        manifest_path = _required_package_path(
+            plugin_root,
+            ".codex-plugin/plugin.json",
+            "plugin manifest",
+            "file",
+            errors,
+        )
+        manifest = (
+            _load_json_object(manifest_path, "plugin.json", errors)
+            if manifest_path is not None
+            else None
+        )
+        if manifest is not None:
+            _validate_plugin_manifest(manifest, plugin_root, errors)
 
-    _validate_agents(plugin_root, errors)
-    _validate_policy(plugin_root, errors)
-    _validate_helper_and_package_layout(plugin_root, errors)
+        _validate_agents(plugin_root, errors)
+        _validate_policy(plugin_root, errors)
+        _validate_helper_and_package_layout(plugin_root, errors)
     return tuple(errors)
 
 
@@ -473,11 +595,15 @@ def _validate_plugin_manifest(
 
 
 def _validate_skills(skills_root: Path, errors: list[str]) -> None:
-    if not skills_root.is_dir():
-        if skills_root.exists():
-            errors.append(f"skills path must be a directory: {skills_root}")
-        else:
-            errors.append(f"skills directory is missing: {skills_root}")
+    plugin_root = skills_root.parent
+    if _required_package_path(
+        plugin_root,
+        "skills",
+        "skills path",
+        "directory",
+        errors,
+        missing_label="skills directory",
+    ) is None:
         return
     entries = {path.name: path for path in skills_root.iterdir()}
     for name in sorted(EXPECTED_SKILLS - entries.keys()):
@@ -486,11 +612,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         errors.append(f"unexpected skill entry {name!r}")
     names: list[str] = []
     for skill_root in sorted(entries.values(), key=lambda path: path.name):
-        if skill_root.is_symlink():
-            errors.append(f"skill {skill_root.name!r} must not be a symlink")
-            continue
-        if not skill_root.is_dir():
-            errors.append(f"skill {skill_root.name!r} must be a directory")
+        relative_skill = f"skills/{skill_root.name}"
+        if _required_package_path(
+            plugin_root,
+            relative_skill,
+            f"skill {skill_root.name!r}",
+            "directory",
+            errors,
+        ) is None:
             continue
         expected_files = {"SKILL.md", "agents/openai.yaml"}
         actual_files = {
@@ -510,9 +639,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         for path in skill_root.rglob("*"):
             if path.is_symlink():
                 errors.append(f"skill {skill_root.name!r} contains a symlink: {path}")
-        skill_path = skill_root / "SKILL.md"
-        if not skill_path.is_file():
-            errors.append(f"skill {skill_root.name!r} is missing SKILL.md")
+        skill_path = _required_package_path(
+            plugin_root,
+            f"{relative_skill}/SKILL.md",
+            f"skill {skill_root.name!r} entrypoint",
+            "file",
+            errors,
+        )
+        if skill_path is None:
             continue
         try:
             contents = skill_path.read_text(encoding="utf-8")
@@ -604,12 +738,24 @@ def _parse_frontmatter(
 
 
 def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
-    metadata_path = skill_root / "agents" / "openai.yaml"
-    if not metadata_path.is_file():
-        errors.append(f"skill {skill_root.name!r} is missing agents/openai.yaml")
+    plugin_root = skill_root.parent.parent
+    agents_path = _required_package_path(
+        plugin_root,
+        f"skills/{skill_root.name}/agents",
+        f"skill {skill_root.name!r} agents directory",
+        "directory",
+        errors,
+    )
+    if agents_path is None:
         return
-    if metadata_path.is_symlink():
-        errors.append(f"skill {skill_root.name!r} metadata must not be a symlink")
+    metadata_path = _required_package_path(
+        plugin_root,
+        f"skills/{skill_root.name}/agents/openai.yaml",
+        f"skill {skill_root.name!r} metadata",
+        "file",
+        errors,
+    )
+    if metadata_path is None:
         return
     try:
         contents = metadata_path.read_text(encoding="utf-8")
@@ -716,9 +862,26 @@ def _parse_skill_metadata(
 
 
 def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
-    policy_path = plugin_root / POLICY_PATH
-    if policy_path.is_symlink():
-        errors.append(f"execution policy must not be a symlink: {policy_path}")
+    if _required_package_path(plugin_root, "assets", "asset directory", "directory", errors) is None:
+        return
+    policy_entries = [
+        path.relative_to(plugin_root).as_posix()
+        for path, _ in _lexical_package_entries(plugin_root)
+        if path.name == "execution-policy.json"
+    ]
+    if policy_entries != [POLICY_PATH]:
+        observed = ", ".join(sorted(policy_entries)) or "none"
+        errors.append(
+            f"execution policy artifacts must contain exactly {POLICY_PATH}; found {observed}"
+        )
+    policy_path = _required_package_path(
+        plugin_root,
+        POLICY_PATH,
+        "execution policy",
+        "file",
+        errors,
+    )
+    if policy_path is None or policy_entries != [POLICY_PATH]:
         return
     policy = _load_json_object(policy_path, "execution policy", errors)
     if policy is None:
@@ -740,11 +903,15 @@ def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
 
 
 def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) -> None:
-    helper = plugin_root / HELPER_PATH
-    if not helper.is_file():
-        errors.append(f"worktree helper is missing: {helper}")
-    elif helper.is_symlink():
-        errors.append(f"worktree helper must not be a symlink: {helper}")
+    if _required_package_path(plugin_root, "scripts", "plugin scripts directory", "directory", errors) is None:
+        return
+    helper = _required_package_path(
+        plugin_root,
+        HELPER_PATH,
+        "worktree helper",
+        "file",
+        errors,
+    )
     helpers = sorted(
         (
             path.relative_to(plugin_root).as_posix(),
@@ -760,8 +927,7 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
 
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
     agents_root = plugin_root / AGENTS_PATH
-    if not agents_root.is_dir():
-        errors.append(f"agent directory is missing: {agents_root}")
+    if _required_package_path(plugin_root, AGENTS_PATH, "agent directory", "directory", errors) is None:
         return
 
     expected_filenames = {f"{name}.toml" for name in EXPECTED_AGENTS}
@@ -778,9 +944,14 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
         elif path.name.startswith("devflow-") and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.name!r}")
     for expected_name in EXPECTED_AGENTS:
-        path = agents_root / f"{expected_name}.toml"
-        if not path.is_file():
-            errors.append(f"missing agent profile {expected_name!r}")
+        path = _required_package_path(
+            plugin_root,
+            f"{AGENTS_PATH}/{expected_name}.toml",
+            f"agent profile {expected_name!r}",
+            "file",
+            errors,
+        )
+        if path is None:
             continue
         _validate_agent_profile(path, expected_name, errors)
 
