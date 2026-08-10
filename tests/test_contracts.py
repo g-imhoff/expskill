@@ -157,6 +157,124 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(marketplace["plugins"][0]["source"]["path"], "./plugins/codex-dev-flow")
         self.assertEqual(marketplace["plugins"][0]["category"], "Developer Tools")
 
+    def test_plugin_metadata_describes_the_actual_standalone_skill_surface(self) -> None:
+        """Regression: generated scaffold copy hides the plugin's real public workflow."""
+
+        manifest = self.load_manifest(ROOT)
+        description = manifest.get("description")
+        self.assertIsInstance(description, str)
+        self.assertLessEqual(len(str(description)), 120)
+        for phrase in ("seven", "standalone", "development phase", "optional", "routing"):
+            self.assertIn(phrase, str(description).lower())
+        self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
+        self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
+
+        interface = manifest.get("interface")
+        self.assertIsInstance(interface, dict)
+        if not isinstance(interface, dict):
+            return
+        self.assertEqual(set(interface), PLUGIN_INTERFACE_FIELDS)
+        self.assertEqual(interface.get("displayName"), "Codex Dev Flow")
+        self.assertEqual(interface.get("developerName"), "g-imhoff")
+        self.assertEqual(interface.get("category"), "Developer Tools")
+        self.assertEqual(interface.get("capabilities"), [])
+        self.assertLessEqual(len(str(interface.get("shortDescription"))), 80)
+        self.assertIn("phase", str(interface.get("shortDescription")).lower())
+        self.assertIn("routing", str(interface.get("shortDescription")).lower())
+        self.assertNotRegex(str(interface.get("shortDescription")), PUBLIC_METADATA_JARGON)
+        long_description = str(interface.get("longDescription"))
+        self.assertLessEqual(len(long_description), 320)
+        for token in PUBLIC_PHASE_TOKENS:
+            self.assertIn(token, long_description)
+        for phrase in ("directly", "one next phase", "required gates"):
+            self.assertIn(phrase, long_description.lower())
+        self.assertNotRegex(long_description, PUBLIC_METADATA_JARGON)
+        default_prompt = str(interface.get("defaultPrompt"))
+        self.assertLessEqual(len(default_prompt), 160)
+        self.assertIn("$use-expand", default_prompt)
+        self.assertIn("next development phase", default_prompt.lower())
+        self.assertNotRegex(default_prompt, PUBLIC_METADATA_JARGON)
+
+        mutations = (
+            ("description", None, "Generic plugin scaffold."),
+            ("author", None, {"name": "Local developer"}),
+            ("interface", "displayName", "Other Flow"),
+            ("interface", "shortDescription", "Use Codex Dev Flow."),
+            ("interface", "shortDescription", "Quick model phase routing"),
+            ("interface", "longDescription", "Codex Dev Flow adds a local Codex plugin scaffold."),
+            ("interface", "developerName", "Local developer"),
+            ("interface", "category", "Other"),
+            ("interface", "capabilities", ["undeclared"]),
+            ("interface", "defaultPrompt", "Help me use Codex Dev Flow."),
+        )
+        for section, field, replacement in mutations:
+            with self.subTest(section=section, field=field):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if field is None:
+                    payload[section] = replacement
+                else:
+                    payload[section][field] = replacement
+                path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(
+                    any(section in error and (field is None or field in error) for error in errors),
+                    errors,
+                )
+
+        for field in sorted(PLUGIN_INTERFACE_FIELDS):
+            with self.subTest(missing_field=field):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["interface"].pop(field)
+                path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any("interface" in error and field in error for error in errors), errors)
+
+        wrong_types = {
+            "displayName": [],
+            "shortDescription": [],
+            "longDescription": [],
+            "developerName": [],
+            "category": [],
+            "capabilities": {},
+            "defaultPrompt": [],
+        }
+        for field, replacement in wrong_types.items():
+            with self.subTest(wrong_type=field):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["interface"][field] = replacement
+                path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any("interface" in error and field in error for error in errors), errors)
+
+        for token in sorted(PUBLIC_PHASE_TOKENS):
+            with self.subTest(missing_phase_token=token):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["interface"]["longDescription"] = payload["interface"]["longDescription"].replace(
+                    token, token.removeprefix("$"),
+                )
+                path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(
+                    any("longDescription" in error and token in error for error in errors),
+                    errors,
+                )
+
+        root = self.copy_repository()
+        path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["interface"]["unexpected"] = True
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(any("interface" in error and "unexpected" in error for error in errors), errors)
+
     def test_codex_cachebuster_versions_are_valid(self) -> None:
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
             with self.subTest(version=version):

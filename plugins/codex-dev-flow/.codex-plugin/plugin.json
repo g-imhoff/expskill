@@ -1,19 +1,19 @@
 {
   "name": "codex-dev-flow",
-  "version": "0.1.0+codex.20260809153240",
-  "description": "A private marketplace plugin for proportionate, model-pinned development workflows.",
+  "version": "0.1.0+codex.20260810223046",
+  "description": "Seven standalone development phases with one optional phase-routing skill.",
   "repository": "https://github.com/g-imhoff/codex-dev-flow",
   "author": {
-    "name": "Local developer"
+    "name": "g-imhoff"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Dev Flow",
-    "shortDescription": "Use Codex Dev Flow in Codex.",
-    "longDescription": "Codex Dev Flow adds a local Codex plugin scaffold.",
-    "developerName": "Local developer",
+    "shortDescription": "Standalone development phases with optional routing",
+    "longDescription": "Run $brainstorm, $plan, $acceptance, $implement, $review, $verify, or $integrate directly, or use $use-expand to select one next phase while preserving required gates.",
+    "developerName": "g-imhoff",
     "category": "Developer Tools",
     "capabilities": [],
-    "defaultPrompt": "Help me use Codex Dev Flow."
+    "defaultPrompt": "Use $use-expand to select and explain the next development phase for my code change."
   }
 }

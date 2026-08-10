@@ -25,6 +25,30 @@ AGENTS_PATH = "assets/agents"
 POLICY_PATH = "assets/execution-policy.json"
 HELPER_PATH = "scripts/worktrees.py"
 PLACEHOLDER = "[TODO:"
+PLUGIN_AUTHOR_NAME = "g-imhoff"
+PLUGIN_INTERFACE_FIELDS = {
+    "displayName",
+    "shortDescription",
+    "longDescription",
+    "developerName",
+    "category",
+    "capabilities",
+    "defaultPrompt",
+}
+PUBLIC_PHASE_TOKENS = {
+    "$brainstorm",
+    "$plan",
+    "$acceptance",
+    "$implement",
+    "$review",
+    "$verify",
+    "$integrate",
+    "$use-expand",
+}
+PUBLIC_METADATA_JARGON = re.compile(
+    r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
+    re.IGNORECASE,
+)
 EXPECTED_SKILLS = {
     "use-expand",
     "brainstorm",
@@ -578,6 +602,20 @@ def _validate_plugin_manifest(
         errors.append(
             f"plugin skills path must be {SKILLS_PATH!r}, got {manifest.get('skills')!r}"
         )
+    description = manifest.get("description")
+    if not isinstance(description, str) or not description.strip() or len(description) > 120:
+        errors.append("plugin description must be a non-empty string of at most 120 characters")
+    else:
+        normalized_description = description.lower()
+        for phrase in ("seven", "standalone", "development phase", "optional", "routing"):
+            if phrase not in normalized_description:
+                errors.append(f"plugin description must advertise {phrase!r}")
+        if PUBLIC_METADATA_JARGON.search(description):
+            errors.append("plugin description exposes private implementation or scaffold jargon")
+    if manifest.get("author") != {"name": PLUGIN_AUTHOR_NAME}:
+        errors.append(
+            f"plugin author must identify {PLUGIN_AUTHOR_NAME!r}, got {manifest.get('author')!r}"
+        )
 
     forbidden_fields = {"hooks", "mcpServers", "apps", "icons", "authentication"}
     for field in sorted(forbidden_fields.intersection(manifest)):
@@ -586,10 +624,64 @@ def _validate_plugin_manifest(
     interface = manifest.get("interface")
     if not isinstance(interface, dict):
         errors.append("plugin interface must be an object")
-    elif interface.get("category") != PLUGIN_CATEGORY:
-        errors.append(
-            f"plugin interface category must be {PLUGIN_CATEGORY!r}, got {interface.get('category')!r}"
-        )
+    else:
+        missing = sorted(PLUGIN_INTERFACE_FIELDS - set(interface))
+        unexpected = sorted(set(interface) - PLUGIN_INTERFACE_FIELDS)
+        if missing:
+            errors.append(f"plugin interface is missing fields: {missing!r}")
+        if unexpected:
+            errors.append(f"plugin interface has unexpected fields: {unexpected!r}")
+        if interface.get("displayName") != "Codex Dev Flow":
+            errors.append("plugin interface displayName must preserve the product identity")
+        if interface.get("developerName") != PLUGIN_AUTHOR_NAME:
+            errors.append("plugin interface developerName must match the plugin author")
+        if interface.get("category") != PLUGIN_CATEGORY:
+            errors.append(
+                f"plugin interface category must be {PLUGIN_CATEGORY!r}, got {interface.get('category')!r}"
+            )
+        if interface.get("capabilities") != []:
+            errors.append("plugin interface capabilities must be an empty list for this skills-only plugin")
+
+        short_description = interface.get("shortDescription")
+        if (
+            not isinstance(short_description, str)
+            or not short_description.strip()
+            or len(short_description) > 80
+            or "phase" not in short_description.lower()
+            or "routing" not in short_description.lower()
+            or PUBLIC_METADATA_JARGON.search(short_description) is not None
+        ):
+            errors.append(
+                "plugin interface shortDescription must concisely advertise phases and optional routing "
+                "without private implementation or scaffold jargon"
+            )
+
+        long_description = interface.get("longDescription")
+        if not isinstance(long_description, str) or not long_description.strip() or len(long_description) > 320:
+            errors.append("plugin interface longDescription must be a non-empty string of at most 320 characters")
+        else:
+            for token in sorted(PUBLIC_PHASE_TOKENS):
+                if token not in long_description:
+                    errors.append(f"plugin interface longDescription must advertise {token}")
+            for phrase in ("directly", "one next phase", "required gates"):
+                if phrase not in long_description.lower():
+                    errors.append(f"plugin interface longDescription must explain {phrase!r}")
+            if PUBLIC_METADATA_JARGON.search(long_description):
+                errors.append("plugin interface longDescription exposes private implementation or scaffold jargon")
+
+        default_prompt = interface.get("defaultPrompt")
+        if (
+            not isinstance(default_prompt, str)
+            or not default_prompt.strip()
+            or len(default_prompt) > 160
+            or "$use-expand" not in default_prompt
+            or "next development phase" not in default_prompt.lower()
+        ):
+            errors.append(
+                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next development phase"
+            )
+        elif PUBLIC_METADATA_JARGON.search(default_prompt):
+            errors.append("plugin interface defaultPrompt exposes private implementation or scaffold jargon")
 
     _validate_skills(plugin_root / "skills", errors)
 
