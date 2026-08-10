@@ -1,6 +1,6 @@
 ---
 name: integrate
-description: Combine accepted work only after required review and verification pass.
+description: Use only for an explicit integrate phase; perform only accepted integration and stay inactive for other phases or tasks.
 ---
 
 # Integrate
@@ -15,12 +15,13 @@ Combine accepted branches only when their review and verification evidence is re
 
 This phase does not invoke another skill, open another skill, or run another skill.
 
-## Typed handoff
+## Typed next-skill outcome handoff
 
-Return a typed next-skill handoff containing:
+The selected phase is always `integrate`. Every outcome emits exactly five fields: `schema`, `selected_phase`, `reason_code`, `next_skill`, and `status` of `phase-handoff-v1`.
 
-- `schema: phase-handoff-v1`
-- `selected_phase: integrate`
-- `reason_code: accepted-branches`
-- `next_skill: none`
-- `status: handoff`
+- success/ready: `reason_code: accepted-branches`; `next_skill: none`.
+- findings/failure: `reason_code: findings-failure`; `next_skill: integrate` (the owning phase); do not advance.
+- blocked: `reason_code: blocked`; `next_skill: none`; stop.
+- user-decision: `reason_code: user-decision`; `next_skill: none`; ask the user.
+
+The handoff remains typed with `status: handoff` and no additional outcome field.

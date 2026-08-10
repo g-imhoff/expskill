@@ -1,6 +1,6 @@
 ---
 name: acceptance
-description: Define tests and acceptance evidence before production changes begin.
+description: Use only for an explicit acceptance phase; perform only test definition and stay inactive for other phases or tasks.
 ---
 
 # Acceptance
@@ -15,12 +15,13 @@ Turn a plan into observable acceptance criteria and a useful test shape.
 
 No production changes are made in this phase. This phase does not invoke another skill, open another skill, or run another skill.
 
-## Typed handoff
+## Typed next-skill outcome handoff
 
-Return a typed next-skill handoff containing:
+The selected phase is always `acceptance`. Every outcome emits exactly five fields: `schema`, `selected_phase`, `reason_code`, `next_skill`, and `status` of `phase-handoff-v1`.
 
-- `schema: phase-handoff-v1`
-- `selected_phase: acceptance`
-- `reason_code: tests-ready`
-- `next_skill: implement`
-- `status: handoff`
+- success/ready: `reason_code: tests-ready`; `next_skill: implement`.
+- findings/failure: `reason_code: findings-failure`; `next_skill: acceptance` (the owning phase); do not advance.
+- blocked: `reason_code: blocked`; `next_skill: none`; stop.
+- user-decision: `reason_code: user-decision`; `next_skill: none`; ask the user.
+
+The handoff remains typed with `status: handoff` and no additional outcome field.
