@@ -1,7 +1,0 @@
-interface:
-  display_name: "Route Code Change"
-  short_description: "Choose the proportionate development route"
-  default_prompt: "Use $route-code-change to route this coding change."
-
-policy:
-  allow_implicit_invocation: true

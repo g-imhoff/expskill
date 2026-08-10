@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import os
 import re
+import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -19,19 +22,31 @@ REPOSITORY_URL = "https://github.com/g-imhoff/codex-dev-flow"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
+POLICY_PATH = "assets/execution-policy.json"
+HELPER_PATH = "scripts/worktrees.py"
 PLACEHOLDER = "[TODO:"
 EXPECTED_SKILLS = {
-    "full-code-change",
-    "quick-code-change",
-    "route-code-change",
+    "use-expand",
+    "brainstorm",
+    "plan",
+    "acceptance",
+    "implement",
+    "review",
+    "verify",
+    "integrate",
 }
+RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
+PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
 
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "devflow-verifier": ("gpt-5.6-luna", "max", "workspace-write"),
+    "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
+    "devflow-implementer-high": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-reviewer": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-critical-reviewer": ("gpt-5.6-sol", "high", "read-only"),
+    "devflow-verifier": ("gpt-5.6-luna", "medium", "workspace-write"),
+    "devflow-verifier-low": ("gpt-5.6-luna", "low", "workspace-write"),
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -58,7 +73,23 @@ AGENT_BOUNDARIES = {
         "no delegation",
         "no scope expansion",
     ),
+    "devflow-implementer-high": (
+        "exactly one brief",
+        "red-green-refactor",
+        "one owned branch",
+        "no delegation",
+        "no scope expansion",
+    ),
     "devflow-reviewer": (
+        "read-only",
+        "severity",
+        "evidence",
+        "impact",
+        "correction",
+        "ready",
+        "not ready",
+    ),
+    "devflow-critical-reviewer": (
         "read-only",
         "severity",
         "evidence",
@@ -73,11 +104,340 @@ AGENT_BOUNDARIES = {
         "no tracked-source edits",
         "no reliance on another agent's claims",
     ),
+    "devflow-verifier-low": (
+        "exact commands",
+        "exit evidence",
+        "no tracked-source edits",
+        "no reliance on another agent's claims",
+    ),
+}
+
+EXPECTED_POLICY_PROFILES = {
+    "devflow-explorer": {
+        "agent_type": "devflow-explorer",
+        "role": "explorer",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "devflow-implementer": {
+        "agent_type": "devflow-implementer",
+        "role": "implementer",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-implementer-high": {
+        "agent_type": "devflow-implementer-high",
+        "role": "implementer",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-reviewer": {
+        "agent_type": "devflow-reviewer",
+        "role": "reviewer",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "devflow-critical-reviewer": {
+        "agent_type": "devflow-critical-reviewer",
+        "role": "critical-reviewer",
+        "model": "gpt-5.6-sol",
+        "effort": "high",
+        "sandbox_mode": "read-only",
+        "escalation": "critical-review",
+    },
+    "devflow-verifier": {
+        "agent_type": "devflow-verifier",
+        "role": "verifier",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-verifier-low": {
+        "agent_type": "devflow-verifier-low",
+        "role": "verifier",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-test-engineer": {
+        "agent_type": "devflow-test-engineer",
+        "role": "test-engineer",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+}
+
+EXPECTED_POLICY_ROUTES = {
+    "quick": {
+        "low": {
+            "allowed_profiles": ["devflow-verifier-low"],
+            "selected": [
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier-low",
+                    "agent_type": "devflow-verifier-low",
+                }
+            ],
+            "max_agent_calls": 3,
+            "max_concurrency": 1,
+            "max_depth": 1,
+            "max_retries": 0,
+        },
+        "standard": {
+            "allowed_profiles": ["devflow-reviewer", "devflow-verifier"],
+            "selected": [
+                {
+                    "role": "reviewer",
+                    "profile": "devflow-reviewer",
+                    "agent_type": "devflow-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+            ],
+            "max_agent_calls": 5,
+            "max_concurrency": 2,
+            "max_depth": 1,
+            "max_retries": 1,
+        },
+        "high": {
+            "allowed_profiles": ["devflow-critical-reviewer", "devflow-verifier"],
+            "selected": [
+                {
+                    "role": "critical-reviewer",
+                    "profile": "devflow-critical-reviewer",
+                    "agent_type": "devflow-critical-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+            ],
+            "max_agent_calls": 5,
+            "max_concurrency": 2,
+            "max_depth": 1,
+            "max_retries": 1,
+        },
+    },
+    "full": {
+        "standard": {
+            "allowed_profiles": [
+                "devflow-explorer",
+                "devflow-implementer",
+                "devflow-reviewer",
+                "devflow-verifier",
+                "devflow-test-engineer",
+            ],
+            "selected": [
+                {
+                    "role": "explorer",
+                    "profile": "devflow-explorer",
+                    "agent_type": "devflow-explorer",
+                },
+                {
+                    "role": "implementer",
+                    "profile": "devflow-implementer",
+                    "agent_type": "devflow-implementer",
+                },
+                {
+                    "role": "reviewer",
+                    "profile": "devflow-reviewer",
+                    "agent_type": "devflow-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+                {
+                    "role": "test-engineer",
+                    "profile": "devflow-test-engineer",
+                    "agent_type": "devflow-test-engineer",
+                },
+            ],
+            "max_agent_calls": 25,
+            "max_concurrency": 3,
+            "max_depth": 1,
+            "max_retries": 1,
+            "max_elapsed_ms": 7200000,
+        },
+        "high": {
+            "allowed_profiles": [
+                "devflow-explorer",
+                "devflow-implementer-high",
+                "devflow-reviewer",
+                "devflow-verifier",
+                "devflow-test-engineer",
+                "devflow-critical-reviewer",
+            ],
+            "selected": [
+                {
+                    "role": "explorer",
+                    "profile": "devflow-explorer",
+                    "agent_type": "devflow-explorer",
+                },
+                {
+                    "role": "implementer",
+                    "profile": "devflow-implementer-high",
+                    "agent_type": "devflow-implementer-high",
+                },
+                {
+                    "role": "reviewer",
+                    "profile": "devflow-reviewer",
+                    "agent_type": "devflow-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+                {
+                    "role": "test-engineer",
+                    "profile": "devflow-test-engineer",
+                    "agent_type": "devflow-test-engineer",
+                },
+                {
+                    "role": "critical-reviewer",
+                    "profile": "devflow-critical-reviewer",
+                    "agent_type": "devflow-critical-reviewer",
+                },
+            ],
+            "max_agent_calls": 25,
+            "max_concurrency": 3,
+            "max_depth": 1,
+            "max_retries": 1,
+            "max_elapsed_ms": 7200000,
+        },
+    },
 }
 
 
+def _lstat(path: Path) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except OSError:
+        return None
+
+
+def _is_symlink(path: Path) -> bool:
+    metadata = _lstat(path)
+    return metadata is not None and stat.S_ISLNK(metadata.st_mode)
+
+
+def _symlink_component(root: Path, relative: str) -> Path | None:
+    current = root
+    if _is_symlink(current):
+        return current
+    for component in Path(relative).parts:
+        current /= component
+        if _is_symlink(current):
+            return current
+    return None
+
+
+def _validate_plugin_root(plugin_root: Path, errors: list[str]) -> bool:
+    if _is_symlink(plugin_root):
+        errors.append(f"plugin root must not be a symlink: {plugin_root}")
+        return False
+    metadata = _lstat(plugin_root)
+    if metadata is None:
+        errors.append(f"plugin directory is missing: {plugin_root}")
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"plugin root must be a directory: {plugin_root}")
+        return False
+    try:
+        resolved = plugin_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        errors.append(f"plugin root cannot be resolved: {plugin_root}: {error}")
+        return False
+    if resolved != plugin_root:
+        errors.append(f"plugin root resolves outside its lexical path: {plugin_root}")
+        return False
+    return True
+
+
+def _required_package_path(
+    plugin_root: Path,
+    relative: str,
+    label: str,
+    kind: str,
+    errors: list[str],
+    missing_label: str | None = None,
+) -> Path | None:
+    path = plugin_root / relative
+    symlink = _symlink_component(plugin_root, relative)
+    if symlink is not None:
+        errors.append(f"{label} contains a symlink: {symlink}")
+        return None
+    try:
+        canonical_root = plugin_root.resolve(strict=True)
+        resolved = path.resolve(strict=False)
+        resolved.relative_to(canonical_root)
+    except ValueError:
+        errors.append(f"{label} resolves outside the plugin root: {path}")
+        return None
+    except (OSError, RuntimeError) as error:
+        errors.append(f"{label} cannot be resolved: {path}: {error}")
+        return None
+    metadata = _lstat(path)
+    if metadata is None:
+        errors.append(f"{missing_label or label} is missing: {path}")
+        return None
+    if kind == "directory" and not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"{label} must be a directory: {path}")
+        return None
+    if kind == "file" and not stat.S_ISREG(metadata.st_mode):
+        errors.append(f"{label} must be a regular file: {path}")
+        return None
+    return path
+
+
+def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
+    """Enumerate package entries without traversing symlink directories."""
+
+    pending = [plugin_root]
+    entries: list[tuple[Path, os.stat_result]] = []
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as iterator:
+                children = sorted(iterator, key=lambda entry: entry.name)
+                for child in children:
+                    try:
+                        metadata = child.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    child_path = Path(child.path)
+                    entries.append((child_path, metadata))
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(child_path)
+        except OSError:
+            continue
+    return entries
+
+
 def validate_repository(root: Path) -> tuple[str, ...]:
-    repository_root = Path(root)
+    repository_root = Path(root).expanduser()
+    try:
+        repository_root = repository_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
     marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
     marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
@@ -85,12 +445,25 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         _validate_marketplace(marketplace, repository_root, errors)
 
     plugin_root = repository_root / "plugins" / PLUGIN_NAME
-    manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
-    manifest = _load_json_object(manifest_path, "plugin.json", errors)
-    if manifest is not None:
-        _validate_plugin_manifest(manifest, plugin_root, errors)
+    if _validate_plugin_root(plugin_root, errors):
+        manifest_path = _required_package_path(
+            plugin_root,
+            ".codex-plugin/plugin.json",
+            "plugin manifest",
+            "file",
+            errors,
+        )
+        manifest = (
+            _load_json_object(manifest_path, "plugin.json", errors)
+            if manifest_path is not None
+            else None
+        )
+        if manifest is not None:
+            _validate_plugin_manifest(manifest, plugin_root, errors)
 
-    _validate_agents(plugin_root, errors)
+        _validate_agents(plugin_root, errors)
+        _validate_policy(plugin_root, errors)
+        _validate_helper_and_package_layout(plugin_root, errors)
     return tuple(errors)
 
 
@@ -222,11 +595,15 @@ def _validate_plugin_manifest(
 
 
 def _validate_skills(skills_root: Path, errors: list[str]) -> None:
-    if not skills_root.is_dir():
-        if skills_root.exists():
-            errors.append(f"skills path must be a directory: {skills_root}")
-        else:
-            errors.append(f"skills directory is missing: {skills_root}")
+    plugin_root = skills_root.parent
+    if _required_package_path(
+        plugin_root,
+        "skills",
+        "skills path",
+        "directory",
+        errors,
+        missing_label="skills directory",
+    ) is None:
         return
     entries = {path.name: path for path in skills_root.iterdir()}
     for name in sorted(EXPECTED_SKILLS - entries.keys()):
@@ -235,12 +612,41 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         errors.append(f"unexpected skill entry {name!r}")
     names: list[str] = []
     for skill_root in sorted(entries.values(), key=lambda path: path.name):
-        if not skill_root.is_dir():
-            errors.append(f"skill {skill_root.name!r} must be a directory")
+        relative_skill = f"skills/{skill_root.name}"
+        if _required_package_path(
+            plugin_root,
+            relative_skill,
+            f"skill {skill_root.name!r}",
+            "directory",
+            errors,
+        ) is None:
             continue
-        skill_path = skill_root / "SKILL.md"
-        if not skill_path.is_file():
-            errors.append(f"skill {skill_root.name!r} is missing SKILL.md")
+        expected_files = {"SKILL.md", "agents/openai.yaml"}
+        actual_files = {
+            path.relative_to(skill_root).as_posix()
+            for path in skill_root.rglob("*")
+            if path.is_file()
+        }
+        actual_directories = {
+            path.relative_to(skill_root).as_posix()
+            for path in skill_root.rglob("*")
+            if path.is_dir()
+        }
+        for relative in sorted(actual_directories - {"agents"}):
+            errors.append(f"skill {skill_root.name!r} contains unexpected directory {relative!r}")
+        for relative in sorted(actual_files - expected_files):
+            errors.append(f"skill {skill_root.name!r} contains unexpected file {relative!r}")
+        for path in skill_root.rglob("*"):
+            if path.is_symlink():
+                errors.append(f"skill {skill_root.name!r} contains a symlink: {path}")
+        skill_path = _required_package_path(
+            plugin_root,
+            f"{relative_skill}/SKILL.md",
+            f"skill {skill_root.name!r} entrypoint",
+            "file",
+            errors,
+        )
+        if skill_path is None:
             continue
         try:
             contents = skill_path.read_text(encoding="utf-8")
@@ -252,14 +658,36 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         frontmatter = _parse_frontmatter(contents, skill_root.name, errors)
         if frontmatter is None:
             continue
+        if set(frontmatter) != {"name", "description"}:
+            errors.append(
+                f"skill {skill_root.name!r} frontmatter keys must be exactly name and description"
+            )
         name = frontmatter.get("name", "")
         description = frontmatter.get("description", "")
-        if not name:
+        if not isinstance(name, str) or not name.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter name")
         else:
             names.append(name)
-        if not description:
+            if name != skill_root.name:
+                errors.append(
+                    f"skill {skill_root.name!r} frontmatter name must match directory"
+                )
+            if not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", name):
+                errors.append(f"skill {skill_root.name!r} has an invalid frontmatter name")
+        if not isinstance(description, str) or not description.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter description")
+        elif not 20 <= len(description) <= 300:
+            errors.append(f"skill {skill_root.name!r} description must be 20-300 characters")
+        elif any(character in description for character in "<>\r\n"):
+            errors.append(f"skill {skill_root.name!r} description contains forbidden characters")
+        if len(contents.splitlines()) >= 500:
+            errors.append(f"skill {skill_root.name!r} SKILL.md body is overlong")
+        normalized_contents = contents.lower()
+        if any(retired in normalized_contents for retired in RETIRED_SKILLS):
+            errors.append(f"skill {skill_root.name!r} references a retired skill")
+        if PUBLIC_SKILL_JARGON.search(contents):
+            errors.append(f"skill {skill_root.name!r} contains private policy vocabulary")
+        _validate_skill_metadata(skill_root, errors)
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
@@ -281,35 +709,249 @@ def _parse_frontmatter(
     for line in lines[1:end]:
         key, separator, raw_value = line.partition(":")
         if not separator:
+            if line.strip():
+                errors.append(f"skill {skill_directory!r} frontmatter contains an invalid line")
             continue
         key = key.strip()
         value = raw_value.strip()
         if not key:
+            errors.append(f"skill {skill_directory!r} frontmatter contains an empty key")
+            continue
+        if key in values:
+            errors.append(f"skill {skill_directory!r} frontmatter key {key!r} is duplicated")
+            continue
+        if value.startswith(("[", "{")):
+            errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is invalid")
+                continue
+            if not isinstance(parsed, str):
+                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a string")
+                continue
+            value = parsed
         values[key] = value
     return values
 
 
+def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
+    plugin_root = skill_root.parent.parent
+    agents_path = _required_package_path(
+        plugin_root,
+        f"skills/{skill_root.name}/agents",
+        f"skill {skill_root.name!r} agents directory",
+        "directory",
+        errors,
+    )
+    if agents_path is None:
+        return
+    metadata_path = _required_package_path(
+        plugin_root,
+        f"skills/{skill_root.name}/agents/openai.yaml",
+        f"skill {skill_root.name!r} metadata",
+        "file",
+        errors,
+    )
+    if metadata_path is None:
+        return
+    try:
+        contents = metadata_path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"skill {skill_root.name!r} metadata could not be read: {error}")
+        return
+    metadata = _parse_skill_metadata(contents, skill_root.name, errors)
+    if metadata is None:
+        return
+    if set(metadata) != {"interface", "policy"}:
+        errors.append(f"skill {skill_root.name!r} metadata keys must be exactly interface and policy")
+        return
+    interface = metadata.get("interface")
+    policy = metadata.get("policy")
+    if not isinstance(interface, dict):
+        errors.append(f"skill {skill_root.name!r} metadata interface must be a mapping")
+        return
+    if not isinstance(policy, dict):
+        errors.append(f"skill {skill_root.name!r} metadata policy must be a mapping")
+        return
+    if set(interface) != {"display_name", "short_description", "default_prompt"}:
+        errors.append(f"skill {skill_root.name!r} interface keys are not exact")
+    if set(policy) != {"allow_implicit_invocation"}:
+        errors.append(f"skill {skill_root.name!r} policy keys are not exact")
+    for field in ("display_name", "short_description", "default_prompt"):
+        value = interface.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"skill {skill_root.name!r} interface.{field} must be a non-empty string")
+            continue
+        if any(character in value for character in "<>\r\n"):
+            errors.append(f"skill {skill_root.name!r} interface.{field} contains forbidden characters")
+        if PUBLIC_SKILL_JARGON.search(value):
+            errors.append(f"skill {skill_root.name!r} interface.{field} contains private policy vocabulary")
+    short_description = interface.get("short_description")
+    if isinstance(short_description, str) and not 25 <= len(short_description) <= 64:
+        errors.append(f"skill {skill_root.name!r} short_description must be 25-64 characters")
+    default_prompt = interface.get("default_prompt")
+    if isinstance(default_prompt, str) and f"${skill_root.name}" not in default_prompt:
+        errors.append(f"skill {skill_root.name!r} default_prompt must invoke the matching skill")
+    implicit = policy.get("allow_implicit_invocation")
+    if not isinstance(implicit, bool):
+        errors.append(f"skill {skill_root.name!r} allow_implicit_invocation must be a boolean")
+    elif implicit is not (skill_root.name == "use-expand"):
+        errors.append(f"skill {skill_root.name!r} implicit invocation policy drift")
+
+
+def _parse_skill_metadata(
+    contents: str, skill_name: str, errors: list[str]
+) -> dict[str, dict[str, object]] | None:
+    values: dict[str, dict[str, object]] = {}
+    for line_number, line in enumerate(contents.splitlines(), start=1):
+        if not line.strip():
+            continue
+        if "\t" in line:
+            errors.append(f"skill {skill_name!r} metadata line {line_number} contains a tab")
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        key, separator, raw_value = line.strip().partition(":")
+        if not separator or not key:
+            errors.append(f"skill {skill_name!r} metadata line {line_number} is invalid")
+            continue
+        raw_value = raw_value.strip()
+        if indentation == 0:
+            if raw_value:
+                errors.append(f"skill {skill_name!r} metadata root {key!r} must be a mapping")
+                continue
+            if key in values:
+                errors.append(f"skill {skill_name!r} metadata key {key!r} is duplicated")
+                continue
+            values[key] = {}
+            continue
+        if indentation != 2:
+            errors.append(f"skill {skill_name!r} metadata line {line_number} has invalid indentation")
+            continue
+        if not values:
+            errors.append(f"skill {skill_name!r} metadata child appears before a root mapping")
+            continue
+        parent = next(reversed(values))
+        mapping = values[parent]
+        if key in mapping:
+            errors.append(f"skill {skill_name!r} metadata key {parent}.{key!s} is duplicated")
+            continue
+        if parent == "interface":
+            if len(raw_value) < 2 or raw_value[0] != raw_value[-1] or raw_value[0] not in {'"', "'"}:
+                errors.append(f"skill {skill_name!r} interface.{key} must be a quoted string")
+                continue
+            try:
+                value = ast.literal_eval(raw_value)
+            except (SyntaxError, ValueError):
+                errors.append(f"skill {skill_name!r} interface.{key} is invalid")
+                continue
+            if not isinstance(value, str):
+                errors.append(f"skill {skill_name!r} interface.{key} must be a string")
+                continue
+            mapping[key] = value
+        elif parent == "policy":
+            if raw_value not in {"true", "false"}:
+                errors.append(f"skill {skill_name!r} policy.{key} must be a YAML boolean literal")
+                continue
+            mapping[key] = raw_value == "true"
+        else:
+            mapping[key] = raw_value
+    return values
+
+
+def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
+    if _required_package_path(plugin_root, "assets", "asset directory", "directory", errors) is None:
+        return
+    policy_entries = [
+        path.relative_to(plugin_root).as_posix()
+        for path, _ in _lexical_package_entries(plugin_root)
+        if path.name == "execution-policy.json"
+    ]
+    if policy_entries != [POLICY_PATH]:
+        observed = ", ".join(sorted(policy_entries)) or "none"
+        errors.append(
+            f"execution policy artifacts must contain exactly {POLICY_PATH}; found {observed}"
+        )
+    policy_path = _required_package_path(
+        plugin_root,
+        POLICY_PATH,
+        "execution policy",
+        "file",
+        errors,
+    )
+    if policy_path is None or policy_entries != [POLICY_PATH]:
+        return
+    policy = _load_json_object(policy_path, "execution policy", errors)
+    if policy is None:
+        return
+    expected = {
+        "policy_version": "execution-budget-policy.v1",
+        "profiles": EXPECTED_POLICY_PROFILES,
+        "routes": EXPECTED_POLICY_ROUTES,
+    }
+    if set(policy) != set(expected):
+        errors.append("execution policy keys must be exactly policy_version, profiles, and routes")
+        return
+    if policy.get("policy_version") != expected["policy_version"]:
+        errors.append("execution policy policy_version is not execution-budget-policy.v1")
+    if policy.get("profiles") != EXPECTED_POLICY_PROFILES:
+        errors.append("execution policy profiles do not match the exact validated roster")
+    if policy.get("routes") != EXPECTED_POLICY_ROUTES:
+        errors.append("execution policy routes do not match the exact validated plans")
+
+
+def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) -> None:
+    if _required_package_path(plugin_root, "scripts", "plugin scripts directory", "directory", errors) is None:
+        return
+    helper = _required_package_path(
+        plugin_root,
+        HELPER_PATH,
+        "worktree helper",
+        "file",
+        errors,
+    )
+    helpers = sorted(
+        (
+            path.relative_to(plugin_root).as_posix(),
+            path,
+        )
+        for path in plugin_root.rglob("worktrees.py")
+        if path.is_file() or path.is_symlink()
+    )
+    if [relative for relative, _ in helpers] != [HELPER_PATH]:
+        observed = ", ".join(relative for relative, _ in helpers) or "none"
+        errors.append(f"worktree helper must exist only at {HELPER_PATH}; found {observed}")
+
+
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
     agents_root = plugin_root / AGENTS_PATH
-    if not agents_root.is_dir():
-        errors.append(f"agent directory is missing: {agents_root}")
+    if _required_package_path(plugin_root, AGENTS_PATH, "agent directory", "directory", errors) is None:
         return
 
     expected_filenames = {f"{name}.toml" for name in EXPECTED_AGENTS}
     for path in sorted(agents_root.iterdir(), key=lambda item: item.name):
+        if path.is_symlink():
+            errors.append(f"agent profile {path.name!r} must not be a symlink")
+            continue
         if not path.is_file():
+            if path.name.startswith("devflow-"):
+                errors.append(f"unexpected agent profile {path.name!r}")
             continue
         if path.suffix == ".toml" and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.stem!r}")
         elif path.name.startswith("devflow-") and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.name!r}")
     for expected_name in EXPECTED_AGENTS:
-        path = agents_root / f"{expected_name}.toml"
-        if not path.is_file():
-            errors.append(f"missing agent profile {expected_name!r}")
+        path = _required_package_path(
+            plugin_root,
+            f"{AGENTS_PATH}/{expected_name}.toml",
+            f"agent profile {expected_name!r}",
+            "file",
+            errors,
+        )
+        if path is None:
             continue
         _validate_agent_profile(path, expected_name, errors)
 
