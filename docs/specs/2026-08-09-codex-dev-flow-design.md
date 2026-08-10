@@ -2,112 +2,178 @@
 
 ## Purpose
 
-Codex Dev Flow provides an opt-in development workflow that keeps the primary agent conversational while delegating bounded work to model-pinned, context-free named agents. It replaces project-local workflow agents and orchestration files with one private, reusable Codex plugin.
+Codex Dev Flow is a private Codex plugin for development work. Its public
+interface is a set of independent phase skills plus one optional orchestrator.
+Users can invoke one phase directly without loading a pipeline, or invoke the
+orchestrator when they want the plugin to choose the next phase.
 
-The workflow applies only to requests that change code or its executable configuration. It does not activate for reports, academic writing, general research, explanations, or read-only analysis.
+Implicit `use-expand` activation applies only to code and
+executable-configuration changes. It stays inactive for reports, research,
+explanations, read-only analysis, and prose. An explicitly requested phase,
+including the read-only `review` phase, remains available.
 
-## Distribution
+## Public skill surface
 
-The private `g-imhoff/codex-dev-flow` repository is a local Codex marketplace. Its installable plugin lives under `plugins/codex-dev-flow/`. One idempotent installer registers the marketplace and links the plugin's custom agent profiles into `~/.codex/agents/`.
+The complete public skill tree is:
 
-Codex plugins do not natively register custom subagent profiles. The linked profiles remain owned by this repository, use names prefixed with `devflow-`, and are never copied into product repositories. The workflow dispatches these profiles through the supported collaboration boundary. Installation stops rather than overwriting a conflicting user-owned profile.
+```text
+skills/
+├── use-expand/
+├── brainstorm/
+├── plan/
+├── acceptance/
+├── implement/
+├── review/
+├── verify/
+└── integrate/
+```
 
-The installer does not modify a product repository. A new Codex task is required after installation or profile changes so Codex can rediscover the plugin skills and custom agents.
+Every directory is a real skill with its own `SKILL.md` and
+`agents/openai.yaml`. Phase definitions are not reference pages hidden under
+another skill. Only `use-expand` permits implicit invocation; every phase skill
+requires explicit phase intent.
 
-## Model policy
+The phase boundaries are deliberately narrow:
 
-The primary orchestrator is always GPT-5.6 Sol with max reasoning. It owns the conversation, route recommendation, accepted design, plan, coordination, integration, and final decisions.
+| Skill | Owns | Must not do |
+| --- | --- | --- |
+| `brainstorm` | Ambiguity, alternatives, assumptions, decisions | Write production code |
+| `plan` | Accepted direction, boundaries, dependencies, ordered work | Implement the plan |
+| `acceptance` | Observable criteria, negative cases, failing tests | Make production changes |
+| `implement` | One accepted brief on one owned branch | Delegate, expand scope, or silently change an interface |
+| `review` | Read-only findings with evidence, impact, and correction | Apply fixes |
+| `verify` | Exact commands, exit evidence, and checkout inspection | Edit tracked source |
+| `integrate` | Accepted branches in dependency order | Integrate failed or unverified work |
 
-Every token-heavy writer and verifier subagent uses GPT-5.6 Luna with max reasoning:
+Direct invocation executes exactly the named phase and stops. A user can ask
+for `$brainstorm` or `$plan` without loading `use-expand` or any other phase.
 
-- `devflow-test-engineer` owns the overall test strategy and shared or cross-cutting acceptance tests.
-- `devflow-implementer` owns one implementation task and its task-local tests.
-- `devflow-verifier` runs independent checks and may create build or temporary artifacts, but never edits tracked source files.
+## Orchestration
 
-Every custom named agent uses a context-free fork. The dispatch supplies the matching `agent_type` and `fork_turns: "none"` without model or reasoning overrides, so the checked-in profile applies on the first dispatch and every repeated gate.
+`use-expand` is the only public orchestrator. It classifies one transition,
+explains one concrete reason, opens only the selected phase, consumes that
+phase's handoff, and then either recommends the next transition or stops.
 
-The explorer profile uses GPT-5.6 Luna, max reasoning, and a read-only sandbox. Each context-free dispatch receives one bounded question and the relevant repository scope.
+Its reason map is intentionally small:
 
-The reviewer profile uses GPT-5.6 Sol with xhigh reasoning and a read-only sandbox. It reviews one coherent task or the integrated change. Its input is limited to the accepted contract, task brief, scoped diff, relevant repository policy, and concise verification evidence.
+- `requirements-ambiguous` selects `brainstorm`;
+- `bounded-change` selects `plan`, or `implement` after an approach is accepted;
+- `cross-cutting` selects `plan` and requires `acceptance` before implementation;
+- `tests-ready` selects `implement`;
+- `completion-gates` selects `review`, followed by `verify`;
+- `accepted-branches` selects `integrate`.
 
-No workflow profile uses Terra or another model. The orchestrator never delegates a large execution loop to Sol. The reviewer never implements fixes.
+The orchestrator cannot skip acceptance for cross-cutting work, cannot advance
+past review findings, and cannot integrate without passing verification.
+Blocked and user-decision outcomes stop instead of guessing.
 
-## Route selection
+## Typed handoff
 
-When the user has not explicitly selected a route, the orchestrator must recommend Quick or Full, give one concrete reason, and ask the user to choose. It performs no implementation before that answer.
+Each phase returns semantic `phase-handoff-v1` with exactly five fields:
 
-Route selection depends on the shape of the work, not the subsystem name or a generic risk label.
+```yaml
+schema: phase-handoff-v1
+selected_phase: review
+reason_code: completion-gates
+next_skill: verify
+status: handoff
+```
 
-Quick is recommended when the change is localized, understood, reversible, and has bounded acceptance checks. A small API, database, CI, security, or configuration change can remain Quick.
+The selected phase and reason code must match the transition that invoked it.
+Ready outcomes recommend the mapped next skill. Findings return to the owning
+phase, while blocked and user-decision outcomes use `next_skill: none`.
+No prose convention is allowed to substitute for this boundary.
 
-Full is recommended only when at least one of these conditions makes the larger workflow useful:
+## Named-agent isolation
 
-- an unresolved design decision can materially change the solution;
-- at least two meaningful implementation streams can proceed independently;
-- important unknowns require investigation before the solution is stable;
-- shared or cross-cutting test architecture is needed;
-- acceptance requires coordinated evidence across components;
-- failure is difficult to reproduce, diagnose, or reverse.
+The conversational agent owns user decisions, transition selection,
+coordination, and final adjudication. Bounded work can be delegated through
+checked-in named-agent profiles. Each dispatch is context-free and receives
+only the accepted brief, owned scope, applicable repository instructions, and
+the evidence needed for that role.
 
-## Quick route
+The checked-in roster is:
 
-The Sol Max orchestrator performs a short plan, implementation, and focused checks in the current working tree. It does not create a commit unless the user asks.
+| Profile | Purpose | Runtime policy |
+| --- | --- | --- |
+| `devflow-explorer` | Bounded repository evidence | Terra, medium, read-only |
+| `devflow-test-engineer` | Shared acceptance tests | Luna, high, workspace-write |
+| `devflow-implementer` | Routine bounded implementation | Luna, medium, workspace-write |
+| `devflow-implementer-high` | Difficult bounded implementation | Luna, high, workspace-write |
+| `devflow-reviewer` | Routine independent review | Terra, medium, read-only |
+| `devflow-critical-reviewer` | Escalated critical review | Sol, high, read-only |
+| `devflow-verifier` | Independent checks | Luna, medium, workspace-write |
+| `devflow-verifier-low` | Small independent checks | Luna, low, workspace-write |
 
-After implementation, it dispatches exactly one `devflow-reviewer` and one `devflow-verifier` concurrently. The reviewer inspects the bounded change while the verifier independently executes the relevant checks. Findings return to the orchestrator, which fixes them and repeats both gates.
+The canonical roster and declared internal budget tiers live in one atomic artifact,
+`plugins/codex-dev-flow/assets/execution-policy.json`. Those tiers control
+the intended cost, concurrency, retries, depth, elapsed-time, and escalation
+limits. Static validation is implemented; runtime consumption and enforcement
+remain release work. The tiers are an implementation detail, not additional
+user-facing workflow skills.
 
-## Full route
+Profile dispatch uses the exact checked-in `agent_type`; callers do not add a
+runtime override that silently defeats the policy. Reviewers do not implement,
+implementers do not delegate, and verifiers do not accept another agent's
+claim as evidence.
 
-The Sol Max orchestrator explores the request, using context-free `devflow-explorer` dispatches for bounded unknowns, presents a proposition and decision recap, and waits for explicit acceptance. After acceptance, it continues autonomously unless a new important product decision appears or the same blocker survives three attempts.
+## Branch and worktree ownership
 
-It creates a dependency graph of coherent, review-sized tasks. It maximizes useful parallelism without creating artificial microtasks. Each task has one writer, an explicit file scope, acceptance criteria, dependencies, and a commit boundary.
+Independent implementation streams use separate branches and external Git
+worktrees. `plugins/codex-dev-flow/scripts/worktrees.py` creates and finishes
+them under the user's state directory, outside the product checkout.
 
-The Luna Max test engineer defines the behavior matrix before implementation. It owns shared and cross-cutting acceptance tests. Each Luna Max implementer owns its task-local tests and implementation using red-green-refactor.
+One writer owns each branch and explicit file scope. Integration occurs in
+dependency order only after the branch is ready and verification passes.
+Unmerged or failing work is preserved with a recovery path. Unknown branches,
+worktrees, profiles, and user files are never treated as disposable cleanup.
 
-Independent tasks use separate Git worktrees and branches outside the product repository. Worktrees live under the user's state directory so repository-wide scanners do not traverse nested checkouts. Parallel writers never share a branch or overlapping file ownership.
+## Distribution and installation
 
-Each completed task receives concurrent context-free `devflow-reviewer` and `devflow-verifier` dispatches. Confirmed findings return to the original implementer. Fresh reviewer and verifier gates check the corrected task.
+The repository is a local Codex marketplace. The installable plugin lives at
+`plugins/codex-dev-flow/`; marketplace metadata lives at
+`.agents/plugins/marketplace.json`.
 
-The orchestrator integrates accepted commits in dependency order. The integrated change then receives one whole-change Sol XHigh review and one full Luna Max verification concurrently. The orchestrator adjudicates their evidence and reports the outcome.
+`scripts/install.py` validates the package first, registers the marketplace and
+plugin through Codex, and links the exact eight repository-owned agent profiles
+into the user's Codex agent directory. It refuses foreign destinations instead
+of overwriting them and rolls back only state it owns. A fresh Codex session is
+required after installation or profile changes.
 
-Temporary worktrees and branches are removed only after their commits are integrated, the final checks pass, and the integration branch is clean. Unmerged or failing work is preserved with an exact recovery path.
+`scripts/validate.py` rejects missing or extra skills and profiles, malformed
+metadata, policy drift, duplicate policy artifacts, non-regular required files,
+symlinked package boundaries, and paths that resolve outside the plugin root.
 
-## Agent contracts
+## Required certification boundary
 
-Custom agents receive the minimum task-local context needed to work independently. Context-free dispatch prevents conversation inheritance, but does not suppress every globally enabled skill or tool. Agents read repository instructions that apply to their scope, preserve unrelated changes, and return concise evidence rather than raw logs.
+Deterministic contract tests already validate structure and offline behavior.
+The live certification chain is not yet release-ready. It must use fresh
+`codex exec --ephemeral --ignore-user-config --json` sessions against
+disposable repositories and an installed plugin cache. The parent must own the
+oracle; prompts, public identifiers, paths, and child environments must not
+reveal the expected phase or private policy identity.
 
-The test engineer describes which production regression would make each test fail. Tests assert observable behavior and cover relevant negative, rollback, concurrency, migration, and compatibility paths.
+Retained evidence must bind the source package, installed skill, process identity,
+exact invocation, loaded skill, raw session output, tool and command events,
+typed handoff, and repository/Git state before and after execution. A transport
+fixture may carry evidence but cannot manufacture semantic success.
 
-The implementer does not expand its assigned scope, revert another writer's work, or change the accepted interface without returning the decision to the orchestrator.
-
-The reviewer reports only actionable correctness, security, compatibility, architecture-policy, and test-quality findings. Every finding includes severity, evidence, impact, and a concrete correction. It does not create style-only findings or edit files.
-
-The verifier records exact commands and exit results, checks the working tree for unexpected tracked changes, and distinguishes product failures from environment failures. It does not accept another agent's claim as verification evidence.
+Release certification must additionally require compatibility evidence, a signed
+receipt, quality checks, and measured cost/latency thresholds. Missing or
+inconsistent evidence fails closed.
 
 ## Failure handling
 
-Implementation or verification failures return to the agent that owns the relevant work. Follow-up turns reuse that agent rather than spawning replacements. The orchestrator asks the user immediately when a newly discovered product decision falls outside the accepted design. It asks for help after the same blocker occurs three times.
+Findings and failed checks return to the phase that owns the work. A new product
+decision returns to the user. Repeated technical blockers are reported with the
+exact preserved branch and recovery path.
 
-No agent deletes unmerged work, overwrites an unknown custom-agent profile, rewrites history, or performs an external write that the user did not authorize.
-
-## Validation
-
-The checked-in base plugin version is `0.1.0`. Local Codex cachebusters may append `+codex.<token>`, where the token is valid dot-separated SemVer build metadata.
-
-The repository validates:
-
-- plugin and marketplace schemas;
-- every skill's metadata and structure;
-- every custom-agent model, effort, sandbox, name, and instruction contract;
-- context-free named-agent routing, profile validation, and repository-state boundaries;
-- installer idempotency, conflict refusal, and uninstall ownership;
-- route classification against representative Quick, Full, and non-coding prompts;
-- orchestration behavior with baseline and skill-enabled forward tests;
-- external worktree creation, integration preconditions, preservation on failure, and cleanup after success.
-
-Forward tests use disposable repositories and fresh agents. They do not expose the expected answer to the tested agent.
+No phase rewrites history, deletes unmerged work, overwrites an unknown agent
+profile, exposes private oracle data to a child, or performs an external write
+outside the user's authorized scope.
 
 ## Scope exclusions
 
-Version 1 does not provide Claude support, a generic repository-cleaning command, inventory generators, GitHub pull-request automation, committed workflow reports in product repositories, or automatic commits on the Quick route.
-
-After the plugin and linked agents are verified in a fresh Codex task, Expand may remove the project-local agent definitions, cross-runtime synchronization machinery, and orchestration instructions that the plugin replaces. Expand keeps only its repository-specific engineering policies.
+Version 1 does not provide Claude support, a generic repository-cleaning
+command, automatic pull-request publication, target-repository workflow
+reports, or automatic commits for direct phase invocation.
