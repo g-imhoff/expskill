@@ -1,7 +1,0 @@
-interface:
-  display_name: "Quick Code Change"
-  short_description: "Implement a bounded change with independent gates"
-  default_prompt: "Use $quick-code-change for this accepted Quick change."
-
-policy:
-  allow_implicit_invocation: false

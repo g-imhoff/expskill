@@ -1,0 +1,7 @@
+interface:
+  display_name: "Brainstorm"
+  short_description: "Explore an uncertain development request"
+  default_prompt: "Use $brainstorm to explore this request."
+
+policy:
+  allow_implicit_invocation: false

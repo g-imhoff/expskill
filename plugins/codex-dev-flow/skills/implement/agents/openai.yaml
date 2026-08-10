@@ -1,0 +1,7 @@
+interface:
+  display_name: "Implement"
+  short_description: "Apply one accepted change with tests"
+  default_prompt: "Use $implement to apply the accepted change."
+
+policy:
+  allow_implicit_invocation: false
