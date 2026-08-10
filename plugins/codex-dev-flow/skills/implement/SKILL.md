@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Apply one accepted change with task-local tests and careful scope.
+description: Use only for an explicit implement phase; perform only one accepted change and stay inactive for other phases or tasks.
 ---
 
 # Implement
@@ -15,12 +15,13 @@ Apply exactly one accepted brief on one owned branch while preserving unrelated 
 
 There is no delegation and no scope expansion. Do not change an accepted interface without returning the decision. This phase does not invoke another skill, open another skill, or run another skill.
 
-## Typed handoff
+## Typed next-skill outcome handoff
 
-Return a typed next-skill handoff containing:
+The selected phase is always `implement`. Every outcome emits exactly five fields: `schema`, `selected_phase`, `reason_code`, `next_skill`, and `status` of `phase-handoff-v1`.
 
-- `schema: phase-handoff-v1`
-- `selected_phase: implement`
-- `reason_code: bounded-change`
-- `next_skill: review`
-- `status: handoff`
+- success/ready: `reason_code: bounded-change`; `next_skill: review`.
+- findings/failure: `reason_code: findings-failure`; `next_skill: implement` (the owning phase); do not advance.
+- blocked: `reason_code: blocked`; `next_skill: none`; stop.
+- user-decision: `reason_code: user-decision`; `next_skill: none`; ask the user.
+
+The handoff remains typed with `status: handoff` and no additional outcome field.
