@@ -1,7 +1,0 @@
-interface:
-  display_name: "Full Code Change"
-  short_description: "Plan and execute a parallel gated change"
-  default_prompt: "Use $full-code-change for this accepted Full change."
-
-policy:
-  allow_implicit_invocation: false

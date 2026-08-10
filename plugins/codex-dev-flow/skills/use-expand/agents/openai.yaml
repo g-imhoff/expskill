@@ -1,0 +1,7 @@
+interface:
+  display_name: "Use Expand"
+  short_description: "Classify a request for its next phase"
+  default_prompt: "Use $use-expand to classify this request."
+
+policy:
+  allow_implicit_invocation: true

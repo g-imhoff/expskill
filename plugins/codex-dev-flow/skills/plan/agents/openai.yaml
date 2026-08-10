@@ -1,0 +1,7 @@
+interface:
+  display_name: "Plan"
+  short_description: "Shape a bounded development approach"
+  default_prompt: "Use $plan to shape the accepted approach."
+
+policy:
+  allow_implicit_invocation: false
