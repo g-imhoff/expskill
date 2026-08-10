@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -19,19 +20,31 @@ REPOSITORY_URL = "https://github.com/g-imhoff/codex-dev-flow"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
+POLICY_PATH = "assets/execution-policy.json"
+HELPER_PATH = "scripts/worktrees.py"
 PLACEHOLDER = "[TODO:"
 EXPECTED_SKILLS = {
-    "full-code-change",
-    "quick-code-change",
-    "route-code-change",
+    "use-expand",
+    "brainstorm",
+    "plan",
+    "acceptance",
+    "implement",
+    "review",
+    "verify",
+    "integrate",
 }
+RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
+PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
 
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "devflow-verifier": ("gpt-5.6-luna", "max", "workspace-write"),
+    "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
+    "devflow-implementer-high": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-reviewer": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-critical-reviewer": ("gpt-5.6-sol", "high", "read-only"),
+    "devflow-verifier": ("gpt-5.6-luna", "medium", "workspace-write"),
+    "devflow-verifier-low": ("gpt-5.6-luna", "low", "workspace-write"),
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -58,7 +71,23 @@ AGENT_BOUNDARIES = {
         "no delegation",
         "no scope expansion",
     ),
+    "devflow-implementer-high": (
+        "exactly one brief",
+        "red-green-refactor",
+        "one owned branch",
+        "no delegation",
+        "no scope expansion",
+    ),
     "devflow-reviewer": (
+        "read-only",
+        "severity",
+        "evidence",
+        "impact",
+        "correction",
+        "ready",
+        "not ready",
+    ),
+    "devflow-critical-reviewer": (
         "read-only",
         "severity",
         "evidence",
@@ -73,6 +102,226 @@ AGENT_BOUNDARIES = {
         "no tracked-source edits",
         "no reliance on another agent's claims",
     ),
+    "devflow-verifier-low": (
+        "exact commands",
+        "exit evidence",
+        "no tracked-source edits",
+        "no reliance on another agent's claims",
+    ),
+}
+
+EXPECTED_POLICY_PROFILES = {
+    "devflow-explorer": {
+        "agent_type": "devflow-explorer",
+        "role": "explorer",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "devflow-implementer": {
+        "agent_type": "devflow-implementer",
+        "role": "implementer",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-implementer-high": {
+        "agent_type": "devflow-implementer-high",
+        "role": "implementer",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-reviewer": {
+        "agent_type": "devflow-reviewer",
+        "role": "reviewer",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "devflow-critical-reviewer": {
+        "agent_type": "devflow-critical-reviewer",
+        "role": "critical-reviewer",
+        "model": "gpt-5.6-sol",
+        "effort": "high",
+        "sandbox_mode": "read-only",
+        "escalation": "critical-review",
+    },
+    "devflow-verifier": {
+        "agent_type": "devflow-verifier",
+        "role": "verifier",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-verifier-low": {
+        "agent_type": "devflow-verifier-low",
+        "role": "verifier",
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-test-engineer": {
+        "agent_type": "devflow-test-engineer",
+        "role": "test-engineer",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+}
+
+EXPECTED_POLICY_ROUTES = {
+    "quick": {
+        "low": {
+            "allowed_profiles": ["devflow-verifier-low"],
+            "selected": [
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier-low",
+                    "agent_type": "devflow-verifier-low",
+                }
+            ],
+            "max_agent_calls": 3,
+            "max_concurrency": 1,
+            "max_depth": 1,
+            "max_retries": 0,
+        },
+        "standard": {
+            "allowed_profiles": ["devflow-reviewer", "devflow-verifier"],
+            "selected": [
+                {
+                    "role": "reviewer",
+                    "profile": "devflow-reviewer",
+                    "agent_type": "devflow-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+            ],
+            "max_agent_calls": 5,
+            "max_concurrency": 2,
+            "max_depth": 1,
+            "max_retries": 1,
+        },
+        "high": {
+            "allowed_profiles": ["devflow-critical-reviewer", "devflow-verifier"],
+            "selected": [
+                {
+                    "role": "critical-reviewer",
+                    "profile": "devflow-critical-reviewer",
+                    "agent_type": "devflow-critical-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+            ],
+            "max_agent_calls": 5,
+            "max_concurrency": 2,
+            "max_depth": 1,
+            "max_retries": 1,
+        },
+    },
+    "full": {
+        "standard": {
+            "allowed_profiles": [
+                "devflow-explorer",
+                "devflow-implementer",
+                "devflow-reviewer",
+                "devflow-verifier",
+                "devflow-test-engineer",
+            ],
+            "selected": [
+                {
+                    "role": "explorer",
+                    "profile": "devflow-explorer",
+                    "agent_type": "devflow-explorer",
+                },
+                {
+                    "role": "implementer",
+                    "profile": "devflow-implementer",
+                    "agent_type": "devflow-implementer",
+                },
+                {
+                    "role": "reviewer",
+                    "profile": "devflow-reviewer",
+                    "agent_type": "devflow-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+                {
+                    "role": "test-engineer",
+                    "profile": "devflow-test-engineer",
+                    "agent_type": "devflow-test-engineer",
+                },
+            ],
+            "max_agent_calls": 25,
+            "max_concurrency": 3,
+            "max_depth": 1,
+            "max_retries": 1,
+            "max_elapsed_ms": 7200000,
+        },
+        "high": {
+            "allowed_profiles": [
+                "devflow-explorer",
+                "devflow-implementer-high",
+                "devflow-reviewer",
+                "devflow-verifier",
+                "devflow-test-engineer",
+                "devflow-critical-reviewer",
+            ],
+            "selected": [
+                {
+                    "role": "explorer",
+                    "profile": "devflow-explorer",
+                    "agent_type": "devflow-explorer",
+                },
+                {
+                    "role": "implementer",
+                    "profile": "devflow-implementer-high",
+                    "agent_type": "devflow-implementer-high",
+                },
+                {
+                    "role": "reviewer",
+                    "profile": "devflow-reviewer",
+                    "agent_type": "devflow-reviewer",
+                },
+                {
+                    "role": "verifier",
+                    "profile": "devflow-verifier",
+                    "agent_type": "devflow-verifier",
+                },
+                {
+                    "role": "test-engineer",
+                    "profile": "devflow-test-engineer",
+                    "agent_type": "devflow-test-engineer",
+                },
+                {
+                    "role": "critical-reviewer",
+                    "profile": "devflow-critical-reviewer",
+                    "agent_type": "devflow-critical-reviewer",
+                },
+            ],
+            "max_agent_calls": 25,
+            "max_concurrency": 3,
+            "max_depth": 1,
+            "max_retries": 1,
+            "max_elapsed_ms": 7200000,
+        },
+    },
 }
 
 
@@ -91,6 +340,8 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         _validate_plugin_manifest(manifest, plugin_root, errors)
 
     _validate_agents(plugin_root, errors)
+    _validate_policy(plugin_root, errors)
+    _validate_helper_and_package_layout(plugin_root, errors)
     return tuple(errors)
 
 
@@ -235,9 +486,30 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         errors.append(f"unexpected skill entry {name!r}")
     names: list[str] = []
     for skill_root in sorted(entries.values(), key=lambda path: path.name):
+        if skill_root.is_symlink():
+            errors.append(f"skill {skill_root.name!r} must not be a symlink")
+            continue
         if not skill_root.is_dir():
             errors.append(f"skill {skill_root.name!r} must be a directory")
             continue
+        expected_files = {"SKILL.md", "agents/openai.yaml"}
+        actual_files = {
+            path.relative_to(skill_root).as_posix()
+            for path in skill_root.rglob("*")
+            if path.is_file()
+        }
+        actual_directories = {
+            path.relative_to(skill_root).as_posix()
+            for path in skill_root.rglob("*")
+            if path.is_dir()
+        }
+        for relative in sorted(actual_directories - {"agents"}):
+            errors.append(f"skill {skill_root.name!r} contains unexpected directory {relative!r}")
+        for relative in sorted(actual_files - expected_files):
+            errors.append(f"skill {skill_root.name!r} contains unexpected file {relative!r}")
+        for path in skill_root.rglob("*"):
+            if path.is_symlink():
+                errors.append(f"skill {skill_root.name!r} contains a symlink: {path}")
         skill_path = skill_root / "SKILL.md"
         if not skill_path.is_file():
             errors.append(f"skill {skill_root.name!r} is missing SKILL.md")
@@ -252,14 +524,36 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         frontmatter = _parse_frontmatter(contents, skill_root.name, errors)
         if frontmatter is None:
             continue
+        if set(frontmatter) != {"name", "description"}:
+            errors.append(
+                f"skill {skill_root.name!r} frontmatter keys must be exactly name and description"
+            )
         name = frontmatter.get("name", "")
         description = frontmatter.get("description", "")
-        if not name:
+        if not isinstance(name, str) or not name.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter name")
         else:
             names.append(name)
-        if not description:
+            if name != skill_root.name:
+                errors.append(
+                    f"skill {skill_root.name!r} frontmatter name must match directory"
+                )
+            if not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", name):
+                errors.append(f"skill {skill_root.name!r} has an invalid frontmatter name")
+        if not isinstance(description, str) or not description.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter description")
+        elif not 20 <= len(description) <= 300:
+            errors.append(f"skill {skill_root.name!r} description must be 20-300 characters")
+        elif any(character in description for character in "<>\r\n"):
+            errors.append(f"skill {skill_root.name!r} description contains forbidden characters")
+        if len(contents.splitlines()) >= 500:
+            errors.append(f"skill {skill_root.name!r} SKILL.md body is overlong")
+        normalized_contents = contents.lower()
+        if any(retired in normalized_contents for retired in RETIRED_SKILLS):
+            errors.append(f"skill {skill_root.name!r} references a retired skill")
+        if PUBLIC_SKILL_JARGON.search(contents):
+            errors.append(f"skill {skill_root.name!r} contains private policy vocabulary")
+        _validate_skill_metadata(skill_root, errors)
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
@@ -281,15 +575,187 @@ def _parse_frontmatter(
     for line in lines[1:end]:
         key, separator, raw_value = line.partition(":")
         if not separator:
+            if line.strip():
+                errors.append(f"skill {skill_directory!r} frontmatter contains an invalid line")
             continue
         key = key.strip()
         value = raw_value.strip()
         if not key:
+            errors.append(f"skill {skill_directory!r} frontmatter contains an empty key")
+            continue
+        if key in values:
+            errors.append(f"skill {skill_directory!r} frontmatter key {key!r} is duplicated")
+            continue
+        if value.startswith(("[", "{")):
+            errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is invalid")
+                continue
+            if not isinstance(parsed, str):
+                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a string")
+                continue
+            value = parsed
         values[key] = value
     return values
+
+
+def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
+    metadata_path = skill_root / "agents" / "openai.yaml"
+    if not metadata_path.is_file():
+        errors.append(f"skill {skill_root.name!r} is missing agents/openai.yaml")
+        return
+    if metadata_path.is_symlink():
+        errors.append(f"skill {skill_root.name!r} metadata must not be a symlink")
+        return
+    try:
+        contents = metadata_path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"skill {skill_root.name!r} metadata could not be read: {error}")
+        return
+    metadata = _parse_skill_metadata(contents, skill_root.name, errors)
+    if metadata is None:
+        return
+    if set(metadata) != {"interface", "policy"}:
+        errors.append(f"skill {skill_root.name!r} metadata keys must be exactly interface and policy")
+        return
+    interface = metadata.get("interface")
+    policy = metadata.get("policy")
+    if not isinstance(interface, dict):
+        errors.append(f"skill {skill_root.name!r} metadata interface must be a mapping")
+        return
+    if not isinstance(policy, dict):
+        errors.append(f"skill {skill_root.name!r} metadata policy must be a mapping")
+        return
+    if set(interface) != {"display_name", "short_description", "default_prompt"}:
+        errors.append(f"skill {skill_root.name!r} interface keys are not exact")
+    if set(policy) != {"allow_implicit_invocation"}:
+        errors.append(f"skill {skill_root.name!r} policy keys are not exact")
+    for field in ("display_name", "short_description", "default_prompt"):
+        value = interface.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"skill {skill_root.name!r} interface.{field} must be a non-empty string")
+            continue
+        if any(character in value for character in "<>\r\n"):
+            errors.append(f"skill {skill_root.name!r} interface.{field} contains forbidden characters")
+        if PUBLIC_SKILL_JARGON.search(value):
+            errors.append(f"skill {skill_root.name!r} interface.{field} contains private policy vocabulary")
+    short_description = interface.get("short_description")
+    if isinstance(short_description, str) and not 25 <= len(short_description) <= 64:
+        errors.append(f"skill {skill_root.name!r} short_description must be 25-64 characters")
+    default_prompt = interface.get("default_prompt")
+    if isinstance(default_prompt, str) and f"${skill_root.name}" not in default_prompt:
+        errors.append(f"skill {skill_root.name!r} default_prompt must invoke the matching skill")
+    implicit = policy.get("allow_implicit_invocation")
+    if not isinstance(implicit, bool):
+        errors.append(f"skill {skill_root.name!r} allow_implicit_invocation must be a boolean")
+    elif implicit is not (skill_root.name == "use-expand"):
+        errors.append(f"skill {skill_root.name!r} implicit invocation policy drift")
+
+
+def _parse_skill_metadata(
+    contents: str, skill_name: str, errors: list[str]
+) -> dict[str, dict[str, object]] | None:
+    values: dict[str, dict[str, object]] = {}
+    for line_number, line in enumerate(contents.splitlines(), start=1):
+        if not line.strip():
+            continue
+        if "\t" in line:
+            errors.append(f"skill {skill_name!r} metadata line {line_number} contains a tab")
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        key, separator, raw_value = line.strip().partition(":")
+        if not separator or not key:
+            errors.append(f"skill {skill_name!r} metadata line {line_number} is invalid")
+            continue
+        raw_value = raw_value.strip()
+        if indentation == 0:
+            if raw_value:
+                errors.append(f"skill {skill_name!r} metadata root {key!r} must be a mapping")
+                continue
+            if key in values:
+                errors.append(f"skill {skill_name!r} metadata key {key!r} is duplicated")
+                continue
+            values[key] = {}
+            continue
+        if indentation != 2:
+            errors.append(f"skill {skill_name!r} metadata line {line_number} has invalid indentation")
+            continue
+        if not values:
+            errors.append(f"skill {skill_name!r} metadata child appears before a root mapping")
+            continue
+        parent = next(reversed(values))
+        mapping = values[parent]
+        if key in mapping:
+            errors.append(f"skill {skill_name!r} metadata key {parent}.{key!s} is duplicated")
+            continue
+        if parent == "interface":
+            if len(raw_value) < 2 or raw_value[0] != raw_value[-1] or raw_value[0] not in {'"', "'"}:
+                errors.append(f"skill {skill_name!r} interface.{key} must be a quoted string")
+                continue
+            try:
+                value = ast.literal_eval(raw_value)
+            except (SyntaxError, ValueError):
+                errors.append(f"skill {skill_name!r} interface.{key} is invalid")
+                continue
+            if not isinstance(value, str):
+                errors.append(f"skill {skill_name!r} interface.{key} must be a string")
+                continue
+            mapping[key] = value
+        elif parent == "policy":
+            if raw_value not in {"true", "false"}:
+                errors.append(f"skill {skill_name!r} policy.{key} must be a YAML boolean literal")
+                continue
+            mapping[key] = raw_value == "true"
+        else:
+            mapping[key] = raw_value
+    return values
+
+
+def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
+    policy_path = plugin_root / POLICY_PATH
+    if policy_path.is_symlink():
+        errors.append(f"execution policy must not be a symlink: {policy_path}")
+        return
+    policy = _load_json_object(policy_path, "execution policy", errors)
+    if policy is None:
+        return
+    expected = {
+        "policy_version": "execution-budget-policy.v1",
+        "profiles": EXPECTED_POLICY_PROFILES,
+        "routes": EXPECTED_POLICY_ROUTES,
+    }
+    if set(policy) != set(expected):
+        errors.append("execution policy keys must be exactly policy_version, profiles, and routes")
+        return
+    if policy.get("policy_version") != expected["policy_version"]:
+        errors.append("execution policy policy_version is not execution-budget-policy.v1")
+    if policy.get("profiles") != EXPECTED_POLICY_PROFILES:
+        errors.append("execution policy profiles do not match the exact validated roster")
+    if policy.get("routes") != EXPECTED_POLICY_ROUTES:
+        errors.append("execution policy routes do not match the exact validated plans")
+
+
+def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) -> None:
+    helper = plugin_root / HELPER_PATH
+    if not helper.is_file():
+        errors.append(f"worktree helper is missing: {helper}")
+    elif helper.is_symlink():
+        errors.append(f"worktree helper must not be a symlink: {helper}")
+    helpers = sorted(
+        (
+            path.relative_to(plugin_root).as_posix(),
+            path,
+        )
+        for path in plugin_root.rglob("worktrees.py")
+        if path.is_file() or path.is_symlink()
+    )
+    if [relative for relative, _ in helpers] != [HELPER_PATH]:
+        observed = ", ".join(relative for relative, _ in helpers) or "none"
+        errors.append(f"worktree helper must exist only at {HELPER_PATH}; found {observed}")
 
 
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
@@ -300,7 +766,12 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
 
     expected_filenames = {f"{name}.toml" for name in EXPECTED_AGENTS}
     for path in sorted(agents_root.iterdir(), key=lambda item: item.name):
+        if path.is_symlink():
+            errors.append(f"agent profile {path.name!r} must not be a symlink")
+            continue
         if not path.is_file():
+            if path.name.startswith("devflow-"):
+                errors.append(f"unexpected agent profile {path.name!r}")
             continue
         if path.suffix == ".toml" and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.stem!r}")

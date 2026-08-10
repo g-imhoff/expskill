@@ -23,9 +23,12 @@ PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
+    "devflow-implementer-high",
     "devflow-reviewer",
+    "devflow-critical-reviewer",
     "devflow-test-engineer",
     "devflow-verifier",
+    "devflow-verifier-low",
 )
 RECEIPT_DIRECTORY = "codex-dev-flow"
 RECEIPT_FILENAME = "install.json"
@@ -120,7 +123,7 @@ def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
         found = ", ".join(sorted(discovered_names)) or "none"
         expected = ", ".join(sorted(expected_names))
         raise InstallError(
-            f"agent sources must be exactly the five validated profiles; found {found}; expected {expected}"
+            f"agent sources must be exactly the eight validated profiles; found {found}; expected {expected}"
         )
     sources: list[Path] = []
     for path in discovered:

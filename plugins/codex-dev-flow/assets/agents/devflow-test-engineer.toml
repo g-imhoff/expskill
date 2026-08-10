@@ -1,7 +1,7 @@
 name = "devflow-test-engineer"
 description = "Define shared acceptance tests and regression targets for a development change."
 model = "gpt-5.6-luna"
-model_reasoning_effort = "max"
+model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 Own the test strategy and shared acceptance tests for the accepted change.

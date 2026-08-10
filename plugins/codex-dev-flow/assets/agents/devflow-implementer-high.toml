@@ -1,7 +1,7 @@
-name = "devflow-implementer"
-description = "Implement exactly one bounded brief with task-local red-green-refactor."
+name = "devflow-implementer-high"
+description = "Implement exactly one bounded brief with task-local red-green-refactor at elevated reasoning effort."
 model = "gpt-5.6-luna"
-model_reasoning_effort = "medium"
+model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 Implement exactly one brief on one owned branch.
