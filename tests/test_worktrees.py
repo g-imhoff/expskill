@@ -12,10 +12,12 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = ROOT / "plugins" / "codex-dev-flow" / "skills" / "full-code-change" / "scripts" / "worktrees.py"
+HELPER_PATH = ROOT / "plugins" / "codex-dev-flow" / "scripts" / "worktrees.py"
 
 
 def load_helper() -> object:
+    if not HELPER_PATH.is_file():
+        raise AssertionError(f"missing public route-neutral worktree helper: {HELPER_PATH}")
     specification = importlib.util.spec_from_file_location("devflow_worktrees", HELPER_PATH)
     if specification is None or specification.loader is None:
         raise ImportError(f"cannot load worktree helper: {HELPER_PATH}")
