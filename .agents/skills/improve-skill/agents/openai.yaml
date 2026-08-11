@@ -1,0 +1,7 @@
+interface:
+  display_name: "Improve Skill"
+  short_description: "Upgrade agent skills with evidence-gated loops"
+  default_prompt: "Use $improve-skill to improve this agent-skill stack one skill at a time."
+
+policy:
+  allow_implicit_invocation: false

@@ -17,9 +17,22 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
+    "devflow-implementer-high",
     "devflow-reviewer",
+    "devflow-critical-reviewer",
     "devflow-test-engineer",
     "devflow-verifier",
+    "devflow-verifier-low",
+)
+SKILL_NAMES = (
+    "use-expand",
+    "brainstorm",
+    "plan",
+    "acceptance",
+    "implement",
+    "review",
+    "verify",
+    "integrate",
 )
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
 MANIFEST_VERSION = json.loads(
@@ -55,14 +68,26 @@ class FakeRunner:
 
 
 def seed_repository(path: Path) -> Path:
-    shutil.copytree(ROOT / ".agents", path / ".agents")
     source_plugin = ROOT / "plugins" / "codex-dev-flow"
     destination_plugin = path / "plugins" / "codex-dev-flow"
+    source_scripts = source_plugin / "scripts"
+    source_helper = source_scripts / "worktrees.py"
+    if (
+        not source_scripts.is_dir()
+        or source_scripts.is_symlink()
+        or not source_helper.is_file()
+        or source_helper.is_symlink()
+        or source_helper.stat().st_size == 0
+    ):
+        raise AssertionError(f"invalid route-neutral plugin helper fixture: {source_helper}")
+    shutil.copytree(ROOT / ".agents", path / ".agents")
     shutil.copytree(source_plugin / ".codex-plugin", destination_plugin / ".codex-plugin")
     shutil.copytree(source_plugin / "assets", destination_plugin / "assets")
     shutil.copytree(source_plugin / "skills", destination_plugin / "skills")
-    (path / "scripts").mkdir(parents=True)
-    shutil.copy2(ROOT / "scripts" / "validate.py", path / "scripts" / "validate.py")
+    # Seed the same route-neutral plugin inputs that a real marketplace
+    # registration receives, including the centralized worktree helper.
+    shutil.copytree(source_scripts, destination_plugin / "scripts")
+    shutil.copytree(ROOT / "scripts", path / "scripts")
     return path
 
 
@@ -193,6 +218,69 @@ def load_receipt(state_home: Path) -> dict[str, object]:
 
 
 class InstallerTests(unittest.TestCase):
+    def test_seeded_plugin_package_preserves_every_real_phase_entrypoint(self) -> None:
+        """Regression: installation fixtures silently omit independently callable phases."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = seed_repository(Path(temporary) / "repository")
+            skills_root = repository / "plugins" / "codex-dev-flow" / "skills"
+            self.assertEqual({entry.name for entry in skills_root.iterdir()}, set(SKILL_NAMES))
+            for name in SKILL_NAMES:
+                self.assertTrue((skills_root / name / "SKILL.md").is_file(), name)
+                self.assertTrue((skills_root / name / "agents" / "openai.yaml").is_file(), name)
+
+    def test_seed_repository_copies_route_neutral_plugin_scripts(self) -> None:
+        """Fixture regression: installed-package inputs retain the centralized helper."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = seed_repository(Path(temporary) / "repository")
+            source = ROOT / "plugins" / "codex-dev-flow" / "scripts"
+            destination = repository / "plugins" / "codex-dev-flow" / "scripts"
+            self.assertTrue(destination.is_dir(), destination)
+            source_files = {
+                path.relative_to(source).as_posix(): path.read_bytes()
+                for path in source.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            destination_files = {
+                path.relative_to(destination).as_posix(): path.read_bytes()
+                for path in destination.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(destination_files, source_files)
+            self.assertTrue((destination / "worktrees.py").is_file())
+            self.assertFalse((destination / "worktrees.py").is_symlink())
+            self.assertGreater((destination / "worktrees.py").stat().st_size, 0)
+
+    def test_seed_repository_rejects_invalid_route_neutral_helper(self) -> None:
+        """Fixture regression: missing, symlinked, or empty helpers fail closed."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def source_fixture(name: str) -> tuple[Path, Path]:
+                source_root = root / name / "source"
+                shutil.copytree(ROOT / ".agents", source_root / ".agents")
+                shutil.copytree(ROOT / "plugins" / "codex-dev-flow", source_root / "plugins" / "codex-dev-flow")
+                shutil.copytree(ROOT / "scripts", source_root / "scripts")
+                return source_root, source_root / "plugins" / "codex-dev-flow" / "scripts" / "worktrees.py"
+
+            for mutation in ("missing", "symlink", "empty"):
+                with self.subTest(mutation=mutation):
+                    source_root, helper = source_fixture(mutation)
+                    if mutation == "missing":
+                        helper.unlink()
+                    elif mutation == "symlink":
+                        target = root / mutation / "target.py"
+                        target.write_text("target\n", encoding="utf-8")
+                        helper.unlink()
+                        helper.symlink_to(target)
+                    else:
+                        helper.write_bytes(b"")
+                    with mock.patch(__name__ + ".ROOT", source_root):
+                        with self.assertRaisesRegex(AssertionError, "invalid route-neutral plugin helper fixture"):
+                            seed_repository(root / mutation / "destination")
+
     def test_install_accepts_checked_in_manifest_cachebuster(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -247,7 +335,7 @@ class InstallerTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             lines = output.getvalue().splitlines()
-            self.assertEqual(len(lines), 7)
+            self.assertEqual(len(lines), len(PROFILE_NAMES) + 2)
             self.assertEqual(
                 lines[-2],
                 f"codex plugin marketplace add {ROOT.resolve()} --json",
@@ -814,7 +902,11 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertEqual(
                 {path.destination.name for path in result.removed_links},
-                {"devflow-test-engineer.toml", "devflow-verifier.toml"},
+                {
+                    f"{name}.toml"
+                    for name in PROFILE_NAMES
+                    if name not in {"devflow-explorer", "devflow-implementer", "devflow-reviewer"}
+                },
             )
             self.assertTrue(retargeted.is_symlink())
             self.assertTrue(replaced.is_file())
@@ -977,7 +1069,7 @@ class InstallerTests(unittest.TestCase):
             result = uninstall(repo, codex_home, state_home, runner)
 
             self.assertFalse(deleted_source.exists())
-            self.assertEqual(len(result.removed_links), 5)
+            self.assertEqual(len(result.removed_links), len(PROFILE_NAMES))
             self.assertFalse(receipt_path(state_home).exists())
             self.assertTrue(all(not os.path.lexists(path) for path in destination_paths(codex_home).values()))
 
@@ -1027,7 +1119,7 @@ class InstallerTests(unittest.TestCase):
 
             result = uninstall(repo, codex_home, state_home, runner)
 
-            self.assertEqual(len(result.removed_links), 4)
+            self.assertEqual(len(result.removed_links), len(PROFILE_NAMES) - 1)
             self.assertTrue(damaged_source.is_symlink())
             self.assertEqual(damaged_source.read_text(encoding="utf-8"), "user-owned\n")
             self.assertTrue(untouched_source.is_symlink())
