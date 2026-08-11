@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import re
@@ -61,6 +62,47 @@ EXPECTED_SKILLS = {
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
+BRAINSTORM_CATALOG_RELATIVE = "skills/brainstorm/references/brainstorm-techniques.csv"
+BRAINSTORM_CATALOG_SHA256 = "0ab5878b1dbc9e3fa98cb72abfc3920a586b9e2b42609211bb0516eefd542039"
+BRAINSTORM_CATALOG_PREAMBLE = (
+    "# Source: https://github.com/bmad-code-org/BMAD-METHOD/blob/"
+    "890fcda760bade4d6080f5fa09aa8f658bc4a4a5/"
+    "web-bundles/brainstorming-coach/brain-methods.csv\n"
+    "# Source-Revision: 890fcda760bade4d6080f5fa09aa8f658bc4a4a5\n"
+    "# Upstream-SHA256: 0ab5878b1dbc9e3fa98cb72abfc3920a586b9e2b42609211bb0516eefd542039\n"
+    "#\n"
+    "# MIT License\n"
+    "#\n"
+    "# Copyright (c) 2025 BMad Code, LLC\n"
+    "#\n"
+    "# This project incorporates contributions from the open source community.\n"
+    "# See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contributor attribution.\n"
+    "#\n"
+    "# Permission is hereby granted, free of charge, to any person obtaining a copy\n"
+    "# of this software and associated documentation files (the \"Software\"), to deal\n"
+    "# in the Software without restriction, including without limitation the rights\n"
+    "# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
+    "# copies of the Software, and to permit persons to whom the Software is\n"
+    "# furnished to do so, subject to the following conditions:\n"
+    "#\n"
+    "# The above copyright notice and this permission notice shall be included in all\n"
+    "# copies or substantial portions of the Software.\n"
+    "#\n"
+    "# THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+    "# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+    "# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+    "# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+    "# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+    "# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+    "# SOFTWARE.\n"
+    "#\n"
+    "# TRADEMARK NOTICE:\n"
+    "# BMad™, BMad Method™, and BMad Core™ are trademarks of BMad Code, LLC, covering all\n"
+    "# casings and variations (including BMAD, bmad, BMadMethod, BMAD-METHOD, etc.). The use of\n"
+    "# these trademarks in this software does not grant any rights to use the trademarks\n"
+    "# for any other purpose. See [TRADEMARK.md](TRADEMARK.md) for detailed guidelines.\n"
+    "#\n"
+)
 
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
@@ -714,6 +756,11 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         ) is None:
             continue
         expected_files = {"SKILL.md", "agents/openai.yaml"}
+        if skill_root.name == "brainstorm":
+            expected_files.add("references/brainstorm-techniques.csv")
+        expected_directories = {"agents"}
+        if skill_root.name == "brainstorm":
+            expected_directories.add("references")
         actual_files = {
             path.relative_to(skill_root).as_posix()
             for path in skill_root.rglob("*")
@@ -724,7 +771,7 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             for path in skill_root.rglob("*")
             if path.is_dir()
         }
-        for relative in sorted(actual_directories - {"agents"}):
+        for relative in sorted(actual_directories - expected_directories):
             errors.append(f"skill {skill_root.name!r} contains unexpected directory {relative!r}")
         for relative in sorted(actual_files - expected_files):
             errors.append(f"skill {skill_root.name!r} contains unexpected file {relative!r}")
@@ -780,9 +827,36 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         if PUBLIC_SKILL_JARGON.search(contents):
             errors.append(f"skill {skill_root.name!r} contains private policy vocabulary")
         _validate_skill_metadata(skill_root, errors)
+        if skill_root.name == "brainstorm":
+            _validate_brainstorm_catalog(skill_root, errors)
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
+
+
+def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
+    plugin_root = skill_root.parent.parent
+    catalog_path = _required_package_path(
+        plugin_root,
+        BRAINSTORM_CATALOG_RELATIVE,
+        "brainstorm catalog",
+        "file",
+        errors,
+    )
+    if catalog_path is None:
+        return
+    try:
+        contents = catalog_path.read_bytes()
+    except OSError as error:
+        errors.append(f"brainstorm catalog could not be read: {error}")
+        return
+    preamble = BRAINSTORM_CATALOG_PREAMBLE.encode("utf-8")
+    if not contents.startswith(preamble):
+        errors.append("brainstorm catalog has an unexpected attribution preamble")
+        return
+    payload = contents[len(preamble) :]
+    if hashlib.sha256(payload).hexdigest() != BRAINSTORM_CATALOG_SHA256:
+        errors.append("brainstorm catalog payload does not match the pinned upstream digest")
 
 
 def _parse_frontmatter(

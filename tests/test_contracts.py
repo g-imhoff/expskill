@@ -557,10 +557,61 @@ class ContractTests(unittest.TestCase):
                     continue
                 body = skill_path.read_text(encoding="utf-8")
                 self.assertGreater(len(body.splitlines()), 4, name)
-                self.assertNotIn("references/", body.lower(), name)
+                if name != "brainstorm":
+                    self.assertNotIn("references/", body.lower(), name)
                 self.assertNotIn("route-code-change", body, name)
                 self.assertNotIn("quick-code-change", body, name)
                 self.assertNotIn("full-code-change", body, name)
+
+    def test_public_skill_private_policy_vocabulary_is_rejected_on_both_surfaces(self) -> None:
+        """Regression: phase instructions or UI copy leak private routing policy terms."""
+
+        for token in ("quick", "full", "model", "cap", "caps"):
+            with self.subTest(token=token, surface="entrypoint"):
+                root = self.copy_repository()
+                skill_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "brainstorm"
+                    / "SKILL.md"
+                )
+                skill_path.write_text(
+                    f"{skill_path.read_text(encoding='utf-8')}\nReserved probe: {token}.\n",
+                    encoding="utf-8",
+                )
+                self.assertIn(
+                    "skill 'brainstorm' contains private policy vocabulary",
+                    validate_repository(root),
+                )
+
+            with self.subTest(token=token, surface="metadata"):
+                root = self.copy_repository()
+                metadata_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "brainstorm"
+                    / "agents"
+                    / "openai.yaml"
+                )
+                lines = metadata_path.read_text(encoding="utf-8").splitlines()
+                for index, line in enumerate(lines):
+                    if line.strip().startswith("short_description:"):
+                        prefix, separator, raw_value = line.partition(":")
+                        self.assertTrue(separator)
+                        value = ast.literal_eval(raw_value.strip())
+                        lines[index] = f'{prefix}: "{value} {token}"'
+                        break
+                else:
+                    self.fail("brainstorm metadata has no short_description")
+                metadata_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                self.assertIn(
+                    "skill 'brainstorm' interface.short_description contains private policy vocabulary",
+                    validate_repository(root),
+                )
 
     def test_unsupported_read_only_agent_runner_is_removed(self) -> None:
         self.assertFalse((PLUGIN_ROOT / "scripts" / "read_only_agent.py").exists())
