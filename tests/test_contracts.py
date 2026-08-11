@@ -14,21 +14,53 @@ from scripts.validate import validate_repository
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "codex-dev-flow"
-ROUTER_ROOT = PLUGIN_ROOT / "skills" / "route-code-change"
-QUICK_ROOT = PLUGIN_ROOT / "skills" / "quick-code-change"
-FULL_ROOT = PLUGIN_ROOT / "skills" / "full-code-change"
+ROUTER_ROOT = PLUGIN_ROOT / "skills" / "use-expand"
+PHASE_ROOTS = {
+    name: PLUGIN_ROOT / "skills" / name
+    for name in (
+        "brainstorm",
+        "plan",
+        "acceptance",
+        "implement",
+        "review",
+        "verify",
+        "integrate",
+    )
+}
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "devflow-verifier": ("gpt-5.6-luna", "max", "workspace-write"),
+    "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
+    "devflow-implementer-high": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-reviewer": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-critical-reviewer": ("gpt-5.6-sol", "high", "read-only"),
+    "devflow-verifier": ("gpt-5.6-luna", "medium", "workspace-write"),
+    "devflow-verifier-low": ("gpt-5.6-luna", "low", "workspace-write"),
 }
 EXPECTED_SKILLS = {
-    "full-code-change",
-    "quick-code-change",
-    "route-code-change",
+    "use-expand",
+    "brainstorm",
+    "plan",
+    "acceptance",
+    "implement",
+    "review",
+    "verify",
+    "integrate",
 }
+PLUGIN_INTERFACE_FIELDS = {
+    "displayName",
+    "shortDescription",
+    "longDescription",
+    "developerName",
+    "category",
+    "capabilities",
+    "defaultPrompt",
+}
+PUBLIC_PHASE_TOKENS = {f"${name}" for name in EXPECTED_SKILLS}
+PUBLIC_METADATA_JARGON = re.compile(
+    r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
+    re.IGNORECASE,
+)
 
 
 def _parse_yaml_scalar(raw_value: str) -> object:
@@ -84,7 +116,10 @@ class ContractTests(unittest.TestCase):
         return json.loads((root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
 
     def load_skill_frontmatter(self, skill_root: Path) -> dict[str, object]:
-        lines = (skill_root / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        try:
+            lines = (skill_root / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            self.fail(f"missing readable skill entrypoint: {skill_root / 'SKILL.md'} ({error})")
         self.assertEqual(lines[0], "---")
         end = lines.index("---", 1)
         return _parse_yaml_mapping("\n".join(lines[1:end]))
@@ -109,10 +144,13 @@ class ContractTests(unittest.TestCase):
 
     def test_missing_required_skill_is_rejected(self) -> None:
         root = self.copy_repository()
-        missing = root / "plugins" / "codex-dev-flow" / "skills" / "quick-code-change"
+        missing = root / "plugins" / "codex-dev-flow" / "skills" / "brainstorm"
+        self.assertTrue(missing.is_dir(), missing)
+        if not missing.is_dir():
+            return
         shutil.rmtree(missing)
         errors = validate_repository(root)
-        self.assertTrue(any("quick-code-change" in error and "missing" in error for error in errors))
+        self.assertTrue(any("brainstorm" in error and "missing" in error for error in errors))
 
     def test_unexpected_skill_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -127,18 +165,24 @@ class ContractTests(unittest.TestCase):
 
     def test_required_skill_file_is_rejected(self) -> None:
         root = self.copy_repository()
-        skill_path = root / "plugins" / "codex-dev-flow" / "skills" / "quick-code-change"
+        skill_path = root / "plugins" / "codex-dev-flow" / "skills" / "brainstorm"
+        self.assertTrue(skill_path.is_dir(), skill_path)
+        if not skill_path.is_dir():
+            return
         shutil.rmtree(skill_path)
         skill_path.write_text("not a directory\n", encoding="utf-8")
         errors = validate_repository(root)
-        self.assertTrue(any("quick-code-change" in error and "directory" in error for error in errors))
+        self.assertTrue(any("brainstorm" in error and "directory" in error for error in errors))
 
     def test_required_skill_without_skill_markdown_is_rejected(self) -> None:
         root = self.copy_repository()
-        skill_path = root / "plugins" / "codex-dev-flow" / "skills" / "quick-code-change"
+        skill_path = root / "plugins" / "codex-dev-flow" / "skills" / "brainstorm"
+        self.assertTrue(skill_path.is_dir(), skill_path)
+        if not skill_path.is_dir():
+            return
         (skill_path / "SKILL.md").unlink()
         errors = validate_repository(root)
-        self.assertTrue(any("quick-code-change" in error and "SKILL.md" in error for error in errors))
+        self.assertTrue(any("brainstorm" in error and "SKILL.md" in error for error in errors))
 
     def test_repository_contains_exact_required_skill_roster(self) -> None:
         skills_root = PLUGIN_ROOT / "skills"
@@ -414,15 +458,18 @@ class ContractTests(unittest.TestCase):
         errors = validate_repository(root)
         self.assertTrue(any("duplicate-skill" in error and "duplicate" in error for error in errors))
 
-    def test_terra_model_is_rejected(self) -> None:
+    def test_wrong_explorer_model_is_rejected(self) -> None:
         root = self.copy_repository()
         path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-explorer.toml"
         path.write_text(
-            path.read_text(encoding="utf-8").replace('model = "gpt-5.6-luna"', 'model = "terra"'),
+            path.read_text(encoding="utf-8").replace(
+                f'model = "{EXPECTED_AGENTS["devflow-explorer"][0]}"',
+                'model = "gpt-5.6-not-allowed"',
+            ),
             encoding="utf-8",
         )
         errors = validate_repository(root)
-        self.assertTrue(any("terra" in error.lower() and "model" in error.lower() for error in errors))
+        self.assertTrue(any("explorer" in error.lower() and "model" in error.lower() for error in errors))
 
     def test_reviewer_must_be_read_only(self) -> None:
         root = self.copy_repository()
@@ -467,129 +514,53 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(any("reviewer" in error for error in errors))
         self.assertTrue(any("explorer" in error for error in errors))
 
-    def test_route_skill_frontmatter_matches_directory(self) -> None:
-        frontmatter = self.load_skill_frontmatter(ROUTER_ROOT)
-        self.assertEqual(frontmatter["name"], ROUTER_ROOT.name)
-        self.assertTrue(frontmatter["description"])
+    def test_phase_skill_frontmatter_matches_each_directory(self) -> None:
+        """Regression: a copied or renamed phase is advertised under the wrong skill name."""
 
-    def test_route_skill_ui_metadata_enables_implicit_invocation(self) -> None:
-        metadata = _parse_yaml_mapping(
-            (ROUTER_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            metadata,
-            {
-                "interface": {
-                    "display_name": "Route Code Change",
-                    "short_description": "Choose the proportionate development route",
-                    "default_prompt": "Use $route-code-change to route this coding change.",
-                },
-                "policy": {"allow_implicit_invocation": True},
-            },
-        )
+        for name, skill_root in {"use-expand": ROUTER_ROOT, **PHASE_ROOTS}.items():
+            with self.subTest(skill=name):
+                frontmatter = self.load_skill_frontmatter(skill_root)
+                self.assertEqual(set(frontmatter), {"name", "description"})
+                self.assertEqual(frontmatter["name"], name)
+                self.assertTrue(str(frontmatter["description"]).strip())
 
-    def test_route_skill_body_stays_under_200_words(self) -> None:
-        contents = (ROUTER_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        _, _, body = contents.split("---", 2)
-        self.assertLess(len(body.split()), 200)
+    def test_phase_skill_metadata_has_exact_explicit_invocation_contract(self) -> None:
+        """Regression: an individual phase becomes ambient or the router cannot be selected."""
 
-    def test_quick_skill_frontmatter_matches_directory_and_explicit_route(self) -> None:
-        self.assertTrue((QUICK_ROOT / "SKILL.md").is_file())
-        frontmatter = self.load_skill_frontmatter(QUICK_ROOT)
-        self.assertEqual(frontmatter["name"], QUICK_ROOT.name)
-        description = frontmatter["description"]
-        self.assertTrue(description)
-        self.assertIn("explicitly selected Quick route", description)
-        self.assertIn("router handoff", description)
+        roots = {"use-expand": ROUTER_ROOT, **PHASE_ROOTS}
+        for name, skill_root in roots.items():
+            with self.subTest(skill=name):
+                metadata_path = skill_root / "agents" / "openai.yaml"
+                self.assertTrue(metadata_path.is_file(), metadata_path)
+                if not metadata_path.is_file():
+                    continue
+                metadata = _parse_yaml_mapping(
+                    metadata_path.read_text(encoding="utf-8")
+                )
+                self.assertEqual(set(metadata), {"interface", "policy"})
+                self.assertEqual(
+                    set(metadata["interface"]),
+                    {"display_name", "short_description", "default_prompt"},
+                )
+                self.assertEqual(set(metadata["policy"]), {"allow_implicit_invocation"})
+                self.assertIs(metadata["policy"]["allow_implicit_invocation"], name == "use-expand")
+                self.assertIn(f"${name}", str(metadata["interface"]["default_prompt"]))
 
-    def test_quick_skill_ui_metadata_disables_implicit_invocation(self) -> None:
-        self.assertTrue((QUICK_ROOT / "agents" / "openai.yaml").is_file())
-        metadata = _parse_yaml_mapping(
-            (QUICK_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            metadata,
-            {
-                "interface": {
-                    "display_name": "Quick Code Change",
-                    "short_description": "Implement a bounded change with independent gates",
-                    "default_prompt": "Use $quick-code-change for this accepted Quick change.",
-                },
-                "policy": {"allow_implicit_invocation": False},
-            },
-        )
+    def test_phase_entrypoints_are_not_reference_files(self) -> None:
+        """Regression: a short placeholder body claims a phase without defining its boundary."""
 
-    def test_quick_skill_body_stays_under_200_words(self) -> None:
-        self.assertTrue((QUICK_ROOT / "SKILL.md").is_file())
-        contents = (QUICK_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        _, _, body = contents.split("---", 2)
-        self.assertLess(len(body.split()), 200)
-
-    def test_quick_pressure_dispatches_context_free_reviewer_and_verifier(self) -> None:
-        body = (QUICK_ROOT / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
-        for profile in ("devflow-reviewer", "devflow-verifier"):
-            self.assertIn(f"`{profile}`", body)
-            self.assertRegex(
-                body,
-                re.compile(
-                    rf"agent_type[^\n]+{profile}[^\n]+fork_turns[^\n]+none",
-                    re.IGNORECASE,
-                ),
-            )
-        self.assertIn("concurrent", body.lower())
-        self.assertNotIn("read_only_agent.py", body)
-
-    def test_full_skill_frontmatter_matches_directory_and_explicit_route(self) -> None:
-        self.assertTrue((FULL_ROOT / "SKILL.md").is_file())
-        frontmatter = self.load_skill_frontmatter(FULL_ROOT)
-        self.assertEqual(frontmatter["name"], FULL_ROOT.name)
-        description = frontmatter["description"]
-        self.assertTrue(description)
-        self.assertIn("explicitly selected Full route", description)
-        self.assertIn("router handoff", description)
-
-    def test_full_skill_ui_metadata_disables_implicit_invocation(self) -> None:
-        self.assertTrue((FULL_ROOT / "agents" / "openai.yaml").is_file())
-        metadata = _parse_yaml_mapping(
-            (FULL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            metadata,
-            {
-                "interface": {
-                    "display_name": "Full Code Change",
-                    "short_description": "Plan and execute a parallel gated change",
-                    "default_prompt": "Use $full-code-change for this accepted Full change.",
-                },
-                "policy": {"allow_implicit_invocation": False},
-            },
-        )
-
-    def test_full_skill_body_stays_under_500_words(self) -> None:
-        self.assertTrue((FULL_ROOT / "SKILL.md").is_file())
-        contents = (FULL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        _, _, body = contents.split("---", 2)
-        self.assertLess(len(body.split()), 500)
-
-    def test_full_pressure_dispatches_every_profile_with_context_free_routing(self) -> None:
-        body = (FULL_ROOT / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
-        for profile in (
-            "devflow-explorer",
-            "devflow-test-engineer",
-            "devflow-implementer",
-            "devflow-reviewer",
-            "devflow-verifier",
-        ):
-            self.assertIn(f"`{profile}`", body)
-            self.assertRegex(
-                body,
-                re.compile(
-                    rf"agent_type[^\n]+{profile}[^\n]+fork_turns[^\n]+none",
-                    re.IGNORECASE,
-                ),
-            )
-        self.assertIn("concurrent", body.lower())
-        self.assertNotIn("read_only_agent.py", body)
+        for name, skill_root in {"use-expand": ROUTER_ROOT, **PHASE_ROOTS}.items():
+            with self.subTest(skill=name):
+                skill_path = skill_root / "SKILL.md"
+                self.assertTrue(skill_path.is_file(), skill_path)
+                if not skill_path.is_file():
+                    continue
+                body = skill_path.read_text(encoding="utf-8")
+                self.assertGreater(len(body.splitlines()), 4, name)
+                self.assertNotIn("references/", body.lower(), name)
+                self.assertNotIn("route-code-change", body, name)
+                self.assertNotIn("quick-code-change", body, name)
+                self.assertNotIn("full-code-change", body, name)
 
     def test_unsupported_read_only_agent_runner_is_removed(self) -> None:
         self.assertFalse((PLUGIN_ROOT / "scripts" / "read_only_agent.py").exists())
