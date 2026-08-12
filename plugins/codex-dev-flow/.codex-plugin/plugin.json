@@ -1,6 +1,6 @@
 {
   "name": "codex-dev-flow",
-  "version": "0.1.0+codex.20260812175819",
+  "version": "0.1.0+codex.20260812180042",
   "description": "Six standalone development phases with one optional phase-routing skill.",
   "repository": "https://github.com/g-imhoff/codex-dev-flow",
   "author": {
