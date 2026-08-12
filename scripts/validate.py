@@ -25,6 +25,7 @@ SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
 POLICY_PATH = "assets/execution-policy.json"
 HELPER_PATH = "scripts/worktrees.py"
+PLAN_GRAPH_HELPER_PATH = "scripts/plan_graph.py"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
 PLUGIN_INTERFACE_FIELDS = {
@@ -39,7 +40,6 @@ PLUGIN_INTERFACE_FIELDS = {
 PUBLIC_PHASE_TOKENS = {
     "$brainstorm",
     "$plan",
-    "$acceptance",
     "$implement",
     "$review",
     "$verify",
@@ -54,7 +54,6 @@ EXPECTED_SKILLS = {
     "use-expand",
     "brainstorm",
     "plan",
-    "acceptance",
     "implement",
     "review",
     "verify",
@@ -649,7 +648,7 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("seven", "standalone", "development phase", "optional", "routing"):
+        for phrase in ("six", "standalone", "development phase", "optional", "routing"):
             if phrase not in normalized_description:
                 errors.append(f"plugin description must advertise {phrase!r}")
         if PUBLIC_METADATA_JARGON.search(description):
@@ -702,6 +701,8 @@ def _validate_plugin_manifest(
         if not isinstance(long_description, str) or not long_description.strip() or len(long_description) > 320:
             errors.append("plugin interface longDescription must be a non-empty string of at most 320 characters")
         else:
+            if ("$" + "acceptance") in long_description:
+                errors.append("plugin interface longDescription contains removed public token " + "$" + "acceptance")
             for token in sorted(PUBLIC_PHASE_TOKENS):
                 if token not in long_description:
                     errors.append(f"plugin interface longDescription must advertise {token}")
@@ -1089,6 +1090,26 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
     if [relative for relative, _ in helpers] != [HELPER_PATH]:
         observed = ", ".join(relative for relative, _ in helpers) or "none"
         errors.append(f"worktree helper must exist only at {HELPER_PATH}; found {observed}")
+    plan_helper = _required_package_path(
+        plugin_root,
+        PLAN_GRAPH_HELPER_PATH,
+        "plan graph helper",
+        "file",
+        errors,
+    )
+    plan_helpers = sorted(
+        path.relative_to(plugin_root).as_posix()
+        for path in plugin_root.rglob("plan_graph.py")
+        if path.is_file() or path.is_symlink()
+    )
+    if plan_helpers != [PLAN_GRAPH_HELPER_PATH]:
+        observed = ", ".join(plan_helpers) or "none"
+        errors.append(
+            f"plan graph helper must exist only at {PLAN_GRAPH_HELPER_PATH}; found {observed}"
+        )
+    for label, path in (("worktree", helper), ("plan graph", plan_helper)):
+        if path is not None and (path.is_symlink() or not path.is_file() or path.stat().st_size == 0):
+            errors.append(f"{label} helper must be a non-empty regular file")
 
 
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:

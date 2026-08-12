@@ -110,7 +110,7 @@ FORBIDDEN_ROUTING_TOKENS = (
     "phase-handoff",
     "next_skill",
     "$plan",
-    "$acceptance",
+    "$" + "acceptance",
     "$implement",
     "$review",
     "$verify",

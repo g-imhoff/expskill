@@ -28,7 +28,6 @@ SKILL_NAMES = (
     "use-expand",
     "brainstorm",
     "plan",
-    "acceptance",
     "implement",
     "review",
     "verify",
@@ -72,12 +71,16 @@ def seed_repository(path: Path) -> Path:
     destination_plugin = path / "plugins" / "codex-dev-flow"
     source_scripts = source_plugin / "scripts"
     source_helper = source_scripts / "worktrees.py"
+    source_plan_helper = source_scripts / "plan_graph.py"
     if (
         not source_scripts.is_dir()
         or source_scripts.is_symlink()
         or not source_helper.is_file()
         or source_helper.is_symlink()
         or source_helper.stat().st_size == 0
+        or not source_plan_helper.is_file()
+        or source_plan_helper.is_symlink()
+        or source_plan_helper.stat().st_size == 0
     ):
         raise AssertionError(f"invalid route-neutral plugin helper fixture: {source_helper}")
     shutil.copytree(ROOT / ".agents", path / ".agents")
@@ -251,6 +254,9 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((destination / "worktrees.py").is_file())
             self.assertFalse((destination / "worktrees.py").is_symlink())
             self.assertGreater((destination / "worktrees.py").stat().st_size, 0)
+            self.assertTrue((destination / "plan_graph.py").is_file())
+            self.assertFalse((destination / "plan_graph.py").is_symlink())
+            self.assertGreater((destination / "plan_graph.py").stat().st_size, 0)
 
     def test_seed_repository_rejects_invalid_route_neutral_helper(self) -> None:
         """Fixture regression: missing, symlinked, or empty helpers fail closed."""
@@ -258,28 +264,30 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
 
-            def source_fixture(name: str) -> tuple[Path, Path]:
+            def source_fixture(name: str, helper_name: str) -> tuple[Path, Path]:
                 source_root = root / name / "source"
                 shutil.copytree(ROOT / ".agents", source_root / ".agents")
                 shutil.copytree(ROOT / "plugins" / "codex-dev-flow", source_root / "plugins" / "codex-dev-flow")
                 shutil.copytree(ROOT / "scripts", source_root / "scripts")
-                return source_root, source_root / "plugins" / "codex-dev-flow" / "scripts" / "worktrees.py"
+                return source_root, source_root / "plugins" / "codex-dev-flow" / "scripts" / helper_name
 
-            for mutation in ("missing", "symlink", "empty"):
-                with self.subTest(mutation=mutation):
-                    source_root, helper = source_fixture(mutation)
-                    if mutation == "missing":
-                        helper.unlink()
-                    elif mutation == "symlink":
-                        target = root / mutation / "target.py"
-                        target.write_text("target\n", encoding="utf-8")
-                        helper.unlink()
-                        helper.symlink_to(target)
-                    else:
-                        helper.write_bytes(b"")
-                    with mock.patch(__name__ + ".ROOT", source_root):
-                        with self.assertRaisesRegex(AssertionError, "invalid route-neutral plugin helper fixture"):
-                            seed_repository(root / mutation / "destination")
+            for helper_name in ("worktrees.py", "plan_graph.py"):
+                for mutation in ("missing", "symlink", "empty"):
+                    case = f"{helper_name}-{mutation}"
+                    with self.subTest(helper=helper_name, mutation=mutation):
+                        source_root, helper = source_fixture(case, helper_name)
+                        if mutation == "missing":
+                            helper.unlink()
+                        elif mutation == "symlink":
+                            target = root / case / "target.py"
+                            target.write_text("target\n", encoding="utf-8")
+                            helper.unlink()
+                            helper.symlink_to(target)
+                        else:
+                            helper.write_bytes(b"")
+                        with mock.patch(__name__ + ".ROOT", source_root):
+                            with self.assertRaisesRegex(AssertionError, "invalid route-neutral plugin helper fixture"):
+                                seed_repository(root / case / "destination")
 
     def test_install_accepts_checked_in_manifest_cachebuster(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

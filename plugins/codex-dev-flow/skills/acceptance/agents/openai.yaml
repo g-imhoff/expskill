@@ -1,7 +1,0 @@
-interface:
-  display_name: "Acceptance"
-  short_description: "Define tests and acceptance evidence"
-  default_prompt: "Use $acceptance to define acceptance evidence."
-
-policy:
-  allow_implicit_invocation: false

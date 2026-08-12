@@ -13,7 +13,6 @@ EXPECTED_PUBLIC_SKILLS = {
     "use-expand",
     "brainstorm",
     "plan",
-    "acceptance",
     "implement",
     "review",
     "verify",
@@ -151,6 +150,28 @@ class ImproveSkillContractTests(unittest.TestCase):
             with self.subTest(artifact=artifact):
                 self.assertIn(artifact, body)
 
+    def test_upgrade_queue_has_exactly_seven_public_targets_and_no_removed_phase(self) -> None:
+        """Regression: the maintainer queue must not select or preserve acceptance as a target."""
+
+        body = self.skill_body().lower()
+        self.assertIn("seven production skills", body)
+        self.assertNotIn("eight production skills", body)
+        self.assertNotIn("$" + "acceptance", body)
+        self.assertNotIn("→ acceptance", body)
+        self.assertNotIn("acceptance →", body)
+        removed_public_skill = "accept" + "ance"
+        self.assertNotIn(f"{removed_public_skill} phase", body)
+        for skill in EXPECTED_PUBLIC_SKILLS:
+            with self.subTest(skill=skill):
+                self.assertIn(skill, body)
+
+    def test_generic_acceptance_terms_remain_in_maintainer_contract(self) -> None:
+        """Regression: ordinary acceptance criteria/tests remain valid vocabulary after phase removal."""
+
+        body = self.skill_body().lower()
+        self.assertIn("acceptance evidence", body)
+        self.assertIn("acceptance case", body)
+
     def test_research_is_independent_and_evidence_only(self) -> None:
         body = self.skill_body().lower()
         for phrase in (
@@ -280,7 +301,7 @@ class ImproveSkillContractTests(unittest.TestCase):
 
     def test_router_is_last_and_each_skill_is_completed_once(self) -> None:
         body = self.skill_body().lower()
-        self.assertIn("brainstorm → plan → acceptance → implement → review → verify → integrate → use-expand", body)
+        self.assertIn("brainstorm → plan → implement → review → verify → integrate → use-expand", body)
         self.assertIn("complete one target before selecting another", body)
         self.assertIn("upgrade `use-expand` last", body)
 

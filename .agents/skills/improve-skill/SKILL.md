@@ -26,7 +26,7 @@ Keep this maintainer workflow separate from the product skill surface. Do not ad
 Use this mode only to test `$improve-skill`, never to improve or certify the production stack. Its rules override the production-specific instructions in stages 1–13:
 
 1. Create a unique temporary run directory outside the checkout. Copy one disposable fixture into it without symlinks, keep the checked-in fixture read-only, and snapshot the production skill surface before any trial.
-2. In stage 1, build a fixture-only stack map, contract, and one-entry fixture-only queue bound to that copy. This queue substitutes for the production queue; do not select or advance any of the eight production skills.
+2. In stage 1, build a fixture-only stack map, contract, and one-entry fixture-only queue bound to that copy. This queue substitutes for the production queue; do not select or advance any of the seven production skills.
 3. In stages 2–12, write only inside the temporary run directory. Treat every target, candidate, test, repair, review, and verification result as disposable workflow evidence.
 4. In stage 13, replace the production-stack audit with a fixture-only terminal audit. Check the copied fixture, the complete evidence chain, sentinel files, and the unchanged production snapshot.
 5. Emit only a `workflow-validation` record, not a release record. It cannot satisfy target completion, stack completion, or release, even when every fixture gate passes. Never call this stack completion.
@@ -60,7 +60,7 @@ Perform this setup once for the stack, then reuse it for every target:
 2. Record shared invariants in the stack contract. Include direct-invocation rules, side-effect boundaries, handoff schemas, public naming, installation surface, and router constraints.
 3. Record the initial upgrade queue as:
 
-   `brainstorm → plan → acceptance → implement → review → verify → integrate → use-expand`
+   `brainstorm → plan → implement → review → verify → integrate → use-expand`
 
 4. Change that order only when dependency evidence requires it. Preserve the rule to upgrade `use-expand` last because it must route against the final phase contracts.
 5. Define the ten-category rubric and release commands before selecting a target.
@@ -165,7 +165,7 @@ Translate the accepted direction into a skill contract containing exactly these 
 - stopping conditions;
 - required resources and explicit non-goals.
 
-Resolve contradictions with the stack contract before proceeding. Obtain the user's decision for material product choices. Freeze the contract for acceptance work; later changes return here.
+Resolve contradictions with the stack contract before proceeding. Obtain the user's decision for material product choices. Freeze the contract for evaluation work; later changes return here.
 
 ## 8. Define acceptance before implementation
 
