@@ -21,7 +21,6 @@ skills/
 ├── use-expand/
 ├── brainstorm/
 ├── plan/
-├── acceptance/
 ├── implement/
 ├── review/
 ├── verify/
@@ -38,8 +37,7 @@ The phase boundaries are deliberately narrow:
 | Skill | Owns | Must not do |
 | --- | --- | --- |
 | `brainstorm` | Ambiguity, alternatives, assumptions, decisions | Write production code |
-| `plan` | Accepted direction, boundaries, dependencies, ordered work | Implement the plan |
-| `acceptance` | Observable criteria, negative cases, failing tests | Make production changes |
+| `plan` | Accepted direction, boundaries, dependencies, ordered work, observable criteria, positive and negative behavior, test surfaces, and proof design | Write code or tests |
 | `implement` | One accepted brief on one owned branch | Delegate, expand scope, or silently change an interface |
 | `review` | Read-only findings with evidence, impact, and correction | Apply fixes |
 | `verify` | Exact commands, exit evidence, and checkout inspection | Edit tracked source |
@@ -51,38 +49,43 @@ for `$brainstorm` or `$plan` without loading `use-expand` or any other phase.
 ## Orchestration
 
 `use-expand` is the only public orchestrator. It classifies one transition,
-explains one concrete reason, opens only the selected phase, consumes that
-phase's handoff, and then either recommends the next transition or stops.
+explains one concrete reason, opens only the selected phase, validates that
+phase's revision-bound receipt against the canonical Plan Graph when one
+exists, and then either recommends the next transition or stops.
 
 Its reason map is intentionally small:
 
 - `requirements-ambiguous` selects `brainstorm`;
 - `bounded-change` selects `plan`, or `implement` after an approach is accepted;
-- `cross-cutting` selects `plan` and requires `acceptance` before implementation;
+- `cross-cutting` selects `plan`, whose design must include implementation and proof before implementation;
 - `tests-ready` selects `implement`;
 - `completion-gates` selects `review`, followed by `verify`;
 - `accepted-branches` selects `integrate`.
 
-The orchestrator cannot skip acceptance for cross-cutting work, cannot advance
-past review findings, and cannot integrate without passing verification.
+The orchestrator cannot skip planned tests, review findings, or verification.
 Blocked and user-decision outcomes stop instead of guessing.
 
-## Typed handoff
+## Canonical workflow state and phase receipts
 
-Each phase returns semantic `phase-handoff-v1` with exactly five fields:
+`plan` owns a private, versioned Plan Graph stored outside the repository by
+`plugins/codex-dev-flow/scripts/plan_graph.py`. The graph binds one workflow to
+the canonical Git common directory, non-protected target branch, exact baseline,
+dirty-state fingerprint, and monotonic graph revision. It records outcomes,
+evidence, material decisions and confirmations, executable work and joins,
+proof obligations, logical Git topology, and concise user projections.
 
-```yaml
-schema: phase-handoff-v1
-selected_phase: review
-reason_code: completion-gates
-next_skill: verify
-status: handoff
-```
+The helper is the only graph writer. Implementers, reviewers, verifiers, and
+integration lanes return typed receipts bound to workflow ID, graph revision,
+node, branch, commit, commands, and evidence appropriate to their role. The one
+coordinator validates those receipts and applies compare-and-swap updates.
+Findings, stale receipts, failed checks, blocked work, and unresolved user
+decisions never advance. Direct `plan` use stops at graph readiness without a
+typed next-skill route; transition selection remains solely an optional
+`use-expand` responsibility.
 
-The selected phase and reason code must match the transition that invoked it.
-Ready outcomes recommend the mapped next skill. Findings return to the owning
-phase, while blocked and user-decision outcomes use `next_skill: none`.
-No prose convention is allowed to substitute for this boundary.
+`brainstorm` is intentionally independent of this runtime graph. It may produce
+a confirmed Concept Brief as authoritative conceptual input, but `plan` also
+accepts another sufficiently concrete direction.
 
 ## Named-agent isolation
 
@@ -155,7 +158,7 @@ reveal the expected phase or private policy identity.
 
 Retained evidence must bind the source package, installed skill, process identity,
 exact invocation, loaded skill, raw session output, tool and command events,
-typed handoff, and repository/Git state before and after execution. A transport
+Plan Graph and receipt bindings, and repository/Git state before and after execution. A transport
 fixture may carry evidence but cannot manufacture semantic success.
 
 Release certification must additionally require compatibility evidence, a signed
