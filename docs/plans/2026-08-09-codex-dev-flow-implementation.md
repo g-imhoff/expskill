@@ -2,18 +2,19 @@
 
 ## Goal
 
-Ship a private Codex plugin with seven independently invokable development
+Ship a private Codex plugin with six independently invokable development
 phases and one optional orchestrator. Keep phase behavior, internal execution
 policy, installation, and live certification independently testable.
 
 ## Non-negotiable architecture
 
 - The public skills are exactly `use-expand`, `brainstorm`, `plan`,
-  `acceptance`, `implement`, `review`, `verify`, and `integrate`.
+  `implement`, `review`, `verify`, and `integrate`.
 - Every phase is a real skill. No phase is stored as a reference file beneath
   another skill.
 - Only `use-expand` can activate implicitly.
-- Direct phase invocation runs exactly one phase and stops with a typed handoff.
+- Direct phase invocation runs exactly one phase and stops at that phase's own
+  output boundary; direct `plan` never emits a next-skill route.
 - `use-expand` opens exactly one selected phase per transition and never skips
   a required gate.
 - Named-agent dispatch is context-free and uses the exact checked-in profile.
@@ -36,7 +37,6 @@ plugins/codex-dev-flow/
     ├── use-expand/{SKILL.md,agents/openai.yaml}
     ├── brainstorm/{SKILL.md,agents/openai.yaml}
     ├── plan/{SKILL.md,agents/openai.yaml}
-    ├── acceptance/{SKILL.md,agents/openai.yaml}
     ├── implement/{SKILL.md,agents/openai.yaml}
     ├── review/{SKILL.md,agents/openai.yaml}
     ├── verify/{SKILL.md,agents/openai.yaml}
@@ -45,22 +45,26 @@ scripts/
 ├── install.py
 └── validate.py
 tests/
+├── test_brainstorm_contract.py
 ├── test_contracts.py
 ├── test_install.py
-├── test_phase_skills_acceptance.py
+├── test_plan_contract.py
+├── test_plan_graph.py
+├── test_plan_graph_stage10.py
 ├── test_worktrees.py
-└── test_*_acceptance.py
+└── test_improve_skill.py
 ```
 
 ## Delivery sequence
 
 ### 1. Lock the public phase contract
 
-- [x] Add acceptance tests for the exact eight-skill roster.
+- [x] Add acceptance tests for the exact seven-skill roster.
 - [x] Require one `SKILL.md` and one `agents/openai.yaml` per skill.
 - [x] Require only `use-expand` to allow implicit invocation.
 - [x] Reject phase cross-invocation and legacy route-skill directories.
-- [x] Define semantic `phase-handoff-v1` with exactly five fields.
+- [x] Replace the early generic handoff draft with the private Plan Graph and
+  revision-bound role receipts used by graph-backed phases.
 - [x] Cover ready, findings, blocked, and user-decision outcomes.
 
 Gate: contract tests must fail when a phase is a nested reference, silently
@@ -68,7 +72,7 @@ loads another phase, advances after failure, or changes the handoff schema.
 
 ### 2. Implement the independent skills
 
-- [x] Scaffold all eight skills with the canonical skill creator.
+- [x] Scaffold all seven skills with the canonical skill creator.
 - [x] Give every phase a narrow ownership boundary and explicit stop behavior.
 - [x] Implement one-transition routing in `use-expand`.
 - [x] Delete the former public route-skill directories.
@@ -154,19 +158,18 @@ The final command set is intentionally explicit:
 ```text
 python3 scripts/validate.py
 python3 /home/gimhoff/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/codex-dev-flow
-python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py tests/test_phase_skills_acceptance.py
-python3 -m pytest -q tests/test_budget_acceptance.py tests/test_security_acceptance.py
-python3 -m pytest -q tests/test_behavioral_evals_acceptance.py tests/test_portability_acceptance.py
-python3 -m pytest -q tests/test_maturity_acceptance.py tests/test_acceptance_fixtures.py
+python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py tests/test_improve_skill.py
+python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py
+python3 -m pytest -q tests/test_plan_graph.py tests/test_plan_graph_stage10.py
 ```
 
-The complete acceptance command must use a recursion-safe root selector. A
-passing subset is not release evidence.
+The frozen fresh-context evaluator is an additional release gate; a passing
+deterministic subset is not live certification evidence.
 
 ## Completion definition
 
 The migration is complete only when the public surface contains exactly the
-eight skills, direct invocation remains independent, the installed profile and
+seven skills, direct invocation remains independent, the installed profile and
 policy artifacts validate, real sessions produce independently judged typed
 handoffs, CI exercises every gate, release evidence is retained, and the
 cachebusted plugin is reinstalled in a fresh session.

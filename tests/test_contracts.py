@@ -20,7 +20,6 @@ PHASE_ROOTS = {
     for name in (
         "brainstorm",
         "plan",
-        "acceptance",
         "implement",
         "review",
         "verify",
@@ -41,12 +40,13 @@ EXPECTED_SKILLS = {
     "use-expand",
     "brainstorm",
     "plan",
-    "acceptance",
     "implement",
     "review",
     "verify",
     "integrate",
 }
+REMOVED_PUBLIC_SKILL = "accept" + "ance"
+REMOVED_PUBLIC_TOKEN = "$" + REMOVED_PUBLIC_SKILL
 PLUGIN_INTERFACE_FIELDS = {
     "displayName",
     "shortDescription",
@@ -188,6 +188,106 @@ class ContractTests(unittest.TestCase):
         skills_root = PLUGIN_ROOT / "skills"
         self.assertEqual({path.name for path in skills_root.iterdir()}, EXPECTED_SKILLS)
 
+    def test_removed_acceptance_skill_directory_is_absent(self) -> None:
+        """Regression: the deleted phase must not remain installable as a public skill."""
+
+        self.assertFalse((PLUGIN_ROOT / "skills" / REMOVED_PUBLIC_SKILL).exists())
+        self.assertNotIn(REMOVED_PUBLIC_SKILL, EXPECTED_SKILLS)
+
+    def test_public_surface_contains_no_removed_phase_route_or_token(self) -> None:
+        """Regression: stale token, alias, or route keeps the removed phase publicly reachable."""
+
+        surface_roots = (
+            ROOT / "README.md",
+            ROOT / ".agents" / "skills" / "improve-skill",
+            ROOT / "docs" / "plans",
+            ROOT / "docs" / "specs",
+            ROOT / "plugins" / "codex-dev-flow",
+            ROOT / "scripts",
+            ROOT / "tests",
+        )
+        files: list[Path] = []
+        for surface_root in surface_roots:
+            files.extend(
+                [surface_root]
+                if surface_root.is_file()
+                else [
+                    path
+                    for path in surface_root.rglob("*")
+                    if path.is_file()
+                    and path.suffix
+                    in {".md", ".py", ".yaml", ".yml", ".json", ".toml", ".csv", ".txt"}
+                ]
+            )
+        route_markers = (
+            rf"\bname\s*[:=]\s*{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            rf"\bselected_phase\s*[:=]\s*{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            rf"\bnext_skill\s*[:=]\s*{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            rf"\b(?:alias|aliases|deprecated|route|target)\b\s*[:=]?\s*[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            rf"\b(?:deprecated|alias|aliases)\b.{{0,32}}\b{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            rf"(?:require|recommend|route|select|invoke)\s+[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            rf"\b{re.escape(REMOVED_PUBLIC_SKILL)}\s+phase\b",
+        )
+        for path in files:
+            contents = path.read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                self.assertNotIn(REMOVED_PUBLIC_TOKEN, contents)
+                for marker in route_markers:
+                    self.assertIsNone(re.search(marker, contents, re.IGNORECASE), marker)
+
+    def test_generic_acceptance_terminology_remains_valid(self) -> None:
+        """Regression: removing the phase must not ban ordinary acceptance vocabulary."""
+
+        root = self.copy_repository()
+        plan = root / "plugins" / "codex-dev-flow" / "skills" / "plan" / "SKILL.md"
+        plan.write_text(
+            plan.read_text(encoding="utf-8")
+            + "\nDocument acceptance criteria and the acceptance test suite here.\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(validate_repository(root), ())
+
+    def test_reintroduced_acceptance_skill_is_rejected(self) -> None:
+        """Regression: a stale acceptance directory must fail repository validation."""
+
+        root = self.copy_repository()
+        acceptance = root / "plugins" / "codex-dev-flow" / "skills" / REMOVED_PUBLIC_SKILL
+        self.assertFalse(acceptance.exists())
+        acceptance.mkdir()
+        (acceptance / "SKILL.md").write_text(
+            "---\nname: "
+            + REMOVED_PUBLIC_SKILL
+            + "\ndescription: Define observable evidence for a change\n---\n\nStale.\n",
+            encoding="utf-8",
+        )
+        agents = acceptance / "agents"
+        agents.mkdir()
+        (agents / "openai.yaml").write_text(
+            "interface:\n"
+            "  display_name: \"Acceptance\"\n"
+            "  short_description: \"Define tests and acceptance evidence\"\n"
+            f"  default_prompt: \"Use {REMOVED_PUBLIC_TOKEN} to define evidence.\"\n"
+            "policy:\n"
+            "  allow_implicit_invocation: false\n",
+            encoding="utf-8",
+        )
+        errors = validate_repository(root)
+        self.assertTrue(
+            any(REMOVED_PUBLIC_SKILL in error and "unexpected" in error for error in errors),
+            errors,
+        )
+
+    def test_reintroduced_acceptance_token_is_rejected(self) -> None:
+        """Regression: a stale public token must fail validation independently of a stale directory."""
+
+        root = self.copy_repository()
+        manifest_path = root / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["interface"]["longDescription"] += f" {REMOVED_PUBLIC_TOKEN}"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(any(REMOVED_PUBLIC_TOKEN in error for error in errors), errors)
+
     def test_plugin_and_marketplace_identities_are_exact(self) -> None:
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)
@@ -208,7 +308,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("seven", "standalone", "development phase", "optional", "routing"):
+        for phrase in ("six", "standalone", "development phase", "optional", "routing"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -318,6 +418,25 @@ class ContractTests(unittest.TestCase):
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("interface" in error and "unexpected" in error for error in errors), errors)
+
+    def test_readme_and_implementation_plan_count_standalone_phases(self) -> None:
+        """Regression: documentation must separate six phases from the seven-skill total."""
+
+        expected = re.compile(
+            r"\bsix (?:independent|independently invokable) development phases and one optional orchestrator\b"
+        )
+        stale = re.compile(
+            r"\bseven (?:independent|independently invokable) development phases and one optional orchestrator\b"
+        )
+        paths = (
+            ROOT / "README.md",
+            ROOT / "docs" / "plans" / "2026-08-09-codex-dev-flow-implementation.md",
+        )
+        for path in paths:
+            normalized = " ".join(path.read_text(encoding="utf-8").lower().split())
+            with self.subTest(path=path):
+                self.assertRegex(normalized, expected)
+                self.assertNotRegex(normalized, stale)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
@@ -499,6 +618,32 @@ class ContractTests(unittest.TestCase):
         errors = validate_repository(root)
         self.assertTrue(any("placeholder" in error.lower() or "todo" in error.lower() for error in errors))
 
+    def test_plan_graph_helper_is_unique_nonempty_and_package_owned(self) -> None:
+        """Regression: graph-backed phases must not load a missing or shadow helper."""
+
+        for mutation in ("missing", "symlink", "empty", "duplicate"):
+            with self.subTest(mutation=mutation):
+                root = self.copy_repository()
+                plugin = root / "plugins" / "codex-dev-flow"
+                helper = plugin / "scripts" / "plan_graph.py"
+                if mutation == "missing":
+                    helper.unlink()
+                elif mutation == "symlink":
+                    target = root / "outside-plan-graph.py"
+                    target.write_text("outside\n", encoding="utf-8")
+                    helper.unlink()
+                    helper.symlink_to(target)
+                elif mutation == "empty":
+                    helper.write_bytes(b"")
+                else:
+                    shadow = plugin / "assets" / "plan_graph.py"
+                    shadow.write_bytes(helper.read_bytes())
+                errors = validate_repository(root)
+                self.assertTrue(
+                    any("plan graph helper" in error.lower() for error in errors),
+                    errors,
+                )
+
     def test_validation_aggregates_independent_errors(self) -> None:
         root = self.copy_repository()
         reviewer = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-reviewer.toml"
@@ -557,10 +702,122 @@ class ContractTests(unittest.TestCase):
                     continue
                 body = skill_path.read_text(encoding="utf-8")
                 self.assertGreater(len(body.splitlines()), 4, name)
-                self.assertNotIn("references/", body.lower(), name)
+                if name != "brainstorm":
+                    self.assertNotIn("references/", body.lower(), name)
                 self.assertNotIn("route-code-change", body, name)
                 self.assertNotIn("quick-code-change", body, name)
                 self.assertNotIn("full-code-change", body, name)
+
+    def test_plan_owns_implementation_and_proof_design_without_writing_tests(self) -> None:
+        """Regression: plan must define implementation proof while remaining no-code/no-test."""
+
+        body = (PHASE_ROOTS["plan"] / "SKILL.md").read_text(encoding="utf-8").lower()
+        for phrase in (
+            "implementation and proof",
+            "observable acceptance criteria",
+            "positive and negative behavior",
+            "verification intent",
+            "relevant test surfaces and commands",
+            "test work",
+            "writes no code or tests",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, body)
+        self.assertNotIn(f"next_skill: {REMOVED_PUBLIC_SKILL}", body)
+
+    def test_implement_owns_planned_tests_failure_evidence_and_green_checks(self) -> None:
+        """Regression: implementation must own planned tests, red evidence, product changes, and green checks."""
+
+        body = (PHASE_ROOTS["implement"] / "SKILL.md").read_text(encoding="utf-8").lower()
+        for phrase in (
+            "create or update planned tests",
+            "planned test and proof strategy",
+            "pre-change failure evidence",
+            "production implementation",
+            "green checks",
+            "when feasible",
+            "alternative proof",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, body)
+        self.assertNotIn("and failing test", body)
+
+    def test_verify_runs_checks_from_plan_implementation_and_review(self) -> None:
+        """Regression: verify must execute the accepted evidence sources, not a deleted phase."""
+
+        body = (PHASE_ROOTS["verify"] / "SKILL.md").read_text(encoding="utf-8").lower()
+        for phrase in ("plan", "implementation", "review", "exact commands"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, body)
+
+    def test_use_expand_does_not_route_through_removed_acceptance_phase(self) -> None:
+        """Regression: the router must preserve plan → implement → review → verify without acceptance."""
+
+        body = ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8").lower()
+        for marker in (
+            REMOVED_PUBLIC_TOKEN,
+            f"next_skill: {REMOVED_PUBLIC_SKILL}",
+            f"require {REMOVED_PUBLIC_SKILL}",
+            f"require `{REMOVED_PUBLIC_SKILL}`",
+            f"recommend {REMOVED_PUBLIC_SKILL}",
+            f"recommend `{REMOVED_PUBLIC_SKILL}`",
+            f"route `{REMOVED_PUBLIC_SKILL}`",
+        ):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, body)
+        for phase in ("plan", "implement", "review", "verify"):
+            with self.subTest(phase=phase):
+                self.assertIn(phase, body)
+
+    def test_public_skill_private_policy_vocabulary_is_rejected_on_both_surfaces(self) -> None:
+        """Regression: phase instructions or UI copy leak private routing policy terms."""
+
+        for token in ("quick", "full", "model", "cap", "caps"):
+            with self.subTest(token=token, surface="entrypoint"):
+                root = self.copy_repository()
+                skill_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "brainstorm"
+                    / "SKILL.md"
+                )
+                skill_path.write_text(
+                    f"{skill_path.read_text(encoding='utf-8')}\nReserved probe: {token}.\n",
+                    encoding="utf-8",
+                )
+                self.assertIn(
+                    "skill 'brainstorm' contains private policy vocabulary",
+                    validate_repository(root),
+                )
+
+            with self.subTest(token=token, surface="metadata"):
+                root = self.copy_repository()
+                metadata_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "brainstorm"
+                    / "agents"
+                    / "openai.yaml"
+                )
+                lines = metadata_path.read_text(encoding="utf-8").splitlines()
+                for index, line in enumerate(lines):
+                    if line.strip().startswith("short_description:"):
+                        prefix, separator, raw_value = line.partition(":")
+                        self.assertTrue(separator)
+                        value = ast.literal_eval(raw_value.strip())
+                        lines[index] = f'{prefix}: "{value} {token}"'
+                        break
+                else:
+                    self.fail("brainstorm metadata has no short_description")
+                metadata_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                self.assertIn(
+                    "skill 'brainstorm' interface.short_description contains private policy vocabulary",
+                    validate_repository(root),
+                )
 
     def test_unsupported_read_only_agent_runner_is_removed(self) -> None:
         self.assertFalse((PLUGIN_ROOT / "scripts" / "read_only_agent.py").exists())

@@ -15,13 +15,7 @@ Combine accepted branches only when their review and verification evidence is re
 
 This phase does not invoke another skill, open another skill, or run another skill.
 
-## Typed next-skill outcome handoff
+## Plan Graph contract
 
-The selected phase is always `integrate`. Every outcome emits exactly five fields: `schema`, `selected_phase`, `reason_code`, `next_skill`, and `status` of `phase-handoff-v1`.
-
-- success/ready: `reason_code: accepted-branches`; `next_skill: none`.
-- findings/failure: `reason_code: findings-failure`; `next_skill: integrate` (the owning phase); do not advance.
-- blocked: `reason_code: blocked`; `next_skill: none`; stop.
-- user-decision: `reason_code: user-decision`; `next_skill: none`; ask the user.
-
-The handoff remains typed with `status: handoff` and no additional outcome field.
+Resolve the graph helper from this loaded skill at `../../scripts/plan_graph.py`; `plugins/codex-dev-flow/scripts/plan_graph.py` is only the source-package locator. Consume the workflow ID, graph revision, live target branch, exact commit, join, and lane ownership. Integrate incrementally and target-side; verify gates, apply_updates through the one coordinator, clean lanes, and remove external worktrees only after accepted-on-target. Preserve unrelated dirty work and return a bound integration receipt.
+Perform cleanup only after the join is accepted.

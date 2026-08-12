@@ -1,6 +1,6 @@
 # Codex Dev Flow
 
-Codex Dev Flow is a private Codex plugin with seven independent development
+Codex Dev Flow is a private Codex plugin with six independent development
 phases and one optional orchestrator.
 
 ## Install and validate
@@ -22,17 +22,17 @@ repository-owned installation state.
 Invoke a phase directly when you know what you want:
 
 - `$brainstorm` explores uncertainty without writing production code.
-- `$plan` produces an ordered, reviewable approach.
-- `$acceptance` defines observable criteria and failing tests.
+- `$plan` produces an ordered, reviewable implementation-and-proof design with observable criteria, behavior, planned tests, and verification intent.
 - `$implement` applies one accepted brief.
 - `$review` reports read-only findings and concrete corrections.
 - `$verify` runs exact checks without editing tracked source.
 - `$integrate` combines accepted branches in dependency order.
 
 Invoke `$use-expand` when you want the plugin to select and explain the next
-phase. It opens one phase per transition, consumes that phase's typed handoff,
-and protects acceptance, review, and verification gates. It is the only skill
-that may activate implicitly.
+phase. It opens one phase per transition, coordinates against the canonical
+Plan Graph when one exists, validates revision-bound phase receipts, and
+protects planned test evidence, review, and verification gates. It is the only
+skill that may activate implicitly.
 
 Direct phase invocation never loads the entire pipeline. For example:
 
@@ -42,31 +42,36 @@ Use $plan to turn the accepted API decision into bounded tasks.
 Use $review to inspect this branch against the accepted brief.
 ```
 
-## Handoffs and evidence
+## Workflow state and evidence
 
-Every phase stops with a machine-readable `phase-handoff-v1` containing exactly
-`schema`, `selected_phase`, `reason_code`, `next_skill`, and `status`.
-Findings return to their owning phase; blocked work and unresolved user
-decisions do not advance.
+`$plan` creates the private canonical Plan Graph outside the repository. Later
+phases consume its exact workflow ID, graph revision, branch, commit, work, and
+proof obligations. Workers and read-only reviewers return bound receipts; only
+the coordinator validates and applies them. Direct `$plan` use stops when the
+plan is ready and never emits a next-skill route. Findings, blocked work, stale
+evidence, and unresolved user decisions do not advance.
+
+`$brainstorm` remains independently usable and produces a confirmed Concept
+Brief without requiring the graph. `$use-expand` owns optional transition
+selection; the individual phases do not silently open the whole pipeline.
 
 The live certification chain is unfinished. Its required boundary must use
 fresh `codex exec --ephemeral --ignore-user-config --json` sessions in
 disposable repositories. It must retain evidence binding the installed skill,
-invocation, loaded skill, typed handoff, commands, and repository state, and it
-must fail closed on missing or inconsistent evidence.
+invocation, loaded skill and helper, Plan Graph observations, phase receipts,
+commands, and repository state, and it must fail closed on missing or
+inconsistent evidence.
 
 ## Repository commands
 
 ```bash
 python3 scripts/validate.py
 python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
-python3 -m pytest -q tests/test_phase_skills_acceptance.py
+python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
 ```
 
-The broader acceptance suites cover budgets, security, behavior, portability,
-and maturity. See
-[`tests/ACCEPTANCE_MATRIX.md`](tests/ACCEPTANCE_MATRIX.md) for the regression
-each group is intended to prevent.
+The focused contract and runtime suites cover the currently implemented skill,
+installation, security, concurrency, recovery, and lifecycle boundaries.
 
 The live certification and release chain is still being hardened. The phase
 surface and installer are available on the integration branch, but the plugin
