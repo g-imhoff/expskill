@@ -12,6 +12,7 @@ PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills"
 EXPECTED_PUBLIC_SKILLS = {
     "use-expand",
     "brainstorm",
+    "design",
     "plan",
     "implement",
     "review",
@@ -301,7 +302,7 @@ class ImproveSkillContractTests(unittest.TestCase):
 
     def test_router_is_last_and_each_skill_is_completed_once(self) -> None:
         body = self.skill_body().lower()
-        self.assertIn("brainstorm → plan → implement → review → verify → integrate → use-expand", body)
+        self.assertIn("brainstorm → plan → design → implement → review → verify → integrate → use-expand", body)
         self.assertIn("complete one target before selecting another", body)
         self.assertIn("upgrade `use-expand` last", body)
 

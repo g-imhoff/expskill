@@ -45,6 +45,7 @@ PUBLIC_PHASE_TOKENS = {
     "$verify",
     "$integrate",
     "$use-expand",
+    "$design",
 }
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
@@ -52,6 +53,7 @@ PUBLIC_METADATA_JARGON = re.compile(
 )
 EXPECTED_SKILLS = {
     "use-expand",
+    "design",
     "brainstorm",
     "plan",
     "implement",
@@ -648,7 +650,7 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("six", "standalone", "development phase", "optional", "routing"):
+        for phrase in ("seven", "independent", "development phase", "optional", "orchestrator", "$design"):
             if phrase not in normalized_description:
                 errors.append(f"plugin description must advertise {phrase!r}")
         if PUBLIC_METADATA_JARGON.search(description):
@@ -759,8 +761,16 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         expected_files = {"SKILL.md", "agents/openai.yaml"}
         if skill_root.name == "brainstorm":
             expected_files.add("references/brainstorm-techniques.csv")
+        if skill_root.name == "design":
+            expected_files.update({
+                "references/rules-index.md", "references/geometry.md", "references/typography.md",
+                "references/interaction.md", "references/forms.md", "references/responsive.md",
+                "references/accessibility.md", "references/motion.md", "references/data-display.md",
+            })
         expected_directories = {"agents"}
         if skill_root.name == "brainstorm":
+            expected_directories.add("references")
+        if skill_root.name == "design":
             expected_directories.add("references")
         actual_files = {
             path.relative_to(skill_root).as_posix()
@@ -1110,6 +1120,17 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
     for label, path in (("worktree", helper), ("plan graph", plan_helper)):
         if path is not None and (path.is_symlink() or not path.is_file() or path.stat().st_size == 0):
             errors.append(f"{label} helper must be a non-empty regular file")
+    design_helper_path = "scripts/design_state.py"
+    design_matches = sorted(
+        path.relative_to(plugin_root).as_posix()
+        for path in plugin_root.rglob("design_state.py")
+        if path.is_file() or path.is_symlink()
+    )
+    if design_matches != [design_helper_path]:
+        errors.append(f"design state helper must exist only at {design_helper_path}; found {', '.join(design_matches) or 'none'}")
+    design_helper = plugin_root / design_helper_path
+    if design_helper.is_symlink() or not design_helper.is_file() or design_helper.stat().st_size == 0:
+        errors.append("design state helper must be a non-empty regular file")
 
 
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:

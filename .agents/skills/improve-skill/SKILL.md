@@ -60,7 +60,7 @@ Perform this setup once for the stack, then reuse it for every target:
 2. Record shared invariants in the stack contract. Include direct-invocation rules, side-effect boundaries, handoff schemas, public naming, installation surface, and router constraints.
 3. Record the initial upgrade queue as:
 
-   `brainstorm → plan → implement → review → verify → integrate → use-expand`
+   `brainstorm → plan → design → implement → review → verify → integrate → use-expand`
 
 4. Change that order only when dependency evidence requires it. Preserve the rule to upgrade `use-expand` last because it must route against the final phase contracts.
 5. Define the ten-category rubric and release commands before selecting a target.
