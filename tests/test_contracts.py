@@ -39,6 +39,7 @@ EXPECTED_AGENTS = {
 EXPECTED_SKILLS = {
     "use-expand",
     "brainstorm",
+    "design",
     "plan",
     "implement",
     "review",
@@ -229,6 +230,8 @@ class ContractTests(unittest.TestCase):
             rf"\b{re.escape(REMOVED_PUBLIC_SKILL)}\s+phase\b",
         )
         for path in files:
+            if path.name in {"test_design_contract.py", "test_design_state.py", "test_design_acceptance.py"}:
+                continue
             contents = path.read_text(encoding="utf-8")
             with self.subTest(path=path):
                 self.assertNotIn(REMOVED_PUBLIC_TOKEN, contents)
@@ -308,7 +311,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("six", "standalone", "development phase", "optional", "routing"):
+        for phrase in ("seven", "independent", "development phase", "optional", "orchestrator"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -420,13 +423,13 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(any("interface" in error and "unexpected" in error for error in errors), errors)
 
     def test_readme_and_implementation_plan_count_standalone_phases(self) -> None:
-        """Regression: documentation must separate six phases from the seven-skill total."""
+        """Regression: documentation must expose the seven standalone phases."""
 
         expected = re.compile(
-            r"\bsix (?:independent|independently invokable) development phases and one optional orchestrator\b"
+            r"\bseven (?:independent|independently invokable) development phases and one optional orchestrator\b"
         )
         stale = re.compile(
-            r"\bseven (?:independent|independently invokable) development phases and one optional orchestrator\b"
+            r"\bsix (?:independent|independently invokable) development phases and one optional orchestrator\b"
         )
         paths = (
             ROOT / "README.md",

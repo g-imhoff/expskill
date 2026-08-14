@@ -2,7 +2,7 @@
 
 ## Goal
 
-Ship a private Codex plugin with six independently invokable development
+Ship a private Codex plugin with seven independently invokable development
 phases and one optional orchestrator. Keep phase behavior, internal execution
 policy, installation, and live certification independently testable.
 

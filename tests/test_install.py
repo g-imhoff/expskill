@@ -27,6 +27,7 @@ PROFILE_NAMES = (
 SKILL_NAMES = (
     "use-expand",
     "brainstorm",
+    "design",
     "plan",
     "implement",
     "review",
