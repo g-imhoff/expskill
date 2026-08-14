@@ -1,7 +1,6 @@
 # Codex Dev Flow
 
-Codex Dev Flow is a private Codex plugin with six independent development
-phases and one optional orchestrator.
+Codex Dev Flow is a private Codex plugin with seven independent development phases and one optional orchestrator.
 
 ## Install and validate
 
@@ -23,6 +22,7 @@ Invoke a phase directly when you know what you want:
 
 - `$brainstorm` explores uncertainty without writing production code.
 - `$plan` produces an ordered, reviewable implementation-and-proof design with observable criteria, behavior, planned tests, and verification intent.
+- `$design` creates grounded production-intended UI components and admits them to responsive, stateful review only after blocking quality gates pass.
 - `$implement` applies one accepted brief.
 - `$review` reports read-only findings and concrete corrections.
 - `$verify` runs exact checks without editing tracked source.

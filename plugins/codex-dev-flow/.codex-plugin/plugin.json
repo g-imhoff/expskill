@@ -1,7 +1,7 @@
 {
   "name": "codex-dev-flow",
-  "version": "0.1.0+codex.20260812175819",
-  "description": "Six standalone development phases with one optional phase-routing skill.",
+  "version": "0.1.0+codex.20260813204711",
+  "description": "Seven independent development phases and one optional orchestrator. Use $design.",
   "repository": "https://github.com/g-imhoff/codex-dev-flow",
   "author": {
     "name": "g-imhoff"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Codex Dev Flow",
     "shortDescription": "Standalone development phases with optional routing",
-    "longDescription": "Run $brainstorm, $plan, $implement, $review, $verify, or $integrate directly, or use $use-expand to select one next phase while preserving required gates.",
+    "longDescription": "Run $brainstorm, $plan, $design, $implement, $review, $verify, or $integrate directly, or use $use-expand to select one next phase while preserving required gates.",
     "developerName": "g-imhoff",
     "category": "Developer Tools",
     "capabilities": [],
