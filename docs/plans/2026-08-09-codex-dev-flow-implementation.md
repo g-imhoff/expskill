@@ -2,26 +2,23 @@
 
 ## Goal
 
-Ship a private Codex plugin with seven independently invokable development
-phases and one optional orchestrator. Keep phase behavior, internal execution
-policy, installation, and live certification independently testable.
+Ship a private Codex plugin with four independently invokable development skills
+and one optional lifecycle router. Keep durable planning, UI design, local
+implementation orchestration, installation, and behavioral validation separate.
 
 ## Non-negotiable architecture
 
-- The public skills are exactly `use-expand`, `brainstorm`, `plan`,
-  `implement`, `review`, `verify`, and `integrate`.
-- Every phase is a real skill. No phase is stored as a reference file beneath
-  another skill.
-- Only `use-expand` can activate implicitly.
-- Direct phase invocation runs exactly one phase and stops at that phase's own
-  output boundary; direct `plan` never emits a next-skill route.
-- `use-expand` opens exactly one selected phase per transition and never skips
-  a required gate.
-- Named-agent dispatch is context-free and uses the exact checked-in profile.
-- Independent writers use separate external worktrees and non-overlapping file
-  ownership.
-- Unknown user state and unmerged work are preserved.
-- Runtime code uses the Python standard library only.
+- Public skills are exactly `use-expand`, `brainstorm`, `plan`, `design`, and
+  `implement`.
+- Only `use-expand` activates implicitly and it opens one skill per transition.
+- `plan` owns the canonical private graph; no later skill invents another state
+  engine.
+- `implement` owns TDD workers, independent review/spec gates, corrections,
+  local joins, affected checks, cleanup, and final whole-branch gates.
+- Named-agent dispatch is context-free and uses exact checked-in profiles.
+- Parallel writers use separate external worktrees and non-overlapping ownership.
+- Unknown state, dirty work, conflicts, and unmerged lanes are preserved.
+- AI never performs the final remote merge.
 
 ## File map
 
@@ -31,145 +28,90 @@ plugins/codex-dev-flow/
 ├── .codex-plugin/plugin.json
 ├── assets/
 │   ├── execution-policy.json
-│   └── agents/devflow-*.toml
-├── scripts/worktrees.py
+│   └── agents/
+│       ├── devflow-explorer.toml
+│       ├── devflow-test-engineer.toml
+│       ├── devflow-implementer.toml
+│       ├── devflow-review.toml
+│       └── devflow-spec.toml
+├── scripts/
+│   ├── design_state.py
+│   ├── plan_graph.py
+│   └── worktrees.py
 └── skills/
     ├── use-expand/{SKILL.md,agents/openai.yaml}
-    ├── brainstorm/{SKILL.md,agents/openai.yaml}
+    ├── brainstorm/{SKILL.md,agents/openai.yaml,references/brainstorm-techniques.csv}
     ├── plan/{SKILL.md,agents/openai.yaml}
-    ├── implement/{SKILL.md,agents/openai.yaml}
-    ├── review/{SKILL.md,agents/openai.yaml}
-    ├── verify/{SKILL.md,agents/openai.yaml}
-    └── integrate/{SKILL.md,agents/openai.yaml}
-scripts/
-├── install.py
-└── validate.py
-tests/
-├── test_brainstorm_contract.py
-├── test_contracts.py
-├── test_install.py
-├── test_plan_contract.py
-├── test_plan_graph.py
-├── test_plan_graph_stage10.py
-├── test_worktrees.py
-└── test_improve_skill.py
+    ├── design/{SKILL.md,agents/openai.yaml,references/*}
+    └── implement/{SKILL.md,agents/openai.yaml}
+scripts/{install.py,validate.py}
+tests/{test_contracts.py,test_implement_contract.py,test_install.py,...}
 ```
 
 ## Delivery sequence
 
-### 1. Lock the public phase contract
+### 1. Keep the public surface independent
 
-- [x] Add acceptance tests for the exact seven-skill roster.
-- [x] Require one `SKILL.md` and one `agents/openai.yaml` per skill.
-- [x] Require only `use-expand` to allow implicit invocation.
-- [x] Reject phase cross-invocation and legacy route-skill directories.
-- [x] Replace the early generic handoff draft with the private Plan Graph and
-  revision-bound role receipts used by graph-backed phases.
-- [x] Cover ready, findings, blocked, and user-decision outcomes.
+- [x] Give every product skill a real entrypoint and explicit invocation policy.
+- [x] Keep brainstorming, planning, and design independently usable.
+- [x] Remove duplicate review, verification, and integration public skills.
+- [x] Route only by the next unresolved lifecycle decision.
 
-Gate: contract tests must fail when a phase is a nested reference, silently
-loads another phase, advances after failure, or changes the handoff schema.
+### 2. Keep Implement lean
 
-### 2. Implement the independent skills
+- [x] Express orchestration in `skills/implement/SKILL.md`.
+- [x] Use fresh implementer, review, and spec profiles.
+- [x] Require task-local TDD and one coherent node commit.
+- [x] Run review and spec concurrently on the same immutable candidate.
+- [x] Send findings to a new implementer and bound non-improving retries.
+- [x] Integrate accepted nodes locally and gate the whole target branch.
+- [x] Exclude remote delivery and protected-branch merge.
+- [x] Keep `implement_state.py` and command-attestation machinery out of the
+  product package.
 
-- [x] Scaffold all seven skills with the canonical skill creator.
-- [x] Give every phase a narrow ownership boundary and explicit stop behavior.
-- [x] Implement one-transition routing in `use-expand`.
-- [x] Delete the former public route-skill directories.
-- [x] Move worktree support to the route-neutral plugin scripts directory.
-- [x] Validate every skill with the canonical skill validator.
+### 3. Preserve durable ownership boundaries
 
-Gate: a user can invoke `$brainstorm`, `$plan`, or any other phase without
-loading the orchestrator or the rest of the pipeline.
+- [x] Keep the Plan Graph in the route-neutral Plan helper.
+- [x] Keep Design state in the Design helper.
+- [x] Keep worktree lifecycle in the route-neutral worktree helper.
+- [x] Let workers return compact results rather than write canonical state.
 
-### 3. Align execution policy and installed profiles
+### 4. Validate packaging and installation
 
-- [x] Add the exact eight named-agent profiles.
-- [x] Bind role, profile, `agent_type`, runtime, effort, sandbox, and escalation
-  in one canonical execution-policy artifact.
-- [x] Keep routine exploration and review read-only.
-- [x] Reserve critical review for explicit escalation.
-- [x] Declare and statically validate call, concurrency, depth, retry, and
-  elapsed-time budgets.
-- [ ] Enforce those budgets in the production execution boundary.
+- [x] Validate the exact five-skill and five-profile rosters.
+- [x] Validate one small Implement execution policy.
+- [x] Reject symlinked or malformed package entries.
+- [x] Link owned profiles transactionally and preserve foreign destinations.
+- [ ] Run the complete repository suite from the final revision.
 
-Gate: any missing, extra, renamed, reordered, or mismatched selected profile is
-rejected before an agent or Codex child starts.
+### 5. Validate behavior
 
-### 4. Harden validation and installation
+- [x] Add focused static tests for TDD dispatch, independent gates, corrections,
+  local integration, cleanup, and remote boundaries.
+- [ ] Run bounded fresh-context trials for direct and Plan-backed work.
+- [ ] Obtain one independent read-only review of the final revision.
+- [ ] Repair only concrete behavior or contract failures.
 
-- [x] Validate the exact skill/profile roster and policy schema.
-- [x] Require exactly one canonical execution-policy artifact.
-- [x] Reject symlinked package components and out-of-root resolution.
-- [x] Link every owned profile transactionally.
-- [x] Refuse foreign destinations and preserve unrelated user state.
-- [x] Make uninstall remove only links still owned by this repository.
+### 6. Publish
 
-Gate: malformed packages fail before marketplace registration, Codex calls, or
-agent-destination mutation.
-
-### 5. Certify real phase sessions
-
-- [ ] Run five fresh installed-plugin sessions in disposable repositories.
-- [ ] Resolve the real Codex launcher and bind the exact observed process chain.
-- [ ] Keep the expected phase in a randomized parent-only oracle.
-- [ ] Reject every unexpected router tool or command event.
-- [ ] Compare complete before/after repository and Git snapshots.
-- [ ] Prove direct-phase controls remain bounded.
-- [ ] Retain raw session, handoff, loaded-skill, process, tool, command, and
-  repository evidence.
-
-Gate: the live runner must not accept source-tree substitution, resumed
-sessions, leaked user configuration, fabricated transport semantics, stale
-artifacts, hidden skill loads, or unapproved repository mutation.
-
-### 6. Make CI and release gates executable
-
-- [ ] Execute the complete acceptance root without recursively invoking the job
-  harness itself.
-- [ ] Run compatibility, receipt, and certification gates from a checked-in job
-  specification.
-- [ ] Require release to depend on all four gates.
-- [ ] Retain newly produced evidence under the job workspace for a positive,
-  exact number of days.
-- [ ] Add Linux, Python, Git, and Codex compatibility coverage.
-- [ ] Require the release quality, receipt, cost, and latency thresholds.
-
-Gate: forcing any dependency to fail prevents release, and no stale or
-repository-local artifact can satisfy retention.
-
-### 7. Publish and reinstall
-
-- [ ] Run repository validation and canonical plugin validation.
-- [ ] Run focused phase, installer, worktree, portability, security, budget,
-  behavioral, and maturity suites.
-- [ ] Obtain an independent read-only review and independent verification.
+- [ ] Merge the reviewed branch into `main`.
+- [ ] Push `main`.
 - [ ] Update the plugin cachebuster with the canonical helper.
-- [ ] Reinstall the marketplace plugin and confirm all eight profile links.
-- [ ] Start a fresh Codex session and run the installed-plugin smoke test.
-
-Gate: publication occurs only from a clean integrated branch with passing
-review, verification, and certification evidence.
+- [ ] Reinstall the plugin and verify the installed skill/profile roster.
+- [ ] Start a fresh session for user testing.
 
 ## Required verification commands
 
-The final command set is intentionally explicit:
-
 ```text
 python3 scripts/validate.py
+python3 /home/gimhoff/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/codex-dev-flow/skills/implement
 python3 /home/gimhoff/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/codex-dev-flow
-python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py tests/test_improve_skill.py
-python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py
-python3 -m pytest -q tests/test_plan_graph.py tests/test_plan_graph_stage10.py
+python3 -m pytest -q tests/test_implement_contract.py tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
+python3 -m pytest -q
 ```
-
-The frozen fresh-context evaluator is an additional release gate; a passing
-deterministic subset is not live certification evidence.
 
 ## Completion definition
 
-The migration is complete only when the public surface contains exactly the
-seven skills, direct invocation remains independent, the installed profile and
-policy artifacts validate, real sessions produce independently judged typed
-handoffs, CI exercises every gate, release evidence is retained, and the
-cachebusted plugin is reinstalled in a fresh session.
+The reset is complete when the lean public surface validates, fresh behavior
+uses the three Implement agents correctly, the full suite passes, one independent
+review is ready, `main` is pushed, and the cachebusted plugin is reinstalled.

@@ -33,18 +33,17 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             shutil.copytree(ROOT / name, temporary / name)
         return temporary
 
-    def test_readme_and_manifest_expose_seven_phases_and_design(self) -> None:
-        """Regression: stale six-phase language hides Design and contradicts the public roster."""
+    def test_readme_and_manifest_expose_four_skills_and_design(self) -> None:
+        """Regression: stale phase language hides Design and contradicts the public roster."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
-        phase_wording = re.compile(r"\bseven independent development phases and one optional orchestrator\b", re.I)
-        self.assertRegex(readme, phase_wording)
+        skill_wording = re.compile(r"\bfour independent development skills and one optional lifecycle router\b", re.I)
+        self.assertRegex(" ".join(readme.split()), skill_wording)
         self.assertIn("$design", readme)
-        self.assertRegex(description, phase_wording)
-        self.assertIn("$design", description)
-        self.assertNotRegex(readme, re.compile(r"\bsix independent development phases\b", re.I))
-        self.assertNotRegex(description, re.compile(r"\bsix standalone development phases\b", re.I))
+        self.assertRegex(description, skill_wording)
+        self.assertNotRegex(readme, re.compile(r"\b(?:six|seven) independent development phases\b", re.I))
+        self.assertNotRegex(description, re.compile(r"\b(?:six|seven) standalone development phases\b", re.I))
 
     def test_validator_accepts_the_complete_design_package(self) -> None:
         """Regression: package validation must have an independent Design helper boundary."""

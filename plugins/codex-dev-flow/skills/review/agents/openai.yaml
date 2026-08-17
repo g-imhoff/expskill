@@ -1,7 +1,0 @@
-interface:
-  display_name: "Review"
-  short_description: "Inspect a change and report findings"
-  default_prompt: "Use $review to inspect this change."
-
-policy:
-  allow_implicit_invocation: false

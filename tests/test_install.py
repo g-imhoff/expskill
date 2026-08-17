@@ -17,12 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
-    "devflow-implementer-high",
-    "devflow-reviewer",
-    "devflow-critical-reviewer",
     "devflow-test-engineer",
-    "devflow-verifier",
-    "devflow-verifier-low",
+    "devflow-review",
+    "devflow-spec",
 )
 SKILL_NAMES = (
     "use-expand",
@@ -30,9 +27,6 @@ SKILL_NAMES = (
     "design",
     "plan",
     "implement",
-    "review",
-    "verify",
-    "integrate",
 )
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
 MANIFEST_VERSION = json.loads(
@@ -358,17 +352,17 @@ class InstallerTests(unittest.TestCase):
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            conflict = codex_home / "agents" / "devflow-reviewer.toml"
+            conflict = codex_home / "agents" / "devflow-review.toml"
             conflict.parent.mkdir(parents=True)
             conflict.write_text("user-owned\n", encoding="utf-8")
             runner = FakeRunner([])
 
-            with self.assertRaisesRegex(InstallError, "devflow-reviewer.toml"):
+            with self.assertRaisesRegex(InstallError, "devflow-review.toml"):
                 install(repo, codex_home, state_home, runner)
 
             self.assertEqual(
                 sorted(path.name for path in conflict.parent.iterdir()),
-                ["devflow-reviewer.toml"],
+                ["devflow-review.toml"],
             )
             self.assertEqual(runner.calls, [])
             self.assertFalse(receipt_path(state_home).exists())
@@ -484,11 +478,11 @@ class InstallerTests(unittest.TestCase):
             unrelated_target.write_text("unrelated\n", encoding="utf-8")
             unrelated = agents / "devflow-explorer.toml"
             unrelated.symlink_to(unrelated_target)
-            broken = agents / "devflow-verifier.toml"
+            broken = agents / "devflow-spec.toml"
             broken.symlink_to(root / "does-not-exist.toml")
             runner = FakeRunner([])
 
-            with self.assertRaisesRegex(InstallError, "devflow-explorer.toml|devflow-verifier.toml"):
+            with self.assertRaisesRegex(InstallError, "devflow-explorer.toml|devflow-spec.toml"):
                 install(repo, codex_home, state_home, runner)
 
             self.assertEqual(runner.calls, [])
@@ -700,7 +694,7 @@ class InstallerTests(unittest.TestCase):
                     removal_response(),
                 ]
             )
-            target = codex_home / "agents" / "devflow-reviewer.toml"
+            target = codex_home / "agents" / "devflow-review.toml"
             original_unlink = Path.unlink
 
             def fail_target(path: Path, *args: object, **kwargs: object) -> None:
@@ -731,9 +725,9 @@ class InstallerTests(unittest.TestCase):
                 / "codex-dev-flow"
                 / "assets"
                 / "agents"
-                / "devflow-reviewer.toml"
+                / "devflow-review.toml"
             )
-            retargeted = codex_home / "agents" / "devflow-reviewer.toml"
+            retargeted = codex_home / "agents" / "devflow-review.toml"
             fake_runner = FakeRunner(
                 [
                     marketplace_list_response(),
@@ -771,7 +765,7 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertEqual(
                 tuple(path.name for path in (codex_home / "agents").iterdir()),
-                ("devflow-reviewer.toml",),
+                ("devflow-review.toml",),
             )
             self.assertFalse(receipt_path(state_home).exists())
 
@@ -798,12 +792,12 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            reviewer = repo / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-reviewer.toml"
+            reviewer = repo / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-review.toml"
             reviewer.write_text(
                 reviewer.read_text(encoding="utf-8").replace(
-                    'model = "gpt-5.6-sol"', 'model = "gpt-5.6-luna"'
+                    'model = "gpt-5.6-terra"', 'model = "gpt-5.6-luna"'
                 ).replace(
-                    'model_reasoning_effort = "xhigh"', 'model_reasoning_effort = "max"'
+                    'model_reasoning_effort = "medium"', 'model_reasoning_effort = "max"'
                 ).replace(
                     'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
                 ),
@@ -879,7 +873,7 @@ class InstallerTests(unittest.TestCase):
             target = root / "unrelated.toml"
             target.write_text("preserved\n", encoding="utf-8")
             retargeted.symlink_to(target)
-            replaced = destinations["devflow-reviewer"]
+            replaced = destinations["devflow-review"]
             replaced.unlink()
             replaced.write_text("user replacement\n", encoding="utf-8")
             uninstall_runner = FakeRunner(
@@ -914,7 +908,7 @@ class InstallerTests(unittest.TestCase):
                 {
                     f"{name}.toml"
                     for name in PROFILE_NAMES
-                    if name not in {"devflow-explorer", "devflow-implementer", "devflow-reviewer"}
+                    if name not in {"devflow-explorer", "devflow-implementer", "devflow-review"}
                 },
             )
             self.assertTrue(retargeted.is_symlink())
@@ -928,7 +922,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo, marketplace_present=True)))
-            retargeted = destination_paths(codex_home)["devflow-reviewer"]
+            retargeted = destination_paths(codex_home)["devflow-review"]
             retargeted.unlink()
             unrelated = root / "unrelated.toml"
             unrelated.write_text("preserved\n", encoding="utf-8")
@@ -961,7 +955,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
-            target = destination_paths(codex_home)["devflow-reviewer"]
+            target = destination_paths(codex_home)["devflow-review"]
             original_unlink = Path.unlink
             failed = {"value": True}
 
@@ -1063,7 +1057,7 @@ class InstallerTests(unittest.TestCase):
                 / "codex-dev-flow"
                 / "assets"
                 / "agents"
-                / "devflow-reviewer.toml"
+                / "devflow-review.toml"
             )
             deleted_source.unlink()
             runner = FakeRunner(
@@ -1099,7 +1093,7 @@ class InstallerTests(unittest.TestCase):
                 / "codex-dev-flow"
                 / "assets"
                 / "agents"
-                / "devflow-reviewer.toml"
+                / "devflow-review.toml"
             )
             damaged_source.unlink()
             damaged_source.symlink_to(outside_file)
@@ -1114,7 +1108,7 @@ class InstallerTests(unittest.TestCase):
             )
             untouched_source.unlink()
             untouched_source.symlink_to(outside_file)
-            retargeted = destination_paths(codex_home)["devflow-reviewer"]
+            retargeted = destination_paths(codex_home)["devflow-review"]
             retargeted.unlink()
             retargeted.symlink_to(outside_alias)
             runner = FakeRunner(
@@ -1223,7 +1217,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
-            target = destination_paths(codex_home)["devflow-reviewer"]
+            target = destination_paths(codex_home)["devflow-review"]
             original_unlink = Path.unlink
             failed = {"value": True}
 

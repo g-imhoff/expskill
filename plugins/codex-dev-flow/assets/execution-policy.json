@@ -9,6 +9,14 @@
       "sandbox_mode": "read-only",
       "escalation": null
     },
+    "devflow-test-engineer": {
+      "agent_type": "devflow-test-engineer",
+      "role": "test-engineer",
+      "model": "gpt-5.6-luna",
+      "effort": "high",
+      "sandbox_mode": "workspace-write",
+      "escalation": null
+    },
     "devflow-implementer": {
       "agent_type": "devflow-implementer",
       "role": "implementer",
@@ -17,49 +25,17 @@
       "sandbox_mode": "workspace-write",
       "escalation": null
     },
-    "devflow-implementer-high": {
-      "agent_type": "devflow-implementer-high",
-      "role": "implementer",
-      "model": "gpt-5.6-luna",
-      "effort": "high",
-      "sandbox_mode": "workspace-write",
-      "escalation": null
-    },
-    "devflow-reviewer": {
-      "agent_type": "devflow-reviewer",
-      "role": "reviewer",
+    "devflow-review": {
+      "agent_type": "devflow-review",
+      "role": "review",
       "model": "gpt-5.6-terra",
       "effort": "medium",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "devflow-critical-reviewer": {
-      "agent_type": "devflow-critical-reviewer",
-      "role": "critical-reviewer",
-      "model": "gpt-5.6-sol",
-      "effort": "high",
-      "sandbox_mode": "read-only",
-      "escalation": "critical-review"
-    },
-    "devflow-verifier": {
-      "agent_type": "devflow-verifier",
-      "role": "verifier",
-      "model": "gpt-5.6-luna",
-      "effort": "medium",
-      "sandbox_mode": "workspace-write",
-      "escalation": null
-    },
-    "devflow-verifier-low": {
-      "agent_type": "devflow-verifier-low",
-      "role": "verifier",
-      "model": "gpt-5.6-luna",
-      "effort": "low",
-      "sandbox_mode": "workspace-write",
-      "escalation": null
-    },
-    "devflow-test-engineer": {
-      "agent_type": "devflow-test-engineer",
-      "role": "test-engineer",
+    "devflow-spec": {
+      "agent_type": "devflow-spec",
+      "role": "spec",
       "model": "gpt-5.6-luna",
       "effort": "high",
       "sandbox_mode": "workspace-write",
@@ -67,155 +43,34 @@
     }
   },
   "routes": {
-    "quick": {
-      "low": {
-        "allowed_profiles": [
-          "devflow-verifier-low"
-        ],
-        "selected": [
-          {
-            "role": "verifier",
-            "profile": "devflow-verifier-low",
-            "agent_type": "devflow-verifier-low"
-          }
-        ],
-        "max_agent_calls": 3,
-        "max_concurrency": 1,
-        "max_depth": 1,
-        "max_retries": 0
-      },
+    "implement": {
       "standard": {
         "allowed_profiles": [
-          "devflow-reviewer",
-          "devflow-verifier"
-        ],
-        "selected": [
-          {
-            "role": "reviewer",
-            "profile": "devflow-reviewer",
-            "agent_type": "devflow-reviewer"
-          },
-          {
-            "role": "verifier",
-            "profile": "devflow-verifier",
-            "agent_type": "devflow-verifier"
-          }
-        ],
-        "max_agent_calls": 5,
-        "max_concurrency": 2,
-        "max_depth": 1,
-        "max_retries": 1
-      },
-      "high": {
-        "allowed_profiles": [
-          "devflow-critical-reviewer",
-          "devflow-verifier"
-        ],
-        "selected": [
-          {
-            "role": "critical-reviewer",
-            "profile": "devflow-critical-reviewer",
-            "agent_type": "devflow-critical-reviewer"
-          },
-          {
-            "role": "verifier",
-            "profile": "devflow-verifier",
-            "agent_type": "devflow-verifier"
-          }
-        ],
-        "max_agent_calls": 5,
-        "max_concurrency": 2,
-        "max_depth": 1,
-        "max_retries": 1
-      }
-    },
-    "full": {
-      "standard": {
-        "allowed_profiles": [
-          "devflow-explorer",
           "devflow-implementer",
-          "devflow-reviewer",
-          "devflow-verifier",
-          "devflow-test-engineer"
+          "devflow-review",
+          "devflow-spec"
         ],
         "selected": [
-          {
-            "role": "explorer",
-            "profile": "devflow-explorer",
-            "agent_type": "devflow-explorer"
-          },
           {
             "role": "implementer",
             "profile": "devflow-implementer",
             "agent_type": "devflow-implementer"
           },
           {
-            "role": "reviewer",
-            "profile": "devflow-reviewer",
-            "agent_type": "devflow-reviewer"
+            "role": "review",
+            "profile": "devflow-review",
+            "agent_type": "devflow-review"
           },
           {
-            "role": "verifier",
-            "profile": "devflow-verifier",
-            "agent_type": "devflow-verifier"
-          },
-          {
-            "role": "test-engineer",
-            "profile": "devflow-test-engineer",
-            "agent_type": "devflow-test-engineer"
+            "role": "spec",
+            "profile": "devflow-spec",
+            "agent_type": "devflow-spec"
           }
         ],
-        "max_agent_calls": 25,
-        "max_concurrency": 3,
+        "max_agent_calls": 30,
+        "max_concurrency": 6,
         "max_depth": 1,
-        "max_retries": 1,
-        "max_elapsed_ms": 7200000
-      },
-      "high": {
-        "allowed_profiles": [
-          "devflow-explorer",
-          "devflow-implementer-high",
-          "devflow-reviewer",
-          "devflow-verifier",
-          "devflow-test-engineer",
-          "devflow-critical-reviewer"
-        ],
-        "selected": [
-          {
-            "role": "explorer",
-            "profile": "devflow-explorer",
-            "agent_type": "devflow-explorer"
-          },
-          {
-            "role": "implementer",
-            "profile": "devflow-implementer-high",
-            "agent_type": "devflow-implementer-high"
-          },
-          {
-            "role": "reviewer",
-            "profile": "devflow-reviewer",
-            "agent_type": "devflow-reviewer"
-          },
-          {
-            "role": "verifier",
-            "profile": "devflow-verifier",
-            "agent_type": "devflow-verifier"
-          },
-          {
-            "role": "test-engineer",
-            "profile": "devflow-test-engineer",
-            "agent_type": "devflow-test-engineer"
-          },
-          {
-            "role": "critical-reviewer",
-            "profile": "devflow-critical-reviewer",
-            "agent_type": "devflow-critical-reviewer"
-          }
-        ],
-        "max_agent_calls": 25,
-        "max_concurrency": 3,
-        "max_depth": 1,
-        "max_retries": 1,
+        "max_retries": 3,
         "max_elapsed_ms": 7200000
       }
     }

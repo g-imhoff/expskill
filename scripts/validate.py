@@ -41,9 +41,6 @@ PUBLIC_PHASE_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
-    "$review",
-    "$verify",
-    "$integrate",
     "$use-expand",
     "$design",
 }
@@ -57,9 +54,6 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "plan",
     "implement",
-    "review",
-    "verify",
-    "integrate",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
@@ -109,11 +103,8 @@ EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
     "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
     "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-implementer-high": ("gpt-5.6-luna", "high", "workspace-write"),
-    "devflow-reviewer": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-critical-reviewer": ("gpt-5.6-sol", "high", "read-only"),
-    "devflow-verifier": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-verifier-low": ("gpt-5.6-luna", "low", "workspace-write"),
+    "devflow-review": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-spec": ("gpt-5.6-luna", "high", "workspace-write"),
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -134,20 +125,13 @@ AGENT_BOUNDARIES = {
         "no product implementation",
     ),
     "devflow-implementer": (
-        "exactly one brief",
+        "exactly one accepted node",
         "red-green-refactor",
         "one owned branch",
         "no delegation",
         "no scope expansion",
     ),
-    "devflow-implementer-high": (
-        "exactly one brief",
-        "red-green-refactor",
-        "one owned branch",
-        "no delegation",
-        "no scope expansion",
-    ),
-    "devflow-reviewer": (
+    "devflow-review": (
         "read-only",
         "severity",
         "evidence",
@@ -156,26 +140,14 @@ AGENT_BOUNDARIES = {
         "ready",
         "not ready",
     ),
-    "devflow-critical-reviewer": (
-        "read-only",
-        "severity",
-        "evidence",
-        "impact",
-        "correction",
-        "ready",
-        "not ready",
-    ),
-    "devflow-verifier": (
-        "exact commands",
-        "exit evidence",
+    "devflow-spec": (
+        "every accepted behavior",
+        "criterion-by-criterion evidence",
         "no tracked-source edits",
-        "no reliance on another agent's claims",
-    ),
-    "devflow-verifier-low": (
-        "exact commands",
-        "exit evidence",
-        "no tracked-source edits",
-        "no reliance on another agent's claims",
+        "pass or fail",
+        "do not implement fixes",
+        "do not expand scope",
+        "do not delegate",
     ),
 }
 
@@ -188,54 +160,6 @@ EXPECTED_POLICY_PROFILES = {
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-implementer": {
-        "agent_type": "devflow-implementer",
-        "role": "implementer",
-        "model": "gpt-5.6-luna",
-        "effort": "medium",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-implementer-high": {
-        "agent_type": "devflow-implementer-high",
-        "role": "implementer",
-        "model": "gpt-5.6-luna",
-        "effort": "high",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-reviewer": {
-        "agent_type": "devflow-reviewer",
-        "role": "reviewer",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
-        "sandbox_mode": "read-only",
-        "escalation": None,
-    },
-    "devflow-critical-reviewer": {
-        "agent_type": "devflow-critical-reviewer",
-        "role": "critical-reviewer",
-        "model": "gpt-5.6-sol",
-        "effort": "high",
-        "sandbox_mode": "read-only",
-        "escalation": "critical-review",
-    },
-    "devflow-verifier": {
-        "agent_type": "devflow-verifier",
-        "role": "verifier",
-        "model": "gpt-5.6-luna",
-        "effort": "medium",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-verifier-low": {
-        "agent_type": "devflow-verifier-low",
-        "role": "verifier",
-        "model": "gpt-5.6-luna",
-        "effort": "low",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
     "devflow-test-engineer": {
         "agent_type": "devflow-test-engineer",
         "role": "test-engineer",
@@ -244,150 +168,61 @@ EXPECTED_POLICY_PROFILES = {
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
+    "devflow-implementer": {
+        "agent_type": "devflow-implementer",
+        "role": "implementer",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-review": {
+        "agent_type": "devflow-review",
+        "role": "review",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "devflow-spec": {
+        "agent_type": "devflow-spec",
+        "role": "spec",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
 }
 
 EXPECTED_POLICY_ROUTES = {
-    "quick": {
-        "low": {
-            "allowed_profiles": ["devflow-verifier-low"],
-            "selected": [
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier-low",
-                    "agent_type": "devflow-verifier-low",
-                }
-            ],
-            "max_agent_calls": 3,
-            "max_concurrency": 1,
-            "max_depth": 1,
-            "max_retries": 0,
-        },
-        "standard": {
-            "allowed_profiles": ["devflow-reviewer", "devflow-verifier"],
-            "selected": [
-                {
-                    "role": "reviewer",
-                    "profile": "devflow-reviewer",
-                    "agent_type": "devflow-reviewer",
-                },
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-            ],
-            "max_agent_calls": 5,
-            "max_concurrency": 2,
-            "max_depth": 1,
-            "max_retries": 1,
-        },
-        "high": {
-            "allowed_profiles": ["devflow-critical-reviewer", "devflow-verifier"],
-            "selected": [
-                {
-                    "role": "critical-reviewer",
-                    "profile": "devflow-critical-reviewer",
-                    "agent_type": "devflow-critical-reviewer",
-                },
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-            ],
-            "max_agent_calls": 5,
-            "max_concurrency": 2,
-            "max_depth": 1,
-            "max_retries": 1,
-        },
-    },
-    "full": {
+    "implement": {
         "standard": {
             "allowed_profiles": [
-                "devflow-explorer",
                 "devflow-implementer",
-                "devflow-reviewer",
-                "devflow-verifier",
-                "devflow-test-engineer",
+                "devflow-review",
+                "devflow-spec",
             ],
             "selected": [
-                {
-                    "role": "explorer",
-                    "profile": "devflow-explorer",
-                    "agent_type": "devflow-explorer",
-                },
                 {
                     "role": "implementer",
                     "profile": "devflow-implementer",
                     "agent_type": "devflow-implementer",
                 },
                 {
-                    "role": "reviewer",
-                    "profile": "devflow-reviewer",
-                    "agent_type": "devflow-reviewer",
+                    "role": "review",
+                    "profile": "devflow-review",
+                    "agent_type": "devflow-review",
                 },
                 {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-                {
-                    "role": "test-engineer",
-                    "profile": "devflow-test-engineer",
-                    "agent_type": "devflow-test-engineer",
+                    "role": "spec",
+                    "profile": "devflow-spec",
+                    "agent_type": "devflow-spec",
                 },
             ],
-            "max_agent_calls": 25,
-            "max_concurrency": 3,
+            "max_agent_calls": 30,
+            "max_concurrency": 6,
             "max_depth": 1,
-            "max_retries": 1,
-            "max_elapsed_ms": 7200000,
-        },
-        "high": {
-            "allowed_profiles": [
-                "devflow-explorer",
-                "devflow-implementer-high",
-                "devflow-reviewer",
-                "devflow-verifier",
-                "devflow-test-engineer",
-                "devflow-critical-reviewer",
-            ],
-            "selected": [
-                {
-                    "role": "explorer",
-                    "profile": "devflow-explorer",
-                    "agent_type": "devflow-explorer",
-                },
-                {
-                    "role": "implementer",
-                    "profile": "devflow-implementer-high",
-                    "agent_type": "devflow-implementer-high",
-                },
-                {
-                    "role": "reviewer",
-                    "profile": "devflow-reviewer",
-                    "agent_type": "devflow-reviewer",
-                },
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-                {
-                    "role": "test-engineer",
-                    "profile": "devflow-test-engineer",
-                    "agent_type": "devflow-test-engineer",
-                },
-                {
-                    "role": "critical-reviewer",
-                    "profile": "devflow-critical-reviewer",
-                    "agent_type": "devflow-critical-reviewer",
-                },
-            ],
-            "max_agent_calls": 25,
-            "max_concurrency": 3,
-            "max_depth": 1,
-            "max_retries": 1,
+            "max_retries": 3,
             "max_elapsed_ms": 7200000,
         },
     },
@@ -650,7 +485,7 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("seven", "independent", "development phase", "optional", "orchestrator", "$design"):
+        for phrase in ("four", "independent", "development skills", "optional", "lifecycle router"):
             if phrase not in normalized_description:
                 errors.append(f"plugin description must advertise {phrase!r}")
         if PUBLIC_METADATA_JARGON.search(description):
@@ -690,12 +525,12 @@ def _validate_plugin_manifest(
             not isinstance(short_description, str)
             or not short_description.strip()
             or len(short_description) > 80
-            or "phase" not in short_description.lower()
+            or "skills" not in short_description.lower()
             or "routing" not in short_description.lower()
             or PUBLIC_METADATA_JARGON.search(short_description) is not None
         ):
             errors.append(
-                "plugin interface shortDescription must concisely advertise phases and optional routing "
+                "plugin interface shortDescription must concisely advertise skills and optional routing "
                 "without private implementation or scaffold jargon"
             )
 
@@ -708,7 +543,7 @@ def _validate_plugin_manifest(
             for token in sorted(PUBLIC_PHASE_TOKENS):
                 if token not in long_description:
                     errors.append(f"plugin interface longDescription must advertise {token}")
-            for phrase in ("directly", "one next phase", "required gates"):
+            for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
                 if phrase not in long_description.lower():
                     errors.append(f"plugin interface longDescription must explain {phrase!r}")
             if PUBLIC_METADATA_JARGON.search(long_description):
@@ -720,10 +555,10 @@ def _validate_plugin_manifest(
             or not default_prompt.strip()
             or len(default_prompt) > 160
             or "$use-expand" not in default_prompt
-            or "next development phase" not in default_prompt.lower()
+            or "next lifecycle step" not in default_prompt.lower()
         ):
             errors.append(
-                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next development phase"
+                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next lifecycle step"
             )
         elif PUBLIC_METADATA_JARGON.search(default_prompt):
             errors.append("plugin interface defaultPrompt exposes private implementation or scaffold jargon")
