@@ -27,6 +27,13 @@ PROFILE_NAMES = (
     "devflow-review",
     "devflow-spec",
 )
+RETIRED_PROFILE_NAMES = (
+    "devflow-critical-reviewer",
+    "devflow-implementer-high",
+    "devflow-reviewer",
+    "devflow-verifier",
+    "devflow-verifier-low",
+)
 RECEIPT_DIRECTORY = "codex-dev-flow"
 RECEIPT_FILENAME = "install.json"
 
@@ -120,7 +127,7 @@ def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
         found = ", ".join(sorted(discovered_names)) or "none"
         expected = ", ".join(sorted(expected_names))
         raise InstallError(
-            f"agent sources must be exactly the eight validated profiles; found {found}; expected {expected}"
+            f"agent sources must be exactly the validated profiles; found {found}; expected {expected}"
         )
     sources: list[Path] = []
     for path in discovered:
@@ -201,7 +208,7 @@ def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, 
             source=_lexical_absolute(source_directory / f"{name}.toml"),
             destination=agents_directory / f"{name}.toml",
         )
-        for name in PROFILE_NAMES
+        for name in (*PROFILE_NAMES, *RETIRED_PROFILE_NAMES)
     )
 
 
@@ -566,6 +573,34 @@ def _same_recorded_link(destination: Path, source: Path) -> bool:
     return _lexical_absolute(stored_target) == _lexical_absolute(source)
 
 
+def _prune_retired_links(
+    receipt_path: Path,
+    receipt: _Receipt,
+    current_links: Sequence[ProfileLink],
+) -> tuple[_Receipt, tuple[ProfileLink, ...]]:
+    current = receipt
+    removed: list[ProfileLink] = []
+    current_destinations = {link.destination for link in current_links}
+    for link in receipt.links:
+        if link.destination in current_destinations:
+            continue
+        remaining = tuple(item for item in current.links if item != link)
+        if not _lexists(link.destination) or not _same_recorded_link(
+            link.destination, link.source
+        ):
+            current = _persist_receipt(receipt_path, current, links=remaining)
+            continue
+        try:
+            link.destination.unlink()
+        except OSError as error:
+            raise InstallError(
+                f"cannot remove retired agent link: {link.destination}: {error}"
+            ) from error
+        removed.append(link)
+        current = _persist_receipt(receipt_path, current, links=remaining)
+    return current, tuple(removed)
+
+
 def _remove_command(
     run: Runner | Callable[[Sequence[str]], object], command: list[str]
 ) -> str | None:
@@ -622,9 +657,10 @@ def install(
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
     links = preflight_links(canonical_root, codex_home)
+    receipt_links = _allowlisted_links(canonical_root, codex_home)
     plugin_version = _validated_manifest_version(canonical_root)
     receipt_path_value = _receipt_path(state_home)
-    receipt = _read_receipt(receipt_path_value, canonical_root, links)
+    receipt = _read_receipt(receipt_path_value, canonical_root, receipt_links)
     marketplace_payload = _run_json(
         run,
         ["codex", "plugin", "marketplace", "list", "--json"],
@@ -635,6 +671,7 @@ def install(
     created_links: list[ProfileLink] = []
     marketplace_new = False
     plugin_new = False
+    removed_links: tuple[ProfileLink, ...] = ()
     try:
         _create_links(links, created_links)
         marketplace_add_command = [
@@ -658,6 +695,12 @@ def install(
         plugin_new = plugin_state == "absent"
         plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
         _validate_plugin_add(plugin_add_json, plugin_version)
+        if receipt is not None:
+            receipt, removed_links = _prune_retired_links(
+                receipt_path_value,
+                receipt,
+                links,
+            )
         previous_links = () if receipt is None else receipt.links
         merged_links = list(previous_links)
         known_destinations = {link.destination for link in merged_links}
@@ -683,6 +726,7 @@ def install(
     return InstallResult(
         links=links,
         created_links=tuple(created_links),
+        removed_links=removed_links,
         marketplace_added=marketplace_new,
         plugin_installed=plugin_new,
     )
