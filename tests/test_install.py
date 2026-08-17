@@ -21,6 +21,13 @@ PROFILE_NAMES = (
     "devflow-review",
     "devflow-spec",
 )
+RETIRED_PROFILE_NAMES = (
+    "devflow-critical-reviewer",
+    "devflow-implementer-high",
+    "devflow-reviewer",
+    "devflow-verifier",
+    "devflow-verifier-low",
+)
 SKILL_NAMES = (
     "use-expand",
     "brainstorm",
@@ -465,6 +472,53 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(receipt["plugin_installed"])
             self.assertEqual(receipt, original_receipt)
             self.assertEqual(len(second_runner.calls), 4)
+
+    def test_install_migrates_owned_retired_profile_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            receipt = load_receipt(state_home)
+            retired_destinations: list[Path] = []
+            for name in RETIRED_PROFILE_NAMES:
+                source = (
+                    repo.resolve()
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "assets"
+                    / "agents"
+                    / f"{name}.toml"
+                )
+                destination = codex_home.resolve() / "agents" / f"{name}.toml"
+                destination.symlink_to(source)
+                retired_destinations.append(destination)
+                receipt["links"].append(
+                    {"destination": str(destination), "source": str(source)}
+                )
+            receipt_path(state_home).write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            runner = FakeRunner(install_results(repo, True, True))
+
+            result = install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                {link.destination.name for link in result.removed_links},
+                {f"{name}.toml" for name in RETIRED_PROFILE_NAMES},
+            )
+            self.assertTrue(
+                all(not os.path.lexists(path) for path in retired_destinations)
+            )
+            self.assertEqual(
+                {
+                    Path(entry["destination"]).stem
+                    for entry in load_receipt(state_home)["links"]
+                },
+                set(PROFILE_NAMES),
+            )
 
     def test_unrelated_and_broken_symlink_conflicts_refuse(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
