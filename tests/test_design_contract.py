@@ -18,9 +18,6 @@ EXPECTED_SKILLS = {
     "plan",
     "design",
     "implement",
-    "review",
-    "verify",
-    "integrate",
     "use-expand",
 }
 EXPECTED_DESIGN_FILES = {

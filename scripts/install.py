@@ -23,12 +23,9 @@ PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
 PROFILE_NAMES = (
     "devflow-explorer",
     "devflow-implementer",
-    "devflow-implementer-high",
-    "devflow-reviewer",
-    "devflow-critical-reviewer",
     "devflow-test-engineer",
-    "devflow-verifier",
-    "devflow-verifier-low",
+    "devflow-review",
+    "devflow-spec",
 )
 RECEIPT_DIRECTORY = "codex-dev-flow"
 RECEIPT_FILENAME = "install.json"
