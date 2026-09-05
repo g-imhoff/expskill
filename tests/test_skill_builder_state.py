@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import hashlib
 import json
@@ -35,6 +36,97 @@ SCORE_CATEGORIES = (
     "context efficiency",
     "testability",
 )
+
+CANDIDATE_SKILL_BYTES = b"---\nname: sample-skill\n---\n# Sample skill\n"
+TRIAL_DIGEST_FIELDS = {
+    "request_digest": "request",
+    "raw_prompt_digest": "prompt",
+    "loaded_skill_digest": "loaded-skill",
+    "tool_event_digest": "tool-events",
+    "output_digest": "output",
+    "before_target_manifest_digest": "before-manifest",
+    "after_target_manifest_digest": "after-manifest",
+    "filesystem_result_digest": "filesystem-result",
+}
+
+
+def trial_evidence_bytes(case_id: str, kind: str) -> bytes:
+    if kind == "loaded-skill":
+        return CANDIDATE_SKILL_BYTES
+    return f"{case_id}:{kind}\n".encode("utf-8")
+
+
+def fixture_digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def fixture_canonical_bytes(value: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def evaluation_case(case_id: str, partition: str) -> dict[str, object]:
+    return {
+        "case_id": case_id,
+        "partition": partition,
+        "purpose": f"exercise {partition}",
+        "raw_request_digest": fixture_digest(
+            trial_evidence_bytes(case_id, "request")
+        ),
+        "allowed_context": ["skill contract"],
+        "setup_manifest_digest": fixture_digest(
+            trial_evidence_bytes(case_id, "before-manifest")
+        ),
+        "observable_assertions": ["returns pass"],
+        "forbidden_effects": ["remote write"],
+        "evidence_requirements": ["raw output"],
+        "pass_fail_rule": "all assertions pass",
+    }
+
+
+def trial_files(
+    payload: dict[str, object],
+    *,
+    evidence_overrides: dict[tuple[str, str], bytes] | None = None,
+) -> dict[str, bytes]:
+    files = {"record.json": fixture_canonical_bytes(payload)}
+    cases = payload.get("cases")
+    assert isinstance(cases, list)
+    overrides = evidence_overrides or {}
+    for trial_case in cases:
+        assert isinstance(trial_case, dict)
+        case_id = trial_case["case_id"]
+        assert isinstance(case_id, str)
+        partition = {
+            "case-1": "visible_development",
+            "case-2": "frozen_validation",
+            "case-3": "hidden_release",
+        }[case_id]
+        case_bytes = overrides.get(
+            (case_id, "case"),
+            fixture_canonical_bytes(evaluation_case(case_id, partition)),
+        )
+        files[f"evidence/{case_id}/case.json"] = case_bytes
+        for kind in TRIAL_DIGEST_FIELDS.values():
+            evidence = overrides.get(
+                (case_id, kind), trial_evidence_bytes(case_id, kind)
+            )
+            files[f"evidence/{case_id}/{kind}.bin"] = evidence
+    aggregate = overrides.get(
+        ("aggregate", "manifest"),
+        fixture_canonical_bytes(
+            {"case_ids": [case["case_id"] for case in cases]}
+        ),
+    )
+    files["evidence/aggregate-manifest.json"] = aggregate
+    return files
 
 
 def load_helper() -> ModuleType:
@@ -143,22 +235,17 @@ def retain_json(
     payload: dict[str, object],
     input_bindings: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
+    files = (
+        trial_files(payload)
+        if artifact_type == "trial-pack"
+        else {"record.json": fixture_canonical_bytes(payload)}
+    )
     return helper.retain_artifact(
         workflow_id=workflow_id,
         expected_sequence=sequence,
         artifact_id=artifact_id,
         artifact_type=artifact_type,
-        files={
-            "record.json": (
-                json.dumps(
-                    payload,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            ).encode("utf-8")
-        },
+        files=files,
         primary_path="record.json",
         producer="main-agent",
         input_bindings=input_bindings or [],
@@ -347,20 +434,7 @@ def evaluation_payload(
     for index, partition in enumerate(
         ("visible_development", "frozen_validation", "hidden_release"), start=1
     ):
-        partitions[partition] = [
-            {
-                "case_id": f"case-{index}",
-                "partition": partition,
-                "purpose": f"exercise {partition}",
-                "raw_request_digest": f"{index}" * 64,
-                "allowed_context": ["skill contract"],
-                "setup_manifest_digest": "a" * 64,
-                "observable_assertions": ["returns pass"],
-                "forbidden_effects": ["remote write"],
-                "evidence_requirements": ["raw output"],
-                "pass_fail_rule": "all assertions pass",
-            }
-        ]
+        partitions[partition] = [evaluation_case(f"case-{index}", partition)]
     return {
         "schema_version": "skill-builder-evaluation-pack.v1",
         "frozen": True,
@@ -390,7 +464,7 @@ def candidate_payload(
         "isolated_locator": str((tmp_path / "candidate").resolve()),
         "base_snapshot_digest": snapshot_digest,
         "candidate_revision": revision,
-        "resulting_digest": "1" * 64,
+        "resulting_digest": fixture_digest(CANDIDATE_SKILL_BYTES),
         "writable_role": "implementer",
         "owned_paths": ["SKILL.md"],
         "diff_digest": "2" * 64,
@@ -403,15 +477,56 @@ def candidate_payload(
 
 
 def trial_payload(candidate_digest: str, revision: str = "candidate-1") -> dict[str, object]:
+    cases: list[dict[str, object]] = []
+    partitions = (
+        "visible_development",
+        "frozen_validation",
+        "hidden_release",
+    )
+    for index, partition in enumerate(partitions, start=1):
+        case_id = f"case-{index}"
+        frozen_case = evaluation_case(case_id, partition)
+        cases.append(
+            {
+                "case_id": case_id,
+                "case_digest": fixture_digest(fixture_canonical_bytes(frozen_case)),
+                "request_digest": frozen_case["raw_request_digest"],
+                "raw_prompt_digest": fixture_digest(
+                    trial_evidence_bytes(case_id, "prompt")
+                ),
+                "loaded_skill_digest": fixture_digest(CANDIDATE_SKILL_BYTES),
+                "fresh_context_identity": f"fresh-context-{index}",
+                "tool_event_digest": fixture_digest(
+                    trial_evidence_bytes(case_id, "tool-events")
+                ),
+                "output_digest": fixture_digest(
+                    trial_evidence_bytes(case_id, "output")
+                ),
+                "before_target_manifest_digest": frozen_case[
+                    "setup_manifest_digest"
+                ],
+                "after_target_manifest_digest": fixture_digest(
+                    trial_evidence_bytes(case_id, "after-manifest")
+                ),
+                "filesystem_result_digest": fixture_digest(
+                    trial_evidence_bytes(case_id, "filesystem-result")
+                ),
+                "verdict": "pass",
+                "limitations": [],
+            }
+        )
+    aggregate = fixture_canonical_bytes(
+        {"case_ids": [case["case_id"] for case in cases]}
+    )
     return {
         "schema_version": "skill-builder-trial-pack.v1",
         "candidate_digest": candidate_digest,
         "candidate_revision": revision,
-        "cases": [{"case_id": "case-1", "verdict": "pass"}],
-        "coverage": ["visible", "frozen", "hidden"],
+        "cases": cases,
+        "coverage": [case["case_id"] for case in cases],
         "isolation_evidence": ["fresh context"],
         "leakage_checks": ["no hidden leakage"],
-        "aggregate_manifest_digest": "4" * 64,
+        "aggregate_manifest_digest": fixture_digest(aggregate),
         "status": "pass",
         "limitations": [],
     }
@@ -1222,7 +1337,9 @@ def test_transition_chain_is_contiguous_and_recovers_replaceable_index(
         files={"baseline.json": baseline_bytes},
         primary_path="baseline.json",
         producer="main-agent",
-        input_bindings=[],
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
         limitations=[],
         state_root=state_root,
     )
@@ -1741,7 +1858,9 @@ def test_finalize_delivery_and_authorized_cleanup_leave_durable_tombstone(
     assert finalized["stage"] == "finalized"
     assert run.is_dir()
     candidate_revision = "candidate-1"
-    delivery_authority = "3" * 64
+    delivery_authority_event = b"accepted installation authority\n"
+    delivery_acceptance_evidence = b"installed destination verification\n"
+    delivery_authority = fixture_digest(delivery_authority_event)
     delivery = helper.record_delivery(
         workflow_id=workflow_id,
         expected_sequence=finalized["sequence"],
@@ -1750,19 +1869,27 @@ def test_finalize_delivery_and_authorized_cleanup_leave_durable_tombstone(
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": candidate_revision,
             "resulting_destination_digest": "c" * 64,
-            "acceptance_evidence": ["d" * 64],
+            "acceptance_evidence": [
+                fixture_digest(delivery_acceptance_evidence)
+            ],
             "user_authority_event_digest": delivery_authority,
             "actor": "main-agent",
             "accepted": True,
         },
         authority_event_digest=delivery_authority,
+        authority_event=delivery_authority_event,
+        evidence_files={
+            "destination-verification.bin": delivery_acceptance_evidence
+        },
         state_root=state_root,
     )
-    cleanup_authority = "4" * 64
+    cleanup_authority_event = b"authorized cleanup event\n"
+    cleanup_authority = fixture_digest(cleanup_authority_event)
     authorized = helper.record_cleanup_authority(
         workflow_id=workflow_id,
         expected_sequence=delivery["sequence"],
         authority_event_digest=cleanup_authority,
+        authority_event=cleanup_authority_event,
         actor="user",
         state_root=state_root,
     )
@@ -1816,13 +1943,15 @@ def test_cleanup_rejects_missing_accepted_delivery_or_authority(
         release_artifact_id="release",
         state_root=state_root,
     )
-    authority_digest = "5" * 64
+    authority_event = b"accepted installation authority\n"
+    acceptance_evidence = b"installed destination verification\n"
+    authority_digest = fixture_digest(authority_event)
     rejected_delivery = {
         "action": "installation",
         "destination_identity": "codex:personal:sample-skill",
         "finalized_revision": "candidate-1",
         "resulting_destination_digest": "c" * 64,
-        "acceptance_evidence": ["d" * 64],
+        "acceptance_evidence": [fixture_digest(acceptance_evidence)],
         "user_authority_event_digest": authority_digest,
         "actor": "main-agent",
         "accepted": False,
@@ -1859,6 +1988,8 @@ def test_cleanup_rejects_missing_accepted_delivery_or_authority(
         expected_sequence=finalized["sequence"],
         delivery=accepted_delivery,
         authority_event_digest=authority_digest,
+        authority_event=authority_event,
+        evidence_files={"destination-verification.bin": acceptance_evidence},
         state_root=state_root,
     )
     try:
@@ -1888,7 +2019,9 @@ def test_cleanup_tombstone_publication_failure_deletes_nothing(
         release_artifact_id="release",
         state_root=state_root,
     )
-    delivery_authority = "6" * 64
+    delivery_authority_event = b"accepted installation authority\n"
+    delivery_acceptance_evidence = b"installed destination verification\n"
+    delivery_authority = fixture_digest(delivery_authority_event)
     delivery = helper.record_delivery(
         workflow_id=workflow_id,
         expected_sequence=finalized["sequence"],
@@ -1897,18 +2030,26 @@ def test_cleanup_tombstone_publication_failure_deletes_nothing(
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
             "resulting_destination_digest": "c" * 64,
-            "acceptance_evidence": ["d" * 64],
+            "acceptance_evidence": [
+                fixture_digest(delivery_acceptance_evidence)
+            ],
             "user_authority_event_digest": delivery_authority,
             "actor": "main-agent",
             "accepted": True,
         },
         authority_event_digest=delivery_authority,
+        authority_event=delivery_authority_event,
+        evidence_files={
+            "destination-verification.bin": delivery_acceptance_evidence
+        },
         state_root=state_root,
     )
+    cleanup_authority_event = b"authorized cleanup event\n"
     authorized = helper.record_cleanup_authority(
         workflow_id=workflow_id,
         expected_sequence=delivery["sequence"],
-        authority_event_digest="7" * 64,
+        authority_event_digest=fixture_digest(cleanup_authority_event),
+        authority_event=cleanup_authority_event,
         actor="user",
         state_root=state_root,
     )
@@ -2876,6 +3017,97 @@ def test_delivery_retains_raw_authority_and_acceptance_evidence(tmp_path: Path) 
     assert (artifact / "raw" / "evidence" / "acceptance.txt").read_bytes() == acceptance_bytes
 
 
+def test_delivery_and_cleanup_authority_cli_decode_raw_base64(tmp_path: Path) -> None:
+    """Strict JSON CLI requests must decode and retain terminal raw evidence."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    authority_bytes = b"user authorizes installation\n"
+    acceptance_bytes = b"destination verification\n"
+    authority_digest = fixture_digest(authority_bytes)
+    acceptance_digest = fixture_digest(acceptance_bytes)
+    delivered = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER),
+            "deliver",
+            "--state-root",
+            str(state_root),
+        ],
+        input=json.dumps(
+            {
+                "workflow_id": workflow_id,
+                "expected_sequence": finalized["sequence"],
+                "delivery": {
+                    "action": "installation",
+                    "destination_identity": "codex:personal:sample-skill",
+                    "finalized_revision": "candidate-1",
+                    "resulting_destination_digest": "c" * 64,
+                    "acceptance_evidence": [acceptance_digest],
+                    "user_authority_event_digest": authority_digest,
+                    "actor": "main-agent",
+                    "accepted": True,
+                },
+                "authority_event_digest": authority_digest,
+                "authority_event_base64": base64.b64encode(
+                    authority_bytes
+                ).decode("ascii"),
+                "evidence_files_base64": {
+                    "destination-verification.bin": base64.b64encode(
+                        acceptance_bytes
+                    ).decode("ascii")
+                },
+            }
+        ),
+        text=True,
+        capture_output=True,
+    )
+    assert delivered.returncode == 0, delivered.stderr
+    delivery_receipt = json.loads(delivered.stdout)
+
+    cleanup_bytes = b"user authorizes cleanup\n"
+    cleanup_digest = fixture_digest(cleanup_bytes)
+    authorized = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER),
+            "cleanup-authority",
+            "--state-root",
+            str(state_root),
+        ],
+        input=json.dumps(
+            {
+                "workflow_id": workflow_id,
+                "expected_sequence": delivery_receipt["sequence"],
+                "authority_event_digest": cleanup_digest,
+                "authority_event_base64": base64.b64encode(cleanup_bytes).decode(
+                    "ascii"
+                ),
+                "actor": "user",
+            }
+        ),
+        text=True,
+        capture_output=True,
+    )
+    assert authorized.returncode == 0, authorized.stderr
+    authority_receipt = json.loads(authorized.stdout)
+    authority_artifact = (
+        state_root
+        / "live"
+        / workflow_id
+        / "artifacts"
+        / authority_receipt["authority_artifact_id"]
+    )
+    assert (
+        authority_artifact / "raw" / "authority-event.bin"
+    ).read_bytes() == cleanup_bytes
+
+
 def test_cleanup_does_not_follow_directory_swapped_to_symlink(
     tmp_path: Path,
 ) -> None:
@@ -2927,7 +3159,9 @@ def test_cleanup_resumes_after_tombstone_and_partial_tree_deletion(
         release_artifact_id="release",
         state_root=state_root,
     )
-    delivery_authority = "9" * 64
+    delivery_authority_event = b"accepted installation authority\n"
+    delivery_acceptance_evidence = b"installed destination verification\n"
+    delivery_authority = fixture_digest(delivery_authority_event)
     delivery = helper.record_delivery(
         workflow_id=workflow_id,
         expected_sequence=finalized["sequence"],
@@ -2936,18 +3170,26 @@ def test_cleanup_resumes_after_tombstone_and_partial_tree_deletion(
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
             "resulting_destination_digest": "c" * 64,
-            "acceptance_evidence": ["d" * 64],
+            "acceptance_evidence": [
+                fixture_digest(delivery_acceptance_evidence)
+            ],
             "user_authority_event_digest": delivery_authority,
             "actor": "main-agent",
             "accepted": True,
         },
         authority_event_digest=delivery_authority,
+        authority_event=delivery_authority_event,
+        evidence_files={
+            "destination-verification.bin": delivery_acceptance_evidence
+        },
         state_root=state_root,
     )
+    cleanup_authority_event = b"authorized cleanup event\n"
     authorized = helper.record_cleanup_authority(
         workflow_id=workflow_id,
         expected_sequence=delivery["sequence"],
-        authority_event_digest="a" * 64,
+        authority_event_digest=fixture_digest(cleanup_authority_event),
+        authority_event=cleanup_authority_event,
         actor="user",
         state_root=state_root,
     )
@@ -3121,6 +3363,9 @@ def test_transition_requires_exact_singular_artifact_cardinality(tmp_path: Path)
         artifact_id="baseline-one",
         artifact_type="baseline-report",
         payload=payload,
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
     )
     second = retain_json(
         helper,
@@ -3130,6 +3375,9 @@ def test_transition_requires_exact_singular_artifact_cardinality(tmp_path: Path)
         artifact_id="baseline-two",
         artifact_type="baseline-report",
         payload=payload,
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
     )
 
     try:
@@ -3175,6 +3423,9 @@ def test_recovery_reapplies_event_artifact_cardinality_to_rehashed_receipts(
         artifact_id="baseline-one",
         artifact_type="baseline-report",
         payload=payload,
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
     )
     second = retain_json(
         helper,
@@ -3184,6 +3435,9 @@ def test_recovery_reapplies_event_artifact_cardinality_to_rehashed_receipts(
         artifact_id="baseline-two",
         artifact_type="baseline-report",
         payload=payload,
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
     )
     advanced = helper.transition_run(
         workflow_id=started["workflow_id"],
@@ -3287,7 +3541,9 @@ def test_final_run_manifest_explicitly_binds_terminal_release_evidence(
         release_artifact_id="release",
         state_root=state_root,
     )
-    delivery_authority = "b" * 64
+    delivery_authority_event = b"accepted installation authority\n"
+    delivery_acceptance_evidence = b"installed destination verification\n"
+    delivery_authority = fixture_digest(delivery_authority_event)
     delivery = helper.record_delivery(
         workflow_id=workflow_id,
         expected_sequence=finalized["sequence"],
@@ -3296,18 +3552,26 @@ def test_final_run_manifest_explicitly_binds_terminal_release_evidence(
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
             "resulting_destination_digest": "c" * 64,
-            "acceptance_evidence": ["d" * 64],
+            "acceptance_evidence": [
+                fixture_digest(delivery_acceptance_evidence)
+            ],
             "user_authority_event_digest": delivery_authority,
             "actor": "main-agent",
             "accepted": True,
         },
         authority_event_digest=delivery_authority,
+        authority_event=delivery_authority_event,
+        evidence_files={
+            "destination-verification.bin": delivery_acceptance_evidence
+        },
         state_root=state_root,
     )
+    cleanup_authority_event = b"authorized cleanup event\n"
     authorized = helper.record_cleanup_authority(
         workflow_id=workflow_id,
         expected_sequence=delivery["sequence"],
-        authority_event_digest="e" * 64,
+        authority_event_digest=fixture_digest(cleanup_authority_event),
+        authority_event=cleanup_authority_event,
         actor="user",
         state_root=state_root,
     )
@@ -3341,3 +3605,408 @@ def test_final_run_manifest_explicitly_binds_terminal_release_evidence(
         "delivery_artifact_digest"
     ]
     assert manifest["head_transition_digest"] == authorized["receipt_digest"]
+
+
+def test_baseline_transition_requires_current_snapshot_and_resolution_binding(
+    tmp_path: Path,
+) -> None:
+    """A baseline cannot become current with a stale snapshot or no resolution binding."""
+    helper = load_helper()
+    for label in ("stale-snapshot", "missing-resolution-binding"):
+        case_root = tmp_path / label
+        state_root = case_root / "state"
+        target = case_root / "skills" / "sample-skill"
+        started = helper.initialize_run(
+            host_identity=host_identity(case_root),
+            target_identity=target_identity(target),
+            mode="create",
+            authority=authority(),
+            absence_evidence={"searched": [str(target)], "exists": False},
+            overlap_map={"exact": [], "near_neighbours": []},
+            git_identity={"present": False},
+            state_root=state_root,
+        )
+        payload = valid_create_baseline_payload(
+            helper, state_root, started["workflow_id"]
+        )
+        bindings = current_bindings(helper, state_root, started["workflow_id"])
+        if label == "stale-snapshot":
+            payload["target_snapshot_digest"] = "f" * 64
+        else:
+            bindings = []
+        retained = retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=started["workflow_id"],
+            sequence=0,
+            artifact_id="baseline",
+            artifact_type="baseline-report",
+            payload=payload,
+            input_bindings=bindings,
+        )
+
+        try:
+            helper.transition_run(
+                workflow_id=started["workflow_id"],
+                expected_sequence=retained["sequence"],
+                event="capture-baseline",
+                destination_stage="baseline",
+                artifact_ids=["baseline"],
+                state_root=state_root,
+            )
+        except helper.RunStateError as error:
+            assert "baseline" in str(error) or "binding" in str(error)
+        else:
+            raise AssertionError(f"baseline accepted {label}")
+
+
+def test_trial_case_payload_requires_every_contract_field(tmp_path: Path) -> None:
+    """A case missing one required trace cannot satisfy the normative trial schema."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path
+    )
+    required_case_fields = tuple(trial_payload(candidate["artifact_digest"])["cases"][0])
+    for offset, missing_field in enumerate(required_case_fields):
+        payload = trial_payload(candidate["artifact_digest"])
+        cases = payload["cases"]
+        assert isinstance(cases, list) and isinstance(cases[0], dict)
+        del cases[0][missing_field]
+        try:
+            helper.retain_artifact(
+                workflow_id=workflow_id,
+                expected_sequence=sequence,
+                artifact_id=f"trials-missing-{offset}",
+                artifact_type="trial-pack",
+                files={"record.json": fixture_canonical_bytes(payload)},
+                primary_path="record.json",
+                producer="main-agent",
+                input_bindings=current_bindings(helper, state_root, workflow_id),
+                limitations=[],
+                state_root=state_root,
+            )
+        except helper.RunStateError as error:
+            assert "trial" in str(error) or "schema" in str(error)
+        else:
+            raise AssertionError(f"trial case accepted without {missing_field}")
+
+
+def test_trial_cases_cross_bind_frozen_case_candidate_and_raw_trace(
+    tmp_path: Path,
+) -> None:
+    """Structurally valid trial cases cannot substitute their frozen inputs or traces."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path
+    )
+    wrong_bytes = b"substituted trial evidence\n"
+    cases: list[tuple[str, str | None, str | None]] = [
+        ("candidate-digest", None, None),
+        ("candidate-revision", None, None),
+        ("case-digest", "case_digest", "case"),
+        ("request", "request_digest", "request"),
+        ("loaded-skill", "loaded_skill_digest", "loaded-skill"),
+        ("before-manifest", "before_target_manifest_digest", "before-manifest"),
+        ("prompt-claim", "raw_prompt_digest", None),
+        ("tools-claim", "tool_event_digest", None),
+        ("output-claim", "output_digest", None),
+        ("after-manifest-claim", "after_target_manifest_digest", None),
+        ("filesystem-claim", "filesystem_result_digest", None),
+        ("aggregate-claim", None, None),
+    ]
+    for offset, (label, field, override_kind) in enumerate(cases):
+        payload = trial_payload(candidate["artifact_digest"])
+        overrides: dict[tuple[str, str], bytes] = {}
+        trial_cases = payload["cases"]
+        assert isinstance(trial_cases, list) and isinstance(trial_cases[0], dict)
+        if label == "candidate-digest":
+            payload["candidate_digest"] = "e" * 64
+        elif label == "candidate-revision":
+            payload["candidate_revision"] = "substituted-revision"
+        elif label == "aggregate-claim":
+            payload["aggregate_manifest_digest"] = "e" * 64
+        else:
+            assert field is not None
+            trial_cases[0][field] = fixture_digest(wrong_bytes)
+            if override_kind is not None:
+                overrides[("case-1", override_kind)] = wrong_bytes
+        retained = helper.retain_artifact(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            artifact_id=f"trials-bad-{offset}",
+            artifact_type="trial-pack",
+            files=trial_files(payload, evidence_overrides=overrides),
+            primary_path="record.json",
+            producer="main-agent",
+            input_bindings=current_bindings(helper, state_root, workflow_id),
+            limitations=[],
+            state_root=state_root,
+        )
+        sequence = retained["sequence"]
+        try:
+            helper.transition_run(
+                workflow_id=workflow_id,
+                expected_sequence=sequence,
+                event="complete-trials",
+                destination_stage="trials",
+                artifact_ids=[f"trials-bad-{offset}"],
+                state_root=state_root,
+            )
+        except helper.RunStateError as error:
+            assert "trial" in str(error) or "binding" in str(error)
+        else:
+            raise AssertionError(f"trial transition accepted substituted {label}")
+
+
+def test_delivery_and_cleanup_authority_reject_digest_only_claims(
+    tmp_path: Path,
+) -> None:
+    """Authority and acceptance digests are invalid without their retained raw bytes."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    authority_digest = "a" * 64
+    try:
+        helper.record_delivery(
+            workflow_id=workflow_id,
+            expected_sequence=finalized["sequence"],
+            delivery={
+                "action": "installation",
+                "destination_identity": "codex:personal:sample-skill",
+                "finalized_revision": "candidate-1",
+                "resulting_destination_digest": "c" * 64,
+                "acceptance_evidence": ["d" * 64],
+                "user_authority_event_digest": authority_digest,
+                "actor": "main-agent",
+                "accepted": True,
+            },
+            authority_event_digest=authority_digest,
+            state_root=state_root,
+        )
+    except helper.RunStateError as error:
+        assert "raw" in str(error) or "evidence" in str(error)
+    else:
+        raise AssertionError("delivery accepted digest-only authority and evidence")
+
+
+def test_recovery_reapplies_live_baseline_semantics_to_rehashed_receipt(
+    tmp_path: Path,
+) -> None:
+    """Replay must reject a rehashed transition that the live baseline gate rejects."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    payload = valid_create_baseline_payload(helper, state_root, started["workflow_id"])
+    payload["target_snapshot_digest"] = "f" * 64
+    retained = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=started["workflow_id"],
+        sequence=0,
+        artifact_id="stale-baseline",
+        artifact_type="baseline-report",
+        payload=payload,
+        input_bindings=current_bindings(helper, state_root, started["workflow_id"]),
+    )
+    current = helper.load_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    receipt = {
+        "schema_version": "skill-builder-transition.v1",
+        "workflow_id": started["workflow_id"],
+        "target_identity": current["target_identity"]["canonical"],
+        "sequence": retained["sequence"] + 1,
+        "prior_receipt_digest": retained["receipt_digest"],
+        "event": "capture-baseline",
+        "source_stage": "resolved",
+        "destination_stage": "baseline",
+        "relevant_artifact_digests": [
+            {
+                "artifact_id": "stale-baseline",
+                "envelope_digest": retained["artifact_digest"],
+                "status": "accepted",
+            }
+        ],
+        "target_snapshot_digest": started["target_snapshot_digest"],
+        "authority_event_digest": None,
+        "created_at": "2026-09-06T12:00:00Z",
+    }
+    receipt["receipt_digest"] = helper.canonical_digest(receipt, "receipt_digest")
+    run = state_root / "live" / started["workflow_id"]
+    (run / "receipts" / f"{receipt['sequence']:08d}.json").write_bytes(
+        helper.canonical_json_bytes(receipt)
+    )
+    (run / "current.json").write_text("{broken", encoding="utf-8")
+
+    try:
+        helper.recover_run(workflow_id=started["workflow_id"], state_root=state_root)
+    except helper.RunStateError as error:
+        assert "baseline" in str(error) or "binding" in str(error)
+    else:
+        raise AssertionError("replay accepted a semantically stale baseline receipt")
+
+
+def test_cleanup_retry_reauthenticates_rehashed_tombstone_bindings(
+    tmp_path: Path,
+) -> None:
+    """A self-consistently rehashed tombstone cannot authorize retry deletion."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    delivery_authority = b"accepted delivery authority event\n"
+    delivery_evidence = b"accepted destination verification\n"
+    delivery = helper.record_delivery(
+        workflow_id=workflow_id,
+        expected_sequence=finalized["sequence"],
+        delivery={
+            "action": "installation",
+            "destination_identity": "codex:personal:sample-skill",
+            "finalized_revision": "candidate-1",
+            "resulting_destination_digest": "c" * 64,
+            "acceptance_evidence": [fixture_digest(delivery_evidence)],
+            "user_authority_event_digest": fixture_digest(delivery_authority),
+            "actor": "main-agent",
+            "accepted": True,
+        },
+        authority_event_digest=fixture_digest(delivery_authority),
+        authority_event=delivery_authority,
+        evidence_files={"destination-verification.bin": delivery_evidence},
+        state_root=state_root,
+    )
+    cleanup_authority = b"cleanup authority event\n"
+    authorized = helper.record_cleanup_authority(
+        workflow_id=workflow_id,
+        expected_sequence=delivery["sequence"],
+        authority_event_digest=fixture_digest(cleanup_authority),
+        authority_event=cleanup_authority,
+        actor="user",
+        state_root=state_root,
+    )
+    original_remove = helper._remove_owned_tree
+
+    def stop_after_tombstone(_path: Path) -> None:
+        raise helper.RunStateError("retain live run for tombstone retry")
+
+    helper._remove_owned_tree = stop_after_tombstone
+    try:
+        try:
+            helper.cleanup_run(
+                workflow_id=workflow_id,
+                expected_sequence=authorized["sequence"],
+                acknowledge_cleanup=True,
+                state_root=state_root,
+            )
+        except helper.RunStateError as error:
+            assert "tombstone retry" in str(error)
+        else:
+            raise AssertionError("cleanup retry fixture did not stop after tombstone")
+    finally:
+        helper._remove_owned_tree = original_remove
+
+    tombstone_path = state_root / "tombstones" / f"{workflow_id}.json"
+    tombstone = json.loads(tombstone_path.read_text(encoding="utf-8"))
+    tombstone["accepted_delivery_record_digest"] = "f" * 64
+    tombstone["tombstone_digest"] = helper.canonical_digest(
+        tombstone, "tombstone_digest"
+    )
+    tombstone_path.write_bytes(helper.canonical_json_bytes(tombstone))
+
+    try:
+        helper.cleanup_run(
+            workflow_id=workflow_id,
+            expected_sequence=authorized["sequence"],
+            acknowledge_cleanup=True,
+            state_root=state_root,
+        )
+    except helper.RunStateError as error:
+        assert "tombstone" in str(error) or "delivery" in str(error)
+    else:
+        raise AssertionError("cleanup retry trusted a forged tombstone binding")
+    assert (state_root / "live" / workflow_id).is_dir()
+
+
+def test_cleanup_authority_index_failure_preserves_append_only_commit(
+    tmp_path: Path,
+) -> None:
+    """Index publication failure cannot delete a committed cleanup-authority receipt."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    delivery_authority = b"accepted delivery authority event\n"
+    delivery_evidence = b"accepted destination verification\n"
+    delivery = helper.record_delivery(
+        workflow_id=workflow_id,
+        expected_sequence=finalized["sequence"],
+        delivery={
+            "action": "installation",
+            "destination_identity": "codex:personal:sample-skill",
+            "finalized_revision": "candidate-1",
+            "resulting_destination_digest": "c" * 64,
+            "acceptance_evidence": [fixture_digest(delivery_evidence)],
+            "user_authority_event_digest": fixture_digest(delivery_authority),
+            "actor": "main-agent",
+            "accepted": True,
+        },
+        authority_event_digest=fixture_digest(delivery_authority),
+        authority_event=delivery_authority,
+        evidence_files={"destination-verification.bin": delivery_evidence},
+        state_root=state_root,
+    )
+    run = state_root / "live" / workflow_id
+    committed_sequence = delivery["sequence"] + 1
+    original_atomic_json = helper._atomic_json
+
+    def fail_current_index(path: Path, value: dict[str, object]) -> None:
+        if path == run / "current.json":
+            raise helper.RunStateError("injected authority index publication failure")
+        original_atomic_json(path, value)
+
+    helper._atomic_json = fail_current_index
+    cleanup_authority = b"cleanup authority event\n"
+    try:
+        try:
+            helper.record_cleanup_authority(
+                workflow_id=workflow_id,
+                expected_sequence=delivery["sequence"],
+                authority_event_digest=fixture_digest(cleanup_authority),
+                authority_event=cleanup_authority,
+                actor="user",
+                state_root=state_root,
+            )
+        except helper.RunStateError as error:
+            assert "index publication" in str(error)
+        else:
+            raise AssertionError("injected authority index failure did not fire")
+    finally:
+        helper._atomic_json = original_atomic_json
+
+    assert (run / "receipts" / f"{committed_sequence:08d}.json").is_file()
+    assert (run / "artifacts" / f"cleanup-authority-{committed_sequence:08d}").is_dir()
+    recovered = helper.recover_run(workflow_id=workflow_id, state_root=state_root)
+    assert recovered["sequence"] == committed_sequence
+    assert recovered["stage"] == "delivered"
