@@ -982,12 +982,64 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     if artifact_type == "trial-pack":
         _digest(payload["candidate_digest"], "trial candidate")
         _text(payload["candidate_revision"], "trial candidate revision")
-        _mapping_list(payload["cases"], "trial cases")
+        cases = _mapping_list(payload["cases"], "trial cases")
+        if not cases:
+            raise RunStateError("trial pack has no cases")
+        case_fields = {
+            "case_id",
+            "case_digest",
+            "request_digest",
+            "raw_prompt_digest",
+            "loaded_skill_digest",
+            "fresh_context_identity",
+            "tool_event_digest",
+            "output_digest",
+            "before_target_manifest_digest",
+            "after_target_manifest_digest",
+            "filesystem_result_digest",
+            "verdict",
+            "limitations",
+        }
+        case_ids: list[str] = []
+        context_ids: set[str] = set()
+        for case in cases:
+            if set(case) != case_fields:
+                raise RunStateError("trial case schema is invalid")
+            case_id = _text(case["case_id"], "trial case identity")
+            context_id = _text(
+                case["fresh_context_identity"], "trial fresh context identity"
+            )
+            if case_id in case_ids or context_id in context_ids:
+                raise RunStateError("trial case or fresh context identity is duplicated")
+            case_ids.append(case_id)
+            context_ids.add(context_id)
+            for field in (
+                "case_digest",
+                "request_digest",
+                "raw_prompt_digest",
+                "loaded_skill_digest",
+                "tool_event_digest",
+                "output_digest",
+                "before_target_manifest_digest",
+                "after_target_manifest_digest",
+                "filesystem_result_digest",
+            ):
+                _digest(case[field], f"trial case {field}")
+            if case["verdict"] not in {"pass", "fail"}:
+                raise RunStateError("trial case verdict is invalid")
+            _text_list(case["limitations"], "trial case limitations")
         for field in ("coverage", "isolation_evidence", "leakage_checks"):
             _text_list(payload[field], f"trial {field}")
+        if payload["coverage"] != case_ids:
+            raise RunStateError("trial case coverage is incomplete or out of order")
         _digest(payload["aggregate_manifest_digest"], "trial aggregate manifest")
         if payload["status"] not in {"pass", "fail"}:
             raise RunStateError("trial status is invalid")
+        expected_status = (
+            "pass" if all(case["verdict"] == "pass" for case in cases) else "fail"
+        )
+        if payload["status"] != expected_status:
+            raise RunStateError("trial aggregate status contradicts case verdicts")
         _text_list(payload["limitations"], "trial limitations")
         return
 
@@ -2220,9 +2272,162 @@ def _artifact_payload_json(run: Path, artifact_id: str) -> dict[str, Any]:
     return payload
 
 
+def _require_input_bindings(
+    envelope: dict[str, Any],
+    required: dict[str, str],
+    label: str,
+) -> None:
+    observed = {
+        binding["artifact_id"]: binding["digest"]
+        for binding in envelope["input_bindings"]
+    }
+    if any(observed.get(artifact_id) != digest for artifact_id, digest in required.items()):
+        raise RunStateError(f"{label} input binding is missing or stale")
+
+
+def _validate_baseline_binding(
+    run: Path,
+    current: dict[str, Any],
+    baseline_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    baseline_envelope, _ = _validate_envelope(run, baseline_id)
+    baseline = _artifact_payload_json(run, baseline_id)
+    resolution_id, resolution_envelope = _event_artifact(
+        run, "initialize", "resolution-record", event_artifacts
+    )
+    snapshot = current["target_snapshot"]
+    if (
+        baseline.get("mode") != current["mode"]["name"]
+        or baseline.get("target_snapshot_digest") != snapshot["snapshot_digest"]
+    ):
+        raise RunStateError("baseline mode or target-snapshot binding is stale")
+    if current["mode"]["name"] == "create":
+        expected_proof = {
+            "absence_evidence_digest": snapshot["absence_evidence_digest"],
+            "overlap_map_digest": snapshot["overlap_map_digest"],
+        }
+        if baseline.get("absent_target_proof") != expected_proof:
+            raise RunStateError("baseline absent-target proof binding is stale")
+    elif baseline.get("absent_target_proof") is not None:
+        raise RunStateError("improve baseline contains an absent-target proof")
+    _require_input_bindings(
+        baseline_envelope,
+        {resolution_id: resolution_envelope["envelope_digest"]},
+        "baseline",
+    )
+
+
+def _artifact_raw_digests(
+    run: Path, artifact_id: str
+) -> tuple[dict[str, Any], dict[str, str]]:
+    envelope, manifest = _validate_envelope(run, artifact_id)
+    prefix = f"artifacts/{artifact_id}/raw/"
+    return envelope, {
+        entry["path"].removeprefix(prefix): entry["digest"]
+        for entry in manifest["entries"]
+    }
+
+
+def _validate_trial_binding(
+    run: Path,
+    current: dict[str, Any],
+    trial_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    trial_envelope, raw_digests = _artifact_raw_digests(run, trial_id)
+    trials = _artifact_payload_json(run, trial_id)
+    candidate_id, candidate_envelope = _event_artifact(
+        run, "accept-candidate", "candidate-record", event_artifacts
+    )
+    candidate = _artifact_payload_json(run, candidate_id)
+    evaluation_id, evaluation_envelope = _event_artifact(
+        run, "freeze-evaluation", "evaluation-pack", event_artifacts
+    )
+    evaluation = _artifact_payload_json(run, evaluation_id)
+    resolution_id, resolution_envelope = _event_artifact(
+        run, "initialize", "resolution-record", event_artifacts
+    )
+    if (
+        trials["candidate_digest"] != candidate_envelope["envelope_digest"]
+        or trials["candidate_revision"] != candidate["candidate_revision"]
+    ):
+        raise RunStateError("trial candidate binding is stale or substituted")
+    _require_input_bindings(
+        trial_envelope,
+        {
+            resolution_id: resolution_envelope["envelope_digest"],
+            candidate_id: candidate_envelope["envelope_digest"],
+            evaluation_id: evaluation_envelope["envelope_digest"],
+        },
+        "trial pack",
+    )
+
+    frozen_cases: list[dict[str, Any]] = []
+    for partition in (
+        "visible_development",
+        "frozen_validation",
+        "hidden_release",
+    ):
+        frozen_cases.extend(evaluation["partitions"][partition])
+    trial_cases = trials["cases"]
+    if [case["case_id"] for case in trial_cases] != [
+        case["case_id"] for case in frozen_cases
+    ]:
+        raise RunStateError("trial coverage does not match the frozen evaluation cases")
+
+    raw_fields = {
+        "request_digest": "request",
+        "raw_prompt_digest": "prompt",
+        "loaded_skill_digest": "loaded-skill",
+        "tool_event_digest": "tool-events",
+        "output_digest": "output",
+        "before_target_manifest_digest": "before-manifest",
+        "after_target_manifest_digest": "after-manifest",
+        "filesystem_result_digest": "filesystem-result",
+    }
+    for trial_case, frozen_case in zip(trial_cases, frozen_cases, strict=True):
+        case_id = trial_case["case_id"]
+        if not _ARTIFACT_RE.fullmatch(case_id):
+            raise RunStateError("trial case identity is unsafe")
+        expected_case_digest = raw_digest(canonical_json_bytes(frozen_case))
+        if (
+            trial_case["case_digest"] != expected_case_digest
+            or raw_digests.get(f"evidence/{case_id}/case.json")
+            != expected_case_digest
+            or trial_case["request_digest"] != frozen_case["raw_request_digest"]
+            or trial_case["before_target_manifest_digest"]
+            != frozen_case["setup_manifest_digest"]
+            or trial_case["loaded_skill_digest"] != candidate["resulting_digest"]
+        ):
+            raise RunStateError("trial case binding is stale or substituted")
+        for field, file_stem in raw_fields.items():
+            if (
+                raw_digests.get(f"evidence/{case_id}/{file_stem}.bin")
+                != trial_case[field]
+            ):
+                raise RunStateError("trial raw evidence binding is missing or stale")
+    if (
+        raw_digests.get("evidence/aggregate-manifest.json")
+        != trials["aggregate_manifest_digest"]
+    ):
+        raise RunStateError("trial aggregate manifest binding is missing or stale")
+
+
 def _event_artifact(
-    run: Path, event: str, artifact_type: str
+    run: Path,
+    event: str,
+    artifact_type: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if event_artifacts is not None:
+        artifact_id = event_artifacts.get(event, {}).get(artifact_type)
+        if artifact_id is None:
+            raise RunStateError(f"current {artifact_type} binding is missing")
+        envelope, _ = _validate_envelope(run, artifact_id)
+        if envelope["artifact_type"] != artifact_type:
+            raise RunStateError(f"current {artifact_type} binding is invalid")
+        return artifact_id, envelope
     for receipt in reversed(_load_receipt_chain(run)):
         if receipt["event"] != event:
             continue
@@ -2238,10 +2443,16 @@ def _validate_confirmation_binding(
     current: dict[str, Any],
     confirmation_id: str,
     authority_event_digest: str | None,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     confirmation_envelope, _ = _validate_envelope(run, confirmation_id)
     confirmation = _artifact_payload_json(run, confirmation_id)
-    _, contract_envelope = _event_artifact(run, "accept-contract", "skill-contract")
+    contract_id, contract_envelope = _event_artifact(
+        run, "accept-contract", "skill-contract", event_artifacts
+    )
+    resolution_id, resolution_envelope = _event_artifact(
+        run, "initialize", "resolution-record", event_artifacts
+    )
     required = {
         "accepted",
         "contract_digest",
@@ -2253,6 +2464,7 @@ def _validate_confirmation_binding(
         raise RunStateError("user confirmation is not an accepted explicit record")
     if (
         confirmation.get("contract_digest") != contract_envelope["envelope_digest"]
+        or confirmation.get("contract_artifact_id") != contract_id
         or confirmation.get("target_identity") != current["target_identity"]["canonical"]
         or confirmation.get("target_snapshot_digest")
         != current["target_snapshot"]["snapshot_digest"]
@@ -2261,6 +2473,14 @@ def _validate_confirmation_binding(
         or not _DIGEST_RE.fullmatch(authority_event_digest)
     ):
         raise RunStateError("user confirmation binding is missing or mismatched")
+    _require_input_bindings(
+        confirmation_envelope,
+        {
+            resolution_id: resolution_envelope["envelope_digest"],
+            contract_id: contract_envelope["envelope_digest"],
+        },
+        "user confirmation",
+    )
     return confirmation, confirmation_envelope
 
 
@@ -2268,23 +2488,34 @@ def _validate_evaluation_binding(
     run: Path,
     current: dict[str, Any],
     evaluation_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     evaluation_envelope, _ = _validate_envelope(run, evaluation_id)
     evaluation = _artifact_payload_json(run, evaluation_id)
-    _, contract_envelope = _event_artifact(run, "accept-contract", "skill-contract")
-    confirmation_id, confirmation_envelope = _event_artifact(
-        run, "confirm-contract", "user-confirmation-record"
+    contract_id, contract_envelope = _event_artifact(
+        run, "accept-contract", "skill-contract", event_artifacts
     )
-    confirmation_receipt = next(
-        receipt
-        for receipt in reversed(_load_receipt_chain(run))
-        if receipt["event"] == "confirm-contract"
+    confirmation_id, confirmation_envelope = _event_artifact(
+        run, "confirm-contract", "user-confirmation-record", event_artifacts
+    )
+    resolution_id, resolution_envelope = _event_artifact(
+        run, "initialize", "resolution-record", event_artifacts
+    )
+    confirmation_authority = (
+        event_artifacts.get("confirm-contract", {}).get("authority_event_digest")
+        if event_artifacts is not None
+        else next(
+            receipt["authority_event_digest"]
+            for receipt in reversed(_load_receipt_chain(run))
+            if receipt["event"] == "confirm-contract"
+        )
     )
     _validate_confirmation_binding(
         run,
         current,
         confirmation_id,
-        confirmation_receipt["authority_event_digest"],
+        confirmation_authority,
+        event_artifacts,
     )
     required = {
         "frozen",
@@ -2302,32 +2533,55 @@ def _validate_evaluation_binding(
         != current["target_snapshot"]["snapshot_digest"]
     ):
         raise RunStateError("evaluation pack binding is missing or mismatched")
+    _require_input_bindings(
+        evaluation_envelope,
+        {
+            resolution_id: resolution_envelope["envelope_digest"],
+            contract_id: contract_envelope["envelope_digest"],
+            confirmation_id: confirmation_envelope["envelope_digest"],
+        },
+        "evaluation pack",
+    )
     return evaluation, evaluation_envelope
 
 
 def _validate_candidate_entry(
-    run: Path, current: dict[str, Any], candidate_id: str
+    run: Path,
+    current: dict[str, Any],
+    candidate_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> None:
+    candidate_envelope, _ = _validate_envelope(run, candidate_id)
     candidate = _artifact_payload_json(run, candidate_id)
-    _, contract_envelope = _event_artifact(run, "accept-contract", "skill-contract")
+    contract_id, contract_envelope = _event_artifact(
+        run, "accept-contract", "skill-contract", event_artifacts
+    )
     confirmation_id, confirmation_envelope = _event_artifact(
-        run, "confirm-contract", "user-confirmation-record"
+        run, "confirm-contract", "user-confirmation-record", event_artifacts
     )
     evaluation_id, evaluation_envelope = _event_artifact(
-        run, "freeze-evaluation", "evaluation-pack"
+        run, "freeze-evaluation", "evaluation-pack", event_artifacts
     )
-    confirmation_receipt = next(
-        receipt
-        for receipt in reversed(_load_receipt_chain(run))
-        if receipt["event"] == "confirm-contract"
+    resolution_id, resolution_envelope = _event_artifact(
+        run, "initialize", "resolution-record", event_artifacts
+    )
+    confirmation_authority = (
+        event_artifacts.get("confirm-contract", {}).get("authority_event_digest")
+        if event_artifacts is not None
+        else next(
+            receipt["authority_event_digest"]
+            for receipt in reversed(_load_receipt_chain(run))
+            if receipt["event"] == "confirm-contract"
+        )
     )
     _validate_confirmation_binding(
         run,
         current,
         confirmation_id,
-        confirmation_receipt["authority_event_digest"],
+        confirmation_authority,
+        event_artifacts,
     )
-    _validate_evaluation_binding(run, current, evaluation_id)
+    _validate_evaluation_binding(run, current, evaluation_id, event_artifacts)
     required = {
         "contract_digest",
         "confirmation_digest",
@@ -2344,8 +2598,86 @@ def _validate_candidate_entry(
         or candidate.get("evaluation_digest") != evaluation_envelope["envelope_digest"]
         or candidate.get("target_snapshot_digest")
         != current["target_snapshot"]["snapshot_digest"]
+        or candidate.get("base_snapshot_digest")
+        != current["target_snapshot"]["snapshot_digest"]
     ):
         raise RunStateError("candidate entry binding is missing or mismatched")
+    _require_input_bindings(
+        candidate_envelope,
+        {
+            resolution_id: resolution_envelope["envelope_digest"],
+            contract_id: contract_envelope["envelope_digest"],
+            confirmation_id: confirmation_envelope["envelope_digest"],
+            evaluation_id: evaluation_envelope["envelope_digest"],
+        },
+        "candidate entry",
+    )
+
+
+def _artifact_id_of_type(
+    run: Path, artifact_ids: list[str], artifact_type: str
+) -> str:
+    matches = [
+        artifact_id
+        for artifact_id in artifact_ids
+        if _validate_envelope(run, artifact_id)[0]["artifact_type"] == artifact_type
+    ]
+    if len(matches) != 1:
+        raise RunStateError(
+            f"transition requires exactly one {artifact_type} artifact"
+        )
+    return matches[0]
+
+
+def _validate_transition_semantics(
+    run: Path,
+    current: dict[str, Any],
+    event: str,
+    artifact_ids: list[str],
+    authority_event_digest: str | None,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Apply the same evidence gate to a live transition and receipt replay."""
+    if event != "confirm-contract" and authority_event_digest is not None:
+        raise RunStateError("transition carries uncontracted authority evidence")
+    if event == "capture-baseline":
+        _validate_baseline_binding(
+            run,
+            current,
+            _artifact_id_of_type(run, artifact_ids, "baseline-report"),
+            event_artifacts,
+        )
+    elif event == "confirm-contract":
+        _validate_confirmation_binding(
+            run,
+            current,
+            _artifact_id_of_type(
+                run, artifact_ids, "user-confirmation-record"
+            ),
+            authority_event_digest,
+            event_artifacts,
+        )
+    elif event == "freeze-evaluation":
+        _validate_evaluation_binding(
+            run,
+            current,
+            _artifact_id_of_type(run, artifact_ids, "evaluation-pack"),
+            event_artifacts,
+        )
+    elif event == "accept-candidate":
+        _validate_candidate_entry(
+            run,
+            current,
+            _artifact_id_of_type(run, artifact_ids, "candidate-record"),
+            event_artifacts,
+        )
+    elif event == "complete-trials":
+        _validate_trial_binding(
+            run,
+            current,
+            _artifact_id_of_type(run, artifact_ids, "trial-pack"),
+            event_artifacts,
+        )
 
 
 def _derive_index(run: Path) -> dict[str, Any]:
@@ -2372,6 +2704,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
     if any(receipt.get("target_snapshot_digest") != snapshot["snapshot_digest"] for receipt in chain):
         raise RunStateError("receipt target snapshot binding mismatch")
     artifact_status: dict[str, dict[str, Any]] = {}
+    event_artifacts: dict[str, dict[str, Any]] = {}
     for receipt in chain:
         prior_artifact_status = dict(artifact_status)
         validated_bindings: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -2452,6 +2785,58 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 raise RunStateError("genesis artifact binding is invalid")
         elif event != "invalidate":
             raise RunStateError("receipt event semantics are unsupported")
+        replay_current = {
+            "workflow_id": workflow_id,
+            "stage": receipt["source_stage"],
+            "target_identity": resolution["target_identity"],
+            "mode": resolution["mode"],
+            "authority": resolution["authority"],
+            "target_snapshot": snapshot,
+            "artifact_index": prior_artifact_status,
+        }
+        accepted_ids = [
+            item["artifact_id"]
+            for item, _ in validated_bindings
+            if item["status"] == "accepted"
+        ]
+        if event in _STAGE_TRANSITIONS:
+            _validate_transition_semantics(
+                run,
+                replay_current,
+                event,
+                accepted_ids,
+                receipt["authority_event_digest"],
+                event_artifacts,
+            )
+        elif event == "finalize":
+            release_id = _artifact_id_of_type(run, accepted_ids, "release-record")
+            if set(_validate_final_evidence(
+                run,
+                replay_current,
+                release_id,
+                event_artifacts,
+            )) != set(accepted_ids):
+                raise RunStateError("finalization receipt semantic binding is invalid")
+        elif event == "record-delivery":
+            _validate_delivery_record_binding(
+                run,
+                replay_current,
+                _artifact_id_of_type(
+                    run, accepted_ids, "delivery-acceptance-record"
+                ),
+                receipt["authority_event_digest"],
+                event_artifacts,
+            )
+        elif event == "record-cleanup-authority":
+            _validate_cleanup_authority_binding(
+                run,
+                replay_current,
+                _artifact_id_of_type(
+                    run, accepted_ids, "cleanup-authority-record"
+                ),
+                receipt["authority_event_digest"],
+                event_artifacts,
+            )
         for item, envelope in validated_bindings:
             artifact_id = item["artifact_id"]
             artifact_status[artifact_id] = {
@@ -2463,6 +2848,24 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 "producing_sequence": envelope["created_sequence"],
                 "dependency_identifiers": [entry["artifact_id"] for entry in envelope["input_bindings"]],
             }
+            if item["status"] != "accepted":
+                for event_binding in event_artifacts.values():
+                    for key, value in list(event_binding.items()):
+                        if key != "authority_event_digest" and value == artifact_id:
+                            event_binding.pop(key)
+        if event == "initialize" or event in _STAGE_TRANSITIONS or event in {
+            "finalize",
+            "record-delivery",
+            "record-cleanup-authority",
+        }:
+            event_artifacts[event] = {
+                envelope["artifact_type"]: item["artifact_id"]
+                for item, envelope in validated_bindings
+                if item["status"] == "accepted"
+            }
+            event_artifacts[event]["authority_event_digest"] = receipt[
+                "authority_event_digest"
+            ]
     actual_artifacts: set[str] = set()
     artifacts_directory = run / "artifacts"
     for path in artifacts_directory.iterdir():
@@ -2996,32 +3399,13 @@ def transition_run(
             )
         for artifact_id in artifact_ids:
             _artifact_payload_json(run, artifact_id)
-        if event == "confirm-contract":
-            confirmation_id = next(
-                artifact_id
-                for artifact_id in artifact_ids
-                if current["artifact_index"][artifact_id]["type"]
-                == "user-confirmation-record"
-            )
-            _validate_confirmation_binding(
-                run, current, confirmation_id, authority_event_digest
-            )
-        elif event == "freeze-evaluation":
-            evaluation_id = next(
-                artifact_id
-                for artifact_id in artifact_ids
-                if current["artifact_index"][artifact_id]["type"]
-                == "evaluation-pack"
-            )
-            _validate_evaluation_binding(run, current, evaluation_id)
-        elif event == "accept-candidate":
-            candidate_id = next(
-                artifact_id
-                for artifact_id in artifact_ids
-                if current["artifact_index"][artifact_id]["type"]
-                == "candidate-record"
-            )
-            _validate_candidate_entry(run, current, candidate_id)
+        _validate_transition_semantics(
+            run,
+            current,
+            event,
+            artifact_ids,
+            authority_event_digest,
+        )
         derived, _, _ = _append_transaction(
             run=run,
             current=current,
@@ -3412,8 +3796,11 @@ def _current_event_artifact(
     current: dict[str, Any],
     event: str,
     artifact_type: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    artifact_id, envelope = _event_artifact(run, event, artifact_type)
+    artifact_id, envelope = _event_artifact(
+        run, event, artifact_type, event_artifacts
+    )
     record = current["artifact_index"].get(artifact_id)
     if record is None or record["derived_status"] != "accepted" or record["digest"] != envelope["envelope_digest"]:
         raise RunStateError(f"current {artifact_type} evidence is invalidated or stale")
@@ -3421,17 +3808,20 @@ def _current_event_artifact(
 
 
 def _validate_final_evidence(
-    run: Path, current: dict[str, Any], release_artifact_id: str
+    run: Path,
+    current: dict[str, Any],
+    release_artifact_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     candidate_id, candidate_envelope, candidate = _current_event_artifact(
-        run, current, "accept-candidate", "candidate-record"
+        run, current, "accept-candidate", "candidate-record", event_artifacts
     )
     candidate_digest = candidate_envelope["envelope_digest"]
     candidate_revision = candidate.get("candidate_revision")
     if not isinstance(candidate_revision, str) or not candidate_revision:
         raise RunStateError("candidate revision is missing")
     trials_id, _, trials = _current_event_artifact(
-        run, current, "complete-trials", "trial-pack"
+        run, current, "complete-trials", "trial-pack", event_artifacts
     )
     if (
         trials.get("candidate_digest") != candidate_digest
@@ -3440,7 +3830,7 @@ def _validate_final_evidence(
     ):
         raise RunStateError("trial evidence is stale or failing")
     review_id, review_envelope, review = _current_event_artifact(
-        run, current, "accept-review", "review-record"
+        run, current, "accept-review", "review-record", event_artifacts
     )
     findings = review.get("findings")
     if (
@@ -3459,7 +3849,11 @@ def _validate_final_evidence(
     ):
         raise RunStateError("final review is stale, invalid, or not ready")
     conformance_id, conformance_envelope, conformance = _current_event_artifact(
-        run, current, "accept-scores", "builder-run-conformance-ledger"
+        run,
+        current,
+        "accept-scores",
+        "builder-run-conformance-ledger",
+        event_artifacts,
     )
     gates = conformance.get("gates")
     if (
@@ -3477,7 +3871,7 @@ def _validate_final_evidence(
     ):
         raise RunStateError("builder-run conformance is incomplete or failing")
     scorecard_id, scorecard_envelope, scorecard = _current_event_artifact(
-        run, current, "accept-scores", "target-scorecard"
+        run, current, "accept-scores", "target-scorecard", event_artifacts
     )
     categories = scorecard.get("categories")
     if (
@@ -3500,7 +3894,7 @@ def _validate_final_evidence(
         ):
             raise RunStateError("every target score and binary criterion must pass at 10")
     verification_id, verification_envelope, verification = _current_event_artifact(
-        run, current, "accept-verification", "verification-record"
+        run, current, "accept-verification", "verification-record", event_artifacts
     )
     commands = verification.get("commands")
     if (
@@ -3533,13 +3927,13 @@ def _validate_final_evidence(
     release_envelope, _ = _validate_envelope(run, release_artifact_id)
     release = _artifact_payload_json(run, release_artifact_id)
     contract_id, contract_envelope = _event_artifact(
-        run, "accept-contract", "skill-contract"
+        run, "accept-contract", "skill-contract", event_artifacts
     )
     confirmation_id, confirmation_envelope = _event_artifact(
-        run, "confirm-contract", "user-confirmation-record"
+        run, "confirm-contract", "user-confirmation-record", event_artifacts
     )
     evaluation_id, evaluation_envelope = _event_artifact(
-        run, "freeze-evaluation", "evaluation-pack"
+        run, "freeze-evaluation", "evaluation-pack", event_artifacts
     )
     evaluation = _artifact_payload_json(run, evaluation_id)
     if (
@@ -3575,6 +3969,87 @@ def _validate_final_evidence(
         confirmation_id,
         evaluation_id,
     ]
+
+
+def _validate_delivery_record_binding(
+    run: Path,
+    current: dict[str, Any],
+    delivery_id: str,
+    authority_event_digest: str | None,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    delivery_envelope, raw_digests = _artifact_raw_digests(run, delivery_id)
+    delivery = _artifact_payload_json(run, delivery_id)
+    candidate_id, candidate_envelope, candidate = _current_event_artifact(
+        run,
+        current,
+        "accept-candidate",
+        "candidate-record",
+        event_artifacts,
+    )
+    release_id, release_envelope, release = _current_event_artifact(
+        run, current, "finalize", "release-record", event_artifacts
+    )
+    delivery_scope = f"{delivery['action']}:{delivery['destination_identity']}"
+    if (
+        delivery["user_authority_event_digest"] != authority_event_digest
+        or raw_digests.get("authority-event.bin") != authority_event_digest
+        or delivery["finalized_revision"] != candidate["candidate_revision"]
+        or delivery["candidate_digest"] != candidate_envelope["envelope_digest"]
+        or delivery["release_digest"] != release_envelope["envelope_digest"]
+        or delivery_scope not in current["authority"]["delivery_effects"]
+        or delivery_scope not in release["authorized_delivery_scope"]
+    ):
+        raise RunStateError("delivery authority, revision, or release binding is invalid")
+    retained_evidence = sorted(
+        digest
+        for path, digest in raw_digests.items()
+        if path.startswith("evidence/")
+    )
+    if retained_evidence != sorted(delivery["acceptance_evidence"]):
+        raise RunStateError("delivery acceptance evidence lacks retained raw bytes")
+    _require_input_bindings(
+        delivery_envelope,
+        {
+            candidate_id: candidate_envelope["envelope_digest"],
+            release_id: release_envelope["envelope_digest"],
+        },
+        "delivery acceptance",
+    )
+
+
+def _validate_cleanup_authority_binding(
+    run: Path,
+    current: dict[str, Any],
+    authority_id: str,
+    authority_event_digest: str | None,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    authority_envelope, raw_digests = _artifact_raw_digests(run, authority_id)
+    cleanup_authority = _artifact_payload_json(run, authority_id)
+    delivery_id, delivery_envelope, delivery = _current_event_artifact(
+        run,
+        current,
+        "record-delivery",
+        "delivery-acceptance-record",
+        event_artifacts,
+    )
+    if (
+        cleanup_authority["workflow_id"] != current["workflow_id"]
+        or cleanup_authority["target_identity"]
+        != current["target_identity"]["canonical"]
+        or cleanup_authority["authority_event_digest"] != authority_event_digest
+        or raw_digests.get("authority-event.bin") != authority_event_digest
+        or cleanup_authority["accepted_delivery_digest"]
+        != delivery_envelope["envelope_digest"]
+        or delivery["accepted"] is not True
+    ):
+        raise RunStateError("cleanup authority or accepted-delivery binding is invalid")
+    _require_input_bindings(
+        authority_envelope,
+        {delivery_id: delivery_envelope["envelope_digest"]},
+        "cleanup authority",
+    )
 
 
 def finalize_run(
@@ -3674,22 +4149,20 @@ def record_delivery(
         not isinstance(item, str) or not _DIGEST_RE.fullmatch(item) for item in evidence
     ):
         raise RunStateError("delivery acceptance evidence is incomplete")
-    raw_evidence = evidence_files if evidence_files is not None else {}
-    if authority_event is not None or evidence_files is not None:
-        if not isinstance(authority_event, bytes):
-            raise RunStateError("delivery authority event must be retained as raw bytes")
-        if raw_digest(authority_event) != authority_event_digest:
-            raise RunStateError("raw delivery authority does not match its digest")
-        if not isinstance(raw_evidence, dict) or not raw_evidence:
-            raise RunStateError("delivery acceptance evidence files are required")
-        raw_evidence_digests: list[str] = []
-        for name, content in raw_evidence.items():
-            _safe_artifact_path(name)
-            if not isinstance(content, bytes):
-                raise RunStateError("delivery evidence values must be raw bytes")
-            raw_evidence_digests.append(raw_digest(content))
-        if sorted(raw_evidence_digests) != sorted(evidence):
-            raise RunStateError("raw delivery evidence does not match declared digests")
+    if not isinstance(authority_event, bytes):
+        raise RunStateError("delivery authority event must be retained as raw bytes")
+    if raw_digest(authority_event) != authority_event_digest:
+        raise RunStateError("raw delivery authority does not match its digest")
+    if not isinstance(evidence_files, dict) or not evidence_files:
+        raise RunStateError("delivery acceptance evidence files are required")
+    raw_evidence_digests: list[str] = []
+    for name, content in evidence_files.items():
+        _safe_artifact_path(name)
+        if not isinstance(content, bytes):
+            raise RunStateError("delivery evidence values must be raw bytes")
+        raw_evidence_digests.append(raw_digest(content))
+    if sorted(raw_evidence_digests) != sorted(evidence):
+        raise RunStateError("raw delivery evidence does not match declared digests")
     with _locked_root(state_root, create=False) as root:
         run = _run_directory(root, workflow_id)
         current = _derive_index(run)
@@ -3722,12 +4195,14 @@ def record_delivery(
             "release_digest": release_envelope["envelope_digest"],
             "timestamp": _now(),
         }
-        files = {"record.json": canonical_json_bytes(payload)}
-        if authority_event is not None:
-            files["authority-event.bin"] = authority_event
-            files.update(
-                {f"evidence/{name}": content for name, content in raw_evidence.items()}
-            )
+        files = {
+            "record.json": canonical_json_bytes(payload),
+            "authority-event.bin": authority_event,
+            **{
+                f"evidence/{name}": content
+                for name, content in evidence_files.items()
+            },
+        }
         derived, created, _ = _append_transaction(
             run=run,
             current=current,
@@ -3774,11 +4249,16 @@ def record_cleanup_authority(
     workflow_id: str,
     expected_sequence: int,
     authority_event_digest: str,
+    authority_event: bytes | None = None,
     actor: str,
     state_root: Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(authority_event_digest, str) or not _DIGEST_RE.fullmatch(authority_event_digest):
         raise RunStateError("cleanup-authority event digest is invalid")
+    if not isinstance(authority_event, bytes):
+        raise RunStateError("cleanup-authority event must be retained as raw bytes")
+    if raw_digest(authority_event) != authority_event_digest:
+        raise RunStateError("cleanup-authority raw event digest does not match")
     if not isinstance(actor, str) or not actor.strip():
         raise RunStateError("cleanup-authority actor is required")
     with _locked_root(state_root, create=False) as root:
@@ -3794,74 +4274,45 @@ def record_cleanup_authority(
             run, current, "record-delivery", "delivery-acceptance-record"
         )
         artifact_id = f"cleanup-authority-{expected_sequence + 1:08d}"
-        artifact = _artifact_directory(run, artifact_id)
-        receipt_path: Path | None = None
-        try:
-            payload = {
-                "schema_version": "skill-builder-cleanup-authority.v1",
-                "workflow_id": workflow_id,
-                "target_identity": current["target_identity"]["canonical"],
-                "action": "cleanup",
-                "authorized": True,
-                "authority_event_digest": authority_event_digest,
-                "actor": actor,
-                "timestamp": _now(),
-                "accepted_delivery_digest": delivery_envelope["envelope_digest"],
-            }
-            envelope = _create_artifact(
-                run=run,
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                mode=current["mode"]["name"],
-                stage="delivered",
-                sequence=expected_sequence + 1,
-                artifact_id=artifact_id,
-                artifact_type="cleanup-authority-record",
-                files={"record.json": canonical_json_bytes(payload)},
-                primary_path="record.json",
-                producer=actor,
-                input_bindings=[
-                    {
-                        "artifact_id": delivery_id,
-                        "digest": delivery_envelope["envelope_digest"],
-                    }
-                ],
-                limitations=[],
-            )
-            receipt = _new_receipt(
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                sequence=expected_sequence + 1,
-                prior_receipt_digest=current["head_transition_digest"],
-                event="record-cleanup-authority",
-                source_stage="delivered",
-                destination_stage="delivered",
-                relevant_artifact_digests=[
-                    {
-                        "artifact_id": artifact_id,
-                        "envelope_digest": envelope["envelope_digest"],
-                        "status": "accepted",
-                    }
-                ],
-                target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
-                authority_event_digest=authority_event_digest,
-            )
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-        except BaseException:
-            if (
-                receipt_path is not None
-                and receipt_path.exists()
-                and not receipt_path.is_symlink()
-            ):
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            if artifact.exists() and not artifact.is_symlink():
-                shutil.rmtree(artifact)
-                _fsync_directory(artifact.parent)
-            _atomic_json(run / "current.json", current)
-            raise
+        payload = {
+            "schema_version": "skill-builder-cleanup-authority.v1",
+            "workflow_id": workflow_id,
+            "target_identity": current["target_identity"]["canonical"],
+            "action": "cleanup",
+            "authorized": True,
+            "authority_event_digest": authority_event_digest,
+            "actor": actor,
+            "timestamp": _now(),
+            "accepted_delivery_digest": delivery_envelope["envelope_digest"],
+        }
+        derived, created, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="record-cleanup-authority",
+            destination_stage="delivered",
+            authority_event_digest=authority_event_digest,
+            existing_bindings=[],
+            artifact_requests=[
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": "cleanup-authority-record",
+                    "files": {
+                        "record.json": canonical_json_bytes(payload),
+                        "authority-event.bin": authority_event,
+                    },
+                    "primary_path": "record.json",
+                    "producer": actor,
+                    "input_bindings": [
+                        {
+                            "artifact_id": delivery_id,
+                            "digest": delivery_envelope["envelope_digest"],
+                        }
+                    ],
+                    "limitations": [],
+                }
+            ],
+        )
+        envelope = created[artifact_id]
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "record-cleanup-authority",
@@ -4113,6 +4564,46 @@ def cleanup_run(
                     "tombstone_digest": tombstone["tombstone_digest"],
                 }
             _validate_private_directory(run_candidate, "live run")
+            current = _derive_index(run_candidate)
+            current_path = run_candidate / "current.json"
+            if os.path.lexists(current_path) and _read_json(current_path) != current:
+                raise RunStateError("cleanup retry current index is stale or corrupt")
+            if current["head_sequence"] != expected_sequence:
+                raise RevisionConflict("cleanup retry receipt sequence conflict")
+            if current["stage"] != "delivered":
+                raise RunStateError("cleanup retry requires accepted delivery")
+            _validate_target_unchanged(current, root)
+            _, delivery_envelope, delivery = _current_event_artifact(
+                run_candidate,
+                current,
+                "record-delivery",
+                "delivery-acceptance-record",
+            )
+            _, _, cleanup_authority = _current_event_artifact(
+                run_candidate,
+                current,
+                "record-cleanup-authority",
+                "cleanup-authority-record",
+            )
+            final_manifest = _final_run_manifest(run_candidate, current)
+            final_manifest_path = run_candidate / "final-run-manifest.json"
+            if (
+                not os.path.lexists(final_manifest_path)
+                or _read_json(final_manifest_path) != final_manifest
+                or delivery.get("accepted") is not True
+                or cleanup_authority.get("authorized") is not True
+                or tombstone["target_identity"]
+                != current["target_identity"]["canonical"]
+                or tombstone["final_transition_receipt_digest"]
+                != current["head_transition_digest"]
+                or tombstone["final_run_manifest_digest"]
+                != final_manifest["manifest_digest"]
+                or tombstone["accepted_delivery_record_digest"]
+                != delivery_envelope["envelope_digest"]
+                or tombstone["cleanup_authority_event_digest"]
+                != cleanup_authority["authority_event_digest"]
+            ):
+                raise RunStateError("cleanup retry tombstone bindings are invalid")
             run_info = run_candidate.lstat()
             expected_identity = tombstone["run_directory_identity"]
             if (
@@ -4251,6 +4742,10 @@ def main(argv: list[str] | None = None) -> int:
             "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
             "  transition request: workflow_id, expected_sequence, event, "
             "destination_stage, artifact_ids; optional authority_event_digest\n"
+            "  deliver request: workflow_id, expected_sequence, delivery, "
+            "authority_event_digest, authority_event_base64, evidence_files_base64\n"
+            "  cleanup-authority request: workflow_id, expected_sequence, "
+            "authority_event_digest, authority_event_base64, actor\n"
             "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
             "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence"
         ),
@@ -4328,9 +4823,53 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "finalize":
             result = finalize_run(state_root=state_root, **payload)
         elif args.command == "deliver":
-            result = record_delivery(state_root=state_root, **payload)
+            encoded_authority = payload.pop("authority_event_base64", None)
+            encoded_evidence = payload.pop("evidence_files_base64", None)
+            if not isinstance(encoded_authority, str) or not isinstance(
+                encoded_evidence, dict
+            ) or any(
+                not isinstance(name, str) or not isinstance(value, str)
+                for name, value in encoded_evidence.items()
+            ):
+                raise RunStateError(
+                    "deliver requires authority_event_base64 and an "
+                    "evidence_files_base64 object"
+                )
+            try:
+                authority_event = base64.b64decode(
+                    encoded_authority, validate=True
+                )
+                evidence_files = {
+                    name: base64.b64decode(value, validate=True)
+                    for name, value in encoded_evidence.items()
+                }
+            except (ValueError, binascii.Error) as error:
+                raise RunStateError("delivery evidence contains invalid base64") from error
+            result = record_delivery(
+                state_root=state_root,
+                authority_event=authority_event,
+                evidence_files=evidence_files,
+                **payload,
+            )
         elif args.command == "cleanup-authority":
-            result = record_cleanup_authority(state_root=state_root, **payload)
+            encoded_authority = payload.pop("authority_event_base64", None)
+            if not isinstance(encoded_authority, str):
+                raise RunStateError(
+                    "cleanup-authority requires authority_event_base64"
+                )
+            try:
+                authority_event = base64.b64decode(
+                    encoded_authority, validate=True
+                )
+            except (ValueError, binascii.Error) as error:
+                raise RunStateError(
+                    "cleanup-authority event contains invalid base64"
+                ) from error
+            result = record_cleanup_authority(
+                state_root=state_root,
+                authority_event=authority_event,
+                **payload,
+            )
         elif args.command == "activate-next":
             result = activate_next_target(state_root=state_root, **payload)
         else:
