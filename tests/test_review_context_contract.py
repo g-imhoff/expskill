@@ -182,25 +182,35 @@ class ReviewContextContractTests(unittest.TestCase):
                     )
 
     def test_repository_validator_rejects_judge_policy_inversions(self) -> None:
+        mutations = (
+            ("at most 300", "at least 300"),
+            ("Accept only a locator handoff", "Accept any handoff"),
+            (
+                "stop and return `invalid handoff` without a review verdict",
+                "continue and return a review verdict",
+            ),
+            ("Do not request a copied diff", "Request a copied diff"),
+        )
         for name in ("devflow-review", "devflow-spec"):
-            root = self.copy_repository()
-            path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / f"{name}.toml"
-            contents = path.read_text(encoding="utf-8")
-            self.assertIn("Do not request a copied diff", contents)
-            path.write_text(
-                contents.replace(
-                    "Do not request a copied diff",
-                    "Request a copied diff",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-            errors = validate_repository(root)
-            with self.subTest(profile=name):
-                self.assertTrue(
-                    any(name in error and "instructions" in error for error in errors),
-                    errors,
+            for old, new in mutations:
+                root = self.copy_repository()
+                path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "assets"
+                    / "agents"
+                    / f"{name}.toml"
                 )
+                contents = path.read_text(encoding="utf-8")
+                self.assertIn(old, contents)
+                path.write_text(contents.replace(old, new, 1), encoding="utf-8")
+                errors = validate_repository(root)
+                with self.subTest(profile=name, mutation=new):
+                    self.assertTrue(
+                        any(name in error and "instructions" in error for error in errors),
+                        errors,
+                    )
 
 
 if __name__ == "__main__":
