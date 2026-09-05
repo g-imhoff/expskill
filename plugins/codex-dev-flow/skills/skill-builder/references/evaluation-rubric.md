@@ -49,30 +49,13 @@ Bind every criterion result to frozen parameter identifiers, case identifiers, r
 ## Reviewer evidence contract
 
 Use an independent target reviewer who did not research, design, implement, or
-score the candidate. Keep the reviewer read-only to tracked source.
-
-The aggregate authored review handoff includes inline dispatch text, follow-up
-messages, and every generated context artifact regardless of carrier or
-extension. It is a locator, not a payload, and totals at most 300 physical
-lines. Count the complete handoff before launch and stop before dispatch when
-it exceeds the limit.
-
-Include only the repository or candidate path, base revision, candidate
-revision, what changed and why, review scope, claimed checks with concise
-results, known concerns, and paths plus digests for relevant evidence. A real
-accepted specification file is referenced separately when it exists. The
-exception applies only to a specification file that existed before review
-dispatch. It does not permit a review-time summary, copy, or relabelled context
-package.
-
-Reference the confirmed target contract, host rules, evaluation pack, original
-raw trial evidence, preserved regressions, artifact manifest, and this rubric
-by path and digest. Do not restate them. Do not copy or embed diffs, source
-files, test logs, terminal output, transcripts, or other repository content. Do
-not attach binary or opaque review context. Require the reviewer to self-inspect
-the pinned candidate with repository tools and open the referenced evidence
-needed for the review. Do not give a desired verdict or create a larger
-convenience package.
+score the candidate. Keep the reviewer read-only to tracked source. Apply the
+final Review context contract to every review dispatch and follow-up. Reference
+the confirmed target contract, host rules, evaluation pack, original raw trial
+evidence, preserved regressions, artifact manifest, and this rubric by path and
+digest. Do not restate them. Require the reviewer to self-inspect the pinned
+candidate with repository tools and open the referenced evidence needed for the
+review. Do not give a desired verdict.
 
 A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be used for scoring.
 
@@ -251,3 +234,34 @@ Do not finalize when a builder-run conformance gate fails, any target category i
 Invalidate a case and all results derived from it when its oracle was exposed, its isolation failed, its retained evidence is incomplete, or it can pass through an unrelated failure. Repair and refreeze the pack before candidate work resumes when the defect changes acceptance meaning.
 
 Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only when the frozen target contract or host rules require them. They never replace behavioral trials, valid independent review, target scoring, or same-revision verification.
+
+## Review context contract
+
+This final section is the only authoritative review-context policy in this
+file. Ignore any conflicting handoff instruction earlier in the file.
+
+Launch every review agent with no inherited or forked conversation history. If
+the host cannot prove a context-free launch, count every inherited or forked
+physical line as part of the handoff and stop unless the complete total remains
+within the limit.
+
+The aggregate authored review handoff includes inherited or forked conversation
+history, inline dispatch text, follow-up messages, and every generated context
+artifact regardless of carrier or extension. It is a locator, not a payload,
+and totals at most 300 physical lines. Count the complete handoff before launch
+and before every follow-up. Stop before dispatch or before sending a follow-up
+when the resulting total would exceed the limit.
+
+Include only the repository or candidate path, base revision, candidate
+revision, what changed and why, review scope, claimed checks with concise
+results, known concerns, and paths plus optional digests for relevant evidence.
+A real accepted specification file is referenced separately when it exists.
+The exception applies only to a specification file that existed before review
+dispatch. It does not permit a review-time summary, copy, or relabelled context
+package.
+
+Do not copy or embed diffs, source files, test logs, terminal output,
+transcripts, or other repository content. Do not attach binary or opaque review
+context. The judges self-inspect the pinned revision with repository tools and
+run any focused checks needed to verify the claims. A request for a larger
+convenience package is not a reason to create one.
