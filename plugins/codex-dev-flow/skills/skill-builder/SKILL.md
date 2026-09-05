@@ -10,7 +10,7 @@ Build, improve, redesign, or evaluate one exact agent skill through evidence tha
 
 `$skill-builder` is standalone and explicit-only. Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Do not invoke or depend on a product lifecycle phase or an ambient authoring skill.
 
-Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, independent review, ten independently satisfied category scores, verification, and retained release evidence. Static validation alone is never completion.
+Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence. Static validation alone is never completion.
 
 Read [artifact contracts](references/artifact-contracts.md) completely at run start and again before resuming persisted work. Read [evaluation rubric](references/evaluation-rubric.md) completely before freezing the evaluation pack and before every review or scoring pass.
 
@@ -18,9 +18,9 @@ Read [artifact contracts](references/artifact-contracts.md) completely at run st
 
 Resolve the package's `scripts/run_state.py` relative to the loaded skill. Execute it for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Read its runtime help before the first operation and use the interface it exposes instead of guessing flags or editing state directly.
 
-The helper owns private XDG state outside target repositories. Require a strict manifest, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat missing, stale, inconsistent, or unauditable state as a failed gate.
+The helper owns private XDG state outside target repositories. Require immutable hash-chained transition receipts, strict manifests, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat current-state files as replaceable derived indexes, never as the append-only source of truth. Treat missing, stale, inconsistent, or unauditable state as a failed gate.
 
-Before every stage transition, have the helper validate the current state, input bindings, target snapshot, and allowed transition. A failed transition leaves the current stage unchanged and blocks downstream work.
+Before every stage transition, have the helper validate the receipt chain, immutable artifacts, derived state, input bindings, target snapshot, and allowed transition. A successful transition appends one canonical receipt linked to the prior receipt digest. A failed transition appends nothing, leaves the current stage unchanged, and blocks downstream work.
 
 ## Ordered workflow
 
@@ -125,13 +125,17 @@ Candidate agents receive only the candidate skill, realistic request, visible ca
 
 ### 11. Obtain independent review before scoring
 
-Give an independent read-only reviewer the confirmed contract, exact candidate revision, evaluation pack, candidate diff, raw trial evidence, and preserved regressions. Verify access to every supplied artifact. Do not give the reviewer a desired verdict.
+Give an independent read-only target reviewer the confirmed contract, host rules, exact candidate revision, evaluation pack, candidate diff, raw trial evidence, and preserved regressions. Verify independence, revision freshness, read-only behavior, and access to every supplied artifact. Do not give the reviewer a desired verdict.
 
-Require evidence, impact, correction, severity, and `ready` or `not ready`. An inaccessible artifact invalidates the review. A `not ready` verdict blocks scoring and candidate completion.
+Require evidence, impact, correction, severity, affected target criteria, and `ready` or `not ready`. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be scored.
+
+Treat a valid `not ready` review or a valid review with High or Medium findings as negative scoring evidence. Map every finding to affected target criteria, mark those criteria failing, and carry them into the ordinary lowest-category repair loop. No material finding may coexist with a score of 10.
 
 ### 12. Score and repair the lowest category
 
-Score these exact categories using the evaluation rubric:
+Evaluate the builder-run conformance gates in the evaluation rubric as a separate pass or fail ledger. These gates prove that this run followed its research, confirmation, acceptance-first, isolation, evidence, state, authority, and cleanup rules. A failed gate blocks release and returns the run to its earliest affected stage, but never becomes a target category criterion.
+
+Score the exact candidate target against the confirmed target contract, host rules, accepted neighbouring boundaries, and frozen evaluation pack. Never score the candidate against `$skill-builder` identity, invocation policy, package layout, or workflow. Score these exact target categories using the evaluation rubric:
 
 1. triggering
 2. scope discipline
@@ -148,17 +152,19 @@ Use integer scores from 0 to 10. Every category must independently reach 10. Nev
 
 Select the lowest score. Break ties by greater safety or correctness impact, then greater dependency impact, then earlier position in the category list. Identify the evidence preventing 10, strengthen or add the proving case, issue one bounded repair brief, edit only the isolated candidate, rerun affected and preserved cases, obtain independent review, and rescore the exact new revision. Continue until every category is 10.
 
-Missing evidence, a flaky gate, a blocking finding, conflicting requirements, or an unresolved user decision keeps the affected category below 10 and stops advancement.
+Missing evidence, a flaky target gate, a valid negative review, conflicting requirements, or an unresolved user decision keeps the affected target category below 10 and stops target completion. Invalid review evidence blocks advancement without receiving a score.
 
 ### 13. Review, verify, and finalize one exact revision
 
-After all ten categories reach 10, run a final independent review and independent verification against the same exact candidate revision. Verification records exact commands or operations, exit status, relevant output, target manifests, and revision. Any candidate change invalidates both final gates and returns affected categories to repair.
+After all ten target categories reach 10 and every builder-run conformance gate passes, run a final independent target review against the same exact candidate revision. Validate the review before using its verdict. An invalid final review blocks advancement without changing scores. A valid `not ready` review or valid High or Medium finding lowers every affected target category below 10 and returns it to repair.
 
-Finalize through the state helper only after the final review is `ready`, verification passes, every binding matches, and release evidence is retained. The finalization terminal stage retains the contract, confirmation, evaluation pack, candidate identity, scorecard, review, verification, limitations, and release record.
+After a valid `ready` final review, run independent verification against that exact revision. Verification records exact commands or operations, exit status, relevant output, target manifests, and revision. Any candidate change invalidates both final gates and returns affected categories to repair.
+
+Finalize through the state helper only after every builder-run conformance gate passes, every target category is 10, the final review is valid and `ready`, verification passes, every binding matches, and release evidence is retained. The finalization terminal stage retains the contract, confirmation, evaluation pack, candidate identity, conformance ledger, scorecard, review, verification, limitations, and release record.
 
 Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect. Record any accepted installation or integration against the exact finalized revision.
 
-Cleanup is a separate terminal transition. It requires explicit user authority plus a recorded accepted installation or integration. Cleanup may delete only the helper-owned run directory. It must never delete a target skill, repository, candidate outside that owned directory, or any unowned path.
+Cleanup is a separate terminal transition. It requires explicit user authority plus a recorded accepted installation or integration. Before deletion, write and validate a helper-owned parent-level tombstone outside the run directory, bound to the run identity, final transition digest, final run-manifest digest, and accepted delivery or installation record digest. Only then may cleanup delete the helper-owned run directory. The tombstone survives. Cleanup must never delete a target skill, repository, candidate outside that owned directory, tombstone, or any unowned path.
 
 ## Roles, tools, and permissions
 
@@ -177,6 +183,6 @@ Stop at the current gate when identity, authority, evidence, confirmation, isola
 
 ## Status and output contract
 
-During work, report the exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and any user-owned decision. At finalization, report the exact revision, ten category scores, review verdict, verification evidence, retained limitations, release-record locator, and authorized delivery result.
+During work, report the exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and any user-owned decision. At finalization, report the exact revision, builder-run conformance, ten target category scores, review validity and verdict, verification evidence, retained limitations, release-record locator, and authorized delivery result.
 
-A status report is an observation, not a stage transition. Only a validated helper receipt advances or terminates the run.
+A status report is an observation, not a stage transition. Only a validated hash-chained helper receipt advances the live run. The cleaned terminal state additionally requires its valid durable tombstone and deletion of only the helper-owned run directory.

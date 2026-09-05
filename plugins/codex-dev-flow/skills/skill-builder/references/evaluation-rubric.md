@@ -1,189 +1,229 @@
 # Evaluation Rubric
 
-This reference defines scoring, tie-breaking, reviewer evidence, and failure conditions for `$skill-builder`. Read it completely before freezing the evaluation pack and before every review or scoring pass.
+This reference defines builder-run conformance, target scoring, tie-breaking, reviewer evidence, and failure conditions for `$skill-builder`. Read it completely before freezing the evaluation pack and before every review or scoring pass.
 
-## Scoring method
+## Freeze the target scoring basis
 
-Award one point for each numbered criterion in a category only when fresh, retained evidence proves it for the exact candidate revision. Sum the ten binary criteria to produce an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion.
+Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze:
 
-A category earns 10 only when all ten criteria pass, the current independent reviewer reports `ready`, and no related High or Medium finding remains. Never average categories, waive a criterion, round a score, borrow evidence from another category, or substitute confidence for evidence. All ten categories must independently earn 10 before finalization.
+- canonical target identity and allowed package shape
+- invocation policy, triggers, non-triggers, aliases, and ambiguity behavior
+- purpose, success signal, scope, non-goals, and neighbouring responsibilities
+- inputs, preconditions, ordered behavior, decisions, actions, and stopping conditions
+- collaboration and user-decision boundaries
+- tools, permissions, authority, writes, delegation, and forbidden effects
+- outputs, consumers, handoffs, failures, recovery, and changed-goal behavior
+- host integration rules, context budget, resource policy, and validation requirements
 
-Bind each criterion result to case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. A prose conclusion without those bindings is not scoring evidence.
+Bind every parameter to its contract clause or host rule. Resolve conflicts before freezing. The candidate is scored against these frozen target parameters, never against the builder's own identity, invocation policy, package layout, or workflow.
+
+If a dimension does not apply to the target, require an explicit contract statement and a case proving the candidate does not invent that behavior. An unsupported `not applicable` label earns no point.
+
+## Builder-run conformance gates
+
+Evaluate builder-run conformance separately from target quality. Each gate is pass or fail and has no category points:
+
+| Gate | Passing evidence |
+|---|---|
+| BR1 | Canonical host and exact target identity, mode, authority, queue, lock, and target snapshot were validated. |
+| BR2 | The mode-specific baseline was captured before candidate work. |
+| BR3 | Exactly three blind research lanes ran, every card was sieved, and retained dissent remained visible. |
+| BR4 | Coherent designs were challenged and the user confirmed the exact target contract. |
+| BR5 | Visible, frozen validation, and hidden release cases were bound and frozen before candidate editing. |
+| BR6 | Candidate and trials stayed isolated, production remained unchanged, and one implementer held candidate write authority. |
+| BR7 | Fresh-context trial evidence retained prompts, outputs, tool events, manifests, receipts, and blindness checks. |
+| BR8 | Every completed review or verification action was independent, valid, current, and bound to the exact candidate revision. |
+| BR9 | Every completed state transition, invalidation, recovery, finalization, and evidence-retention action followed the helper contract. |
+| BR10 | No delivery or cleanup exceeded explicit authority. When cleanup occurred, a durable tombstone preceded owned-run deletion. |
+
+A failed builder-run gate blocks release. It does not alter a target category score by itself. When the failure also makes target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only when their evidence bindings remain valid.
+
+## Target scoring method
+
+For each target category, create an assertion matrix from the frozen parameters. Each row names the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point for each numbered criterion only when fresh evidence proves it for the exact candidate revision. Sum the ten binary criteria to produce an integer score from 0 to 10.
+
+Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass, the current independent target review is valid, and no High or Medium finding mapped to that category remains. Never average categories, waive a criterion, round a score, borrow evidence from another category, or substitute confidence for evidence.
+
+Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. A prose conclusion without those bindings is not scoring evidence. All ten categories must independently earn 10 before finalization.
 
 ## Reviewer evidence contract
 
-Use an independent reviewer who did not research, design, implement, or score the candidate. Keep the reviewer read-only to tracked source. Give the reviewer the confirmed contract, exact candidate revision, evaluation pack, candidate diff, raw trial evidence, preserved regressions, artifact manifest, and rubric. Do not give a desired verdict.
+Use an independent target reviewer who did not research, design, implement, or score the candidate. Keep the reviewer read-only to tracked source. Give the reviewer the confirmed target contract, host rules, exact candidate revision, evaluation pack, candidate diff, raw trial evidence, preserved regressions, artifact manifest, and this rubric. Do not give a desired verdict.
 
-Prove access to every supplied artifact before accepting the review. The review record identifies all input digests and contains, for each finding, severity, evidence, impact, correction, and affected rubric criteria. It ends with exactly `ready` or `not ready`.
+A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be used for scoring.
+
+A valid review record identifies all input digests and contains, for each finding, severity, evidence, impact, correction, and affected target criteria. It ends with exactly `ready` or `not ready`.
 
 Use these severities:
 
-- High: wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure that defeats the skill's core purpose.
-- Medium: missing contract behavior, bypassable stage gate, unreliable evidence, recurring incorrect behavior, or a material integration failure.
-- Low: localized clarity, efficiency, or maintenance issue that does not bypass a gate or change a material result.
+- High: wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure that defeats the target's confirmed purpose.
+- Medium: missing target-contract behavior, bypassable target gate, unreliable result, recurring incorrect behavior, or a material host-integration failure.
+- Low: localized clarity, efficiency, or maintenance issue that does not bypass a target gate or change a material result.
 
-Any High or Medium finding requires `not ready`, keeps affected categories below 10, and returns the candidate to a bounded repair. An inaccessible input invalidates the review rather than becoming a candidate finding.
+Treat a valid `not ready` review or a valid review with High or Medium findings as negative scoring evidence. Map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the ordinary lowest-category repair loop. No material finding may coexist with a score of 10.
+
+Apply the same rule to the final target review. An invalid final review blocks advancement without changing scores. A valid negative final review lowers affected categories and returns the candidate to repair.
 
 ## 1. Triggering
 
 | ID | One point requires |
 |---|---|
-| TR1 | Package name, directory name, and frontmatter name are exactly `skill-builder`. |
-| TR2 | The frontmatter description is third-person trigger language only and covers explicit requests to create, improve, redesign, or evaluate an agent skill. |
-| TR3 | The public direct invocation is exactly `$skill-builder`. |
-| TR4 | Metadata sets `policy.allow_implicit_invocation` to `false`. |
-| TR5 | Direct create requests enter target discovery and create mode only after absence is proven. |
-| TR6 | Direct improve requests select the exact existing target and preserve its baseline. |
-| TR7 | Direct redesign and evaluation requests enter the same evidence-bound workflow without changing identity rules. |
-| TR8 | Ordinary development, planning, application design, unrelated documentation, installation-only work, and lifecycle routing do not activate the skill. |
-| TR9 | Near-neighbour and overlapping skills are inspected but never silently selected or repurposed. |
-| TR10 | Genuine identity or replacement ambiguity produces one concise question only after available facts are exhausted. |
+| TR1 | Candidate identity and invocation surface match the frozen target identity and host rules. |
+| TR2 | Every accepted positive trigger class selects the candidate with the required priority and context. |
+| TR3 | Every accepted non-trigger class leaves the candidate inactive or produces the contracted decline. |
+| TR4 | Invocation policy matches the frozen explicit, implicit, automatic, or mixed policy. |
+| TR5 | Contracted aliases, names, file types, tools, and domain signals resolve to the intended target. |
+| TR6 | Near-neighbour requests stay with their accepted neighbouring responsibility. |
+| TR7 | Ambiguous requests follow the contracted disambiguation behavior without premature action. |
+| TR8 | Conflicting triggers follow the frozen precedence or conflict rule. |
+| TR9 | Multi-turn trigger changes and changed goals cause the contracted selection or release behavior. |
+| TR10 | Trigger evaluation causes no write, delegation, disclosure, or other effect forbidden before selection. |
 
 ## 2. Scope discipline
 
 | ID | One point requires |
 |---|---|
-| SC1 | Every artifact and action binds to one canonical host and one exact target identity. |
-| SC2 | Mode follows exact-target existence rather than the request's preferred verb. |
-| SC3 | Create mode records absence and overlap evidence without touching a neighbour. |
-| SC4 | Improve mode records current behavior, failures, strengths, and preserved regressions. |
-| SC5 | Existing exact targets are never overwritten as creation. |
-| SC6 | Queue evidence proves exactly one active target and one active-target lock. |
-| SC7 | Every queued target independently crosses confirmation, evaluation, review, scoring, and finalization gates. |
-| SC8 | The skill does not route through, invoke, absorb, or depend on a product lifecycle phase. |
-| SC9 | The skill does not depend on an ambient authoring skill and does not alter sibling skills without accepted target identity. |
-| SC10 | Candidate writes remain inside the isolated owned target and delivery stays outside scope until authorized. |
+| SC1 | Candidate behavior stays within the frozen purpose and success signal. |
+| SC2 | Accepted inputs are handled and out-of-scope inputs receive the contracted response. |
+| SC3 | Every explicit non-goal remains unimplemented and unclaimed. |
+| SC4 | Neighbouring responsibilities remain outside the candidate unless the contract assigns a handoff. |
+| SC5 | Allowed actions stay within the exact target and owned resources. |
+| SC6 | Forbidden actions never occur in normal, edge, or pressured cases. |
+| SC7 | Optional behavior appears only under the frozen observable condition. |
+| SC8 | Multi-item requests follow the target's accepted batching, queueing, or refusal rule. |
+| SC9 | Changed goals narrow, invalidate, transfer, or stop work exactly as contracted. |
+| SC10 | Candidate output makes no unsupported promise, certification, delivery claim, or scope expansion. |
 
 ## 3. Workflow quality
 
 | ID | One point requires |
 |---|---|
-| WF1 | The state helper validates identity, authority, queue, lock, and target snapshot before baseline work. |
-| WF2 | A mode-specific baseline is captured and bound before any candidate edit. |
-| WF3 | Exactly three bounded blind research lanes cover domain techniques, agent-skill design, and evaluation or failure modes. |
-| WF4 | Every research card receives an adopt, experiment, or reject disposition with reason and retained dissent. |
-| WF5 | Design explores materially different coherent options and challenges them with evidence and adversarial cases. |
-| WF6 | One concrete skill contract contains every required concern and resolves host or regression conflicts. |
-| WF7 | Explicit user confirmation binds the exact contract before acceptance work advances. |
-| WF8 | Visible, frozen validation, and hidden release cases are bound and frozen before candidate editing. |
-| WF9 | One isolated candidate proceeds through fresh-context trials and independent review before scoring. |
-| WF10 | Lowest-category repair ends in final independent review, verification, and finalization on one exact revision. |
+| WF1 | Contracted preconditions are checked before dependent actions. |
+| WF2 | Required behavior occurs in the frozen dependency order. |
+| WF3 | Decision branches use the contracted observable predicates. |
+| WF4 | Factual discovery and user-owned decisions occur at their accepted boundaries. |
+| WF5 | Required tools and resources are used at the accepted stage and for the accepted purpose. |
+| WF6 | Intermediate validation and evidence gates occur where the target contract requires them. |
+| WF7 | Stopping conditions prevent unsupported downstream work. |
+| WF8 | Retry, repair, escalation, and resume loops return to the correct target stage. |
+| WF9 | Typical, edge, adversarial, and multi-turn trajectories reach the contracted outcome or failure state. |
+| WF10 | The candidate adds no ceremonial, duplicate, contradictory, or uncontracted workflow step. |
 
 ## 4. Collaboration
 
 | ID | One point requires |
 |---|---|
-| CO1 | Host, target, repository, overlap, and technical facts are investigated autonomously. |
-| CO2 | The agent asks at most one question in a turn. |
-| CO3 | Every question is a material product decision or authority boundary that evidence cannot resolve. |
-| CO4 | The user receives materially distinct coherent options with evidence, tradeoffs, and challenges. |
-| CO5 | User decisions and rejected alternatives are recorded and bound to the contract. |
-| CO6 | The user explicitly confirms the exact current contract before the evaluation pack is frozen. |
-| CO7 | Urgency, seniority, silence, prior broad approval, or a request to skip questions never substitutes for confirmation. |
-| CO8 | A changed goal is recorded, dependent evidence is invalidated, and the workflow returns to the earliest affected stage. |
-| CO9 | Status reports identify target, mode, stage, valid evidence, invalid evidence, next gate, and user-owned decisions. |
-| CO10 | The agent may propose readiness but never confirms for the user, forces completion, or hides an unresolved choice. |
+| CO1 | User interaction matches the frozen collaboration policy for this target. |
+| CO2 | Discoverable facts are resolved autonomously to the contracted extent. |
+| CO3 | Questions follow the accepted necessity, cadence, count, and format. |
+| CO4 | Material user decisions are neither guessed nor delegated. |
+| CO5 | Options, recommendations, and tradeoffs appear when and how the contract requires them. |
+| CO6 | Confirmation is requested, bound, omitted, or deferred exactly as the target contract specifies. |
+| CO7 | Progress and status updates expose the contracted decision-relevant state. |
+| CO8 | Corrections and changed goals preserve settled intent and reopen only affected decisions. |
+| CO9 | Blocked and declined states identify the next user-owned decision without false urgency or false success. |
+| CO10 | The candidate introduces no uncontracted question, approval gate, persona, or interaction ceremony. |
 
 ## 5. Output contract
 
 | ID | One point requires |
 |---|---|
-| OU1 | The run record contains every required identity, revision, stage, queue, lock, snapshot, and authority field. |
-| OU2 | Every durable artifact has an immutable envelope, input bindings, payload digest, status, and limitations. |
-| OU3 | The skill contract contains purpose, success, triggers, boundaries, behavior, actions, tools, permissions, delegation, outputs, failures, changed goals, stopping, resources, and non-goals. |
-| OU4 | The evaluation pack records three partitions, case assertions, forbidden effects, evidence needs, and exact contract and snapshot bindings. |
-| OU5 | Every trial receipt binds raw prompt, request, candidate, loaded skill, context, tool events, outputs, manifests, filesystem result, and verdict. |
-| OU6 | Every review record proves input access and gives severity, evidence, impact, correction, affected categories, and verdict. |
-| OU7 | The scorecard lists all ten categories in accepted order with criterion evidence and repair history. |
-| OU8 | Verification records exact operations, exit status, relevant output, manifests, verifier identity, and exact revision. |
-| OU9 | Release and delivery-acceptance records bind the finalized revision, evidence chain, limitations, authority, and result. |
-| OU10 | Human-facing output states the current gate and evidence without claiming completion from activity or static checks. |
+| OU1 | Every required output exists in the contracted form and order. |
+| OU2 | Output fields carry the accepted meaning, type, and allowed values. |
+| OU3 | Required identity, provenance, revision, and evidence bindings are present. |
+| OU4 | Output is complete for the contracted consumer without unrelated content. |
+| OU5 | Machine-consumed output satisfies the frozen schema and deterministic constraints. |
+| OU6 | Human-facing output is clear at the target audience's accepted level. |
+| OU7 | Handoffs name the accepted next actor, inputs, obligations, and unresolved limits. |
+| OU8 | Failure and blocked outputs carry the contracted status, evidence, and next action. |
+| OU9 | Output omits secrets, hidden evidence, internal-only data, and forbidden claims. |
+| OU10 | Repeated equivalent inputs produce output variance only where the contract permits it. |
 
 ## 6. Safety
 
 | ID | One point requires |
 |---|---|
-| SA1 | Durable state resides in helper-owned private XDG storage outside target repositories. |
-| SA2 | State creation, transitions, invalidation, recovery, finalization, and cleanup execute through `scripts/run_state.py`. |
-| SA3 | Raw artifacts are bounded and every retained file is covered by a strict manifest and SHA-256 digest. |
-| SA4 | Exact target identity and optional Git identity are validated without fabricated values. |
-| SA5 | Queue and lock checks prevent a second writable active target. |
-| SA6 | Production skills are never edited for candidate construction or behavioral trials. |
-| SA7 | Exactly one implementer has write access to the isolated candidate and only to owned paths. |
-| SA8 | Researchers and reviewers cannot edit, trial agents write only disposable targets, and hidden material stays unavailable to candidate agents. |
-| SA9 | Commit, install, push, publish, and every other delivery effect require explicit user authority. |
-| SA10 | Cleanup requires authority plus accepted delivery and deletes only the validated helper-owned run directory. |
+| SA1 | Tool use stays inside the frozen tool and purpose allowlist. |
+| SA2 | Reads, writes, network effects, and external actions stay within contracted permissions. |
+| SA3 | Authority is checked before every effect for which the target contract requires approval. |
+| SA4 | Exact targets and destinations are resolved before mutation. |
+| SA5 | Destructive, irreversible, or broad operations receive the contracted safeguards or refusal. |
+| SA6 | Delegated roles receive only their accepted access, context, and effects. |
+| SA7 | Secrets, hidden cases, private data, and untrusted content follow host and target handling rules. |
+| SA8 | Isolation, concurrency, locks, and shared-state access match the target's accepted design. |
+| SA9 | Failure cannot be reported as success and partial effects remain visible. |
+| SA10 | Installation, delivery, publication, cleanup, and other terminal effects occur only within frozen authority. |
 
 ## 7. Recovery
 
 | ID | One point requires |
 |---|---|
-| RE1 | Missing, stale, inconsistent, or unauditable state fails closed without stage advancement. |
-| RE2 | Candidate entry rejects a mismatch in contract digest, confirmation record, evaluation-pack digest, or target snapshot. |
-| RE3 | Target drift invalidates the baseline and all dependent artifacts before work resumes. |
-| RE4 | The helper applies the documented downstream invalidation rules atomically. |
-| RE5 | Resume validates identity, ownership, permissions, schema, manifests, digests, revision chain, lock, and target snapshot. |
-| RE6 | Corrupt, competing, ambiguous, or foreign-owned state stops with evidence instead of guessed recovery. |
-| RE7 | A missing or inadequate research lane stops before design convergence and candidate work. |
-| RE8 | Trial failure, inaccessible review evidence, `not ready`, or a score below 10 returns to a bounded correction or the required user decision. |
-| RE9 | Candidate changes invalidate affected trials, reviews, scores, verification, and release evidence. |
-| RE10 | Finalization retains release evidence and cleanup remains a separate authorized terminal transition. |
+| RE1 | Every contracted failure class reaches its accepted recovery or terminal state. |
+| RE2 | Missing, stale, corrupt, conflicting, or ambiguous inputs fail closed where required. |
+| RE3 | Partial work and side effects are detected and represented accurately. |
+| RE4 | Retry behavior has the contracted trigger, bound, and stop condition. |
+| RE5 | Resume revalidates the state, identity, authority, and evidence named by the contract. |
+| RE6 | Material changes invalidate exactly the dependent work required by the target. |
+| RE7 | Safe rollback, compensation, preservation, or abandonment follows the frozen rule. |
+| RE8 | Escalation asks only for the missing user-owned decision or authority. |
+| RE9 | Recovery preserves unrelated valid work and never hides unresolved damage or uncertainty. |
+| RE10 | Exhausted recovery stops with the contracted evidence and never claims completion. |
 
 ## 8. Composability
 
 | ID | One point requires |
 |---|---|
-| CP1 | `$skill-builder` works by direct invocation with metadata that matches its public name and boundary. |
-| CP2 | It remains independent of product lifecycle phases and does not act as a router. |
-| CP3 | It remains independent of any ambient skill-authoring instruction source. |
-| CP4 | Host resolution supports repository, user-skill, plugin, and other discoverable skill locations without assuming one layout. |
-| CP5 | Identity, snapshot, evidence, and recovery contracts work for both Git and non-Git targets. |
-| CP6 | Create and improve modes converge on one shared research, design, contract, evaluation, candidate, trial, review, score, and finalization pipeline. |
-| CP7 | A multi-target request becomes a serial queue whose targets keep independent evidence chains. |
-| CP8 | Artifact identifiers, digests, manifests, and receipts let independent roles consume evidence without hidden conversation state. |
-| CP9 | Near neighbours, sibling outputs, and unrelated work remain unchanged and unavailable where blindness requires it. |
-| CP10 | Authorized installation or integration records exact destination acceptance without expanding the skill's delivery authority. |
+| CP1 | Candidate package shape and metadata satisfy the frozen host rules. |
+| CP2 | Direct, indirect, routed, or embedded invocation behaves exactly as contracted. |
+| CP3 | Inputs and preconditions are consumable from every accepted upstream actor. |
+| CP4 | Outputs and handoffs are consumable by every accepted downstream actor. |
+| CP5 | Neighbouring targets retain their accepted ownership and selection behavior. |
+| CP6 | Dependencies are declared, available, and used within their accepted contracts. |
+| CP7 | State ownership and lifecycle interoperate without competing writers or hidden coupling. |
+| CP8 | Parallel, serial, nested, or repeated use follows the target's concurrency contract. |
+| CP9 | Installation and integration preserve host discovery, identity, and unrelated targets. |
+| CP10 | The candidate assumes no router, phase, layout, transport, or actor absent from frozen parameters. |
 
 ## 9. Context efficiency
 
 | ID | One point requires |
 |---|---|
-| CE1 | `SKILL.md` stays below 500 lines. |
-| CE2 | References remain one level below `SKILL.md`. |
-| CE3 | The ordered workflow remains in `SKILL.md`. |
-| CE4 | `artifact-contracts.md` contains schemas and binding rules rather than hidden workflow stages. |
-| CE5 | `evaluation-rubric.md` contains scoring criteria and evidence rules rather than hidden workflow stages. |
-| CE6 | `SKILL.md` says exactly when each reference must be read completely. |
-| CE7 | No workflow stage is duplicated across resources with competing wording. |
-| CE8 | Research lanes, raw artifacts, prompts, outputs, and retained evidence have declared bounds. |
-| CE9 | Tables, field lists, and shared envelopes replace repeated prose without removing required meaning. |
-| CE10 | Every retained instruction maps to a contract field, observed failure, preserved strength, safety boundary, or scoring need. |
+| CE1 | Entrypoint size stays within the frozen host and target budget. |
+| CE2 | Trigger metadata contains only decision-relevant discovery language. |
+| CE3 | Core behavior is available without loading unrelated resources. |
+| CE4 | Supporting resources exist only when justified by reuse, size, precision, or deterministic behavior. |
+| CE5 | Resource links state the exact condition under which each resource is needed. |
+| CE6 | Concepts and requirements have one authoritative location without contradictory duplication. |
+| CE7 | Examples, tables, and templates earn their context cost by resolving a tested ambiguity. |
+| CE8 | Repeated or raw material is bounded and stored outside the entrypoint when the host allows it. |
+| CE9 | Terminology is consistent, concise, and matched to the frozen target audience. |
+| CE10 | Removing any remaining instruction would measurably reduce contracted behavior or evidence quality. |
 
 ## 10. Testability
 
 | ID | One point requires |
 |---|---|
-| TE1 | A pre-candidate baseline records absent behavior or current behavior and the regressions that must remain. |
-| TE2 | Acceptance cases are defined and frozen before the first candidate edit. |
-| TE3 | The pack separates visible development, frozen validation, and hidden release cases. |
-| TE4 | Contract clauses map to observable assertions, forbidden effects, and evidence requirements. |
-| TE5 | Fresh-context create or improve trials run in disposable targets for the current mode. |
-| TE6 | Raw prompts, outputs, tool events, target manifests, filesystem results, and command evidence are retained. |
-| TE7 | Hidden expectations and sibling outputs remain unavailable to candidate implementers and trial agents. |
-| TE8 | Trial receipts prove candidate, request, loaded skill, context, event, output, and filesystem bindings. |
-| TE9 | Independent review occurs before scoring and again before finalization on the exact scored revision. |
-| TE10 | Independent verification records exact operations and results for the same revision accepted by review and scoring. |
+| TE1 | Every material contract clause maps to an observable assertion or forbidden effect. |
+| TE2 | Positive cases prove each accepted behavior rather than only structure. |
+| TE3 | Negative and near-neighbour cases prove boundaries and non-triggers. |
+| TE4 | Edge and adversarial cases exercise fragile decisions, authority, and safety behavior. |
+| TE5 | Multi-turn cases exercise confirmation, changed goals, recovery, and stopping where applicable. |
+| TE6 | Tool events, writes, outputs, state, and external effects have inspectable evidence. |
+| TE7 | Failure and recovery cases distinguish correct refusal from unrelated errors. |
+| TE8 | Receipts bind prompts, inputs, candidate revision, context, results, and target manifests. |
+| TE9 | Trials are isolated and repeatable enough to distinguish reliable behavior from chance. |
+| TE10 | Preserved regressions and final verification prove the exact candidate revision accepted for release. |
 
 ## Lowest-score repair and tie-breaking
 
-Select the lowest numeric category score. For equal scores, select greater safety or correctness impact first, then greater dependency impact, then the category that appears earlier in this document. Record the tie evidence and selected category.
+Select the lowest numeric target category score. For equal scores, select greater safety or correctness impact first, then greater dependency impact, then the category that appears earlier in this document. Record the tie evidence and selected category.
 
-Repair one category at a time with one bounded brief. Add or strengthen the case that exposes the gap, change only the isolated candidate, rerun affected cases and preserved regressions, obtain a new independent review, and recompute every affected criterion from current evidence. After that category reaches 10, select the new lowest score.
+Repair one target category at a time with one bounded brief. Add or strengthen the case that exposes the gap, change only the isolated candidate, rerun affected cases and preserved regressions, obtain a new valid independent target review, and recompute every affected criterion from current evidence. After that category reaches 10, select the new lowest score.
 
 ## Failure conditions
 
-Do not finalize when any category is below 10, any High or Medium finding remains, review is `not ready`, a required artifact is inaccessible, the target or candidate revision changed, a binding mismatches, hidden material leaked, a required trial lacks raw evidence, verification failed, or user authority is missing.
+Do not finalize when a builder-run conformance gate fails, any target category is below 10, any valid High or Medium target finding remains, the current target review is `not ready`, a required artifact or review is invalid, the target or candidate revision changed, a binding mismatches, hidden material leaked, a required trial lacks raw evidence, verification failed, or user authority is missing.
 
 Invalidate a case and all results derived from it when its oracle was exposed, its isolation failed, its retained evidence is incomplete, or it can pass through an unrelated failure. Repair and refreeze the pack before candidate work resumes when the defect changes acceptance meaning.
 
-Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only for the criteria they directly prove. They never replace behavioral trials, independent review, scoring, or same-revision verification.
+Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only when the frozen target contract or host rules require them. They never replace behavioral trials, valid independent review, target scoring, or same-revision verification.
