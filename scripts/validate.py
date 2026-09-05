@@ -41,15 +41,18 @@ PLUGIN_INTERFACE_FIELDS = {
     "capabilities",
     "defaultPrompt",
 }
-PUBLIC_PHASE_TOKENS = {
+PUBLIC_SKILL_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
     "$use-expand",
     "$design",
     "$grill-me",
+    "$skill-builder",
     "$unslop",
 }
+PUBLIC_SKILL_COUNT_TEXT = "seven independent skills and one optional lifecycle router"
+SKILL_BUILDER_TOKEN = "$skill-builder"
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
     re.IGNORECASE,
@@ -61,6 +64,7 @@ EXPECTED_SKILLS = {
     "plan",
     "implement",
     "grill-me",
+    "skill-builder",
     "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
@@ -425,6 +429,8 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         _validate_unslop_hook(plugin_root, errors)
         _validate_third_party_sources(plugin_root, errors)
         _validate_helper_and_package_layout(plugin_root, errors)
+    _validate_public_readme(repository_root, errors)
+    _validate_removed_repository_local_skill(repository_root, errors)
     _validate_skill_punctuation(repository_root, errors)
     return tuple(errors)
 
@@ -545,9 +551,11 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
-            if phrase not in normalized_description:
-                errors.append(f"plugin description must advertise {phrase!r}")
+        if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
+            errors.append(
+                "plugin description must advertise seven independent skills and one optional "
+                "lifecycle router"
+            )
         if PUBLIC_METADATA_JARGON.search(description):
             errors.append("plugin description exposes private implementation or scaffold jargon")
     if manifest.get("author") != {"name": PLUGIN_AUTHOR_NAME}:
@@ -600,7 +608,7 @@ def _validate_plugin_manifest(
         else:
             if ("$" + "acceptance") in long_description:
                 errors.append("plugin interface longDescription contains removed public token " + "$" + "acceptance")
-            for token in sorted(PUBLIC_PHASE_TOKENS):
+            for token in sorted(PUBLIC_SKILL_TOKENS):
                 if token not in long_description:
                     errors.append(f"plugin interface longDescription must advertise {token}")
             for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
@@ -662,11 +670,19 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "references/interaction.md", "references/forms.md", "references/responsive.md",
                 "references/accessibility.md", "references/motion.md", "references/data-display.md",
             })
+        if skill_root.name == "skill-builder":
+            expected_files.update({
+                "references/artifact-contracts.md",
+                "references/evaluation-rubric.md",
+                "scripts/run_state.py",
+            })
         expected_directories = {"agents"}
         if skill_root.name == "brainstorm":
             expected_directories.add("references")
         if skill_root.name == "design":
             expected_directories.add("references")
+        if skill_root.name == "skill-builder":
+            expected_directories.update({"references", "scripts"})
         actual_files = {
             path.relative_to(skill_root).as_posix()
             for path in skill_root.rglob("*")
@@ -738,6 +754,42 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
+    _validate_skill_builder_separation(skills_root, errors)
+
+
+def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> None:
+    builder_path = skills_root / "skill-builder" / "SKILL.md"
+    if builder_path.is_file() and not builder_path.is_symlink():
+        try:
+            builder = builder_path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"skill-builder contract could not be read: {error}")
+        else:
+            normalized = " ".join(builder.lower().split())
+            independence_clause = "do not invoke or depend on a product lifecycle phase"
+            if SKILL_BUILDER_TOKEN not in builder:
+                errors.append("skill-builder contract must identify $skill-builder directly")
+            if "$use-expand" in builder:
+                errors.append("skill-builder contract must not reference $use-expand")
+            if "`$skill-builder` is standalone and explicit-only" not in normalized:
+                errors.append("skill-builder explicit standalone contract is missing")
+            if independence_clause not in normalized:
+                errors.append("skill-builder lifecycle independence contract is missing")
+            coupling_probe = normalized.replace(independence_clause, "").replace(
+                "lifecycle routing", ""
+            )
+            if "lifecycle" in coupling_probe:
+                errors.append("skill-builder contract contains lifecycle coupling")
+
+    router_path = skills_root / "use-expand" / "SKILL.md"
+    if router_path.is_file() and not router_path.is_symlink():
+        try:
+            router = router_path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"use-expand contract could not be read: {error}")
+        else:
+            if SKILL_BUILDER_TOKEN in router:
+                errors.append("use-expand must not route to $skill-builder")
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -953,6 +1005,63 @@ def _validate_public_third_party_derivations(
         expected_grill = frontmatter + b"\n" + body
         if public_grill != expected_grill:
             errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
+
+
+def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
+    if _lstat(repository_root / "README.md") is None:
+        return
+    readme_path = _required_package_path(
+        repository_root,
+        "README.md",
+        "README",
+        "file",
+        errors,
+    )
+    if readme_path is None:
+        return
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"README could not be read: {error}")
+        return
+    normalized = " ".join(readme.lower().split())
+    if PUBLIC_SKILL_COUNT_TEXT not in normalized:
+        errors.append(
+            "README must describe seven independent skills and one optional lifecycle router"
+        )
+    if re.search(r"\bsix independent skills\b", normalized):
+        errors.append("README contains stale six-skill wording")
+    if SKILL_BUILDER_TOKEN not in readme:
+        errors.append("README must advertise $skill-builder")
+    builder_lines = [
+        line.lower()
+        for line in readme.splitlines()
+        if SKILL_BUILDER_TOKEN in line
+    ]
+    if not any(
+        line.startswith("- `$skill-builder`")
+        and "create" in line
+        and "improve" in line
+        and "one exact agent skill" in line
+        and "evidence" in line
+        for line in builder_lines
+    ):
+        errors.append(
+            "README must describe $skill-builder as the evidence-gated creator or improver "
+            "of one exact agent skill"
+        )
+    if re.search(r"(?m)^Use \$skill-builder\b", readme) is None:
+        errors.append("README must include a direct $skill-builder invocation example")
+    if any("lifecycle" in line for line in builder_lines):
+        errors.append("README must not describe $skill-builder as part of the code lifecycle")
+
+
+def _validate_removed_repository_local_skill(
+    repository_root: Path, errors: list[str]
+) -> None:
+    duplicate = repository_root / ".agents" / "skills" / "improve-skill"
+    if _lstat(duplicate) is not None:
+        errors.append("repository-local skill '.agents/skills/improve-skill' must be absent")
 
 
 def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:

@@ -31,19 +31,131 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, temporary, ignore_errors=True)
         for name in (".agents", "plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
+        shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
 
-    def test_readme_and_manifest_expose_six_skills_and_design(self) -> None:
-        """Regression: stale phase language hides Design and contradicts the public roster."""
+    def test_readme_and_manifest_expose_seven_skills_design_and_skill_builder(self) -> None:
+        """Regression: stale phase language hides a direct skill or contradicts the public roster."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
-        skill_wording = re.compile(r"\bsix independent skills and one optional lifecycle router\b", re.I)
+        long_description = str(manifest.get("interface", {}).get("longDescription", ""))
+        skill_wording = re.compile(r"\bseven independent skills and one optional lifecycle router\b", re.I)
         self.assertRegex(" ".join(readme.split()), skill_wording)
         self.assertIn("$design", readme)
+        self.assertIn("$skill-builder", readme)
+        self.assertIn("$skill-builder", long_description)
         self.assertRegex(description, skill_wording)
         self.assertNotRegex(readme, re.compile(r"\b(?:six|seven) independent development phases\b", re.I))
         self.assertNotRegex(description, re.compile(r"\b(?:six|seven) standalone development phases\b", re.I))
+
+    def test_validator_accepts_skill_builder_maximum_package_shape(self) -> None:
+        """Regression: the joined state helper is allowed without becoming required in this lane."""
+
+        root = self._copy_repository()
+        scripts = root / "plugins" / "codex-dev-flow" / "skills" / "skill-builder" / "scripts"
+        scripts.mkdir()
+        (scripts / "run_state.py").write_text(
+            "from __future__ import annotations\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(validate_repository(root), ())
+
+    def test_validator_rejects_skill_builder_integration_mutations(self) -> None:
+        """Regression: public visibility, isolation, package bounds, and duplicate removal fail closed."""
+
+        expected_fragments = {
+            "missing-builder": ("skill-builder", "missing"),
+            "unexpected-file": ("skill 'skill-builder'", "unexpected file", "notes.txt"),
+            "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
+            "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
+            "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
+            "stale-six-skill-wording": ("readme", "seven independent skills"),
+            "use-expand-reference": ("skill-builder", "must not reference $use-expand"),
+            "lifecycle-coupling": ("skill-builder", "lifecycle independence contract"),
+            "router-coupling": ("use-expand", "must not route to $skill-builder"),
+            "repository-local-duplicate": (".agents/skills/improve-skill", "must be absent"),
+        }
+        for mutation, fragments in expected_fragments.items():
+            with self.subTest(mutation=mutation):
+                root = self._copy_repository()
+                plugin = root / "plugins" / "codex-dev-flow"
+                builder = plugin / "skills" / "skill-builder"
+                if mutation == "missing-builder":
+                    shutil.rmtree(builder)
+                elif mutation == "unexpected-file":
+                    (builder / "notes.txt").write_text("drift\n", encoding="utf-8")
+                elif mutation == "unexpected-directory":
+                    (builder / "scratch").mkdir()
+                elif mutation == "implicit-invocation":
+                    metadata = builder / "agents" / "openai.yaml"
+                    metadata.write_text(
+                        metadata.read_text(encoding="utf-8").replace(
+                            "allow_implicit_invocation: false",
+                            "allow_implicit_invocation: true",
+                        ),
+                        encoding="utf-8",
+                    )
+                elif mutation == "omitted-manifest-token":
+                    manifest_path = plugin / ".codex-plugin" / "plugin.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["interface"]["longDescription"] = manifest["interface"][
+                        "longDescription"
+                    ].replace("$skill-builder", "skill-builder")
+                    manifest_path.write_text(
+                        json.dumps(manifest, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                elif mutation == "stale-six-skill-wording":
+                    readme = root / "README.md"
+                    readme.write_text(
+                        readme.read_text(encoding="utf-8").replace(
+                            "seven independent skills",
+                            "six independent skills",
+                            1,
+                        ),
+                        encoding="utf-8",
+                    )
+                elif mutation == "use-expand-reference":
+                    contract = builder / "SKILL.md"
+                    contract.write_text(
+                        contract.read_text(encoding="utf-8")
+                        + "\nUse $use-expand after finalization.\n",
+                        encoding="utf-8",
+                    )
+                elif mutation == "lifecycle-coupling":
+                    contract = builder / "SKILL.md"
+                    contract.write_text(
+                        contract.read_text(encoding="utf-8").replace(
+                            "Do not invoke or depend on a product lifecycle phase",
+                            "Invoke and depend on a product lifecycle phase",
+                            1,
+                        ),
+                        encoding="utf-8",
+                    )
+                elif mutation == "router-coupling":
+                    router = plugin / "skills" / "use-expand" / "SKILL.md"
+                    router.write_text(
+                        router.read_text(encoding="utf-8")
+                        + "\nRoute to $skill-builder after implementation.\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    duplicate = root / ".agents" / "skills" / "improve-skill"
+                    duplicate.mkdir(parents=True)
+                    (duplicate / "SKILL.md").write_text(
+                        "---\n"
+                        "name: improve-skill\n"
+                        "description: Improve an existing agent skill\n"
+                        "---\n\n"
+                        "Removed duplicate.\n",
+                        encoding="utf-8",
+                    )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(all(fragment in error for fragment in fragments) for error in errors),
+                    f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
+                )
 
     def test_validator_accepts_the_complete_design_package(self) -> None:
         """Regression: package validation must have an independent Design helper boundary."""

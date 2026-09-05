@@ -1,6 +1,6 @@
 # Codex Dev Flow
 
-Codex Dev Flow is a private Codex plugin with six independent skills and one
+Codex Dev Flow is a private Codex plugin with seven independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -30,6 +30,7 @@ Invoke a skill directly when you know what you want:
 - `$design` creates grounded production-intended UI components and admits them to responsive, stateful review only after blocking quality gates pass.
 - `$implement` coordinates isolated TDD workers, independent review and spec
   gates, corrections, local integration, and final whole-branch gates.
+- `$skill-builder` creates or improves one exact agent skill through evidence-gated research, trials, review, and verification.
 - `$unslop` rewrites prose to remove common AI tells and remains directly
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
@@ -50,6 +51,7 @@ Direct skill invocation never loads the entire pipeline. For example:
 Use $brainstorm to compare storage approaches for this feature.
 Use $plan to turn the accepted API decision into bounded tasks.
 Use $implement to execute this accepted implementation work.
+Use $skill-builder to create or improve one exact agent skill with retained evidence.
 Use $unslop to rewrite this explanation in a natural voice.
 Use $grill-me to stress-test these connected product decisions.
 ```
