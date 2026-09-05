@@ -491,12 +491,13 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
             continue
         normalized = " ".join(contents.lower().split())
         normalized_markdown = contents.replace("\r\n", "\n").replace("\r", "\n")
-        if normalized_markdown.count(REVIEW_HANDOFF_HEADING) != 1:
+        heading_index = _review_contract_heading_index(normalized_markdown)
+        if heading_index is None:
             errors.append(
                 f"review handoff contract at {relative} must contain one final "
                 "Review context contract section"
             )
-        elif not _review_contract_heading_is_live(normalized_markdown):
+        elif not _review_contract_heading_is_live(normalized_markdown, heading_index):
             errors.append(
                 f"review handoff contract at {relative} must begin at a live top-level "
                 "Markdown heading"
@@ -517,13 +518,23 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
 
 def _canonical_review_markdown(contents: str) -> str:
     normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
-    if normalized.count(REVIEW_HANDOFF_HEADING) != 1:
+    heading_index = _review_contract_heading_index(normalized)
+    if heading_index is None:
         return normalized
-    return normalized[normalized.index(REVIEW_HANDOFF_HEADING) :]
+    return normalized[heading_index:]
 
 
-def _review_contract_heading_is_live(contents: str) -> bool:
-    heading_index = contents.index(REVIEW_HANDOFF_HEADING)
+def _review_contract_heading_index(contents: str) -> int | None:
+    matches: list[int] = []
+    offset = 0
+    for line in contents.splitlines(keepends=True):
+        if line == REVIEW_HANDOFF_HEADING:
+            matches.append(offset)
+        offset += len(line)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _review_contract_heading_is_live(contents: str, heading_index: int) -> bool:
     prefix = contents[:heading_index]
     fence_character: str | None = None
     fence_length = 0
