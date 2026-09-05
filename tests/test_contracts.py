@@ -547,7 +547,13 @@ class ContractTests(unittest.TestCase):
                 self.assertTrue(any(label in error.lower() for error in errors), errors)
 
     def test_validator_rejects_missing_or_tampered_unslop_hook(self) -> None:
-        for mutation in ("missing-config", "tampered-command", "missing-script", "extra-source"):
+        for mutation in (
+            "missing-config",
+            "tampered-command",
+            "missing-script",
+            "tampered-script",
+            "extra-source",
+        ):
             with self.subTest(mutation=mutation):
                 root = self.copy_repository()
                 hook_root = root / "plugins" / "codex-dev-flow" / "hooks"
@@ -560,6 +566,16 @@ class ContractTests(unittest.TestCase):
                     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
                 elif mutation == "missing-script":
                     (hook_root / "inject_unslop.py").unlink()
+                elif mutation == "tampered-script":
+                    path = hook_root / "inject_unslop.py"
+                    path.write_text(
+                        path.read_text(encoding="utf-8").replace(
+                            "explicit user formatting or tone choices win",
+                            "explicit user formatting or tone choices lose",
+                            1,
+                        ),
+                        encoding="utf-8",
+                    )
                 else:
                     (hook_root / "surprise.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
                 errors = validate_repository(root)
@@ -580,6 +596,21 @@ class ContractTests(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8") + "\nTampered.\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("upstream" in error.lower() and "digest" in error.lower() for error in errors), errors)
+
+    def test_validator_rejects_drift_in_public_third_party_derived_skills(self) -> None:
+        for name in ("unslop", "grill-me"):
+            with self.subTest(skill=name):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / "skills" / name / "SKILL.md"
+                path.write_text(
+                    path.read_text(encoding="utf-8") + "\nUntracked behavioral addition.\n",
+                    encoding="utf-8",
+                )
+                errors = validate_repository(root)
+                self.assertTrue(
+                    any(name in error.lower() and "derived" in error.lower() for error in errors),
+                    errors,
+                )
 
     def test_missing_profile_is_rejected(self) -> None:
         root = self.copy_repository()
