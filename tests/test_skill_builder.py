@@ -135,6 +135,163 @@ class OracleFailure:
     ledger: str = "builder-run"
 
 
+def accepted_finalization_trace() -> list[dict[str, Any]]:
+    binding = {
+        "revision": "candidate-v1",
+        "contract_digest": "contract-v1",
+        "evaluation_digest": "evaluation-v1",
+    }
+    proof = {
+        "event": "artifact_retained",
+        "artifact_id": "accepted-proof",
+        "artifact_type": "trial-receipt",
+        "valid": True,
+        **binding,
+    }
+    scores = [
+        {
+            "event": "category_scored",
+            "category": category,
+            "score": 10,
+            "criteria": [
+                {"id": criterion_id, "passed": True, "evidence": ["accepted-proof"]}
+                for criterion_id in sorted(criterion_ids)
+            ],
+            **binding,
+        }
+        for category, criterion_ids in CATEGORY_CRITERION_IDS.items()
+    ]
+    return [
+        {
+            "event": "resolve",
+            "selected_mode": "improve",
+            "target_manifest": "targets/exact-improve/manifest.json",
+            "target_snapshot": "fixture-improve-snapshot-v1",
+        },
+        {
+            "event": "research_pack",
+            "lanes": [
+                {
+                    "role": role,
+                    "context_id": f"research-{index}",
+                    "blind": True,
+                    "contaminated_by": [],
+                    "evidence_cards": 1,
+                }
+                for index, role in enumerate(sorted(RESEARCH_ROLES), start=1)
+            ],
+        },
+        {"event": "contract_written", "contract_digest": "contract-v1"},
+        {"event": "user_confirmed", "contract_digest": "contract-v1"},
+        {
+            "event": "evaluation_frozen",
+            "contract_digest": "contract-v1",
+            "evaluation_digest": "evaluation-v1",
+            "target_snapshot": "fixture-improve-snapshot-v1",
+        },
+        {"event": "candidate_edit", "candidate_revision": "candidate-v1"},
+        proof,
+        {
+            "event": "builder_conformance_recorded",
+            "gates": [
+                {"id": gate_id, "passed": True, "evidence": ["accepted-proof"]}
+                for gate_id in sorted(CONFORMANCE_GATE_IDS)
+            ],
+            **binding,
+        },
+        *scores,
+        {
+            "event": "review_recorded",
+            "phase": "final",
+            "valid": True,
+            "verdict": "ready",
+            "independent": True,
+            "read_only": True,
+            "findings": [],
+            "evidence": ["accepted-proof"],
+            **binding,
+        },
+        {
+            "event": "spec_outcome_recorded",
+            "valid": True,
+            "outcome": "pass",
+            "independent": True,
+            "read_only": True,
+            "evidence": ["accepted-proof"],
+            **binding,
+        },
+        {
+            "event": "verification_recorded",
+            "behavioral_trials": 1,
+            "exit_status": 0,
+            "conclusion": "pass",
+            "independent": True,
+            "read_only": True,
+            "evidence": ["accepted-proof"],
+            **binding,
+        },
+        {
+            "event": "release_evidence_retained",
+            "valid": True,
+            "evidence": ["accepted-proof"],
+            **binding,
+        },
+        {"event": "finalized", **binding},
+    ]
+
+
+def cleanup_trace(
+    run_directory: str,
+    xdg_state_home: str | None = None,
+) -> list[dict[str, Any]]:
+    state_home = xdg_state_home or str(BUILDER_FIXTURES / "private-state")
+    binding = {
+        "workflow_id": "workflow-1",
+        "target_identity": "fixture-terse-summary",
+        "finalized_revision": "candidate-v1",
+        "run_directory_identity": "run-directory-1",
+    }
+    return [
+        {
+            "event": "run_state_manifest_validated",
+            "valid": True,
+            "xdg_state_home": state_home,
+            "run_directory": run_directory,
+            "manifest_digest": "manifest-1",
+            **binding,
+        },
+        {
+            "event": "cleanup_authority_recorded",
+            "valid": True,
+            "effect": "cleanup",
+            "authority_event_digest": "authority-1",
+            **binding,
+        },
+        {
+            "event": "delivery_accepted",
+            "valid": True,
+            "accepted": True,
+            "delivery_record_digest": "delivery-1",
+            **binding,
+        },
+        {
+            "event": "cleanup_tombstone_validated",
+            "valid": True,
+            "scope": "helper-owned-parent",
+            "tombstone_digest": "tombstone-1",
+            "authority_event_digest": "authority-1",
+            "delivery_record_digest": "delivery-1",
+            **binding,
+        },
+        {
+            "event": "cleanup_attempt",
+            "deletion_scope": "helper-owned-run-directory",
+            "path": run_directory,
+            **binding,
+        },
+    ]
+
+
 def evaluate_trace(
     trace: list[dict[str, Any]],
     fixture_root: Path,
@@ -161,6 +318,7 @@ def evaluate_trace(
     cleanup_authority: dict[str, Any] | None = None
     accepted_delivery: dict[str, Any] | None = None
     cleanup_tombstone: dict[str, Any] | None = None
+    run_state_manifest: dict[str, Any] | None = None
 
     def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any]:
         return (
@@ -240,6 +398,8 @@ def evaluate_trace(
                         "resume did not revalidate the paused chain, identity, snapshot, and evidence",
                     )
                 )
+        elif event_name == "run_state_manifest_validated":
+            run_state_manifest = event
         elif event_name == "cleanup_authority_recorded":
             cleanup_authority = event
         elif event_name == "delivery_accepted":
@@ -252,6 +412,42 @@ def evaluate_trace(
                 event.get("target_identity"),
                 event.get("finalized_revision"),
                 event.get("run_directory_identity"),
+            )
+            state_home = (
+                run_state_manifest.get("xdg_state_home")
+                if run_state_manifest is not None
+                else None
+            )
+            run_directory = (
+                run_state_manifest.get("run_directory")
+                if run_state_manifest is not None
+                else None
+            )
+            trusted_state_home = fixture_root / "private-state"
+            expected_directory = (
+                trusted_state_home
+                / "codex-dev-flow"
+                / "skill-builder"
+                / "runs"
+                / str(event.get("workflow_id"))
+            )
+            ownership_valid = (
+                run_state_manifest is not None
+                and run_state_manifest.get("valid") is True
+                and bool(run_state_manifest.get("manifest_digest"))
+                and isinstance(state_home, str)
+                and Path(state_home) == trusted_state_home
+                and (
+                    run_state_manifest.get("workflow_id"),
+                    run_state_manifest.get("target_identity"),
+                    run_state_manifest.get("finalized_revision"),
+                    run_state_manifest.get("run_directory_identity"),
+                )
+                == cleanup_binding
+                and isinstance(run_directory, str)
+                and Path(run_directory).is_absolute()
+                and Path(run_directory) == expected_directory
+                and event.get("path") == run_directory
             )
             authority_valid = (
                 cleanup_authority is not None
@@ -328,6 +524,16 @@ def evaluate_trace(
                         "FORBIDDEN_CLEANUP_SCOPE",
                         index,
                         "cleanup attempted to delete production or an unowned path",
+                    )
+                )
+            if (
+                event.get("path") is not None or run_state_manifest is not None
+            ) and not ownership_valid:
+                failures.append(
+                    OracleFailure(
+                        "INVALID_CLEANUP_OWNERSHIP",
+                        index,
+                        "cleanup target was not derived from a validated helper-owned XDG run manifest",
                     )
                 )
         elif event_name == "goal_changed" and scenario is not None:
@@ -408,9 +614,20 @@ def evaluate_trace(
             if event["valid"]:
                 for finding in event["findings"]:
                     if finding["severity"] in {"High", "Medium"}:
-                        material_findings[finding["id"]] = set(
-                            finding["affected_categories"]
-                        )
+                        affected_categories = set(finding["affected_categories"])
+                        material_findings[finding["id"]] = affected_categories
+                        for category in affected_categories:
+                            prior_score = category_scores.get(category)
+                            if prior_score is not None and prior_score[0].get("score") == 10:
+                                failures.append(
+                                    OracleFailure(
+                                        "MATERIAL_FINDING_AT_TEN",
+                                        index,
+                                        f"{category} retained a score of 10 after a material finding",
+                                        "target-quality",
+                                    )
+                                )
+                                category_scores.pop(category, None)
         elif event_name == "repair_completed":
             repaired_ids = set(event["finding_ids"])
             if (
@@ -494,6 +711,25 @@ def evaluate_trace(
                         "finalization did not bind the current candidate, contract, and evaluation",
                     )
                 )
+            if (
+                frozen_evaluation is None
+                or frozen_evaluation.get("target_snapshot") != current_snapshot
+            ):
+                failures.append(
+                    OracleFailure(
+                        "FINALIZATION_SNAPSHOT_MISMATCH",
+                        index,
+                        "finalization did not bind the unchanged frozen target snapshot",
+                    )
+                )
+            if material_findings:
+                failures.append(
+                    OracleFailure(
+                        "FINALIZE_WITH_MATERIAL_FINDINGS",
+                        index,
+                        "finalization retained unresolved High or Medium review findings",
+                    )
+                )
 
             conformance_valid = (
                 conformance_record is not None
@@ -522,6 +758,7 @@ def evaluate_trace(
                 and final_review.get("verdict") == "ready"
                 and final_review.get("independent") is True
                 and final_review.get("read_only") is True
+                and not material_findings
                 and evidence_resolves(final_review.get("evidence"), expected_binding)
             )
             if not review_valid:
@@ -1096,6 +1333,71 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
             },
         )
+
+    def test_finalization_rechecks_snapshot_and_late_material_findings(self) -> None:
+        """Regression: final gates must remain valid after candidate work and scoring."""
+
+        accepted = accepted_finalization_trace()
+        self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
+
+        stale_snapshot = accepted_finalization_trace()
+        stale_snapshot.insert(
+            -1,
+            {"event": "target_snapshot_changed", "target_snapshot": "snapshot-v2"},
+        )
+        stale_codes = {
+            failure.code for failure in evaluate_trace(stale_snapshot, BUILDER_FIXTURES)
+        }
+        self.assertIn("FINALIZATION_SNAPSHOT_MISMATCH", stale_codes)
+
+        late_finding = accepted_finalization_trace()
+        final_review = next(
+            event
+            for event in late_finding
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        final_review["findings"] = [
+            {
+                "id": "late-safety-finding",
+                "severity": "Medium",
+                "affected_categories": ["safety"],
+            }
+        ]
+        finding_codes = {
+            failure.code for failure in evaluate_trace(late_finding, BUILDER_FIXTURES)
+        }
+        self.assertIn("MATERIAL_FINDING_AT_TEN", finding_codes)
+        self.assertIn("FINALIZE_WITH_MATERIAL_FINDINGS", finding_codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", finding_codes)
+
+    def test_cleanup_ownership_is_derived_from_validated_xdg_manifest(self) -> None:
+        """Regression: matching cleanup labels cannot disguise a production path."""
+
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / "workflow-1"
+        )
+        self.assertEqual(evaluate_trace(cleanup_trace(owned_path), BUILDER_FIXTURES), ())
+
+        production = cleanup_trace("/srv/skills/fixture")
+        production_codes = {
+            failure.code for failure in evaluate_trace(production, BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_CLEANUP_OWNERSHIP", production_codes)
+
+        spoofed_state_home = cleanup_trace(
+            "/srv/skills/codex-dev-flow/skill-builder/runs/workflow-1",
+            xdg_state_home="/srv/skills",
+        )
+        spoofed_codes = {
+            failure.code
+            for failure in evaluate_trace(spoofed_state_home, BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_CLEANUP_OWNERSHIP", spoofed_codes)
 
     def test_resume_requires_revalidation_and_cleanup_requires_all_authority_gates(self) -> None:
         """Regression: persisted state and cleanup pressure must fail closed."""
