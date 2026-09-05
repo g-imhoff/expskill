@@ -183,6 +183,32 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, "")
 
+    def test_unslop_hook_reinjects_for_every_supported_root_start_source(self) -> None:
+        environment = dict(os.environ)
+        environment["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+        for source in ("startup", "resume", "clear", "compact"):
+            with self.subTest(source=source):
+                result = subprocess.run(
+                    [sys.executable, str(HOOK_SCRIPT)],
+                    input=json.dumps(
+                        {"hook_event_name": "SessionStart", "source": source}
+                    ),
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                self.assertEqual(
+                    output["hookSpecificOutput"]["hookEventName"],
+                    "SessionStart",
+                )
+                self.assertIn(
+                    "# Unslop",
+                    output["hookSpecificOutput"]["additionalContext"],
+                )
+
     def test_upstream_snapshots_and_licenses_match_pinned_digests(self) -> None:
         lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
         self.assertEqual(lock["schema_version"], "third-party-sources.v1")
