@@ -178,9 +178,16 @@ REVIEW_HANDOFF_CLAUSES = (
     "a real accepted specification file is referenced separately when it exists.",
     "the exception applies only to a specification file that existed before review "
     "dispatch.",
+    "it does not permit a review-time summary, copy, or relabelled context package.",
     "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
     "or other repository content.",
+    "do not attach binary or opaque review context.",
 )
+REVIEW_HANDOFF_NORMALIZED_SHA256 = {
+    "skills/implement/SKILL.md": "7a833647c1fad9e67eb52b88105126bc61eba20618c55da0023834aad3fe1cd3",
+    "skills/skill-builder/SKILL.md": "8108d06ae122801fee577870d4a070bca966acbdf2b57f56b1062686b5ea01af",
+    "skills/skill-builder/references/evaluation-rubric.md": "9d11a8822213fb86e66c70cc2afa8cc5bd133afff1d24e86d412cdf4c05f6a6b",
+}
 REVIEW_AGENT_HANDOFF_CLAUSES = (
     "accept only a locator handoff whose aggregate authored review context includes "
     "inline dispatch text, follow-up messages, and generated context artifacts "
@@ -194,6 +201,10 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "do not request a copied diff, source files, test logs, terminal output, or "
     "transcripts.",
 )
+REVIEW_AGENT_INSTRUCTIONS_NORMALIZED_SHA256 = {
+    "devflow-review": "6ef2e488def33b59952b4b24fc5680a7b2c19c01279898db460015bae55bbb31",
+    "devflow-spec": "610cb621381d47e51a046dd67e49233f261f6fd53c425c69231be0c6b06d2869",
+}
 
 REQUIRED_AGENT_FIELDS = (
     "name",
@@ -475,6 +486,12 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
                 errors.append(
                     f"review handoff contract at {relative} must include {clause!r}"
                 )
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if digest != REVIEW_HANDOFF_NORMALIZED_SHA256[relative]:
+            errors.append(
+                f"review handoff contract at {relative} differs from its validated "
+                "normalized content"
+            )
 
 
 def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
@@ -1361,11 +1378,19 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
 
     instructions = profile.get("developer_instructions")
     if isinstance(instructions, str):
-        normalized = instructions.lower()
+        normalized = " ".join(instructions.lower().split())
         for phrase in AGENT_BOUNDARIES[expected_name]:
             if phrase not in normalized:
                 errors.append(
                     f"agent profile {expected_name!r} instructions must include {phrase!r}"
+                )
+        expected_digest = REVIEW_AGENT_INSTRUCTIONS_NORMALIZED_SHA256.get(expected_name)
+        if expected_digest is not None:
+            digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            if digest != expected_digest:
+                errors.append(
+                    f"agent profile {expected_name!r} instructions differ from their "
+                    "validated normalized content"
                 )
 
 
