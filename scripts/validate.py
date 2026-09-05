@@ -401,7 +401,19 @@ def _required_nonempty_package_file(
     if metadata is None or metadata.st_size == 0:
         errors.append(f"{label} must be a non-empty regular file: {path}")
         return None
+    try:
+        path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"{label} must be readable UTF-8 text: {path}: {error}")
+        return None
     return path
+
+
+def _contains_exact_skill_token(contents: str, token: str) -> bool:
+    return re.search(
+        rf"{re.escape(token)}(?![A-Za-z0-9_-])",
+        contents,
+    ) is not None
 
 
 def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
@@ -642,7 +654,7 @@ def _validate_plugin_manifest(
             if ("$" + "acceptance") in long_description:
                 errors.append("plugin interface longDescription contains removed public token " + "$" + "acceptance")
             for token in sorted(PUBLIC_SKILL_TOKENS):
-                if token not in long_description:
+                if not _contains_exact_skill_token(long_description, token):
                     errors.append(f"plugin interface longDescription must advertise {token}")
             for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
                 if phrase not in long_description.lower():
@@ -813,10 +825,7 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
                 errors.append("skill-builder explicit standalone contract is missing")
             if independence_clause not in normalized:
                 errors.append("skill-builder lifecycle independence contract is missing")
-            coupling_probe = normalized.replace(independence_clause, "").replace(
-                "lifecycle routing", ""
-            )
-            if "lifecycle" in coupling_probe:
+            if _contains_affirmative_lifecycle_reference(builder):
                 errors.append("skill-builder contract contains lifecycle coupling")
             if _contains_affirmative_skill_relation(builder, LIFECYCLE_SKILL_NAMES):
                 errors.append(
@@ -841,11 +850,13 @@ def _contains_affirmative_skill_relation(
     skill_names: tuple[str, ...],
 ) -> bool:
     names = "|".join(re.escape(name) for name in sorted(skill_names, key=len, reverse=True))
-    target = rf"(?:\$(?:{names})|`(?:\$)?(?:{names})`|(?:{names}))(?![a-z0-9-])"
+    skill_token = rf"\$?(?:{names})(?![a-z0-9-])"
+    target = rf"(?:(?P<markup>`|\*{{1,3}}|_{{1,3}}){skill_token}(?P=markup)|{skill_token})"
     relation = re.compile(
         rf"\b(?:"
         rf"invok(?:e|es|ed|ing)|"
         rf"rout(?:e|es|ed|ing)\s+(?:to|through)|"
+        rf"proceed(?:s|ed|ing)?\s+(?:to|with)|"
         rf"depend(?:s|ed|ing)?\s+(?:on|upon)|"
         rf"dependenc(?:y|ies)\s+(?:on|upon|:)|"
         rf"requir(?:e|es|ed|ing)|"
@@ -861,6 +872,13 @@ def _contains_affirmative_skill_relation(
     return False
 
 
+def _contains_affirmative_lifecycle_reference(contents: str) -> bool:
+    for match in re.finditer(r"\blifecycle\b", contents, re.IGNORECASE):
+        if not _relation_is_explicitly_negated(contents, match.start()):
+            return True
+    return False
+
+
 def _relation_is_explicitly_negated(contents: str, relation_start: int) -> bool:
     boundary = max(
         contents.rfind(delimiter, 0, relation_start)
@@ -870,17 +888,28 @@ def _relation_is_explicitly_negated(contents: str, relation_start: int) -> bool:
     contrast = tuple(re.finditer(r"\b(?:but|however|instead|then|yet)\b", prefix, re.IGNORECASE))
     if contrast:
         prefix = prefix[contrast[-1].end() :]
-    return re.search(
+    double_negative = re.search(
         r"(?:"
-        r"\b(?:do|does|did|must|may|might|should|shall|can|could|will|would)\s+not\b|"
-        r"\b(?:never|without|cannot)\b|"
-        r"\b(?:don't|doesn't|didn't|mustn't|shouldn't|can't|won't|wouldn't)\b|"
-        r"\b(?:forbid(?:s|den)?|prohibit(?:s|ed)?)\b|"
-        r"\bno\s+(?:route|routing|dependency|dependence)\b"
+        r"(?:\b(?:not|never|cannot)\b|\b(?:don't|doesn't|didn't|can't|won't|wouldn't)\b)"
+        r"[^\n.!?;]*\b(?:without|avoid(?:s|ed|ing)?)\b|"
+        r"\bavoid(?:s|ed|ing)?\b[^\n.!?;]*\bnot\b"
         r")",
         prefix,
         re.IGNORECASE,
-    ) is not None
+    )
+    if double_negative is not None:
+        return False
+    negations = re.findall(
+        r"(?:"
+        r"\b(?:not|never|without|cannot|no)\b|"
+        r"\b(?:don't|doesn't|didn't|mustn't|shouldn't|can't|won't|wouldn't)\b|"
+        r"\b(?:avoid(?:s|ed|ing)?|forbid(?:s|den|ding)?|prohibit(?:s|ed|ing)?)\b|"
+        r"\bstay(?:s|ed|ing)?\s+inactive\s+for\b"
+        r")",
+        prefix,
+        re.IGNORECASE,
+    )
+    return bool(negations)
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -1109,7 +1138,7 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
         return
     try:
         readme = readme_path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         errors.append(f"README could not be read: {error}")
         return
     normalized = " ".join(readme.lower().split())
@@ -1119,12 +1148,12 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
         )
     if re.search(r"\bsix independent skills\b", normalized):
         errors.append("README contains stale six-skill wording")
-    if SKILL_BUILDER_TOKEN not in readme:
+    if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
         errors.append("README must advertise $skill-builder")
     builder_lines = [
         line.lower()
         for line in readme.splitlines()
-        if SKILL_BUILDER_TOKEN in line
+        if _contains_exact_skill_token(line, SKILL_BUILDER_TOKEN)
     ]
     if not any(
         line.startswith("- `$skill-builder`")
@@ -1138,7 +1167,7 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
             "README must describe $skill-builder as the evidence-gated creator or improver "
             "of one exact agent skill"
         )
-    if re.search(r"(?m)^Use \$skill-builder\b", readme) is None:
+    if re.search(r"(?m)^Use \$skill-builder(?![A-Za-z0-9_-])", readme) is None:
         errors.append("README must include a direct $skill-builder invocation example")
     if any("lifecycle" in line for line in builder_lines):
         errors.append("README must not describe $skill-builder as part of the code lifecycle")
