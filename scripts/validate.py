@@ -53,6 +53,17 @@ PUBLIC_SKILL_TOKENS = {
 }
 PUBLIC_SKILL_COUNT_TEXT = "seven independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
+SKILL_BUILDER_REQUIRED_REFERENCES = (
+    "references/artifact-contracts.md",
+    "references/evaluation-rubric.md",
+)
+LIFECYCLE_SKILL_NAMES = (
+    "brainstorm",
+    "design",
+    "plan",
+    "implement",
+    "use-expand",
+)
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
     re.IGNORECASE,
@@ -371,6 +382,28 @@ def _required_package_path(
     return path
 
 
+def _required_nonempty_package_file(
+    package_root: Path,
+    relative: str,
+    label: str,
+    errors: list[str],
+) -> Path | None:
+    path = _required_package_path(
+        package_root,
+        relative,
+        label,
+        "file",
+        errors,
+    )
+    if path is None:
+        return None
+    metadata = _lstat(path)
+    if metadata is None or metadata.st_size == 0:
+        errors.append(f"{label} must be a non-empty regular file: {path}")
+        return None
+    return path
+
+
 def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
     """Enumerate package entries without traversing symlink directories."""
 
@@ -672,8 +705,7 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             })
         if skill_root.name == "skill-builder":
             expected_files.update({
-                "references/artifact-contracts.md",
-                "references/evaluation-rubric.md",
+                *SKILL_BUILDER_REQUIRED_REFERENCES,
                 "scripts/run_state.py",
             })
         expected_directories = {"agents"}
@@ -700,6 +732,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         for path in skill_root.rglob("*"):
             if path.is_symlink():
                 errors.append(f"skill {skill_root.name!r} contains a symlink: {path}")
+        if skill_root.name == "skill-builder":
+            for relative in SKILL_BUILDER_REQUIRED_REFERENCES:
+                _required_nonempty_package_file(
+                    plugin_root,
+                    f"{relative_skill}/{relative}",
+                    f"skill 'skill-builder' required reference {relative!r}",
+                    errors,
+                )
         skill_path = _required_package_path(
             plugin_root,
             f"{relative_skill}/SKILL.md",
@@ -769,8 +809,6 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
             independence_clause = "do not invoke or depend on a product lifecycle phase"
             if SKILL_BUILDER_TOKEN not in builder:
                 errors.append("skill-builder contract must identify $skill-builder directly")
-            if "$use-expand" in builder:
-                errors.append("skill-builder contract must not reference $use-expand")
             if "`$skill-builder` is standalone and explicit-only" not in normalized:
                 errors.append("skill-builder explicit standalone contract is missing")
             if independence_clause not in normalized:
@@ -780,6 +818,10 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
             )
             if "lifecycle" in coupling_probe:
                 errors.append("skill-builder contract contains lifecycle coupling")
+            if _contains_affirmative_skill_relation(builder, LIFECYCLE_SKILL_NAMES):
+                errors.append(
+                    "skill-builder contains an affirmative lifecycle route or dependency"
+                )
 
     router_path = skills_root / "use-expand" / "SKILL.md"
     if router_path.is_file() and not router_path.is_symlink():
@@ -788,8 +830,57 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
         except OSError as error:
             errors.append(f"use-expand contract could not be read: {error}")
         else:
-            if SKILL_BUILDER_TOKEN in router:
-                errors.append("use-expand must not route to $skill-builder")
+            if _contains_affirmative_skill_relation(router, ("skill-builder",)):
+                errors.append(
+                    "use-expand must not affirmatively route to or depend on skill-builder"
+                )
+
+
+def _contains_affirmative_skill_relation(
+    contents: str,
+    skill_names: tuple[str, ...],
+) -> bool:
+    names = "|".join(re.escape(name) for name in sorted(skill_names, key=len, reverse=True))
+    target = rf"(?:\$(?:{names})|`(?:\$)?(?:{names})`|(?:{names}))(?![a-z0-9-])"
+    relation = re.compile(
+        rf"\b(?:"
+        rf"invok(?:e|es|ed|ing)|"
+        rf"rout(?:e|es|ed|ing)\s+(?:to|through)|"
+        rf"depend(?:s|ed|ing)?\s+(?:on|upon)|"
+        rf"dependenc(?:y|ies)\s+(?:on|upon|:)|"
+        rf"requir(?:e|es|ed|ing)|"
+        rf"hand(?:s|ed|ing)?\s+off\s+to|"
+        rf"(?:select|open|launch|call)(?:s|ed|ing)?|"
+        rf"us(?:e|es|ed|ing)"
+        rf")\s+(?:the\s+)?{target}(?:\s+skill)?",
+        re.IGNORECASE,
+    )
+    for match in relation.finditer(contents):
+        if not _relation_is_explicitly_negated(contents, match.start()):
+            return True
+    return False
+
+
+def _relation_is_explicitly_negated(contents: str, relation_start: int) -> bool:
+    boundary = max(
+        contents.rfind(delimiter, 0, relation_start)
+        for delimiter in ("\n", ".", "!", "?", ";")
+    )
+    prefix = contents[boundary + 1 : relation_start]
+    contrast = tuple(re.finditer(r"\b(?:but|however|instead|then|yet)\b", prefix, re.IGNORECASE))
+    if contrast:
+        prefix = prefix[contrast[-1].end() :]
+    return re.search(
+        r"(?:"
+        r"\b(?:do|does|did|must|may|might|should|shall|can|could|will|would)\s+not\b|"
+        r"\b(?:never|without|cannot)\b|"
+        r"\b(?:don't|doesn't|didn't|mustn't|shouldn't|can't|won't|wouldn't)\b|"
+        r"\b(?:forbid(?:s|den)?|prohibit(?:s|ed)?)\b|"
+        r"\bno\s+(?:route|routing|dependency|dependence)\b"
+        r")",
+        prefix,
+        re.IGNORECASE,
+    ) is not None
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -1008,13 +1099,10 @@ def _validate_public_third_party_derivations(
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
-    if _lstat(repository_root / "README.md") is None:
-        return
-    readme_path = _required_package_path(
+    readme_path = _required_nonempty_package_file(
         repository_root,
         "README.md",
         "README",
-        "file",
         errors,
     )
     if readme_path is None:

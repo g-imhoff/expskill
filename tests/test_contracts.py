@@ -166,6 +166,48 @@ class ContractTests(unittest.TestCase):
         errors = validate_repository(root)
         self.assertIn("required skill 'skill-builder' is missing", errors)
 
+    def test_skill_builder_references_are_required_nonempty_regular_files(self) -> None:
+        """Regression: missing or substituted normative references make the builder unusable."""
+
+        references = (
+            "references/artifact-contracts.md",
+            "references/evaluation-rubric.md",
+        )
+        mutations = ("missing", "empty", "directory", "symlink")
+        for relative in references:
+            for mutation in mutations:
+                with self.subTest(reference=relative, mutation=mutation):
+                    root = self.copy_repository()
+                    reference = (
+                        root
+                        / "plugins"
+                        / "codex-dev-flow"
+                        / "skills"
+                        / "skill-builder"
+                        / relative
+                    )
+                    if mutation == "missing":
+                        reference.unlink()
+                    elif mutation == "empty":
+                        reference.write_bytes(b"")
+                    elif mutation == "directory":
+                        reference.unlink()
+                        reference.mkdir()
+                    else:
+                        outside = root / f"outside-{reference.name}"
+                        outside.write_text("outside\n", encoding="utf-8")
+                        reference.unlink()
+                        reference.symlink_to(outside)
+                    errors = tuple(error.lower() for error in validate_repository(root))
+                    self.assertTrue(
+                        any(
+                            "skill 'skill-builder' required reference" in error
+                            and relative in error
+                            for error in errors
+                        ),
+                        f"{relative} mutation {mutation} escaped its required-file check: {errors}",
+                    )
+
     def test_unexpected_skill_is_rejected(self) -> None:
         root = self.copy_repository()
         unexpected = root / "plugins" / "codex-dev-flow" / "skills" / "surprise"
@@ -455,6 +497,37 @@ class ContractTests(unittest.TestCase):
             normalized = " ".join(path.read_text(encoding="utf-8").lower().split())
             with self.subTest(path=path):
                 self.assertRegex(normalized, expected)
+
+    def test_root_readme_is_a_required_nonempty_regular_file(self) -> None:
+        """Regression: validation cannot silently skip the repository's public contract."""
+
+        expected_fragments = {
+            "missing": ("readme", "missing"),
+            "empty": ("readme", "non-empty regular file"),
+            "directory": ("readme", "regular file"),
+            "symlink": ("readme", "symlink"),
+        }
+        for mutation, fragments in expected_fragments.items():
+            with self.subTest(mutation=mutation):
+                root = self.copy_repository()
+                readme = root / "README.md"
+                if mutation == "missing":
+                    readme.unlink()
+                elif mutation == "empty":
+                    readme.write_bytes(b"")
+                elif mutation == "directory":
+                    readme.unlink()
+                    readme.mkdir()
+                else:
+                    outside = root / "outside-readme.md"
+                    outside.write_text("outside\n", encoding="utf-8")
+                    readme.unlink()
+                    readme.symlink_to(outside)
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(all(fragment in error for fragment in fragments) for error in errors),
+                    f"README mutation {mutation} escaped its required-file check: {errors}",
+                )
 
     def test_skill_builder_is_visible_as_an_independent_direct_skill(self) -> None:
         """Regression: the evidence-gated creator stays public without joining the lifecycle."""

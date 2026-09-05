@@ -35,6 +35,7 @@ SKILL_NAMES = (
     "grill-me",
     "plan",
     "implement",
+    "skill-builder",
     "unslop",
 )
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
@@ -97,6 +98,7 @@ def seed_repository(path: Path) -> Path:
     # registration receives, including the centralized worktree helper.
     shutil.copytree(source_scripts, destination_plugin / "scripts")
     shutil.copytree(ROOT / "scripts", path / "scripts")
+    shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
 
 
