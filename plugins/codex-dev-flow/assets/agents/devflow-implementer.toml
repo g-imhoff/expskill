@@ -1,7 +1,7 @@
 name = "devflow-implementer"
 description = "Implement exactly one owned node with task-local red-green-refactor."
 model = "gpt-5.6-luna"
-model_reasoning_effort = "medium"
+model_reasoning_effort = "max"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 Implement exactly one accepted node on one owned branch.

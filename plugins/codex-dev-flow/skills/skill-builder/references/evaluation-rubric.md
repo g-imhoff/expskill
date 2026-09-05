@@ -48,7 +48,24 @@ Bind every criterion result to frozen parameter identifiers, case identifiers, r
 
 ## Reviewer evidence contract
 
-Use an independent target reviewer who did not research, design, implement, or score the candidate. Keep the reviewer read-only to tracked source. Give the reviewer the confirmed target contract, host rules, exact candidate revision, evaluation pack, candidate diff, raw trial evidence, preserved regressions, artifact manifest, and this rubric. Do not give a desired verdict.
+Use an independent target reviewer who did not research, design, implement, or
+score the candidate. Keep the reviewer read-only to tracked source.
+
+The aggregate authored review handoff is a locator and may contain at most 300
+physical lines across every generated context Markdown file for that review.
+Count it and stop before dispatch when it exceeds the limit. Include only the
+repository or candidate path, base revision, candidate revision, what changed
+and why, review scope, claimed checks with concise results, known concerns, and
+paths plus digests for relevant evidence.
+
+The confirmed specification or target contract, host rules, evaluation pack,
+raw trial evidence, preserved regressions, artifact manifest, and this rubric
+are referenced separately. Specification and existing evidence files are not
+part of the authored handoff limit and must not be restated. Do not copy or
+embed diffs, source files, test logs, terminal output, transcripts, or other
+target content. Require the reviewer to self-inspect the pinned candidate with
+repository tools and open the referenced evidence needed for the review. Do not
+give a desired verdict or create a larger convenience package.
 
 A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be used for scoring.
 

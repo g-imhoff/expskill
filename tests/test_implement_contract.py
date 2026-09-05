@@ -96,7 +96,7 @@ class ImplementContractTests(unittest.TestCase):
         expected = {
             "devflow-implementer": ("workspace-write", "red-green-refactor"),
             "devflow-review": ("read-only", "ready or not ready"),
-            "devflow-spec": ("workspace-write", "criterion-by-criterion evidence"),
+            "devflow-spec": ("read-only", "criterion-by-criterion evidence"),
         }
         for name, (sandbox, boundary) in expected.items():
             with self.subTest(profile=name):
