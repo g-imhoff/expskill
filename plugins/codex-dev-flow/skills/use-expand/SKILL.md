@@ -1,6 +1,6 @@
 ---
 name: use-expand
-description: Use only for code or executable-configuration requests needing lifecycle routing; stay inactive for explicit skills, read-only work, and non-code requests.
+description: Use only for code or executable-configuration requests needing lifecycle routing. Stay inactive for explicit skills, read-only work, and non-code requests.
 ---
 
 # Use Expand
@@ -35,7 +35,7 @@ repository branch when it exists, revalidate its revision and commit before a
 transition, and apply only receipts returned by the selected skill. Do not let
 workers write graph state.
 
-Resolve the graph helper from the loaded skill at `../../scripts/plan_graph.py`;
+Resolve the graph helper from the loaded skill at `../../scripts/plan_graph.py`.
 `plugins/codex-dev-flow/scripts/plan_graph.py` is only the source-package locator.
 
 `$implement` owns its TDD workers, per-node review/spec correction loops, safe
@@ -46,3 +46,25 @@ routes to stitch together.
 Stop on stale state, a failed gate, a material user decision, missing authority,
 or a protected-branch boundary. Never infer permission to push, create or update
 a merge request, approve, merge, enable auto-merge, or enter a merge queue.
+
+## Resolve a decision frontier
+
+`$grill-me` is an optional decision tool, not a lifecycle phase. Let the owning
+skill handle a single isolated user decision. Keep discovering facts and
+resolving quality problems autonomously.
+
+Offer `$grill-me` only when every condition below is true:
+
+- Facts are exhausted.
+- The owning skill cannot continue because multiple consequential decisions
+  remain.
+- Those decisions are connected, so one answer changes which later questions
+  matter.
+- Only the user can decide them.
+
+Explain the blocker briefly and offer `$grill-me`. Never automatically invoke
+`$grill-me`. Wait for explicit consent. If the user accepts, keep the owning
+skill paused while Grill Me resolves the decision tree. When the user confirms
+shared understanding, return the confirmed decision delta and resume the owning
+skill. The owning skill remains responsible for its state and for invalidating
+any dependent work.

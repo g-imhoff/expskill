@@ -6,13 +6,13 @@ Read this index before choosing references. Use the loading strategy below, then
 
 - **Narrow component:** when the work has one bounded responsibility and a small concern set, selectively load the category references that materially apply. Load another category as soon as the render exposes its trigger.
 - **Complex composite:** when the work combines interacting regions, multiple behavior modes, state families, dense or structured data, breakpoint composition, or several dependent components, load the complete category catalog. Cross-category failures are easy to miss when the UI is judged one concern at a time.
-- **Uncertain boundary:** load the broader relevant set. Reading a rule does not activate it; its applicability still depends on the project, platform, confirmed intent, and stated trigger.
+- **Uncertain boundary:** load the broader relevant set. Reading a rule does not activate it. Its applicability still depends on the project, platform, confirmed intent, and stated trigger.
 
 This strategy changes evidence coverage, not authority. Existing project convention wins over a heuristic, and activated normative obligations cannot be silently discarded.
 
 ## Precedence
 
-1. Confirmed product requirements and activated normative obligations; surface conflicts.
+1. Confirmed product requirements and activated normative obligations. Surface conflicts.
 2. Existing project components, tokens, themes, content, interaction language, and platform conventions.
 3. Conditional catalog rules whose activation criteria hold.
 4. Heuristics where project evidence leaves room.
@@ -21,12 +21,12 @@ Never import a public system's exact values merely because its guidance is reput
 
 ## Always retain in the core skill
 
-- inspect project UI evidence before invention;
-- reuse project components and semantic tokens;
-- bind exact platform and accessibility targets before treating numeric rules as obligations;
-- render production-intended components in the project-compatible isolated surface;
-- use realistic, risk-relevant states and content;
-- require progressive user confirmation;
+- inspect project UI evidence before invention.
+- reuse project components and semantic tokens.
+- bind exact platform and accessibility targets before treating numeric rules as obligations.
+- render production-intended components in the project-compatible isolated surface.
+- use realistic, risk-relevant states and content.
+- require progressive user confirmation.
 - record downstream proof when an isolated component cannot establish a page/process claim.
 
 ## Reference routing
@@ -46,7 +46,7 @@ Never import a public system's exact values merely because its guidance is reput
 
 - **Activated norm:** a normative requirement only when its documented platform, conformance level, trigger, and exceptions apply.
 - **Project convention:** evidence from the current repository or an explicitly adopted design system.
-- **Platform convention:** official guidance for the named platform; never silently translated between CSS px, pt, dp, or another unit.
+- **Platform convention:** official guidance for the named platform. Never silently translated between CSS px, pt, dp, or another unit.
 - **Conditional constraint:** a relationship that becomes binding only when its prerequisites hold.
 - **Heuristic:** a useful default that project evidence or rendered evidence may reject.
 

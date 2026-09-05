@@ -1,7 +1,7 @@
 {
   "name": "codex-dev-flow",
-  "version": "0.1.0+codex.20260817094337",
-  "description": "Four independent development skills and one optional lifecycle router.",
+  "version": "0.1.0+codex.20260905140004",
+  "description": "Six independent skills and one optional lifecycle router.",
   "repository": "https://github.com/g-imhoff/codex-dev-flow",
   "author": {
     "name": "g-imhoff"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Codex Dev Flow",
     "shortDescription": "Standalone development skills with optional routing",
-    "longDescription": "Run $brainstorm, $plan, $design, or $implement directly, or use $use-expand to select the next lifecycle step while preserving implementation review and specification gates.",
+    "longDescription": "Run $brainstorm, $plan, $design, $implement, $unslop, or $grill-me directly, or use $use-expand to select the next lifecycle step while preserving implementation review and specification gates. Unslop also shapes root-session prose through a trusted hook.",
     "developerName": "g-imhoff",
     "category": "Developer Tools",
     "capabilities": [],
