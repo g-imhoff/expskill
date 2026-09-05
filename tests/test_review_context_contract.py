@@ -296,6 +296,55 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_canonical_validation_preserves_case_and_markdown_structure(self) -> None:
+        producer_mutations = (
+            (
+                Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+                "references/artifact-contracts.md",
+                "references/Artifact-Contracts.md",
+            ),
+            (
+                Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+                "The aggregate authored review handoff",
+                "    The aggregate authored review handoff",
+            ),
+        )
+        for relative_path, old, new in producer_mutations:
+            root = self.copy_repository()
+            path = root / relative_path
+            contents = path.read_text(encoding="utf-8")
+            self.assertIn(old, contents)
+            path.write_text(contents.replace(old, new, 1), encoding="utf-8")
+            errors = validate_repository(root)
+            with self.subTest(path=relative_path, mutation=new):
+                self.assertTrue(
+                    any("review handoff" in error.lower() for error in errors),
+                    errors,
+                )
+
+        for name in ("devflow-review", "devflow-spec"):
+            root = self.copy_repository()
+            path = (
+                root
+                / "plugins"
+                / "codex-dev-flow"
+                / "assets"
+                / "agents"
+                / f"{name}.toml"
+            )
+            contents = path.read_text(encoding="utf-8")
+            self.assertIn("`invalid handoff`", contents)
+            path.write_text(
+                contents.replace("`invalid handoff`", "`INVALID HANDOFF`", 1),
+                encoding="utf-8",
+            )
+            errors = validate_repository(root)
+            with self.subTest(profile=name):
+                self.assertTrue(
+                    any(name in error and "instructions" in error for error in errors),
+                    errors,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
