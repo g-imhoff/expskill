@@ -181,6 +181,19 @@ REVIEW_HANDOFF_CLAUSES = (
     "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
     "or other repository content.",
 )
+REVIEW_AGENT_HANDOFF_CLAUSES = (
+    "accept only a locator handoff whose aggregate authored review context includes "
+    "inline dispatch text, follow-up messages, and generated context artifacts "
+    "regardless of carrier or extension, and totals at most 300 physical lines.",
+    "a real accepted specification file may be referenced separately only when it "
+    "existed before review dispatch.",
+    "if the handoff exceeds the limit, embeds copied repository content, or uses an "
+    "opaque attachment, stop and return `invalid handoff` without a review verdict.",
+    "self-inspect the pinned repository or candidate and its base and candidate "
+    "revisions using repository tools.",
+    "do not request a copied diff, source files, test logs, terminal output, or "
+    "transcripts.",
+)
 
 REQUIRED_AGENT_FIELDS = (
     "name",
@@ -206,12 +219,8 @@ AGENT_BOUNDARIES = {
         "no delegation",
         "no scope expansion",
     ),
-    "devflow-review": (
+    "devflow-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "read-only",
-        "300 physical lines",
-        "self-inspect",
-        "invalid handoff",
-        "do not request a copied diff",
         "severity",
         "evidence",
         "impact",
@@ -219,12 +228,8 @@ AGENT_BOUNDARIES = {
         "ready",
         "not ready",
     ),
-    "devflow-spec": (
+    "devflow-spec": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "every accepted behavior",
-        "300 physical lines",
-        "self-inspect",
-        "invalid handoff",
-        "do not request a copied diff",
         "criterion-by-criterion evidence",
         "no tracked-source edits",
         "pass or fail",
