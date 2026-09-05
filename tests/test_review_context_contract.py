@@ -46,11 +46,18 @@ class ReviewContextContractTests(unittest.TestCase):
                 self.assertIn("300 physical lines", body)
                 self.assertIn("inline dispatch text", body)
                 self.assertIn("follow-up messages", body)
+                self.assertIn("inherited or forked conversation history", body)
                 self.assertIn("regardless of carrier or extension", body)
                 self.assertIn("stop before dispatch", body)
+                self.assertIn("before every follow-up", body)
                 self.assertIn("specification", body)
                 self.assertIn("referenced separately", body)
                 self.assertIn("existed before review dispatch", body)
+
+                raw = path.read_text(encoding="utf-8")
+                self.assertEqual(raw.count("## Review context contract"), 1)
+                final_section = raw.split("## Review context contract", 1)[1]
+                self.assertNotIn("\n## ", final_section)
 
     def test_review_handoff_is_a_locator_not_a_copied_repository(self) -> None:
         required_fields = (
@@ -88,6 +95,9 @@ class ReviewContextContractTests(unittest.TestCase):
                 self.assertIn("do not request a copied diff", instructions)
                 self.assertIn("300 physical lines", instructions)
                 self.assertIn("invalid handoff", instructions)
+                self.assertIn("inherited or forked conversation history", instructions)
+                self.assertIn("review-time summary", instructions)
+                self.assertIn("binary", instructions)
 
     def test_user_selected_agent_runtime_settings_are_preserved(self) -> None:
         expected = {
@@ -268,6 +278,50 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_repository_validator_rejects_removed_inherited_context_guards(self) -> None:
+        producer_paths = (
+            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path(
+                "plugins/codex-dev-flow/skills/skill-builder/"
+                "references/evaluation-rubric.md"
+            ),
+        )
+        for relative_path in producer_paths:
+            root = self.copy_repository()
+            path = root / relative_path
+            contents = path.read_text(encoding="utf-8")
+            phrase = "inherited or forked conversation history"
+            self.assertIn(phrase, contents)
+            path.write_text(contents.replace(phrase, "prior context", 1), encoding="utf-8")
+            errors = validate_repository(root)
+            with self.subTest(path=relative_path):
+                self.assertTrue(
+                    any("review handoff" in error.lower() for error in errors),
+                    errors,
+                )
+
+        for name in ("devflow-review", "devflow-spec"):
+            root = self.copy_repository()
+            path = (
+                root
+                / "plugins"
+                / "codex-dev-flow"
+                / "assets"
+                / "agents"
+                / f"{name}.toml"
+            )
+            contents = path.read_text(encoding="utf-8")
+            phrase = "inherited or forked conversation history"
+            self.assertIn(phrase, contents)
+            path.write_text(contents.replace(phrase, "prior context", 1), encoding="utf-8")
+            errors = validate_repository(root)
+            with self.subTest(profile=name):
+                self.assertTrue(
+                    any(name in error and "instructions" in error for error in errors),
+                    errors,
+                )
+
     def test_judge_policy_validation_allows_whitespace_wrapping(self) -> None:
         for name in ("devflow-review", "devflow-spec"):
             root = self.copy_repository()
@@ -296,23 +350,20 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
-    def test_canonical_validation_preserves_case_and_markdown_structure(self) -> None:
-        producer_mutations = (
-            (
-                Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
-                "references/artifact-contracts.md",
-                "references/Artifact-Contracts.md",
+    def test_canonical_validation_preserves_review_markdown_structure(self) -> None:
+        for relative_path in (
+            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path(
+                "plugins/codex-dev-flow/skills/skill-builder/"
+                "references/evaluation-rubric.md"
             ),
-            (
-                Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-                "The aggregate authored review handoff",
-                "    The aggregate authored review handoff",
-            ),
-        )
-        for relative_path, old, new in producer_mutations:
+        ):
             root = self.copy_repository()
             path = root / relative_path
             contents = path.read_text(encoding="utf-8")
+            old = "The aggregate authored review handoff"
+            new = "    The aggregate authored review handoff"
             self.assertIn(old, contents)
             path.write_text(contents.replace(old, new, 1), encoding="utf-8")
             errors = validate_repository(root)
@@ -345,12 +396,46 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_unrelated_producer_edits_do_not_invalidate_review_policy(self) -> None:
+        mutations = (
+            (
+                Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+                "references/artifact-contracts.md",
+                "references/Artifact-Contracts.md",
+            ),
+            (
+                Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+                "source-package locator",
+                "source package locator",
+            ),
+            (
+                Path(
+                    "plugins/codex-dev-flow/skills/skill-builder/"
+                    "references/evaluation-rubric.md"
+                ),
+                "outputs, consumers, handoffs",
+                "outputs, consumers, transitions",
+            ),
+        )
+        for relative_path, old, new in mutations:
+            root = self.copy_repository()
+            path = root / relative_path
+            contents = path.read_text(encoding="utf-8")
+            self.assertIn(old, contents)
+            path.write_text(contents.replace(old, new, 1), encoding="utf-8")
+            errors = validate_repository(root)
+            with self.subTest(path=relative_path):
+                self.assertFalse(
+                    any("review handoff" in error.lower() for error in errors),
+                    errors,
+                )
+
     def test_canonical_validation_preserves_markdown_hard_breaks(self) -> None:
         producer_path = Path("plugins/codex-dev-flow/skills/implement/SKILL.md")
         root = self.copy_repository()
         path = root / producer_path
         contents = path.read_text(encoding="utf-8")
-        old = "The aggregate authored review handoff includes inline dispatch text, follow-up"
+        old = "The aggregate authored review handoff includes inherited or forked conversation"
         self.assertIn(old, contents)
         path.write_text(contents.replace(old, old + "  ", 1), encoding="utf-8")
         errors = validate_repository(root)

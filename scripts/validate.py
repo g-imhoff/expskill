@@ -169,12 +169,17 @@ REVIEW_HANDOFF_PATHS = (
     "skills/skill-builder/SKILL.md",
     "skills/skill-builder/references/evaluation-rubric.md",
 )
+REVIEW_HANDOFF_HEADING = "## Review context contract\n"
 REVIEW_HANDOFF_CLAUSES = (
-    "the aggregate authored review handoff includes inline dispatch text, follow-up "
-    "messages, and every generated context artifact regardless of carrier or extension.",
+    "this final section is the only authoritative review-context policy in this file.",
+    "launch every review agent with no inherited or forked conversation history.",
+    "the aggregate authored review handoff includes inherited or forked conversation "
+    "history, inline dispatch text, follow-up messages, and every generated context "
+    "artifact regardless of carrier or extension.",
     "it is a locator, not a payload, and totals at most 300 physical lines.",
-    "count the complete handoff before launch and stop before dispatch when it exceeds "
-    "the limit.",
+    "count the complete handoff before launch and before every follow-up.",
+    "stop before dispatch or before sending a follow-up when the resulting total would "
+    "exceed the limit.",
     "a real accepted specification file is referenced separately when it exists.",
     "the exception applies only to a specification file that existed before review "
     "dispatch.",
@@ -184,26 +189,30 @@ REVIEW_HANDOFF_CLAUSES = (
     "do not attach binary or opaque review context.",
 )
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "skills/implement/SKILL.md": "8a0779199cf7a4527abcc3852948ce98b4126b8f83a0a8c16a437ca8e8301e9c",
-    "skills/skill-builder/SKILL.md": "479ed1df66276d6ef0bd5bc48fe6b9ca08cb3db1090f48f4f4d7cd557e114e1b",
-    "skills/skill-builder/references/evaluation-rubric.md": "30993f64fe0353548b76db6404c491e07c5006e9f7a5a2bb0163121ed2348bc1",
+    "skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
 REVIEW_AGENT_HANDOFF_CLAUSES = (
     "accept only a locator handoff whose aggregate authored review context includes "
-    "inline dispatch text, follow-up messages, and generated context artifacts "
-    "regardless of carrier or extension, and totals at most 300 physical lines.",
+    "inherited or forked conversation history, inline dispatch text, follow-up messages, "
+    "and generated context artifacts regardless of carrier or extension, and totals at "
+    "most 300 physical lines.",
+    "prefer a context-free launch.",
+    "recount the total after every follow-up.",
     "a real accepted specification file may be referenced separately only when it "
     "existed before review dispatch.",
-    "if the handoff exceeds the limit, embeds copied repository content, or uses an "
-    "opaque attachment, stop and return `invalid handoff` without a review verdict.",
+    "if the total is unknown or exceeds the limit, or the handoff includes a review-time "
+    "summary, copied repository content, a binary payload, or an opaque attachment, stop "
+    "and return `invalid handoff` without a review verdict.",
     "self-inspect the pinned repository or candidate and its base and candidate "
     "revisions using repository tools.",
     "do not request a copied diff, source files, test logs, terminal output, or "
     "transcripts.",
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
-    "devflow-review": "1249b9009ddb500175e7b8b69e895d8fe7db52137d2886057cdc89f7c4786f2a",
-    "devflow-spec": "2fb16fbad8293fb617cf5ddc544acdb683623bd8ffb97f06eadd06a940000690",
+    "devflow-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
+    "devflow-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -481,6 +490,13 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
             errors.append(f"review handoff contract could not be read at {relative}: {error}")
             continue
         normalized = " ".join(contents.lower().split())
+        if contents.replace("\r\n", "\n").replace("\r", "\n").count(
+            REVIEW_HANDOFF_HEADING
+        ) != 1:
+            errors.append(
+                f"review handoff contract at {relative} must contain one final "
+                "Review context contract section"
+            )
         for clause in REVIEW_HANDOFF_CLAUSES:
             if clause not in normalized:
                 errors.append(
@@ -496,7 +512,10 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
 
 
 def _canonical_review_markdown(contents: str) -> str:
-    return contents.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized.count(REVIEW_HANDOFF_HEADING) != 1:
+        return normalized
+    return normalized[normalized.index(REVIEW_HANDOFF_HEADING) :]
 
 
 def _canonical_review_agent_instructions(contents: str) -> str:
