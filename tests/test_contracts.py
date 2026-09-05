@@ -288,11 +288,35 @@ class ContractTests(unittest.TestCase):
             rf"\bselected_phase\s*[:=]\s*{re.escape(REMOVED_PUBLIC_SKILL)}\b",
             rf"\bnext_skill\s*[:=]\s*{re.escape(REMOVED_PUBLIC_SKILL)}\b",
             rf"\b(?:alias|aliases|deprecated|route)\b\s*[:=]?\s*[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b",
-            rf"\btarget\b\s*[:=]\s*[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b",
+            (
+                rf"\btarget\b(?:\s*[:=]\s*[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b"
+                rf"|[ \t]+[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b"
+                r"(?![ \t]+\w))"
+            ),
             rf"\b(?:deprecated|alias|aliases)\b.{{0,32}}\b{re.escape(REMOVED_PUBLIC_SKILL)}\b",
             rf"(?:require|recommend|route|select|invoke)\s+[`$]?{re.escape(REMOVED_PUBLIC_SKILL)}\b",
             rf"\b{re.escape(REMOVED_PUBLIC_SKILL)}\s+phase\b",
         )
+        stale_route_mutations = (
+            f"target {REMOVED_PUBLIC_SKILL}",
+        )
+        ordinary_noun_phrases = (
+            f"target {REMOVED_PUBLIC_SKILL} check",
+            f"target {REMOVED_PUBLIC_SKILL} criteria",
+            f"target {REMOVED_PUBLIC_SKILL} tests",
+        )
+        for mutation in stale_route_mutations:
+            with self.subTest(stale_route_mutation=mutation):
+                self.assertTrue(
+                    any(re.search(marker, mutation, re.IGNORECASE) for marker in route_markers),
+                    mutation,
+                )
+        for phrase in ordinary_noun_phrases:
+            with self.subTest(ordinary_noun_phrase=phrase):
+                self.assertFalse(
+                    any(re.search(marker, phrase, re.IGNORECASE) for marker in route_markers),
+                    phrase,
+                )
         for path in files:
             if path.name in {"test_design_contract.py", "test_design_state.py", "test_design_acceptance.py"}:
                 continue
