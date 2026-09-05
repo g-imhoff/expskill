@@ -71,9 +71,15 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
             "stale-six-skill-wording": ("readme", "seven independent skills"),
-            "use-expand-reference": ("skill-builder", "must not reference $use-expand"),
+            "use-expand-route": (
+                "skill-builder",
+                "affirmative lifecycle route or dependency",
+            ),
             "lifecycle-coupling": ("skill-builder", "lifecycle independence contract"),
-            "router-coupling": ("use-expand", "must not route to $skill-builder"),
+            "router-coupling": (
+                "use-expand",
+                "affirmatively route to or depend on skill-builder",
+            ),
             "repository-local-duplicate": (".agents/skills/improve-skill", "must be absent"),
         }
         for mutation, fragments in expected_fragments.items():
@@ -116,7 +122,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         ),
                         encoding="utf-8",
                     )
-                elif mutation == "use-expand-reference":
+                elif mutation == "use-expand-route":
                     contract = builder / "SKILL.md"
                     contract.write_text(
                         contract.read_text(encoding="utf-8")
@@ -156,6 +162,100 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     any(all(fragment in error for fragment in fragments) for error in errors),
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
                 )
+
+    def test_validator_rejects_affirmative_skill_builder_lifecycle_relations(self) -> None:
+        """Regression: formatting a phase name cannot hide routing or dependency coupling."""
+
+        lifecycle_skills = ("brainstorm", "design", "plan", "implement", "use-expand")
+        relation_templates = (
+            "Invoke {skill} after finalization.\n",
+            "Route to `{skill}` after finalization.\n",
+            "Depend on ${skill} for delivery.\n",
+        )
+        for lifecycle_skill in lifecycle_skills:
+            for relation in relation_templates:
+                with self.subTest(skill=lifecycle_skill, relation=relation):
+                    root = self._copy_repository()
+                    contract = (
+                        root
+                        / "plugins"
+                        / "codex-dev-flow"
+                        / "skills"
+                        / "skill-builder"
+                        / "SKILL.md"
+                    )
+                    contract.write_text(
+                        contract.read_text(encoding="utf-8")
+                        + "\n"
+                        + relation.format(skill=lifecycle_skill),
+                        encoding="utf-8",
+                    )
+                    errors = tuple(error.lower() for error in validate_repository(root))
+                    self.assertTrue(
+                        any(
+                            "skill-builder" in error
+                            and "affirmative lifecycle route or dependency" in error
+                            for error in errors
+                        ),
+                        f"affirmative {lifecycle_skill!r} relation escaped validation: {errors}",
+                    )
+
+    def test_validator_rejects_affirmative_router_relations_to_skill_builder(self) -> None:
+        """Regression: bare and formatted builder names stay outside router ownership."""
+
+        relations = (
+            "Route to skill-builder after implementation.\n",
+            "Depend on `skill-builder` for authoring.\n",
+            "Invoke $skill-builder after implementation.\n",
+        )
+        for relation in relations:
+            with self.subTest(relation=relation):
+                root = self._copy_repository()
+                router = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "use-expand"
+                    / "SKILL.md"
+                )
+                router.write_text(
+                    router.read_text(encoding="utf-8") + "\n" + relation,
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "use-expand" in error
+                        and "affirmatively route to or depend on skill-builder" in error
+                        for error in errors
+                    ),
+                    f"affirmative router relation escaped validation: {errors}",
+                )
+
+    def test_validator_allows_explicit_negative_lifecycle_boundaries(self) -> None:
+        """Regression: naming forbidden dependencies must not itself create coupling."""
+
+        root = self._copy_repository()
+        skills = root / "plugins" / "codex-dev-flow" / "skills"
+        builder = skills / "skill-builder" / "SKILL.md"
+        builder.write_text(
+            builder.read_text(encoding="utf-8")
+            + "\nDo not invoke implement.\n"
+            + "Never route to `plan`.\n"
+            + "Must not depend on $design.\n"
+            + "Do not invoke `$use-expand`.\n",
+            encoding="utf-8",
+        )
+        router = skills / "use-expand" / "SKILL.md"
+        router.write_text(
+            router.read_text(encoding="utf-8")
+            + "\nDo not route to skill-builder.\n"
+            + "Never depend on `skill-builder`.\n"
+            + "Must not invoke $skill-builder.\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(validate_repository(root), ())
 
     def test_validator_accepts_the_complete_design_package(self) -> None:
         """Regression: package validation must have an independent Design helper boundary."""
