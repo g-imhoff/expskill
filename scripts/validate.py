@@ -184,9 +184,9 @@ REVIEW_HANDOFF_CLAUSES = (
     "do not attach binary or opaque review context.",
 )
 REVIEW_HANDOFF_NORMALIZED_SHA256 = {
-    "skills/implement/SKILL.md": "7a833647c1fad9e67eb52b88105126bc61eba20618c55da0023834aad3fe1cd3",
-    "skills/skill-builder/SKILL.md": "8108d06ae122801fee577870d4a070bca966acbdf2b57f56b1062686b5ea01af",
-    "skills/skill-builder/references/evaluation-rubric.md": "9d11a8822213fb86e66c70cc2afa8cc5bd133afff1d24e86d412cdf4c05f6a6b",
+    "skills/implement/SKILL.md": "80f29c75b71f466f2d6e8c0b3614a277cc63919be471c24a8a630a057a4860d7",
+    "skills/skill-builder/SKILL.md": "a9e86742a601f5a4fae62dc9498de647c323b66e319c6fe1bf10dcba9f295827",
+    "skills/skill-builder/references/evaluation-rubric.md": "ad2cc4c16f7ce09620193ea3c786adbadb4d5c1c5b5a47601b86827f361a1fe8",
 }
 REVIEW_AGENT_HANDOFF_CLAUSES = (
     "accept only a locator handoff whose aggregate authored review context includes "
@@ -202,9 +202,12 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "transcripts.",
 )
 REVIEW_AGENT_INSTRUCTIONS_NORMALIZED_SHA256 = {
-    "devflow-review": "6ef2e488def33b59952b4b24fc5680a7b2c19c01279898db460015bae55bbb31",
-    "devflow-spec": "610cb621381d47e51a046dd67e49233f261f6fd53c425c69231be0c6b06d2869",
+    "devflow-review": "1249b9009ddb500175e7b8b69e895d8fe7db52137d2886057cdc89f7c4786f2a",
+    "devflow-spec": "2fb16fbad8293fb617cf5ddc544acdb683623bd8ffb97f06eadd06a940000690",
 }
+REVIEW_MARKDOWN_STRUCTURE = re.compile(
+    r"^(?:\s|#{1,6}(?:\s|$)|[-*+]\s|\d+[.)]\s|>|```|~~~|\||---$|<!--)"
+)
 
 REQUIRED_AGENT_FIELDS = (
     "name",
@@ -486,12 +489,37 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
                 errors.append(
                     f"review handoff contract at {relative} must include {clause!r}"
                 )
-        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        canonical = _canonical_review_text(contents)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         if digest != REVIEW_HANDOFF_NORMALIZED_SHA256[relative]:
             errors.append(
                 f"review handoff contract at {relative} differs from its validated "
                 "normalized content"
             )
+
+
+def _canonical_review_text(contents: str) -> str:
+    lines = contents.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks: list[str] = []
+    block: list[str] = []
+
+    def flush() -> None:
+        if not block:
+            return
+        cleaned = [line.rstrip() for line in block]
+        if any(REVIEW_MARKDOWN_STRUCTURE.match(line) for line in cleaned):
+            blocks.append("\n".join(cleaned))
+        else:
+            blocks.append(" ".join(line.strip() for line in cleaned))
+        block.clear()
+
+    for line in lines:
+        if line.strip():
+            block.append(line)
+        else:
+            flush()
+    flush()
+    return "\n\n".join(blocks).strip()
 
 
 def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
@@ -1386,7 +1414,8 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
                 )
         expected_digest = REVIEW_AGENT_INSTRUCTIONS_NORMALIZED_SHA256.get(expected_name)
         if expected_digest is not None:
-            digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            canonical = _canonical_review_text(instructions)
+            digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             if digest != expected_digest:
                 errors.append(
                     f"agent profile {expected_name!r} instructions differ from their "
