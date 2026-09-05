@@ -171,6 +171,9 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "Invoke {skill} after finalization.\n",
             "Route to `{skill}` after finalization.\n",
             "Depend on ${skill} for delivery.\n",
+            "Proceed to ${skill} after finalization.\n",
+            "Invoke **${skill}** after finalization.\n",
+            "Cannot finish without invoking ${skill}.\n",
         )
         for lifecycle_skill in lifecycle_skills:
             for relation in relation_templates:
@@ -207,6 +210,8 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "Route to skill-builder after implementation.\n",
             "Depend on `skill-builder` for authoring.\n",
             "Invoke $skill-builder after implementation.\n",
+            "Proceed to **$skill-builder** after implementation.\n",
+            "Cannot finish without invoking $skill-builder.\n",
         )
         for relation in relations:
             with self.subTest(relation=relation):
@@ -244,7 +249,9 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             + "\nDo not invoke implement.\n"
             + "Never route to `plan`.\n"
             + "Must not depend on $design.\n"
-            + "Do not invoke `$use-expand`.\n",
+            + "Do not invoke `$use-expand`.\n"
+            + "Avoid invoking $plan.\n"
+            + "This skill is not a lifecycle phase.\n",
             encoding="utf-8",
         )
         router = skills / "use-expand" / "SKILL.md"
@@ -252,10 +259,69 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             router.read_text(encoding="utf-8")
             + "\nDo not route to skill-builder.\n"
             + "Never depend on `skill-builder`.\n"
-            + "Must not invoke $skill-builder.\n",
+            + "Must not invoke $skill-builder.\n"
+            + "Avoid invoking **$skill-builder**.\n",
             encoding="utf-8",
         )
         self.assertEqual(validate_repository(root), ())
+
+    def test_manifest_requires_the_exact_skill_builder_token(self) -> None:
+        """Regression: a suffixed skill name is not public visibility for the real skill."""
+
+        for replacement in ("$skill-builder-v2", "$skill-builder-preview"):
+            with self.subTest(replacement=replacement):
+                root = self._copy_repository()
+                manifest_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / ".codex-plugin"
+                    / "plugin.json"
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["interface"]["longDescription"] = manifest["interface"][
+                    "longDescription"
+                ].replace("$skill-builder", replacement)
+                manifest_path.write_text(
+                    json.dumps(manifest, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "longdescription" in error
+                        and "advertise $skill-builder" in error
+                        for error in errors
+                    ),
+                    f"suffixed manifest token {replacement!r} escaped validation: {errors}",
+                )
+
+    def test_readme_invocation_requires_the_exact_skill_builder_token(self) -> None:
+        """Regression: a suffixed invocation example cannot stand in for the public skill."""
+
+        invocation = "Use $skill-builder to create or improve one exact agent skill"
+        for replacement in ("$skill-builder-v2", "$skill-builder-preview"):
+            with self.subTest(replacement=replacement):
+                root = self._copy_repository()
+                readme_path = root / "README.md"
+                readme = readme_path.read_text(encoding="utf-8")
+                self.assertIn(invocation, readme)
+                readme_path.write_text(
+                    readme.replace(
+                        invocation,
+                        invocation.replace("$skill-builder", replacement),
+                    ),
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "readme" in error
+                        and "direct $skill-builder invocation" in error
+                        for error in errors
+                    ),
+                    f"suffixed README token {replacement!r} escaped validation: {errors}",
+                )
 
     def test_validator_accepts_the_complete_design_package(self) -> None:
         """Regression: package validation must have an independent Design helper boundary."""

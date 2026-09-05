@@ -166,14 +166,14 @@ class ContractTests(unittest.TestCase):
         errors = validate_repository(root)
         self.assertIn("required skill 'skill-builder' is missing", errors)
 
-    def test_skill_builder_references_are_required_nonempty_regular_files(self) -> None:
-        """Regression: missing or substituted normative references make the builder unusable."""
+    def test_skill_builder_references_are_required_nonempty_utf8_regular_files(self) -> None:
+        """Regression: missing, unreadable, or substituted references make the builder unusable."""
 
         references = (
             "references/artifact-contracts.md",
             "references/evaluation-rubric.md",
         )
-        mutations = ("missing", "empty", "directory", "symlink")
+        mutations = ("missing", "empty", "directory", "symlink", "invalid-utf8")
         for relative in references:
             for mutation in mutations:
                 with self.subTest(reference=relative, mutation=mutation):
@@ -193,16 +193,19 @@ class ContractTests(unittest.TestCase):
                     elif mutation == "directory":
                         reference.unlink()
                         reference.mkdir()
-                    else:
+                    elif mutation == "symlink":
                         outside = root / f"outside-{reference.name}"
                         outside.write_text("outside\n", encoding="utf-8")
                         reference.unlink()
                         reference.symlink_to(outside)
+                    else:
+                        reference.write_bytes(b"\xff\xfe")
                     errors = tuple(error.lower() for error in validate_repository(root))
                     self.assertTrue(
                         any(
                             "skill 'skill-builder' required reference" in error
                             and relative in error
+                            and (mutation != "invalid-utf8" or "utf-8 text" in error)
                             for error in errors
                         ),
                         f"{relative} mutation {mutation} escaped its required-file check: {errors}",
@@ -506,6 +509,7 @@ class ContractTests(unittest.TestCase):
             "empty": ("readme", "non-empty regular file"),
             "directory": ("readme", "regular file"),
             "symlink": ("readme", "symlink"),
+            "invalid-utf8": ("readme", "utf-8 text"),
         }
         for mutation, fragments in expected_fragments.items():
             with self.subTest(mutation=mutation):
@@ -518,12 +522,17 @@ class ContractTests(unittest.TestCase):
                 elif mutation == "directory":
                     readme.unlink()
                     readme.mkdir()
-                else:
+                elif mutation == "symlink":
                     outside = root / "outside-readme.md"
                     outside.write_text("outside\n", encoding="utf-8")
                     readme.unlink()
                     readme.symlink_to(outside)
-                errors = tuple(error.lower() for error in validate_repository(root))
+                else:
+                    readme.write_bytes(b"\xff\xfe")
+                try:
+                    errors = tuple(error.lower() for error in validate_repository(root))
+                except UnicodeError as error:
+                    self.fail(f"README mutation {mutation} leaked a decode exception: {error}")
                 self.assertTrue(
                     any(all(fragment in error for fragment in fragments) for error in errors),
                     f"README mutation {mutation} escaped its required-file check: {errors}",
