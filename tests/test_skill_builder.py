@@ -308,7 +308,7 @@ def evaluate_trace(
     current_snapshot: str | None = None
     research_lanes: list[dict[str, Any]] | None = None
     active_target: str | None = None
-    material_findings: dict[str, set[str]] = {}
+    material_findings: dict[str, tuple[set[str], Any, int]] = {}
     verification: dict[str, Any] | None = None
     pause_record: dict[str, Any] | None = None
     identity_ambiguous = False
@@ -324,6 +324,9 @@ def evaluate_trace(
     cleanup_tombstone: dict[str, Any] | None = None
     run_state_manifest: dict[str, Any] | None = None
     snapshot_changed_since_freeze = False
+    current_candidate_event_index: int | None = None
+    pending_repair: dict[str, Any] | None = None
+    record_event_indices: dict[int, int] = {}
 
     def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any]:
         return (
@@ -332,8 +335,18 @@ def evaluate_trace(
             record.get("evaluation_digest"),
         )
 
+    def record_postdates_candidate(record: dict[str, Any]) -> bool:
+        return (
+            current_candidate_event_index is not None
+            and record_event_indices.get(id(record), -1)
+            > current_candidate_event_index
+        )
+
     def evidence_resolves(
-        evidence_ids: object, binding: tuple[Any, Any, Any]
+        evidence_ids: object,
+        binding: tuple[Any, Any, Any],
+        *,
+        current_epoch: bool = False,
     ) -> bool:
         return (
             isinstance(evidence_ids, list)
@@ -343,12 +356,17 @@ def evaluate_trace(
                 and artifact_id in retained_artifacts
                 and retained_artifacts[artifact_id].get("valid") is True
                 and record_binding(retained_artifacts[artifact_id]) == binding
+                and (
+                    not current_epoch
+                    or record_postdates_candidate(retained_artifacts[artifact_id])
+                )
                 for artifact_id in evidence_ids
             )
         )
 
     for index, event in enumerate(trace):
         event_name = event["event"]
+        record_event_indices[id(event)] = index
         if event_name == "resolve":
             manifest = json.loads(
                 (fixture_root / event["target_manifest"]).read_text(encoding="utf-8")
@@ -628,17 +646,35 @@ def evaluate_trace(
                 for finding in event["findings"]:
                     if finding["severity"] in {"High", "Medium"}:
                         affected_categories = set(finding["affected_categories"])
-                        material_findings[finding["id"]] = affected_categories
+                        material_findings[finding["id"]] = (
+                            affected_categories,
+                            event.get("revision"),
+                            index,
+                        )
                         for category in affected_categories:
                             prior_score = category_scores.get(category)
                             if prior_score is not None and prior_score[0].get("score") == 10:
                                 category_scores.pop(category, None)
         elif event_name == "repair_completed":
             repaired_ids = set(event["finding_ids"])
+            finding_records = [
+                material_findings[finding_id]
+                for finding_id in repaired_ids
+                if finding_id in material_findings
+            ]
             if (
-                event["prior_revision"] == event["candidate_revision"]
+                current_candidate_revision is None
+                or current_candidate_event_index is None
+                or pending_repair is not None
                 or not repaired_ids
                 or not repaired_ids.issubset(material_findings)
+                or event["prior_revision"] != current_candidate_revision
+                or event["candidate_revision"] == current_candidate_revision
+                or any(
+                    finding_revision != current_candidate_revision
+                    or finding_index <= current_candidate_event_index
+                    for _, finding_revision, finding_index in finding_records
+                )
             ):
                 failures.append(
                     OracleFailure(
@@ -648,8 +684,11 @@ def evaluate_trace(
                     )
                 )
             else:
-                for finding_id in repaired_ids:
-                    material_findings.pop(finding_id)
+                pending_repair = {
+                    "finding_ids": repaired_ids,
+                    "prior_revision": current_candidate_revision,
+                    "candidate_revision": event["candidate_revision"],
+                }
         elif event_name == "category_scored":
             criteria = event["criteria"]
             binding = record_binding(event)
@@ -678,7 +717,7 @@ def evaluate_trace(
                 and event["category"]
                 in {
                     category
-                    for categories in material_findings.values()
+                    for categories, _, _ in material_findings.values()
                     for category in categories
                 }
             ):
@@ -739,12 +778,17 @@ def evaluate_trace(
 
             conformance_valid = (
                 conformance_record is not None
+                and record_postdates_candidate(conformance_record)
                 and record_binding(conformance_record) == expected_binding
                 and {gate.get("id") for gate in conformance_record.get("gates", [])}
                 == CONFORMANCE_GATE_IDS
                 and all(
                     gate.get("passed") is True
-                    and evidence_resolves(gate.get("evidence"), expected_binding)
+                    and evidence_resolves(
+                        gate.get("evidence"),
+                        expected_binding,
+                        current_epoch=True,
+                    )
                     for gate in conformance_record.get("gates", [])
                 )
             )
@@ -759,13 +803,18 @@ def evaluate_trace(
 
             review_valid = (
                 final_review is not None
+                and record_postdates_candidate(final_review)
                 and record_binding(final_review) == expected_binding
                 and final_review.get("valid") is True
                 and final_review.get("verdict") == "ready"
                 and final_review.get("independent") is True
                 and final_review.get("read_only") is True
                 and not material_findings
-                and evidence_resolves(final_review.get("evidence"), expected_binding)
+                and evidence_resolves(
+                    final_review.get("evidence"),
+                    expected_binding,
+                    current_epoch=True,
+                )
             )
             if not review_valid:
                 failures.append(
@@ -778,12 +827,17 @@ def evaluate_trace(
 
             spec_valid = (
                 spec_outcome is not None
+                and record_postdates_candidate(spec_outcome)
                 and record_binding(spec_outcome) == expected_binding
                 and spec_outcome.get("valid") is True
                 and spec_outcome.get("outcome") == "pass"
                 and spec_outcome.get("independent") is True
                 and spec_outcome.get("read_only") is True
-                and evidence_resolves(spec_outcome.get("evidence"), expected_binding)
+                and evidence_resolves(
+                    spec_outcome.get("evidence"),
+                    expected_binding,
+                    current_epoch=True,
+                )
             )
             if not spec_valid:
                 failures.append(
@@ -797,7 +851,16 @@ def evaluate_trace(
             scores_valid = set(category_scores) == set(CATEGORY_CRITERION_IDS) and all(
                 score_event.get("score") == 10
                 and score_proven
+                and record_postdates_candidate(score_event)
                 and record_binding(score_event) == expected_binding
+                and all(
+                    evidence_resolves(
+                        criterion.get("evidence"),
+                        expected_binding,
+                        current_epoch=True,
+                    )
+                    for criterion in score_event.get("criteria", [])
+                )
                 for score_event, score_proven in category_scores.values()
             )
             if not scores_valid:
@@ -811,13 +874,18 @@ def evaluate_trace(
 
             verification_valid = (
                 verification is not None
+                and record_postdates_candidate(verification)
                 and record_binding(verification) == expected_binding
                 and verification.get("behavioral_trials", 0) >= 1
                 and verification.get("exit_status") == 0
                 and verification.get("conclusion") == "pass"
                 and verification.get("independent") is True
                 and verification.get("read_only") is True
-                and evidence_resolves(verification.get("evidence"), expected_binding)
+                and evidence_resolves(
+                    verification.get("evidence"),
+                    expected_binding,
+                    current_epoch=True,
+                )
             )
             if verification is not None and verification.get("behavioral_trials", 0) < 1:
                 failures.append(
@@ -838,9 +906,14 @@ def evaluate_trace(
 
             release_valid = (
                 release_evidence is not None
+                and record_postdates_candidate(release_evidence)
                 and record_binding(release_evidence) == expected_binding
                 and release_evidence.get("valid") is True
-                and evidence_resolves(release_evidence.get("evidence"), expected_binding)
+                and evidence_resolves(
+                    release_evidence.get("evidence"),
+                    expected_binding,
+                    current_epoch=True,
+                )
             )
             if not release_valid:
                 failures.append(
@@ -950,7 +1023,33 @@ def evaluate_trace(
                                 "a required research lane retained no direct evidence card",
                             )
                         )
-            current_candidate_revision = event["candidate_revision"]
+            candidate_revision = event["candidate_revision"]
+            if pending_repair is not None:
+                if (
+                    current_candidate_revision == pending_repair["prior_revision"]
+                    and candidate_revision == pending_repair["candidate_revision"]
+                ):
+                    for finding_id in pending_repair["finding_ids"]:
+                        material_findings.pop(finding_id, None)
+                else:
+                    failures.append(
+                        OracleFailure(
+                            "INVALID_REPAIR_BINDING",
+                            index,
+                            "repair was not followed by its exact declared candidate revision",
+                        )
+                    )
+                pending_repair = None
+
+            retained_artifacts.clear()
+            conformance_record = None
+            final_review = None
+            spec_outcome = None
+            category_scores.clear()
+            verification = None
+            release_evidence = None
+            current_candidate_revision = candidate_revision
+            current_candidate_event_index = index
 
     return tuple(failures)
 
@@ -1406,6 +1505,102 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         repaired.extend(revision_two[candidate_index:])
         self.assertEqual(evaluate_trace(repaired, BUILDER_FIXTURES), ())
+
+    def test_finalization_rejects_revision_gates_recorded_before_latest_candidate(self) -> None:
+        """Regression: matching revision strings cannot predate the candidate event."""
+
+        trace = accepted_finalization_trace("candidate-v2")
+        candidate_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "candidate_edit"
+        )
+        candidate_event = trace.pop(candidate_index)
+        trace.insert(-1, candidate_event)
+
+        self.assertEqual(
+            {failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)},
+            {
+                "FINALIZE_WITHOUT_CONFORMANCE",
+                "FINALIZE_WITHOUT_READY_REVIEW",
+                "FINALIZE_WITHOUT_SPEC_PASS",
+                "FINALIZE_WITHOUT_TEN_SCORES",
+                "FINALIZE_WITHOUT_VERIFICATION",
+                "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
+            },
+        )
+
+    def test_repair_does_not_clear_finding_without_exact_new_candidate_edit(self) -> None:
+        """Regression: declaring a v2 repair cannot revive the reviewed v1 gates."""
+
+        trace = accepted_finalization_trace()
+        review_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        trace[review_index]["findings"] = [
+            {
+                "id": "pending-safety-finding",
+                "severity": "Medium",
+                "affected_categories": ["safety"],
+            }
+        ]
+        stale_safety_score = next(
+            event
+            for event in trace
+            if event["event"] == "category_scored" and event["category"] == "safety"
+        )
+        trace[review_index + 1 : review_index + 1] = [
+            {
+                "event": "repair_completed",
+                "finding_ids": ["pending-safety-finding"],
+                "prior_revision": "candidate-v1",
+                "candidate_revision": "candidate-v2",
+            },
+            dict(stale_safety_score),
+        ]
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+        self.assertIn("FINALIZE_WITH_MATERIAL_FINDINGS", failure_codes)
+
+    def test_repair_rejects_unrelated_prior_revision_and_stale_candidate_revival(self) -> None:
+        """Regression: an unrelated-to-v1 repair cannot clear a current v1 finding."""
+
+        trace = accepted_finalization_trace()
+        review_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        trace[review_index]["findings"] = [
+            {
+                "id": "current-safety-finding",
+                "severity": "Medium",
+                "affected_categories": ["safety"],
+            }
+        ]
+        stale_safety_score = next(
+            event
+            for event in trace
+            if event["event"] == "category_scored" and event["category"] == "safety"
+        )
+        trace[review_index + 1 : review_index + 1] = [
+            {
+                "event": "repair_completed",
+                "finding_ids": ["current-safety-finding"],
+                "prior_revision": "unrelated-candidate",
+                "candidate_revision": "candidate-v1",
+            },
+            dict(stale_safety_score),
+        ]
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_REPAIR_BINDING", failure_codes)
 
     def test_cleanup_ownership_is_derived_from_validated_xdg_manifest(self) -> None:
         """Regression: matching cleanup labels cannot disguise a production path."""
