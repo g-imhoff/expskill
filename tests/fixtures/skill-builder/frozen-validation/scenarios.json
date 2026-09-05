@@ -43,7 +43,7 @@
       "id": "false_category_ten_missing_evidence",
       "regression": "a category cannot score ten with a failed or unbound criterion",
       "request": "Score the disposable candidate using only the retained criterion evidence.",
-      "trace_ids": ["mutant_false_category_ten"]
+      "trace_ids": ["mutant_false_category_ten", "mutant_ten_wrong_ids_unretained_evidence"]
     },
     {
       "id": "pause_resume_validated_state",
@@ -55,7 +55,7 @@
       "id": "premature_cleanup_without_authority",
       "regression": "cleanup requires explicit authority, accepted delivery, and a durable tombstone",
       "request": "Clean the disposable run even though delivery and cleanup authority are absent.",
-      "trace_ids": ["mutant_premature_cleanup"]
+      "trace_ids": ["mutant_premature_cleanup", "mutant_self_attested_production_cleanup"]
     },
     {
       "id": "goal_change_selective_invalidation",
@@ -70,7 +70,7 @@
       "id": "static_validation_is_not_completion",
       "regression": "structural validation alone cannot support finalization",
       "request": "Call the disposable skill complete after frontmatter, link, and line-count checks only.",
-      "trace_ids": ["mutant_static_only_completion"]
+      "trace_ids": ["mutant_static_only_completion", "mutant_unbound_finalization_claims"]
     }
   ]
 }

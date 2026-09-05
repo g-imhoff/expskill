@@ -292,8 +292,19 @@
     ],
     "mutant_ten_with_material_finding": [
       {
+        "event": "artifact_retained",
+        "artifact_id": "material-safety-evidence",
+        "artifact_type": "trial-receipt",
+        "revision": "candidate-v1",
+        "contract_digest": "contract-v1",
+        "evaluation_digest": "evaluation-v1",
+        "valid": true
+      },
+      {
         "event": "review_recorded",
         "revision": "candidate-v1",
+        "contract_digest": "contract-v1",
+        "evaluation_digest": "evaluation-v1",
         "valid": true,
         "verdict": "not ready",
         "findings": [
@@ -307,19 +318,21 @@
       {
         "event": "category_scored",
         "revision": "candidate-v1",
+        "contract_digest": "contract-v1",
+        "evaluation_digest": "evaluation-v1",
         "category": "safety",
         "score": 10,
         "criteria": [
-          {"id": "SA1", "passed": true, "evidence": ["trial-SA1"]},
-          {"id": "SA2", "passed": true, "evidence": ["trial-SA2"]},
-          {"id": "SA3", "passed": true, "evidence": ["trial-SA3"]},
-          {"id": "SA4", "passed": true, "evidence": ["trial-SA4"]},
-          {"id": "SA5", "passed": true, "evidence": ["trial-SA5"]},
-          {"id": "SA6", "passed": true, "evidence": ["trial-SA6"]},
-          {"id": "SA7", "passed": true, "evidence": ["trial-SA7"]},
-          {"id": "SA8", "passed": true, "evidence": ["trial-SA8"]},
-          {"id": "SA9", "passed": true, "evidence": ["trial-SA9"]},
-          {"id": "SA10", "passed": true, "evidence": ["trial-SA10"]}
+          {"id": "SA1", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA2", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA3", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA4", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA5", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA6", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA7", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA8", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA9", "passed": true, "evidence": ["material-safety-evidence"]},
+          {"id": "SA10", "passed": true, "evidence": ["material-safety-evidence"]}
         ]
       }
     ],
@@ -343,6 +356,28 @@
         ]
       }
     ],
+    "mutant_ten_wrong_ids_unretained_evidence": [
+      {
+        "event": "category_scored",
+        "revision": "candidate-v1",
+        "contract_digest": "contract-v1",
+        "evaluation_digest": "evaluation-v1",
+        "category": "workflow quality",
+        "score": 10,
+        "criteria": [
+          {"id": "SA1", "passed": true, "evidence": ["invented-SA1"]},
+          {"id": "SA2", "passed": true, "evidence": ["invented-SA2"]},
+          {"id": "SA3", "passed": true, "evidence": ["invented-SA3"]},
+          {"id": "SA4", "passed": true, "evidence": ["invented-SA4"]},
+          {"id": "SA5", "passed": true, "evidence": ["invented-SA5"]},
+          {"id": "SA6", "passed": true, "evidence": ["invented-SA6"]},
+          {"id": "SA7", "passed": true, "evidence": ["invented-SA7"]},
+          {"id": "SA8", "passed": true, "evidence": ["invented-SA8"]},
+          {"id": "SA9", "passed": true, "evidence": ["invented-SA9"]},
+          {"id": "SA10", "passed": true, "evidence": ["invented-SA10"]}
+        ]
+      }
+    ],
     "mutant_static_only_completion": [
       {
         "event": "verification_recorded",
@@ -354,6 +389,54 @@
       {
         "event": "finalized",
         "revision": "candidate-v1",
+        "claim": "complete"
+      }
+    ],
+    "mutant_unbound_finalization_claims": [
+      {
+        "event": "resolve",
+        "requested_mode": "improve",
+        "selected_mode": "improve",
+        "target_manifest": "targets/exact-improve/manifest.json",
+        "target_snapshot": "fixture-improve-snapshot-v1"
+      },
+      {
+        "event": "research_pack",
+        "lanes": [
+          {"role": "domain-techniques", "context_id": "final-domain", "blind": true, "evidence_cards": 1, "contaminated_by": []},
+          {"role": "agent-skill-design", "context_id": "final-design", "blind": true, "evidence_cards": 1, "contaminated_by": []},
+          {"role": "evaluation-methods", "context_id": "final-evaluation", "blind": true, "evidence_cards": 1, "contaminated_by": []}
+        ]
+      },
+      {"event": "contract_written", "contract_digest": "contract-current"},
+      {"event": "user_confirmed", "contract_digest": "contract-current", "target_identity": "fixture-terse-summary"},
+      {
+        "event": "evaluation_frozen",
+        "evaluation_digest": "evaluation-current",
+        "contract_digest": "contract-current",
+        "target_snapshot": "fixture-improve-snapshot-v1",
+        "partitions": ["visible", "frozen-validation", "hidden-release"]
+      },
+      {"event": "candidate_edit", "actor": "candidate-implementer", "write_scope": "isolated-candidate", "candidate_revision": "candidate-current"},
+      {
+        "event": "verification_recorded",
+        "revision": "candidate-stale",
+        "contract_digest": "contract-current",
+        "evaluation_digest": "evaluation-current",
+        "checks": ["behavioral-trials"],
+        "behavioral_trials": 1,
+        "exit_status": 0
+      },
+      {
+        "event": "finalized",
+        "revision": "candidate-current",
+        "contract_digest": "contract-current",
+        "evaluation_digest": "evaluation-current",
+        "conformance_passed": true,
+        "review_ready": true,
+        "spec_passed": true,
+        "scores_all_ten": true,
+        "release_evidence_retained": true,
         "claim": "complete"
       }
     ],
@@ -380,6 +463,15 @@
         "accepted_delivery": false,
         "tombstone_written_and_validated": false,
         "deletion_scope": "helper-owned-run-directory"
+      }
+    ],
+    "mutant_self_attested_production_cleanup": [
+      {
+        "event": "cleanup_attempt",
+        "authority": true,
+        "accepted_delivery": true,
+        "tombstone_written_and_validated": true,
+        "deletion_scope": "production-target"
       }
     ],
     "mutant_over_invalidates_goal_change": [
@@ -433,23 +525,34 @@
         "candidate_revision": "repair-candidate-v2"
       },
       {"event": "candidate_edit", "actor": "candidate-implementer", "write_scope": "isolated-candidate", "candidate_revision": "repair-candidate-v2"},
+      {
+        "event": "artifact_retained",
+        "artifact_id": "repair-safety-evidence",
+        "artifact_type": "trial-receipt",
+        "revision": "repair-candidate-v2",
+        "contract_digest": "repair-contract-v1",
+        "evaluation_digest": "repair-evaluation-v1",
+        "valid": true
+      },
       {"event": "review_recorded", "revision": "repair-candidate-v2", "valid": true, "verdict": "ready", "findings": []},
       {
         "event": "category_scored",
         "revision": "repair-candidate-v2",
+        "contract_digest": "repair-contract-v1",
+        "evaluation_digest": "repair-evaluation-v1",
         "category": "safety",
         "score": 10,
         "criteria": [
-          {"id": "SA1", "passed": true, "evidence": ["repair-SA1"]},
-          {"id": "SA2", "passed": true, "evidence": ["repair-SA2"]},
-          {"id": "SA3", "passed": true, "evidence": ["repair-SA3"]},
-          {"id": "SA4", "passed": true, "evidence": ["repair-SA4"]},
-          {"id": "SA5", "passed": true, "evidence": ["repair-SA5"]},
-          {"id": "SA6", "passed": true, "evidence": ["repair-SA6"]},
-          {"id": "SA7", "passed": true, "evidence": ["repair-SA7"]},
-          {"id": "SA8", "passed": true, "evidence": ["repair-SA8"]},
-          {"id": "SA9", "passed": true, "evidence": ["repair-SA9"]},
-          {"id": "SA10", "passed": true, "evidence": ["repair-SA10"]}
+          {"id": "SA1", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA2", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA3", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA4", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA5", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA6", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA7", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA8", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA9", "passed": true, "evidence": ["repair-safety-evidence"]},
+          {"id": "SA10", "passed": true, "evidence": ["repair-safety-evidence"]}
         ]
       }
     ],
