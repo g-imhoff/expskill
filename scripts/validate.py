@@ -490,12 +490,16 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
             errors.append(f"review handoff contract could not be read at {relative}: {error}")
             continue
         normalized = " ".join(contents.lower().split())
-        if contents.replace("\r\n", "\n").replace("\r", "\n").count(
-            REVIEW_HANDOFF_HEADING
-        ) != 1:
+        normalized_markdown = contents.replace("\r\n", "\n").replace("\r", "\n")
+        if normalized_markdown.count(REVIEW_HANDOFF_HEADING) != 1:
             errors.append(
                 f"review handoff contract at {relative} must contain one final "
                 "Review context contract section"
+            )
+        elif not _review_contract_heading_is_live(normalized_markdown):
+            errors.append(
+                f"review handoff contract at {relative} must begin at a live top-level "
+                "Markdown heading"
             )
         for clause in REVIEW_HANDOFF_CLAUSES:
             if clause not in normalized:
@@ -516,6 +520,62 @@ def _canonical_review_markdown(contents: str) -> str:
     if normalized.count(REVIEW_HANDOFF_HEADING) != 1:
         return normalized
     return normalized[normalized.index(REVIEW_HANDOFF_HEADING) :]
+
+
+def _review_contract_heading_is_live(contents: str) -> bool:
+    heading_index = contents.index(REVIEW_HANDOFF_HEADING)
+    prefix = contents[:heading_index]
+    fence_character: str | None = None
+    fence_length = 0
+    html_closer: str | None = None
+
+    for line in prefix.splitlines():
+        if fence_character is not None:
+            closing = re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_character)}{{{fence_length},}}[ \t]*",
+                line,
+            )
+            if closing is not None:
+                fence_character = None
+                fence_length = 0
+            continue
+
+        if html_closer is not None:
+            closer_index = line.lower().find(html_closer.lower())
+            if closer_index < 0:
+                continue
+            line = line[closer_index + len(html_closer) :]
+            html_closer = None
+
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            marker = fence.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            continue
+
+        remaining = line
+        while "<!--" in remaining:
+            opener = remaining.index("<!--")
+            closer = remaining.find("-->", opener + 4)
+            if closer < 0:
+                html_closer = "-->"
+                break
+            remaining = remaining[closer + 3 :]
+        if html_closer is not None:
+            continue
+
+        raw_html = re.match(
+            r"^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)",
+            line,
+            re.IGNORECASE,
+        )
+        if raw_html is not None:
+            closer = f"</{raw_html.group(1)}>"
+            if closer.lower() not in line[raw_html.end() :].lower():
+                html_closer = closer
+
+    return fence_character is None and html_closer is None
 
 
 def _canonical_review_agent_instructions(contents: str) -> str:

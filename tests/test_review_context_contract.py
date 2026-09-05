@@ -430,6 +430,33 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_review_contract_heading_must_be_live_top_level_markdown(self) -> None:
+        guarded_paths = (
+            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path(
+                "plugins/codex-dev-flow/skills/skill-builder/"
+                "references/evaluation-rubric.md"
+            ),
+        )
+        for relative_path in guarded_paths:
+            for opener in ("```text\n", "~~~text\n", "<!--\n", "<script>\n"):
+                root = self.copy_repository()
+                path = root / relative_path
+                contents = path.read_text(encoding="utf-8")
+                heading = "## Review context contract\n"
+                self.assertEqual(contents.count(heading), 1)
+                path.write_text(
+                    contents.replace(heading, opener + heading, 1),
+                    encoding="utf-8",
+                )
+                errors = validate_repository(root)
+                with self.subTest(path=relative_path, opener=opener):
+                    self.assertTrue(
+                        any("review handoff" in error.lower() for error in errors),
+                        errors,
+                    )
+
     def test_canonical_validation_preserves_markdown_hard_breaks(self) -> None:
         producer_path = Path("plugins/codex-dev-flow/skills/implement/SKILL.md")
         root = self.copy_repository()
