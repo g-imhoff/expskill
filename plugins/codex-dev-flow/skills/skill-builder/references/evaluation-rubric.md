@@ -210,9 +210,9 @@ Apply the same rule to the final target review. An invalid final review blocks a
 | TE5 | Multi-turn cases exercise confirmation, changed goals, recovery, and stopping where applicable. |
 | TE6 | Tool events, writes, outputs, state, and external effects have inspectable evidence. |
 | TE7 | Failure and recovery cases distinguish correct refusal from unrelated errors. |
-| TE8 | Receipts bind prompts, inputs, candidate revision, context, results, and target manifests. |
-| TE9 | Trials are isolated and repeatable enough to distinguish reliable behavior from chance. |
-| TE10 | Preserved regressions and final verification prove the exact candidate revision accepted for release. |
+| TE8 | Behavior that the frozen target contract permits to vary is repeated at its required frequency and meets its reliability threshold. |
+| TE9 | Every target acceptance check executes contracted behavior and names a frozen contract regression that would make the check fail. |
+| TE10 | The target evaluation suite is independently repeatable from retained target inputs, setup, and commands, and its current pre-final results pass. |
 
 ## Lowest-score repair and tie-breaking
 
