@@ -27,11 +27,11 @@ PHASE_ROOTS = {
     )
 }
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
-    "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-review": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-spec": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
+    "devflow-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+    "devflow-review": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "devflow-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
 }
 EXPECTED_SKILLS = {
     "use-expand",

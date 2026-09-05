@@ -125,7 +125,26 @@ Candidate agents receive only the candidate skill, realistic request, visible ca
 
 ### 11. Obtain independent review before scoring
 
-Give an independent read-only target reviewer the confirmed contract, host rules, exact candidate revision, evaluation pack, candidate diff, raw trial evidence, and preserved regressions. Verify independence, revision freshness, read-only behavior, and access to every supplied artifact. Do not give the reviewer a desired verdict.
+Give an independent read-only target reviewer a compact locator handoff. The
+aggregate authored review handoff for one review may contain at most 300
+physical lines across every generated context Markdown file. Count it and stop
+before dispatch when it exceeds that limit.
+
+Include only the repository or candidate path, base revision, candidate
+revision, what changed and why, review scope, claimed checks with concise
+results, known concerns, and paths plus digests for relevant evidence. The
+confirmed specification or contract, host rules, evaluation pack, raw trial
+evidence, preserved regressions, artifact manifest, and this rubric are
+referenced separately.
+Those specification and existing evidence files do not count toward the
+authored handoff limit and must not be restated.
+
+Do not copy or embed diffs, source files, test logs, terminal output,
+transcripts, or other target content. The reviewer must self-inspect the pinned
+candidate with repository tools and open only the referenced evidence needed
+for the review. Verify independence, revision freshness, read-only behavior,
+and access to the referenced artifacts. Do not give the reviewer a desired
+verdict or create a larger convenience package.
 
 Require evidence, impact, correction, severity, affected target criteria, and `ready` or `not ready`. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be scored.
 

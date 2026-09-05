@@ -58,6 +58,25 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
    commit, changed paths, commands and results, RED evidence or justified
    alternative, remaining risks, and any scope or decision blocker.
 
+## Build a compact review handoff
+
+For each judge, make the aggregate authored review handoff a locator with at
+most 300 physical lines. Count every generated handoff or context Markdown file
+for that dispatch together. Check the count before launch and stop before
+dispatch when it exceeds the limit.
+
+Include only the repository or candidate path, base revision, candidate
+revision, what changed and why, review scope, claimed checks with concise
+results, known concerns, and paths to relevant evidence. The actual accepted
+specification files are referenced separately. Specification files are not part of
+the authored handoff limit and must not be restated in the handoff.
+
+Do not copy or embed diffs, source files, test logs, terminal output,
+transcripts, or other repository content. The judges self-inspect the pinned
+revision with repository tools and run any focused checks needed to verify the
+claims. A request for a larger convenience package is not a reason to create
+one.
+
 ## Gate each candidate
 
 For the exact immutable candidate commit, launch these fresh agents concurrently:

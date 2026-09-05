@@ -157,12 +157,25 @@ EXPECTED_UNSLOP_HOOKS = {
 }
 
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
-    "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-review": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-spec": ("gpt-5.6-luna", "high", "workspace-write"),
+    "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
+    "devflow-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+    "devflow-review": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "devflow-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
 }
+
+REVIEW_HANDOFF_PATHS = (
+    "skills/implement/SKILL.md",
+    "skills/skill-builder/SKILL.md",
+    "skills/skill-builder/references/evaluation-rubric.md",
+)
+REVIEW_HANDOFF_MARKERS = (
+    "aggregate authored review handoff",
+    "300 physical lines",
+    "stop before dispatch",
+    "referenced separately",
+    "self-inspect",
+)
 
 REQUIRED_AGENT_FIELDS = (
     "name",
@@ -190,6 +203,8 @@ AGENT_BOUNDARIES = {
     ),
     "devflow-review": (
         "read-only",
+        "300 physical lines",
+        "self-inspect",
         "severity",
         "evidence",
         "impact",
@@ -199,6 +214,8 @@ AGENT_BOUNDARIES = {
     ),
     "devflow-spec": (
         "every accepted behavior",
+        "300 physical lines",
+        "self-inspect",
         "criterion-by-criterion evidence",
         "no tracked-source edits",
         "pass or fail",
@@ -212,8 +229,8 @@ EXPECTED_POLICY_PROFILES = {
     "devflow-explorer": {
         "agent_type": "devflow-explorer",
         "role": "explorer",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
@@ -221,32 +238,32 @@ EXPECTED_POLICY_PROFILES = {
         "agent_type": "devflow-test-engineer",
         "role": "test-engineer",
         "model": "gpt-5.6-luna",
-        "effort": "high",
-        "sandbox_mode": "workspace-write",
+        "effort": "max",
+        "sandbox_mode": "read-only",
         "escalation": None,
     },
     "devflow-implementer": {
         "agent_type": "devflow-implementer",
         "role": "implementer",
         "model": "gpt-5.6-luna",
-        "effort": "medium",
+        "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
     "devflow-review": {
         "agent_type": "devflow-review",
         "role": "review",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
     "devflow-spec": {
         "agent_type": "devflow-spec",
         "role": "spec",
-        "model": "gpt-5.6-luna",
-        "effort": "high",
-        "sandbox_mode": "workspace-write",
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh",
+        "sandbox_mode": "read-only",
         "escalation": None,
     },
 }
@@ -421,12 +438,29 @@ def validate_repository(root: Path) -> tuple[str, ...]:
             _validate_plugin_manifest(manifest, plugin_root, errors)
 
         _validate_agents(plugin_root, errors)
+        _validate_review_handoff_contract(plugin_root, errors)
         _validate_policy(plugin_root, errors)
         _validate_unslop_hook(plugin_root, errors)
         _validate_third_party_sources(plugin_root, errors)
         _validate_helper_and_package_layout(plugin_root, errors)
     _validate_skill_punctuation(repository_root, errors)
     return tuple(errors)
+
+
+def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> None:
+    for relative in REVIEW_HANDOFF_PATHS:
+        path = plugin_root / relative
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"review handoff contract could not be read at {relative}: {error}")
+            continue
+        normalized = " ".join(contents.lower().split())
+        for marker in REVIEW_HANDOFF_MARKERS:
+            if marker not in normalized:
+                errors.append(
+                    f"review handoff contract at {relative} must include {marker!r}"
+                )
 
 
 def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
