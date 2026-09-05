@@ -126,25 +126,31 @@ Candidate agents receive only the candidate skill, realistic request, visible ca
 ### 11. Obtain independent review before scoring
 
 Give an independent read-only target reviewer a compact locator handoff. The
-aggregate authored review handoff for one review may contain at most 300
-physical lines across every generated context Markdown file. Count it and stop
-before dispatch when it exceeds that limit.
+aggregate authored review handoff includes inline dispatch text, follow-up
+messages, and every generated context artifact regardless of carrier or
+extension. It is a locator, not a payload, and totals at most 300 physical
+lines. Count the complete handoff before launch and stop before dispatch when
+it exceeds the limit.
 
 Include only the repository or candidate path, base revision, candidate
 revision, what changed and why, review scope, claimed checks with concise
-results, known concerns, and paths plus digests for relevant evidence. The
-confirmed specification or contract, host rules, evaluation pack, raw trial
-evidence, preserved regressions, artifact manifest, and this rubric are
-referenced separately.
-Those specification and existing evidence files do not count toward the
-authored handoff limit and must not be restated.
+results, known concerns, and paths plus digests for relevant evidence. A real
+accepted specification file is referenced separately when it exists. The
+exception applies only to a specification file that existed before review
+dispatch. It does not permit a review-time summary, copy, or relabelled context
+package.
+
+Reference the confirmed contract, host rules, evaluation pack, original raw
+trial evidence, preserved regressions, artifact manifest, and this rubric by
+path and digest. Do not restate them.
 
 Do not copy or embed diffs, source files, test logs, terminal output,
-transcripts, or other target content. The reviewer must self-inspect the pinned
-candidate with repository tools and open only the referenced evidence needed
-for the review. Verify independence, revision freshness, read-only behavior,
-and access to the referenced artifacts. Do not give the reviewer a desired
-verdict or create a larger convenience package.
+transcripts, or other repository content. Do not attach binary or opaque review
+context. The reviewer must self-inspect the pinned candidate with repository
+tools and open only the referenced evidence needed for the review. Verify
+independence, revision freshness, read-only behavior, and access to the
+referenced artifacts. Do not give the reviewer a desired verdict or create a
+larger convenience package.
 
 Require evidence, impact, correction, severity, affected target criteria, and `ready` or `not ready`. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be scored.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import tomllib
@@ -43,9 +44,13 @@ class ReviewContextContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn("aggregate authored review handoff", body)
                 self.assertIn("300 physical lines", body)
+                self.assertIn("inline dispatch text", body)
+                self.assertIn("follow-up messages", body)
+                self.assertIn("regardless of carrier or extension", body)
                 self.assertIn("stop before dispatch", body)
                 self.assertIn("specification", body)
                 self.assertIn("referenced separately", body)
+                self.assertIn("existed before review dispatch", body)
 
     def test_review_handoff_is_a_locator_not_a_copied_repository(self) -> None:
         required_fields = (
@@ -82,6 +87,7 @@ class ReviewContextContractTests(unittest.TestCase):
                 self.assertIn("pinned", instructions)
                 self.assertIn("do not request a copied diff", instructions)
                 self.assertIn("300 physical lines", instructions)
+                self.assertIn("invalid handoff", instructions)
 
     def test_user_selected_agent_runtime_settings_are_preserved(self) -> None:
         expected = {
@@ -102,6 +108,19 @@ class ReviewContextContractTests(unittest.TestCase):
             with self.subTest(profile=name):
                 self.assertEqual(observed, settings)
 
+        policy = json.loads(
+            (PLUGIN / "assets" / "execution-policy.json").read_text(encoding="utf-8")
+        )
+        observed_policy = {
+            name: (
+                values["model"],
+                values["effort"],
+                values["sandbox_mode"],
+            )
+            for name, values in policy["profiles"].items()
+        }
+        self.assertEqual(observed_policy, expected)
+
     def test_repository_validator_rejects_a_removed_handoff_limit(self) -> None:
         guarded_paths = (
             Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
@@ -115,15 +134,71 @@ class ReviewContextContractTests(unittest.TestCase):
             root = self.copy_repository()
             path = root / relative_path
             contents = path.read_text(encoding="utf-8")
-            self.assertRegex(contents, r"300\s+physical lines")
+            self.assertRegex(contents, r"300\s+physical\s+lines")
             path.write_text(
-                re.sub(r"300\s+physical lines", "301 physical lines", contents, count=1),
+                re.sub(
+                    r"300\s+physical\s+lines",
+                    "301 physical lines",
+                    contents,
+                    count=1,
+                ),
                 encoding="utf-8",
             )
             errors = validate_repository(root)
             with self.subTest(path=relative_path):
                 self.assertTrue(
                     any("review handoff" in error.lower() for error in errors),
+                    errors,
+                )
+
+    def test_repository_validator_rejects_handoff_policy_inversions(self) -> None:
+        mutations = (
+            (r"at\s+most\s+300", "at least 300"),
+            (r"Do\s+not\s+copy\s+or\s+embed", "Copy or embed"),
+        )
+        guarded_paths = (
+            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path(
+                "plugins/codex-dev-flow/skills/skill-builder/"
+                "references/evaluation-rubric.md"
+            ),
+        )
+        for relative_path in guarded_paths:
+            for pattern, replacement in mutations:
+                root = self.copy_repository()
+                path = root / relative_path
+                contents = path.read_text(encoding="utf-8")
+                self.assertRegex(contents, pattern)
+                path.write_text(
+                    re.sub(pattern, replacement, contents, count=1),
+                    encoding="utf-8",
+                )
+                errors = validate_repository(root)
+                with self.subTest(path=relative_path, mutation=replacement):
+                    self.assertTrue(
+                        any("review handoff" in error.lower() for error in errors),
+                        errors,
+                    )
+
+    def test_repository_validator_rejects_judge_policy_inversions(self) -> None:
+        for name in ("devflow-review", "devflow-spec"):
+            root = self.copy_repository()
+            path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / f"{name}.toml"
+            contents = path.read_text(encoding="utf-8")
+            self.assertIn("Do not request a copied diff", contents)
+            path.write_text(
+                contents.replace(
+                    "Do not request a copied diff",
+                    "Request a copied diff",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            errors = validate_repository(root)
+            with self.subTest(profile=name):
+                self.assertTrue(
+                    any(name in error and "instructions" in error for error in errors),
                     errors,
                 )
 
