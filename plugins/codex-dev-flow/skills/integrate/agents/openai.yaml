@@ -1,7 +1,0 @@
-interface:
-  display_name: "Integrate"
-  short_description: "Combine accepted work with clean evidence"
-  default_prompt: "Use $integrate to combine accepted work."
-
-policy:
-  allow_implicit_invocation: false

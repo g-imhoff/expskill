@@ -13,11 +13,10 @@ EXPECTED_PUBLIC_SKILLS = {
     "use-expand",
     "brainstorm",
     "design",
+    "grill-me",
     "plan",
     "implement",
-    "review",
-    "verify",
-    "integrate",
+    "unslop",
 }
 EXPECTED_STAGES = (
     "Establish the stack program",
@@ -156,7 +155,7 @@ class ImproveSkillContractTests(unittest.TestCase):
 
         body = self.skill_body().lower()
         self.assertIn("seven production skills", body)
-        self.assertNotIn("eight production skills", body)
+        self.assertNotIn("five production skills", body)
         self.assertNotIn("$" + "acceptance", body)
         self.assertNotIn("→ acceptance", body)
         self.assertNotIn("acceptance →", body)
@@ -302,7 +301,10 @@ class ImproveSkillContractTests(unittest.TestCase):
 
     def test_router_is_last_and_each_skill_is_completed_once(self) -> None:
         body = self.skill_body().lower()
-        self.assertIn("brainstorm → plan → design → implement → review → verify → integrate → use-expand", body)
+        self.assertIn(
+            "brainstorm → plan → design → implement → grill-me → unslop → use-expand",
+            body,
+        )
         self.assertIn("complete one target before selecting another", body)
         self.assertIn("upgrade `use-expand` last", body)
 

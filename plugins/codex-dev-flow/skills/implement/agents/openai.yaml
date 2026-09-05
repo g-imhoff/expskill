@@ -1,7 +1,7 @@
 interface:
   display_name: "Implement"
-  short_description: "Apply one accepted change with tests"
-  default_prompt: "Use $implement to apply the accepted change."
+  short_description: "Implement accepted work through independent gates"
+  default_prompt: "Use $implement to execute this accepted implementation work."
 
 policy:
   allow_implicit_invocation: false

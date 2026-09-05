@@ -2,181 +2,121 @@
 
 ## Purpose
 
-Codex Dev Flow is a private Codex plugin for development work. Its public
-interface is a set of independent phase skills plus one optional orchestrator.
-Users can invoke one phase directly without loading a pipeline, or invoke the
-orchestrator when they want the plugin to choose the next phase.
+Codex Dev Flow is a private Codex plugin with four independently usable
+development skills and one optional lifecycle router. Users can invoke a skill
+directly without loading a pipeline, or invoke `use-expand` when they want the
+plugin to select the next lifecycle step.
 
-Implicit `use-expand` activation applies only to code and
-executable-configuration changes. It stays inactive for reports, research,
-explanations, read-only analysis, and prose. An explicitly requested phase,
-including the read-only `review` phase, remains available.
+Only `use-expand` permits implicit invocation. It stays inactive for explicit
+skills, read-only analysis, reports, explanations, and non-code work.
 
 ## Public skill surface
-
-The complete public skill tree is:
 
 ```text
 skills/
 ├── use-expand/
 ├── brainstorm/
 ├── plan/
-├── implement/
-├── review/
-├── verify/
-└── integrate/
+├── design/
+└── implement/
 ```
-
-Every directory is a real skill with its own `SKILL.md` and
-`agents/openai.yaml`. Phase definitions are not reference pages hidden under
-another skill. Only `use-expand` permits implicit invocation; every phase skill
-requires explicit phase intent.
-
-The phase boundaries are deliberately narrow:
 
 | Skill | Owns | Must not do |
 | --- | --- | --- |
-| `brainstorm` | Ambiguity, alternatives, assumptions, decisions | Write production code |
-| `plan` | Accepted direction, boundaries, dependencies, ordered work, observable criteria, positive and negative behavior, test surfaces, and proof design | Write code or tests |
-| `implement` | One accepted brief on one owned branch | Delegate, expand scope, or silently change an interface |
-| `review` | Read-only findings with evidence, impact, and correction | Apply fixes |
-| `verify` | Exact commands, exit evidence, and checkout inspection | Edit tracked source |
-| `integrate` | Accepted branches in dependency order | Integrate failed or unverified work |
+| `brainstorm` | Clarify and stress an idea into a confirmed Concept Brief | Write production code or plan implementation |
+| `plan` | Ground the direction and create the private implementation/proof graph | Redesign the concept or write code/tests |
+| `design` | Produce and approve isolated production-intended UI components | Implement the broader feature |
+| `implement` | Coordinate TDD workers, independent review/spec gates, corrections, local joins, and final branch gates | Route the lifecycle, own a second state engine, push, or merge remotely |
 
-Direct invocation executes exactly the named phase and stops. A user can ask
-for `$brainstorm` or `$plan` without loading `use-expand` or any other phase.
+Direct invocation runs only the named skill and stops at its boundary.
 
-## Orchestration
+## Lifecycle routing
 
-`use-expand` is the only public orchestrator. It classifies one transition,
-explains one concrete reason, opens only the selected phase, validates that
-phase's revision-bound receipt against the canonical Plan Graph when one
-exists, and then either recommends the next transition or stops.
+`use-expand` selects by the next unresolved decision:
 
-Its reason map is intentionally small:
+- ambiguous outcome or experience → `brainstorm`;
+- concrete direction without an accepted technical execution → `plan`;
+- accepted UI work without approved components → `design`;
+- accepted implementation facts and required Design deliverables → `implement`.
 
-- `requirements-ambiguous` selects `brainstorm`;
-- `bounded-change` selects `plan`, or `implement` after an approach is accepted;
-- `cross-cutting` selects `plan`, whose design must include implementation and proof before implementation;
-- `tests-ready` selects `implement`;
-- `completion-gates` selects `review`, followed by `verify`;
-- `accepted-branches` selects `integrate`.
+The router opens one skill per transition. There are no standalone review,
+verification, or integration skills: those are internal gates owned by
+`implement`. The router never grants remote-delivery or protected-branch merge
+authority.
 
-The orchestrator cannot skip planned tests, review findings, or verification.
-Blocked and user-decision outcomes stop instead of guessing.
+## Canonical workflow state
 
-## Canonical workflow state and phase receipts
+`plan` owns the private versioned Plan Graph outside the repository through
+`plugins/codex-dev-flow/scripts/plan_graph.py`. It records accepted outcomes,
+constraints, decisions, work, dependencies, ownership, proof, projections, and
+logical Git topology against an exact non-protected branch and baseline.
 
-`plan` owns a private, versioned Plan Graph stored outside the repository by
-`plugins/codex-dev-flow/scripts/plan_graph.py`. The graph binds one workflow to
-the canonical Git common directory, non-protected target branch, exact baseline,
-dirty-state fingerprint, and monotonic graph revision. It records outcomes,
-evidence, material decisions and confirmations, executable work and joins,
-proof obligations, logical Git topology, and concise user projections.
+The Plan helper is the only graph writer. Other skills and workers return
+compact revision-bound results to the active coordinator. `implement` does not
+create another persistence format. A complete direct implementation brief may
+run without Plan ancestry.
 
-The helper is the only graph writer. Implementers, reviewers, verifiers, and
-integration lanes return typed receipts bound to workflow ID, graph revision,
-node, branch, commit, commands, and evidence appropriate to their role. The one
-coordinator validates those receipts and applies compare-and-swap updates.
-Findings, stale receipts, failed checks, blocked work, and unresolved user
-decisions never advance. Direct `plan` use stops at graph readiness without a
-typed next-skill route; transition selection remains solely an optional
-`use-expand` responsibility.
+## Implement orchestration
 
-`brainstorm` is intentionally independent of this runtime graph. It may produce
-a confirmed Concept Brief as authoritative conceptual input, but `plan` also
-accepts another sufficiently concrete direction.
+The conversational coordinator grounds the accepted work and makes one cheap
+parallelism pass. Independent nodes receive distinct ownership and external
+worktrees; serial work may use the target checkout.
 
-## Named-agent isolation
+Each node uses a context-free `devflow-implementer` with only its accepted brief,
+owned scope, relevant repository instructions, and required evidence. The worker
+uses TDD, produces one coherent local commit, and cannot delegate or expand
+scope.
 
-The conversational agent owns user decisions, transition selection,
-coordination, and final adjudication. Bounded work can be delegated through
-checked-in named-agent profiles. Each dispatch is context-free and receives
-only the accepted brief, owned scope, applicable repository instructions, and
-the evidence needed for that role.
+The exact candidate is then judged concurrently by two fresh agents:
 
-The checked-in roster is:
+- `devflow-review` inspects code quality and regressions read-only;
+- `devflow-spec` checks every accepted criterion and may run checks without
+  editing tracked source.
+
+Any finding goes to a new implementer. Both judges rerun on every correction.
+Three consecutive non-improving attempts block only that node. Accepted nodes
+join the target in dependency order and receive affected checks. Final fresh
+review and spec gates cover the whole target branch.
+
+## Named-agent profiles
 
 | Profile | Purpose | Runtime policy |
 | --- | --- | --- |
 | `devflow-explorer` | Bounded repository evidence | Terra, medium, read-only |
 | `devflow-test-engineer` | Shared acceptance tests | Luna, high, workspace-write |
-| `devflow-implementer` | Routine bounded implementation | Luna, medium, workspace-write |
-| `devflow-implementer-high` | Difficult bounded implementation | Luna, high, workspace-write |
-| `devflow-reviewer` | Routine independent review | Terra, medium, read-only |
-| `devflow-critical-reviewer` | Escalated critical review | Sol, high, read-only |
-| `devflow-verifier` | Independent checks | Luna, medium, workspace-write |
-| `devflow-verifier-low` | Small independent checks | Luna, low, workspace-write |
+| `devflow-implementer` | One owned TDD implementation node | Luna, medium, workspace-write |
+| `devflow-review` | Independent candidate review | Terra, medium, read-only |
+| `devflow-spec` | Independent specification compliance | Luna, high, workspace-write |
 
-The canonical roster and declared internal budget tiers live in one atomic artifact,
-`plugins/codex-dev-flow/assets/execution-policy.json`. Those tiers control
-the intended cost, concurrency, retries, depth, elapsed-time, and escalation
-limits. Static validation is implemented; runtime consumption and enforcement
-remain release work. The tiers are an implementation detail, not additional
-user-facing workflow skills.
+Checked-in profiles are the dispatch authority. Workers do not self-certify,
+judges do not implement, and no delegated agent launches another agent.
 
-Profile dispatch uses the exact checked-in `agent_type`; callers do not add a
-runtime override that silently defeats the policy. Reviewers do not implement,
-implementers do not delegate, and verifiers do not accept another agent's
-claim as evidence.
+## Branch and worktree safety
 
-## Branch and worktree ownership
+Implementation targets an existing non-protected workflow branch. Parallel
+writers use external worktrees from exact accepted commits. One writer owns each
+lane. A task lane is removed only after its exact commit is accepted on the
+target, affected checks pass, and the lane is clean. Dirty, failing, unmerged,
+unknown, or still-needed work is preserved.
 
-Independent implementation streams use separate branches and external Git
-worktrees. `plugins/codex-dev-flow/scripts/worktrees.py` creates and finishes
-them under the user's state directory, outside the product checkout.
+AI may create local implementation commits and perform authorized local joins.
+It never pushes, opens or updates a merge request, approves, merges, enables
+auto-merge, or enters a merge queue under the Implement skill.
 
-One writer owns each branch and explicit file scope. Integration occurs in
-dependency order only after the branch is ready and verification passes.
-Unmerged or failing work is preserved with a recovery path. Unknown branches,
-worktrees, profiles, and user files are never treated as disposable cleanup.
+## Distribution and validation
 
-## Distribution and installation
+The installable plugin lives under `plugins/codex-dev-flow/`; marketplace
+metadata lives at `.agents/plugins/marketplace.json`. `scripts/install.py`
+validates the package, installs the plugin, and links exactly the five checked-in
+agent profiles without overwriting foreign destinations.
 
-The repository is a local Codex marketplace. The installable plugin lives at
-`plugins/codex-dev-flow/`; marketplace metadata lives at
-`.agents/plugins/marketplace.json`.
-
-`scripts/install.py` validates the package first, registers the marketplace and
-plugin through Codex, and links the exact eight repository-owned agent profiles
-into the user's Codex agent directory. It refuses foreign destinations instead
-of overwriting them and rolls back only state it owns. A fresh Codex session is
-required after installation or profile changes.
-
-`scripts/validate.py` rejects missing or extra skills and profiles, malformed
-metadata, policy drift, duplicate policy artifacts, non-regular required files,
-symlinked package boundaries, and paths that resolve outside the plugin root.
-
-## Required certification boundary
-
-Deterministic contract tests already validate structure and offline behavior.
-The live certification chain is not yet release-ready. It must use fresh
-`codex exec --ephemeral --ignore-user-config --json` sessions against
-disposable repositories and an installed plugin cache. The parent must own the
-oracle; prompts, public identifiers, paths, and child environments must not
-reveal the expected phase or private policy identity.
-
-Retained evidence must bind the source package, installed skill, process identity,
-exact invocation, loaded skill, raw session output, tool and command events,
-Plan Graph and receipt bindings, and repository/Git state before and after execution. A transport
-fixture may carry evidence but cannot manufacture semantic success.
-
-Release certification must additionally require compatibility evidence, a signed
-receipt, quality checks, and measured cost/latency thresholds. Missing or
-inconsistent evidence fails closed.
-
-## Failure handling
-
-Findings and failed checks return to the phase that owns the work. A new product
-decision returns to the user. Repeated technical blockers are reported with the
-exact preserved branch and recovery path.
-
-No phase rewrites history, deletes unmerged work, overwrites an unknown agent
-profile, exposes private oracle data to a child, or performs an external write
-outside the user's authorized scope.
+`scripts/validate.py` rejects missing or extra skills/profiles, policy drift,
+malformed metadata, symlinked package boundaries, and out-of-root paths. Focused
+contract tests validate the orchestration and stop boundaries. Fresh behavioral
+trials remain the release evidence for open-ended agent quality.
 
 ## Scope exclusions
 
-Version 1 does not provide Claude support, a generic repository-cleaning
-command, automatic pull-request publication, target-repository workflow
-reports, or automatic commits for direct phase invocation.
+The plugin does not provide automatic protected-branch merge, automatic remote
+delivery, a generic repository cleaner, or a security-grade command-attestation
+runtime. Those are intentionally outside the skill layer.

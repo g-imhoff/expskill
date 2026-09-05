@@ -11,7 +11,7 @@ PLAN_ROOT = PLUGIN_ROOT / "skills" / "plan"
 HELPER_PATH = PLUGIN_ROOT / "scripts" / "plan_graph.py"
 PHASE_ROOTS = {
     name: PLUGIN_ROOT / "skills" / name
-    for name in ("implement", "review", "verify", "integrate", "use-expand")
+    for name in ("implement", "use-expand")
 }
 
 
@@ -190,7 +190,7 @@ class PlanContractTests(unittest.TestCase):
         for forbidden in ("commit", "push", "merge", "rebase", "stash", "reset", "task worktree"):
             with self.subTest(forbidden=forbidden):
                 self.assertRegex(branch_step, rf"never [^.]*\b{re.escape(forbidden)}\b")
-        self.assertRegex(stopping, r"later authorized lifecycle—not `\$plan`—may push")
+        self.assertRegex(stopping, r"later authorized lifecycle, not `\$plan`, may push")
 
     def test_plan_defines_the_private_canonical_graph_and_adaptive_minimum(self) -> None:
         self.assertTrue(HELPER_PATH.is_file(), HELPER_PATH)
@@ -384,37 +384,15 @@ class PlanContractTests(unittest.TestCase):
         required = {
             "implement": (
                 "plan graph",
-                "workflow id",
-                "graph revision",
-                "worker receipt",
-                "does not write canonical",
-            ),
-            "review": (
-                "plan graph",
-                "exact revision",
-                "read-only",
-                "findings receipt",
-                "does not write canonical",
-            ),
-            "verify": (
-                "plan graph",
-                "exact revision",
-                "independent",
-                "executed command",
-                "does not write canonical",
-            ),
-            "integrate": (
-                "plan graph",
-                "target",
-                "join",
-                "cleanup",
-                "apply_updates",
+                "active coordinator",
+                "graph updates",
+                "do not make workers graph writers",
             ),
             "use-expand": (
                 "plan graph",
-                "workflow id",
-                "one coordinator",
-                "apply_updates",
+                "revalidate its revision and commit",
+                "apply only receipts",
+                "do not let workers write graph state",
             ),
         }
         for name, phrases in required.items():

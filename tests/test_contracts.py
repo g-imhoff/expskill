@@ -19,32 +19,28 @@ PHASE_ROOTS = {
     name: PLUGIN_ROOT / "skills" / name
     for name in (
         "brainstorm",
+        "design",
+        "grill-me",
         "plan",
         "implement",
-        "review",
-        "verify",
-        "integrate",
+        "unslop",
     )
 }
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
     "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
     "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-implementer-high": ("gpt-5.6-luna", "high", "workspace-write"),
-    "devflow-reviewer": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-critical-reviewer": ("gpt-5.6-sol", "high", "read-only"),
-    "devflow-verifier": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-verifier-low": ("gpt-5.6-luna", "low", "workspace-write"),
+    "devflow-review": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-spec": ("gpt-5.6-luna", "high", "workspace-write"),
 }
 EXPECTED_SKILLS = {
     "use-expand",
     "brainstorm",
     "design",
+    "grill-me",
     "plan",
     "implement",
-    "review",
-    "verify",
-    "integrate",
+    "unslop",
 }
 REMOVED_PUBLIC_SKILL = "accept" + "ance"
 REMOVED_PUBLIC_TOKEN = "$" + REMOVED_PUBLIC_SKILL
@@ -311,7 +307,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("seven", "independent", "development phase", "optional", "orchestrator"):
+        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -326,20 +322,20 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(interface.get("category"), "Developer Tools")
         self.assertEqual(interface.get("capabilities"), [])
         self.assertLessEqual(len(str(interface.get("shortDescription"))), 80)
-        self.assertIn("phase", str(interface.get("shortDescription")).lower())
+        self.assertIn("skills", str(interface.get("shortDescription")).lower())
         self.assertIn("routing", str(interface.get("shortDescription")).lower())
         self.assertNotRegex(str(interface.get("shortDescription")), PUBLIC_METADATA_JARGON)
         long_description = str(interface.get("longDescription"))
         self.assertLessEqual(len(long_description), 320)
         for token in PUBLIC_PHASE_TOKENS:
             self.assertIn(token, long_description)
-        for phrase in ("directly", "one next phase", "required gates"):
+        for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
             self.assertIn(phrase, long_description.lower())
         self.assertNotRegex(long_description, PUBLIC_METADATA_JARGON)
         default_prompt = str(interface.get("defaultPrompt"))
         self.assertLessEqual(len(default_prompt), 160)
         self.assertIn("$use-expand", default_prompt)
-        self.assertIn("next development phase", default_prompt.lower())
+        self.assertIn("next lifecycle step", default_prompt.lower())
         self.assertNotRegex(default_prompt, PUBLIC_METADATA_JARGON)
 
         mutations = (
@@ -422,24 +418,20 @@ class ContractTests(unittest.TestCase):
         errors = validate_repository(root)
         self.assertTrue(any("interface" in error and "unexpected" in error for error in errors), errors)
 
-    def test_readme_and_implementation_plan_count_standalone_phases(self) -> None:
-        """Regression: documentation must expose the seven standalone phases."""
+    def test_readme_and_manifest_count_standalone_skills(self) -> None:
+        """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bseven (?:independent|independently invokable) development phases and one optional orchestrator\b"
-        )
-        stale = re.compile(
-            r"\bsix (?:independent|independently invokable) development phases and one optional orchestrator\b"
+            r"\bsix independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
-            ROOT / "docs" / "plans" / "2026-08-09-codex-dev-flow-implementation.md",
+            PLUGIN_ROOT / ".codex-plugin" / "plugin.json",
         )
         for path in paths:
             normalized = " ".join(path.read_text(encoding="utf-8").lower().split())
             with self.subTest(path=path):
                 self.assertRegex(normalized, expected)
-                self.assertNotRegex(normalized, stale)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
@@ -504,13 +496,13 @@ class ContractTests(unittest.TestCase):
                 "no product implementation",
             ),
             "devflow-implementer": (
-                "exactly one brief",
+                "exactly one accepted node",
                 "red-green-refactor",
                 "one owned branch",
                 "no delegation",
                 "no scope expansion",
             ),
-            "devflow-reviewer": (
+            "devflow-review": (
                 "read-only",
                 "severity",
                 "evidence",
@@ -519,11 +511,14 @@ class ContractTests(unittest.TestCase):
                 "ready",
                 "not ready",
             ),
-            "devflow-verifier": (
-                "exact commands",
-                "exit evidence",
+            "devflow-spec": (
+                "every accepted behavior",
+                "criterion-by-criterion evidence",
                 "no tracked-source edits",
-                "no reliance on another agent's claims",
+                "pass or fail",
+                "do not implement fixes",
+                "do not expand scope",
+                "do not delegate",
             ),
         }
         for name, phrases in required_phrases.items():
@@ -542,11 +537,86 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("icons", manifest)
         self.assertNotIn("authentication", manifest)
 
+    def test_validator_rejects_banned_punctuation_in_any_skill_owned_text(self) -> None:
+        for character, label in (("\N{EM DASH}", "em dash"), (";", "semicolon")):
+            with self.subTest(character=label):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / "skills" / "unslop" / "SKILL.md"
+                path.write_text(path.read_text(encoding="utf-8") + f"\nBanned {character} mark.\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any(label in error.lower() for error in errors), errors)
+
+    def test_validator_rejects_missing_or_tampered_unslop_hook(self) -> None:
+        for mutation in (
+            "missing-config",
+            "tampered-command",
+            "missing-script",
+            "tampered-script",
+            "extra-source",
+        ):
+            with self.subTest(mutation=mutation):
+                root = self.copy_repository()
+                hook_root = root / "plugins" / "codex-dev-flow" / "hooks"
+                if mutation == "missing-config":
+                    (hook_root / "hooks.json").unlink()
+                elif mutation == "tampered-command":
+                    path = hook_root / "hooks.json"
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    payload["hooks"]["SessionStart"][0]["hooks"][0]["command"] = "true"
+                    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                elif mutation == "missing-script":
+                    (hook_root / "inject_unslop.py").unlink()
+                elif mutation == "tampered-script":
+                    path = hook_root / "inject_unslop.py"
+                    path.write_text(
+                        path.read_text(encoding="utf-8").replace(
+                            "explicit user formatting or tone choices win",
+                            "explicit user formatting or tone choices lose",
+                            1,
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    (hook_root / "surprise.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any("unslop hook" in error.lower() for error in errors), errors)
+
+    def test_validator_rejects_tampered_pinned_upstream_source(self) -> None:
+        root = self.copy_repository()
+        path = (
+            root
+            / "plugins"
+            / "codex-dev-flow"
+            / "third-party"
+            / "sources"
+            / "pstack"
+            / "unslop"
+            / "SKILL.md"
+        )
+        path.write_text(path.read_text(encoding="utf-8") + "\nTampered.\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(any("upstream" in error.lower() and "digest" in error.lower() for error in errors), errors)
+
+    def test_validator_rejects_drift_in_public_third_party_derived_skills(self) -> None:
+        for name in ("unslop", "grill-me"):
+            with self.subTest(skill=name):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / "skills" / name / "SKILL.md"
+                path.write_text(
+                    path.read_text(encoding="utf-8") + "\nUntracked behavioral addition.\n",
+                    encoding="utf-8",
+                )
+                errors = validate_repository(root)
+                self.assertTrue(
+                    any(name in error.lower() and "derived" in error.lower() for error in errors),
+                    errors,
+                )
+
     def test_missing_profile_is_rejected(self) -> None:
         root = self.copy_repository()
-        (root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-reviewer.toml").unlink()
+        (root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-review.toml").unlink()
         errors = validate_repository(root)
-        self.assertTrue(any("devflow-reviewer" in error and "missing" in error for error in errors))
+        self.assertTrue(any("devflow-review" in error and "missing" in error for error in errors))
 
     def test_unexpected_profile_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -595,7 +665,7 @@ class ContractTests(unittest.TestCase):
 
     def test_reviewer_must_be_read_only(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-reviewer.toml"
+        path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-review.toml"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
                 'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
@@ -603,7 +673,7 @@ class ContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         errors = validate_repository(root)
-        self.assertTrue(any("reviewer" in error and "read-only" in error for error in errors))
+        self.assertTrue(any("devflow-review" in error and "read-only" in error for error in errors))
 
     def test_invalid_manifest_path_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -616,7 +686,7 @@ class ContractTests(unittest.TestCase):
 
     def test_placeholder_text_is_rejected(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-verifier.toml"
+        path = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-spec.toml"
         path.write_text(path.read_text(encoding="utf-8") + "\n# [TODO: remove this]\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("placeholder" in error.lower() or "todo" in error.lower() for error in errors))
@@ -649,7 +719,7 @@ class ContractTests(unittest.TestCase):
 
     def test_validation_aggregates_independent_errors(self) -> None:
         root = self.copy_repository()
-        reviewer = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-reviewer.toml"
+        reviewer = root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-review.toml"
         reviewer.write_text(
             reviewer.read_text(encoding="utf-8").replace(
                 'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
@@ -659,7 +729,7 @@ class ContractTests(unittest.TestCase):
         (root / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-explorer.toml").unlink()
         errors = validate_repository(root)
         self.assertGreaterEqual(len(errors), 2)
-        self.assertTrue(any("reviewer" in error for error in errors))
+        self.assertTrue(any("devflow-review" in error for error in errors))
         self.assertTrue(any("explorer" in error for error in errors))
 
     def test_phase_skill_frontmatter_matches_each_directory(self) -> None:
@@ -705,7 +775,7 @@ class ContractTests(unittest.TestCase):
                     continue
                 body = skill_path.read_text(encoding="utf-8")
                 self.assertGreater(len(body.splitlines()), 4, name)
-                if name != "brainstorm":
+                if name not in {"brainstorm", "design"}:
                     self.assertNotIn("references/", body.lower(), name)
                 self.assertNotIn("route-code-change", body, name)
                 self.assertNotIn("quick-code-change", body, name)
@@ -728,49 +798,45 @@ class ContractTests(unittest.TestCase):
                 self.assertIn(phrase, body)
         self.assertNotIn(f"next_skill: {REMOVED_PUBLIC_SKILL}", body)
 
-    def test_implement_owns_planned_tests_failure_evidence_and_green_checks(self) -> None:
-        """Regression: implementation must own planned tests, red evidence, product changes, and green checks."""
+    def test_implement_owns_workers_gates_corrections_and_local_integration(self) -> None:
+        """Regression: Implement stays a lean coordinator while preserving every local gate."""
 
         body = (PHASE_ROOTS["implement"] / "SKILL.md").read_text(encoding="utf-8").lower()
         for phrase in (
-            "create or update planned tests",
-            "planned test and proof strategy",
-            "pre-change failure evidence",
-            "production implementation",
-            "green checks",
-            "when feasible",
-            "alternative proof",
+            "fresh `devflow-implementer`",
+            "red-green-refactor",
+            "fresh `devflow-review`",
+            "fresh `devflow-spec`",
+            "launch a new `devflow-implementer`",
+            "three non-improving attempts",
+            "integrate an accepted node",
+            "whole target branch",
+            "do not push",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, body)
-        self.assertNotIn("and failing test", body)
+        self.assertNotIn("implement_state.py", body)
+        self.assertNotIn("command-attestation", body)
 
-    def test_verify_runs_checks_from_plan_implementation_and_review(self) -> None:
-        """Regression: verify must execute the accepted evidence sources, not a deleted phase."""
+    def test_retired_review_verify_and_integrate_skills_are_absent(self) -> None:
+        """Regression: worker gates must not reappear as duplicate public phases."""
 
-        body = (PHASE_ROOTS["verify"] / "SKILL.md").read_text(encoding="utf-8").lower()
-        for phrase in ("plan", "implementation", "review", "exact commands"):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, body)
+        skills = PLUGIN_ROOT / "skills"
+        for name in ("review", "verify", "integrate"):
+            with self.subTest(skill=name):
+                self.assertFalse((skills / name).exists())
 
-    def test_use_expand_does_not_route_through_removed_acceptance_phase(self) -> None:
-        """Regression: the router must preserve plan → implement → review → verify without acceptance."""
+    def test_use_expand_routes_to_product_skills_not_internal_gates(self) -> None:
+        """Regression: use-expand selects product skills while Implement owns its internal gates."""
 
-        body = ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8").lower()
-        for marker in (
-            REMOVED_PUBLIC_TOKEN,
-            f"next_skill: {REMOVED_PUBLIC_SKILL}",
-            f"require {REMOVED_PUBLIC_SKILL}",
-            f"require `{REMOVED_PUBLIC_SKILL}`",
-            f"recommend {REMOVED_PUBLIC_SKILL}",
-            f"recommend `{REMOVED_PUBLIC_SKILL}`",
-            f"route `{REMOVED_PUBLIC_SKILL}`",
-        ):
+        body = " ".join(ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8").lower().split())
+        for marker in (REMOVED_PUBLIC_TOKEN, "$review", "$verify", "$integrate"):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, body)
-        for phase in ("plan", "implement", "review", "verify"):
+        for phase in ("brainstorm", "plan", "design", "implement"):
             with self.subTest(phase=phase):
                 self.assertIn(phase, body)
+        self.assertIn("no separate review, verification, or integration routes", body)
 
     def test_public_skill_private_policy_vocabulary_is_rejected_on_both_surfaces(self) -> None:
         """Regression: phase instructions or UI copy leak private routing policy terms."""

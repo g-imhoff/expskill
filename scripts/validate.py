@@ -26,6 +26,10 @@ AGENTS_PATH = "assets/agents"
 POLICY_PATH = "assets/execution-policy.json"
 HELPER_PATH = "scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "scripts/plan_graph.py"
+UNSLOP_HOOK_CONFIG_PATH = "hooks/hooks.json"
+UNSLOP_HOOK_SCRIPT_PATH = "hooks/inject_unslop.py"
+UNSLOP_HOOK_SCRIPT_SHA256 = "6eea44b9a2fcccfe685c5b93c7fd2b3e868bb9618f6764a7e97557dd4f8f6403"
+THIRD_PARTY_LOCK_PATH = "third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
 PLUGIN_INTERFACE_FIELDS = {
@@ -41,11 +45,10 @@ PUBLIC_PHASE_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
-    "$review",
-    "$verify",
-    "$integrate",
     "$use-expand",
     "$design",
+    "$grill-me",
+    "$unslop",
 }
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
@@ -57,9 +60,8 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "plan",
     "implement",
-    "review",
-    "verify",
-    "integrate",
+    "grill-me",
+    "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
@@ -105,15 +107,61 @@ BRAINSTORM_CATALOG_PREAMBLE = (
     "#\n"
 )
 
+EXPECTED_THIRD_PARTY_SOURCES = {
+    "pstack-unslop": {
+        "repository": "https://github.com/cursor/plugins",
+        "revision": "93b00b89ef425a9c1bac0d0b317dfc49c930ac99",
+        "source_path": "pstack/skills/unslop/SKILL.md",
+        "vendored_path": "sources/pstack/unslop/SKILL.md",
+        "sha256": "2789ab80477b7e382292e4d7acca1057784df19713fffb74622ff0f83b2f3733",
+        "license_path": "licenses/pstack-MIT.txt",
+        "license_sha256": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e",
+    },
+    "mattpocock-grill-me": {
+        "repository": "https://github.com/mattpocock/skills",
+        "revision": "3cca18b368ae95cdbdebbff572ccafa662551015",
+        "source_path": "skills/productivity/grill-me/SKILL.md",
+        "vendored_path": "sources/mattpocock/grill-me/SKILL.md",
+        "sha256": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+        "license_path": "licenses/mattpocock-skills-MIT.txt",
+        "license_sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5",
+    },
+    "mattpocock-grilling": {
+        "repository": "https://github.com/mattpocock/skills",
+        "revision": "3cca18b368ae95cdbdebbff572ccafa662551015",
+        "source_path": "skills/productivity/grilling/SKILL.md",
+        "vendored_path": "sources/mattpocock/grilling/SKILL.md",
+        "sha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+        "license_path": "licenses/mattpocock-skills-MIT.txt",
+        "license_sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5",
+    },
+}
+
+EXPECTED_UNSLOP_HOOKS = {
+    "description": "Apply Unslop to prose written by the root conversation.",
+    "hooks": {
+        "SessionStart": [
+            {
+                "matcher": "^(startup|resume|clear|compact)$",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": 'python3 "${PLUGIN_ROOT}/hooks/inject_unslop.py"',
+                        "timeout": 3,
+                        "additionalContextLimit": 5000,
+                    }
+                ],
+            }
+        ]
+    },
+}
+
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
     "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
     "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-implementer-high": ("gpt-5.6-luna", "high", "workspace-write"),
-    "devflow-reviewer": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-critical-reviewer": ("gpt-5.6-sol", "high", "read-only"),
-    "devflow-verifier": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-verifier-low": ("gpt-5.6-luna", "low", "workspace-write"),
+    "devflow-review": ("gpt-5.6-terra", "medium", "read-only"),
+    "devflow-spec": ("gpt-5.6-luna", "high", "workspace-write"),
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -134,20 +182,13 @@ AGENT_BOUNDARIES = {
         "no product implementation",
     ),
     "devflow-implementer": (
-        "exactly one brief",
+        "exactly one accepted node",
         "red-green-refactor",
         "one owned branch",
         "no delegation",
         "no scope expansion",
     ),
-    "devflow-implementer-high": (
-        "exactly one brief",
-        "red-green-refactor",
-        "one owned branch",
-        "no delegation",
-        "no scope expansion",
-    ),
-    "devflow-reviewer": (
+    "devflow-review": (
         "read-only",
         "severity",
         "evidence",
@@ -156,26 +197,14 @@ AGENT_BOUNDARIES = {
         "ready",
         "not ready",
     ),
-    "devflow-critical-reviewer": (
-        "read-only",
-        "severity",
-        "evidence",
-        "impact",
-        "correction",
-        "ready",
-        "not ready",
-    ),
-    "devflow-verifier": (
-        "exact commands",
-        "exit evidence",
+    "devflow-spec": (
+        "every accepted behavior",
+        "criterion-by-criterion evidence",
         "no tracked-source edits",
-        "no reliance on another agent's claims",
-    ),
-    "devflow-verifier-low": (
-        "exact commands",
-        "exit evidence",
-        "no tracked-source edits",
-        "no reliance on another agent's claims",
+        "pass or fail",
+        "do not implement fixes",
+        "do not expand scope",
+        "do not delegate",
     ),
 }
 
@@ -188,54 +217,6 @@ EXPECTED_POLICY_PROFILES = {
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-implementer": {
-        "agent_type": "devflow-implementer",
-        "role": "implementer",
-        "model": "gpt-5.6-luna",
-        "effort": "medium",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-implementer-high": {
-        "agent_type": "devflow-implementer-high",
-        "role": "implementer",
-        "model": "gpt-5.6-luna",
-        "effort": "high",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-reviewer": {
-        "agent_type": "devflow-reviewer",
-        "role": "reviewer",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
-        "sandbox_mode": "read-only",
-        "escalation": None,
-    },
-    "devflow-critical-reviewer": {
-        "agent_type": "devflow-critical-reviewer",
-        "role": "critical-reviewer",
-        "model": "gpt-5.6-sol",
-        "effort": "high",
-        "sandbox_mode": "read-only",
-        "escalation": "critical-review",
-    },
-    "devflow-verifier": {
-        "agent_type": "devflow-verifier",
-        "role": "verifier",
-        "model": "gpt-5.6-luna",
-        "effort": "medium",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-verifier-low": {
-        "agent_type": "devflow-verifier-low",
-        "role": "verifier",
-        "model": "gpt-5.6-luna",
-        "effort": "low",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
     "devflow-test-engineer": {
         "agent_type": "devflow-test-engineer",
         "role": "test-engineer",
@@ -244,150 +225,61 @@ EXPECTED_POLICY_PROFILES = {
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
+    "devflow-implementer": {
+        "agent_type": "devflow-implementer",
+        "role": "implementer",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "devflow-review": {
+        "agent_type": "devflow-review",
+        "role": "review",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "devflow-spec": {
+        "agent_type": "devflow-spec",
+        "role": "spec",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
 }
 
 EXPECTED_POLICY_ROUTES = {
-    "quick": {
-        "low": {
-            "allowed_profiles": ["devflow-verifier-low"],
-            "selected": [
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier-low",
-                    "agent_type": "devflow-verifier-low",
-                }
-            ],
-            "max_agent_calls": 3,
-            "max_concurrency": 1,
-            "max_depth": 1,
-            "max_retries": 0,
-        },
-        "standard": {
-            "allowed_profiles": ["devflow-reviewer", "devflow-verifier"],
-            "selected": [
-                {
-                    "role": "reviewer",
-                    "profile": "devflow-reviewer",
-                    "agent_type": "devflow-reviewer",
-                },
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-            ],
-            "max_agent_calls": 5,
-            "max_concurrency": 2,
-            "max_depth": 1,
-            "max_retries": 1,
-        },
-        "high": {
-            "allowed_profiles": ["devflow-critical-reviewer", "devflow-verifier"],
-            "selected": [
-                {
-                    "role": "critical-reviewer",
-                    "profile": "devflow-critical-reviewer",
-                    "agent_type": "devflow-critical-reviewer",
-                },
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-            ],
-            "max_agent_calls": 5,
-            "max_concurrency": 2,
-            "max_depth": 1,
-            "max_retries": 1,
-        },
-    },
-    "full": {
+    "implement": {
         "standard": {
             "allowed_profiles": [
-                "devflow-explorer",
                 "devflow-implementer",
-                "devflow-reviewer",
-                "devflow-verifier",
-                "devflow-test-engineer",
+                "devflow-review",
+                "devflow-spec",
             ],
             "selected": [
-                {
-                    "role": "explorer",
-                    "profile": "devflow-explorer",
-                    "agent_type": "devflow-explorer",
-                },
                 {
                     "role": "implementer",
                     "profile": "devflow-implementer",
                     "agent_type": "devflow-implementer",
                 },
                 {
-                    "role": "reviewer",
-                    "profile": "devflow-reviewer",
-                    "agent_type": "devflow-reviewer",
+                    "role": "review",
+                    "profile": "devflow-review",
+                    "agent_type": "devflow-review",
                 },
                 {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-                {
-                    "role": "test-engineer",
-                    "profile": "devflow-test-engineer",
-                    "agent_type": "devflow-test-engineer",
+                    "role": "spec",
+                    "profile": "devflow-spec",
+                    "agent_type": "devflow-spec",
                 },
             ],
-            "max_agent_calls": 25,
-            "max_concurrency": 3,
+            "max_agent_calls": 30,
+            "max_concurrency": 6,
             "max_depth": 1,
-            "max_retries": 1,
-            "max_elapsed_ms": 7200000,
-        },
-        "high": {
-            "allowed_profiles": [
-                "devflow-explorer",
-                "devflow-implementer-high",
-                "devflow-reviewer",
-                "devflow-verifier",
-                "devflow-test-engineer",
-                "devflow-critical-reviewer",
-            ],
-            "selected": [
-                {
-                    "role": "explorer",
-                    "profile": "devflow-explorer",
-                    "agent_type": "devflow-explorer",
-                },
-                {
-                    "role": "implementer",
-                    "profile": "devflow-implementer-high",
-                    "agent_type": "devflow-implementer-high",
-                },
-                {
-                    "role": "reviewer",
-                    "profile": "devflow-reviewer",
-                    "agent_type": "devflow-reviewer",
-                },
-                {
-                    "role": "verifier",
-                    "profile": "devflow-verifier",
-                    "agent_type": "devflow-verifier",
-                },
-                {
-                    "role": "test-engineer",
-                    "profile": "devflow-test-engineer",
-                    "agent_type": "devflow-test-engineer",
-                },
-                {
-                    "role": "critical-reviewer",
-                    "profile": "devflow-critical-reviewer",
-                    "agent_type": "devflow-critical-reviewer",
-                },
-            ],
-            "max_agent_calls": 25,
-            "max_concurrency": 3,
-            "max_depth": 1,
-            "max_retries": 1,
+            "max_retries": 3,
             "max_elapsed_ms": 7200000,
         },
     },
@@ -530,7 +422,10 @@ def validate_repository(root: Path) -> tuple[str, ...]:
 
         _validate_agents(plugin_root, errors)
         _validate_policy(plugin_root, errors)
+        _validate_unslop_hook(plugin_root, errors)
+        _validate_third_party_sources(plugin_root, errors)
         _validate_helper_and_package_layout(plugin_root, errors)
+    _validate_skill_punctuation(repository_root, errors)
     return tuple(errors)
 
 
@@ -650,7 +545,7 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("seven", "independent", "development phase", "optional", "orchestrator", "$design"):
+        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
             if phrase not in normalized_description:
                 errors.append(f"plugin description must advertise {phrase!r}")
         if PUBLIC_METADATA_JARGON.search(description):
@@ -690,12 +585,12 @@ def _validate_plugin_manifest(
             not isinstance(short_description, str)
             or not short_description.strip()
             or len(short_description) > 80
-            or "phase" not in short_description.lower()
+            or "skills" not in short_description.lower()
             or "routing" not in short_description.lower()
             or PUBLIC_METADATA_JARGON.search(short_description) is not None
         ):
             errors.append(
-                "plugin interface shortDescription must concisely advertise phases and optional routing "
+                "plugin interface shortDescription must concisely advertise skills and optional routing "
                 "without private implementation or scaffold jargon"
             )
 
@@ -708,7 +603,7 @@ def _validate_plugin_manifest(
             for token in sorted(PUBLIC_PHASE_TOKENS):
                 if token not in long_description:
                     errors.append(f"plugin interface longDescription must advertise {token}")
-            for phrase in ("directly", "one next phase", "required gates"):
+            for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
                 if phrase not in long_description.lower():
                     errors.append(f"plugin interface longDescription must explain {phrase!r}")
             if PUBLIC_METADATA_JARGON.search(long_description):
@@ -720,10 +615,10 @@ def _validate_plugin_manifest(
             or not default_prompt.strip()
             or len(default_prompt) > 160
             or "$use-expand" not in default_prompt
-            or "next development phase" not in default_prompt.lower()
+            or "next lifecycle step" not in default_prompt.lower()
         ):
             errors.append(
-                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next development phase"
+                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next lifecycle step"
             )
         elif PUBLIC_METADATA_JARGON.search(default_prompt):
             errors.append("plugin interface defaultPrompt exposes private implementation or scaffold jargon")
@@ -868,6 +763,218 @@ def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
     payload = contents[len(preamble) :]
     if hashlib.sha256(payload).hexdigest() != BRAINSTORM_CATALOG_SHA256:
         errors.append("brainstorm catalog payload does not match the pinned upstream digest")
+
+
+def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
+    hooks_root = _required_package_path(
+        plugin_root,
+        "hooks",
+        "Unslop hook directory",
+        "directory",
+        errors,
+    )
+    if hooks_root is None:
+        return
+
+    expected_files = {"hooks.json", "inject_unslop.py"}
+    actual_files = {
+        path.relative_to(hooks_root).as_posix()
+        for path in hooks_root.rglob("*")
+        if path.is_file() or path.is_symlink()
+        if "__pycache__" not in path.relative_to(hooks_root).parts
+    }
+    if actual_files != expected_files:
+        errors.append(
+            "Unslop hook files must be exactly hooks.json and inject_unslop.py"
+        )
+
+    config_path = _required_package_path(
+        plugin_root,
+        UNSLOP_HOOK_CONFIG_PATH,
+        "Unslop hook configuration",
+        "file",
+        errors,
+    )
+    script_path = _required_package_path(
+        plugin_root,
+        UNSLOP_HOOK_SCRIPT_PATH,
+        "Unslop hook script",
+        "file",
+        errors,
+    )
+    if config_path is not None:
+        config = _load_json_object(config_path, "Unslop hook configuration", errors)
+        if config is not None and config != EXPECTED_UNSLOP_HOOKS:
+            errors.append("Unslop hook configuration does not match the root SessionStart contract")
+    if script_path is None:
+        return
+    try:
+        script_bytes = script_path.read_bytes()
+        script = script_bytes.decode("utf-8")
+    except OSError as error:
+        errors.append(f"Unslop hook script could not be read: {error}")
+        return
+    except UnicodeDecodeError:
+        errors.append("Unslop hook script must be UTF-8 text")
+        return
+    if not script.strip():
+        errors.append("Unslop hook script must be non-empty")
+        return
+    if hashlib.sha256(script_bytes).hexdigest() != UNSLOP_HOOK_SCRIPT_SHA256:
+        errors.append("Unslop hook script digest does not match the reviewed implementation")
+    try:
+        ast.parse(script, filename=str(script_path))
+    except SyntaxError as error:
+        errors.append(f"Unslop hook script is not valid Python: {error.msg}")
+    normalized_script = script.lower()
+    for marker in (
+        "sessionstart",
+        '"unslop"',
+        "additionalcontext",
+        "user-facing prose",
+        "machine-readable data",
+        "higher-priority instructions",
+    ):
+        if marker not in normalized_script:
+            errors.append(f"Unslop hook script is missing required marker {marker!r}")
+
+
+def _validate_third_party_sources(plugin_root: Path, errors: list[str]) -> None:
+    third_party_root = _required_package_path(
+        plugin_root,
+        "third-party",
+        "third-party source directory",
+        "directory",
+        errors,
+    )
+    if third_party_root is None:
+        return
+    lock_path = _required_package_path(
+        plugin_root,
+        THIRD_PARTY_LOCK_PATH,
+        "third-party upstream lock",
+        "file",
+        errors,
+    )
+    if lock_path is None:
+        return
+    lock = _load_json_object(lock_path, "third-party upstream lock", errors)
+    if lock is None:
+        return
+    expected_lock = {
+        "schema_version": "third-party-sources.v1",
+        "sources": EXPECTED_THIRD_PARTY_SOURCES,
+    }
+    if lock != expected_lock:
+        errors.append("third-party upstream lock does not match the pinned source contract")
+
+    expected_files = {"upstream-lock.json"}
+    for source in EXPECTED_THIRD_PARTY_SOURCES.values():
+        expected_files.add(source["vendored_path"])
+        expected_files.add(source["license_path"])
+    actual_files = {
+        path.relative_to(third_party_root).as_posix()
+        for path in third_party_root.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    if actual_files != expected_files:
+        errors.append("third-party source package does not contain the exact pinned file set")
+
+    for name, source in EXPECTED_THIRD_PARTY_SOURCES.items():
+        for path_field, digest_field, label in (
+            ("vendored_path", "sha256", "upstream source"),
+            ("license_path", "license_sha256", "upstream license"),
+        ):
+            relative = source[path_field]
+            path = _required_package_path(
+                plugin_root,
+                f"third-party/{relative}",
+                f"{name} {label}",
+                "file",
+                errors,
+            )
+            if path is None:
+                continue
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as error:
+                errors.append(f"{name} {label} could not be read: {error}")
+                continue
+            if digest != source[digest_field]:
+                errors.append(f"{name} {label} digest does not match the pinned upstream digest")
+
+    _validate_public_third_party_derivations(plugin_root, third_party_root, errors)
+
+
+def _validate_public_third_party_derivations(
+    plugin_root: Path,
+    third_party_root: Path,
+    errors: list[str],
+) -> None:
+    try:
+        unslop_source = (
+            third_party_root / "sources" / "pstack" / "unslop" / "SKILL.md"
+        ).read_bytes()
+        public_unslop = (plugin_root / "skills" / "unslop" / "SKILL.md").read_bytes()
+    except OSError as error:
+        errors.append(f"public Unslop derived-copy validation failed: {error}")
+    else:
+        expected_unslop = unslop_source.replace(
+            b"disable-model-invocation: true\n",
+            b"",
+            1,
+        )
+        if public_unslop != expected_unslop:
+            errors.append("public skill 'unslop' does not match its declared derived upstream copy")
+
+    try:
+        wrapper = (
+            third_party_root / "sources" / "mattpocock" / "grill-me" / "SKILL.md"
+        ).read_bytes()
+        engine = (
+            third_party_root / "sources" / "mattpocock" / "grilling" / "SKILL.md"
+        ).read_bytes()
+        public_grill = (plugin_root / "skills" / "grill-me" / "SKILL.md").read_bytes()
+        wrapper_end = wrapper.index(b"\n---\n", 4) + len(b"\n---\n")
+        engine_end = engine.index(b"\n---\n", 4) + len(b"\n---\n")
+    except (OSError, ValueError) as error:
+        errors.append(f"public Grill Me derived-copy validation failed: {error}")
+    else:
+        frontmatter = wrapper[:wrapper_end].replace(
+            b"disable-model-invocation: true\n",
+            b"",
+            1,
+        )
+        body = engine[engine_end:].lstrip(b"\n")
+        body = body.replace(b"it; don't", b"it. Don't").replace(
+            b"report; ask",
+            b"report. Ask",
+        )
+        expected_grill = frontmatter + b"\n" + body
+        if public_grill != expected_grill:
+            errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
+
+
+def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
+    roots = (
+        repository_root / "plugins" / PLUGIN_NAME / "skills",
+        repository_root / ".agents" / "skills",
+    )
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                contents = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            relative = path.relative_to(repository_root)
+            if "\N{EM DASH}" in contents:
+                errors.append(f"skill text {relative} contains an em dash")
+            if ";" in contents:
+                errors.append(f"skill text {relative} contains a semicolon")
 
 
 def _parse_frontmatter(
