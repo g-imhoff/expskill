@@ -60,22 +60,24 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
 
 ## Build a compact review handoff
 
-For each judge, make the aggregate authored review handoff a locator with at
-most 300 physical lines. Count every generated handoff or context Markdown file
-for that dispatch together. Check the count before launch and stop before
-dispatch when it exceeds the limit.
+The aggregate authored review handoff includes inline dispatch text, follow-up
+messages, and every generated context artifact regardless of carrier or
+extension. It is a locator, not a payload, and totals at most 300 physical
+lines. Count the complete handoff before launch and stop before dispatch when
+it exceeds the limit.
 
 Include only the repository or candidate path, base revision, candidate
 revision, what changed and why, review scope, claimed checks with concise
-results, known concerns, and paths to relevant evidence. The actual accepted
-specification files are referenced separately. Specification files are not part of
-the authored handoff limit and must not be restated in the handoff.
+results, known concerns, and paths to relevant evidence. A real accepted
+specification file is referenced separately when it exists. The exception
+applies only to a specification file that existed before review dispatch. It
+does not permit a review-time summary, copy, or relabelled context package.
 
 Do not copy or embed diffs, source files, test logs, terminal output,
-transcripts, or other repository content. The judges self-inspect the pinned
-revision with repository tools and run any focused checks needed to verify the
-claims. A request for a larger convenience package is not a reason to create
-one.
+transcripts, or other repository content. Do not attach binary or opaque review
+context. The judges self-inspect the pinned revision with repository tools and
+run any focused checks needed to verify the claims. A request for a larger
+convenience package is not a reason to create one.
 
 ## Gate each candidate
 

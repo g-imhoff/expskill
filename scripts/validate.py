@@ -169,12 +169,17 @@ REVIEW_HANDOFF_PATHS = (
     "skills/skill-builder/SKILL.md",
     "skills/skill-builder/references/evaluation-rubric.md",
 )
-REVIEW_HANDOFF_MARKERS = (
-    "aggregate authored review handoff",
-    "300 physical lines",
-    "stop before dispatch",
-    "referenced separately",
-    "self-inspect",
+REVIEW_HANDOFF_CLAUSES = (
+    "the aggregate authored review handoff includes inline dispatch text, follow-up "
+    "messages, and every generated context artifact regardless of carrier or extension.",
+    "it is a locator, not a payload, and totals at most 300 physical lines.",
+    "count the complete handoff before launch and stop before dispatch when it exceeds "
+    "the limit.",
+    "a real accepted specification file is referenced separately when it exists.",
+    "the exception applies only to a specification file that existed before review "
+    "dispatch.",
+    "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
+    "or other repository content.",
 )
 
 REQUIRED_AGENT_FIELDS = (
@@ -205,6 +210,8 @@ AGENT_BOUNDARIES = {
         "read-only",
         "300 physical lines",
         "self-inspect",
+        "invalid handoff",
+        "do not request a copied diff",
         "severity",
         "evidence",
         "impact",
@@ -216,6 +223,8 @@ AGENT_BOUNDARIES = {
         "every accepted behavior",
         "300 physical lines",
         "self-inspect",
+        "invalid handoff",
+        "do not request a copied diff",
         "criterion-by-criterion evidence",
         "no tracked-source edits",
         "pass or fail",
@@ -456,10 +465,10 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
             errors.append(f"review handoff contract could not be read at {relative}: {error}")
             continue
         normalized = " ".join(contents.lower().split())
-        for marker in REVIEW_HANDOFF_MARKERS:
-            if marker not in normalized:
+        for clause in REVIEW_HANDOFF_CLAUSES:
+            if clause not in normalized:
                 errors.append(
-                    f"review handoff contract at {relative} must include {marker!r}"
+                    f"review handoff contract at {relative} must include {clause!r}"
                 )
 
 
