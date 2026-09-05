@@ -63,6 +63,7 @@ CATEGORY_CRITERION_IDS = {
     "testability": frozenset(f"TE{index}" for index in range(1, 11)),
 }
 CONFORMANCE_GATE_IDS = frozenset(f"BR{index}" for index in range(1, 11))
+WORKFLOW_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 def load_traces(partition: str) -> dict[str, list[dict[str, Any]]]:
@@ -135,9 +136,11 @@ class OracleFailure:
     ledger: str = "builder-run"
 
 
-def accepted_finalization_trace() -> list[dict[str, Any]]:
+def accepted_finalization_trace(
+    revision: str = "candidate-v1",
+) -> list[dict[str, Any]]:
     binding = {
-        "revision": "candidate-v1",
+        "revision": revision,
         "contract_digest": "contract-v1",
         "evaluation_digest": "evaluation-v1",
     }
@@ -189,7 +192,7 @@ def accepted_finalization_trace() -> list[dict[str, Any]]:
             "evaluation_digest": "evaluation-v1",
             "target_snapshot": "fixture-improve-snapshot-v1",
         },
-        {"event": "candidate_edit", "candidate_revision": "candidate-v1"},
+        {"event": "candidate_edit", "candidate_revision": revision},
         proof,
         {
             "event": "builder_conformance_recorded",
@@ -243,10 +246,11 @@ def accepted_finalization_trace() -> list[dict[str, Any]]:
 def cleanup_trace(
     run_directory: str,
     xdg_state_home: str | None = None,
+    workflow_id: str = "a" * 32,
 ) -> list[dict[str, Any]]:
     state_home = xdg_state_home or str(BUILDER_FIXTURES / "private-state")
     binding = {
-        "workflow_id": "workflow-1",
+        "workflow_id": workflow_id,
         "target_identity": "fixture-terse-summary",
         "finalized_revision": "candidate-v1",
         "run_directory_identity": "run-directory-1",
@@ -319,6 +323,7 @@ def evaluate_trace(
     accepted_delivery: dict[str, Any] | None = None
     cleanup_tombstone: dict[str, Any] | None = None
     run_state_manifest: dict[str, Any] | None = None
+    snapshot_changed_since_freeze = False
 
     def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any]:
         return (
@@ -376,6 +381,8 @@ def evaluate_trace(
             current_contract = event["contract_digest"]
         elif event_name == "target_snapshot_changed":
             current_snapshot = event["target_snapshot"]
+            if frozen_evaluation is not None:
+                snapshot_changed_since_freeze = True
         elif event_name == "paused":
             pause_record = event
         elif event_name == "resumed":
@@ -424,15 +431,23 @@ def evaluate_trace(
                 else None
             )
             trusted_state_home = fixture_root / "private-state"
+            workflow_identity = event.get("workflow_id")
+            workflow_identity_valid = (
+                isinstance(workflow_identity, str)
+                and WORKFLOW_ID_RE.fullmatch(workflow_identity) is not None
+            )
             expected_directory = (
                 trusted_state_home
                 / "codex-dev-flow"
                 / "skill-builder"
                 / "runs"
-                / str(event.get("workflow_id"))
+                / workflow_identity
+                if workflow_identity_valid
+                else None
             )
             ownership_valid = (
                 run_state_manifest is not None
+                and workflow_identity_valid
                 and run_state_manifest.get("valid") is True
                 and bool(run_state_manifest.get("manifest_digest"))
                 and isinstance(state_home, str)
@@ -526,9 +541,7 @@ def evaluate_trace(
                         "cleanup attempted to delete production or an unowned path",
                     )
                 )
-            if (
-                event.get("path") is not None or run_state_manifest is not None
-            ) and not ownership_valid:
+            if not ownership_valid:
                 failures.append(
                     OracleFailure(
                         "INVALID_CLEANUP_OWNERSHIP",
@@ -619,14 +632,6 @@ def evaluate_trace(
                         for category in affected_categories:
                             prior_score = category_scores.get(category)
                             if prior_score is not None and prior_score[0].get("score") == 10:
-                                failures.append(
-                                    OracleFailure(
-                                        "MATERIAL_FINDING_AT_TEN",
-                                        index,
-                                        f"{category} retained a score of 10 after a material finding",
-                                        "target-quality",
-                                    )
-                                )
                                 category_scores.pop(category, None)
         elif event_name == "repair_completed":
             repaired_ids = set(event["finding_ids"])
@@ -714,6 +719,7 @@ def evaluate_trace(
             if (
                 frozen_evaluation is None
                 or frozen_evaluation.get("target_snapshot") != current_snapshot
+                or snapshot_changed_since_freeze
             ):
                 failures.append(
                     OracleFailure(
@@ -850,6 +856,7 @@ def evaluate_trace(
             research_lanes = event["lanes"]
         elif event_name == "evaluation_frozen":
             frozen_evaluation = event
+            snapshot_changed_since_freeze = False
         elif event_name == "candidate_edit":
             if identity_ambiguous:
                 failures.append(
@@ -1350,6 +1357,19 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         }
         self.assertIn("FINALIZATION_SNAPSHOT_MISMATCH", stale_codes)
 
+        aba_snapshot = accepted_finalization_trace()
+        aba_snapshot[-1:-1] = [
+            {"event": "target_snapshot_changed", "target_snapshot": "snapshot-v2"},
+            {
+                "event": "target_snapshot_changed",
+                "target_snapshot": "fixture-improve-snapshot-v1",
+            },
+        ]
+        aba_codes = {
+            failure.code for failure in evaluate_trace(aba_snapshot, BUILDER_FIXTURES)
+        }
+        self.assertIn("FINALIZATION_SNAPSHOT_MISMATCH", aba_codes)
+
         late_finding = accepted_finalization_trace()
         final_review = next(
             event
@@ -1366,9 +1386,26 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         finding_codes = {
             failure.code for failure in evaluate_trace(late_finding, BUILDER_FIXTURES)
         }
-        self.assertIn("MATERIAL_FINDING_AT_TEN", finding_codes)
         self.assertIn("FINALIZE_WITH_MATERIAL_FINDINGS", finding_codes)
         self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", finding_codes)
+
+        repaired = late_finding[: late_finding.index(final_review) + 1]
+        repaired.append(
+            {
+                "event": "repair_completed",
+                "finding_ids": ["late-safety-finding"],
+                "prior_revision": "candidate-v1",
+                "candidate_revision": "candidate-v2",
+            }
+        )
+        revision_two = accepted_finalization_trace("candidate-v2")
+        candidate_index = next(
+            index
+            for index, event in enumerate(revision_two)
+            if event["event"] == "candidate_edit"
+        )
+        repaired.extend(revision_two[candidate_index:])
+        self.assertEqual(evaluate_trace(repaired, BUILDER_FIXTURES), ())
 
     def test_cleanup_ownership_is_derived_from_validated_xdg_manifest(self) -> None:
         """Regression: matching cleanup labels cannot disguise a production path."""
@@ -1379,7 +1416,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             / "codex-dev-flow"
             / "skill-builder"
             / "runs"
-            / "workflow-1"
+            / ("a" * 32)
         )
         self.assertEqual(evaluate_trace(cleanup_trace(owned_path), BUILDER_FIXTURES), ())
 
@@ -1399,6 +1436,24 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         }
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", spoofed_codes)
 
+        missing_manifest = cleanup_trace(owned_path)[1:]
+        missing_manifest[-1].pop("path")
+        missing_manifest_codes = {
+            failure.code
+            for failure in evaluate_trace(missing_manifest, BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_CLEANUP_OWNERSHIP", missing_manifest_codes)
+
+        absolute_workflow = cleanup_trace(
+            "/srv/skills/fixture",
+            workflow_id="/srv/skills/fixture",
+        )
+        absolute_codes = {
+            failure.code
+            for failure in evaluate_trace(absolute_workflow, BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_CLEANUP_OWNERSHIP", absolute_codes)
+
     def test_resume_requires_revalidation_and_cleanup_requires_all_authority_gates(self) -> None:
         """Regression: persisted state and cleanup pressure must fail closed."""
 
@@ -1409,12 +1464,14 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "CLEANUP_WITHOUT_AUTHORITY",
                 "CLEANUP_WITHOUT_ACCEPTED_DELIVERY",
                 "CLEANUP_WITHOUT_TOMBSTONE",
+                "INVALID_CLEANUP_OWNERSHIP",
             },
             "mutant_self_attested_production_cleanup": {
                 "CLEANUP_WITHOUT_AUTHORITY",
                 "CLEANUP_WITHOUT_ACCEPTED_DELIVERY",
                 "CLEANUP_WITHOUT_TOMBSTONE",
                 "FORBIDDEN_CLEANUP_SCOPE",
+                "INVALID_CLEANUP_OWNERSHIP",
             },
         }
 
