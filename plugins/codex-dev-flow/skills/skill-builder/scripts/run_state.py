@@ -38,6 +38,7 @@ MANIFEST_SCHEMA = "skill-builder-raw-manifest.v1"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
+MAX_CLI_JSON_BYTES = 4 * ((MAX_ARTIFACT_BYTES + 2) // 3) + 64 * 1024
 MAX_TARGET_ITEMS = 10_000
 MAX_TARGET_BYTES = 64 * 1024 * 1024
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -99,18 +100,250 @@ _STAGE_TRANSITIONS = {
     "accept-verification": ("scored", "verified"),
 }
 _EVENT_ARTIFACT_TYPES = {
-    "capture-baseline": {"baseline-report"},
-    "complete-research": {"research-pack"},
-    "sieve-evidence": {"evidence-sieve"},
-    "accept-design": {"design-record"},
-    "accept-contract": {"skill-contract"},
-    "confirm-contract": {"user-confirmation-record"},
-    "freeze-evaluation": {"evaluation-pack"},
-    "accept-candidate": {"candidate-record"},
-    "complete-trials": {"trial-pack"},
-    "accept-review": {"review-record"},
-    "accept-scores": {"builder-run-conformance-ledger", "target-scorecard"},
-    "accept-verification": {"verification-record"},
+    "capture-baseline": ("baseline-report",),
+    "complete-research": ("research-pack",),
+    "sieve-evidence": ("evidence-sieve",),
+    "accept-design": ("design-record",),
+    "accept-contract": ("skill-contract",),
+    "confirm-contract": ("user-confirmation-record",),
+    "freeze-evaluation": ("evaluation-pack",),
+    "accept-candidate": ("candidate-record",),
+    "complete-trials": ("trial-pack",),
+    "accept-review": ("review-record",),
+    "accept-scores": ("builder-run-conformance-ledger", "target-scorecard"),
+    "accept-verification": ("verification-record",),
+}
+
+_PAYLOAD_SCHEMA_VERSIONS = {
+    "baseline-report": "skill-builder-baseline.v1",
+    "research-pack": "skill-builder-research-pack.v1",
+    "evidence-sieve": "skill-builder-evidence-sieve.v1",
+    "design-record": "skill-builder-design.v1",
+    "skill-contract": "skill-builder-contract.v1",
+    "user-confirmation-record": "skill-builder-user-confirmation.v1",
+    "evaluation-pack": "skill-builder-evaluation-pack.v1",
+    "candidate-record": "skill-builder-candidate.v1",
+    "trial-pack": "skill-builder-trial-pack.v1",
+    "builder-run-conformance-ledger": "skill-builder-conformance.v1",
+    "review-record": "skill-builder-review.v1",
+    "target-scorecard": "skill-builder-scorecard.v1",
+    "verification-record": "skill-builder-verification.v1",
+    "release-record": "skill-builder-release.v1",
+    "delivery-acceptance-record": "skill-builder-delivery-acceptance.v1",
+    "cleanup-authority-record": "skill-builder-cleanup-authority.v1",
+    "invalidation-record": "skill-builder-invalidation.v1",
+}
+
+_PAYLOAD_REQUIRED_FIELDS = {
+    "baseline-report": {
+        "schema_version",
+        "mode",
+        "target_snapshot_digest",
+        "absent_target_proof",
+        "host_conventions",
+        "preserved_regressions",
+        "raw_evidence_digests",
+        "limitations",
+    },
+    "research-pack": {
+        "schema_version",
+        "target_snapshot_digest",
+        "baseline_digest",
+        "lanes",
+        "limitations",
+    },
+    "evidence-sieve": {
+        "schema_version",
+        "research_digest",
+        "decisions",
+        "conflicts",
+        "retained_dissent",
+        "design_relevance",
+        "limitations",
+    },
+    "design-record": {
+        "schema_version",
+        "research_digest",
+        "sieve_digest",
+        "alternatives",
+        "mechanisms",
+        "tradeoffs",
+        "challenges",
+        "evidence_links",
+        "factual_conclusions",
+        "user_owned_questions",
+        "user_decisions",
+        "rejected_alternatives",
+        "unresolved_issues",
+    },
+    "skill-contract": {
+        "schema_version",
+        "design_digest",
+        "purpose",
+        "success_signal",
+        "triggers",
+        "non_triggers",
+        "inputs_preconditions",
+        "ordered_behavior",
+        "allowed_actions",
+        "forbidden_actions",
+        "tools",
+        "permissions",
+        "delegation",
+        "outputs_consumers",
+        "failures",
+        "changed_goals",
+        "stopping_conditions",
+        "resources",
+        "non_goals",
+        "evidence_bindings",
+    },
+    "user-confirmation-record": {
+        "schema_version",
+        "user_identity",
+        "confirmed_at",
+        "confirmation_text",
+        "confirmation_event_digest",
+        "target_identity",
+        "contract_artifact_id",
+        "contract_digest",
+        "target_snapshot_digest",
+        "accepted",
+    },
+    "evaluation-pack": {
+        "schema_version",
+        "frozen",
+        "contract_digest",
+        "confirmation_digest",
+        "target_snapshot_digest",
+        "rubric_digest",
+        "scoring_parameters",
+        "freeze_timestamp",
+        "partitions",
+    },
+    "candidate-record": {
+        "schema_version",
+        "candidate_id",
+        "isolated_locator",
+        "base_snapshot_digest",
+        "candidate_revision",
+        "resulting_digest",
+        "writable_role",
+        "owned_paths",
+        "diff_digest",
+        "local_check_evidence",
+        "contract_digest",
+        "confirmation_digest",
+        "evaluation_digest",
+        "target_snapshot_digest",
+    },
+    "trial-pack": {
+        "schema_version",
+        "candidate_digest",
+        "candidate_revision",
+        "cases",
+        "coverage",
+        "isolation_evidence",
+        "leakage_checks",
+        "aggregate_manifest_digest",
+        "status",
+        "limitations",
+    },
+    "builder-run-conformance-ledger": {
+        "schema_version",
+        "candidate_digest",
+        "gates",
+    },
+    "review-record": {
+        "schema_version",
+        "reviewer_identity",
+        "independent",
+        "read_only",
+        "candidate_digest",
+        "candidate_revision",
+        "input_artifacts",
+        "access_check_evidence",
+        "fresh",
+        "contamination_check",
+        "valid",
+        "findings",
+        "verdict",
+        "reviewed_at",
+    },
+    "target-scorecard": {
+        "schema_version",
+        "candidate_digest",
+        "candidate_revision",
+        "rubric_digest",
+        "evaluation_digest",
+        "review_digest",
+        "categories",
+    },
+    "verification-record": {
+        "schema_version",
+        "verifier_identity",
+        "independent",
+        "read_only",
+        "candidate_digest",
+        "candidate_revision",
+        "commands",
+        "started_at",
+        "ended_at",
+        "before_manifest_digest",
+        "after_manifest_digest",
+        "fresh",
+        "status",
+        "conclusion",
+    },
+    "release-record": {
+        "schema_version",
+        "target_identity",
+        "candidate_digest",
+        "candidate_revision",
+        "contract_digest",
+        "confirmation_digest",
+        "evaluation_digest",
+        "conformance_digest",
+        "scorecard_digest",
+        "review_digest",
+        "verification_digest",
+        "retained_limitations",
+        "release_evidence_manifest_digest",
+        "authorized_delivery_scope",
+    },
+    "delivery-acceptance-record": {
+        "schema_version",
+        "action",
+        "destination_identity",
+        "finalized_revision",
+        "resulting_destination_digest",
+        "acceptance_evidence",
+        "user_authority_event_digest",
+        "actor",
+        "accepted",
+        "candidate_digest",
+        "release_digest",
+        "timestamp",
+    },
+    "cleanup-authority-record": {
+        "schema_version",
+        "workflow_id",
+        "target_identity",
+        "action",
+        "authorized",
+        "authority_event_digest",
+        "actor",
+        "timestamp",
+        "accepted_delivery_digest",
+    },
+    "invalidation-record": {
+        "schema_version",
+        "change_kind",
+        "changed_artifact_id",
+        "changed_artifact_digest",
+        "reason",
+        "invalidated_artifact_ids",
+    },
 }
 
 
@@ -377,15 +610,31 @@ def _read_bytes(path: Path, maximum: int = MAX_JSON_BYTES) -> bytes:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    payload = _read_bytes(path)
     try:
         value = json.loads(
-            _read_bytes(path).decode("utf-8"), object_pairs_hook=_unique_object
+            payload.decode("utf-8"), object_pairs_hook=_unique_object
         )
     except (UnicodeError, ValueError) as error:
         raise RunStateError(f"malformed JSON record: {path.name}") from error
     if not isinstance(value, dict):
         raise RunStateError(f"{path.name} must contain an object")
     _json_value(value)
+    if payload != canonical_json_bytes(value):
+        raise RunStateError(f"{path.name} is not exact canonical JSON encoding")
+    return value
+
+
+def _decode_canonical_object(payload: bytes, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (UnicodeError, ValueError) as error:
+        raise RunStateError(f"{label} is not strict JSON") from error
+    if not isinstance(value, dict):
+        raise RunStateError(f"{label} must be a JSON object")
+    _json_value(value)
+    if payload != canonical_json_bytes(value):
+        raise RunStateError(f"{label} is not exact canonical JSON encoding")
     return value
 
 
@@ -442,6 +691,489 @@ def _nonempty_mapping(value: object, label: str) -> dict[str, Any]:
         raise RunStateError(f"{label} must be a nonempty object")
     _json_value(value)
     return value
+
+
+def _exact_integer(value: object, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise RunStateError(f"{label} must be an integer of at least {minimum}")
+    return value
+
+
+def _text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise RunStateError(f"{label} must be nonempty text")
+    return value
+
+
+def _digest(value: object, label: str) -> str:
+    if not isinstance(value, str) or not _DIGEST_RE.fullmatch(value):
+        raise RunStateError(f"{label} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _text_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise RunStateError(f"{label} must be a list of nonempty text")
+    return value
+
+
+def _digest_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not _DIGEST_RE.fullmatch(item) for item in value
+    ):
+        raise RunStateError(f"{label} must be a list of SHA-256 digests")
+    if len(value) != len(set(value)):
+        raise RunStateError(f"{label} contains duplicate digests")
+    return value
+
+
+def _timestamp(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise RunStateError(f"{label} must be an RFC 3339 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise RunStateError(f"{label} must be an RFC 3339 UTC timestamp") from error
+    if parsed.tzinfo != timezone.utc:
+        raise RunStateError(f"{label} must use UTC")
+    return value
+
+
+def _mapping_list(value: object, label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise RunStateError(f"{label} must be a list of objects")
+    return value
+
+
+def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
+    """Apply the normative, versioned payload schema before accepting an artifact."""
+    expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
+    expected_fields = _PAYLOAD_REQUIRED_FIELDS.get(artifact_type)
+    if expected_version is None or expected_fields is None:
+        return
+    if set(payload) != expected_fields or payload.get("schema_version") != expected_version:
+        raise RunStateError(f"{artifact_type} payload schema is invalid")
+
+    if artifact_type == "baseline-report":
+        if payload["mode"] not in {"create", "improve"}:
+            raise RunStateError("baseline mode is invalid")
+        _digest(payload["target_snapshot_digest"], "baseline target snapshot")
+        if payload["mode"] == "create":
+            proof = payload["absent_target_proof"]
+            if not isinstance(proof, dict) or set(proof) != {
+                "absence_evidence_digest",
+                "overlap_map_digest",
+            }:
+                raise RunStateError("create baseline lacks exact absent-target proof")
+            _digest(proof["absence_evidence_digest"], "absence evidence")
+            _digest(proof["overlap_map_digest"], "overlap map")
+        elif payload["absent_target_proof"] is not None:
+            raise RunStateError("improve baseline must not claim absent-target proof")
+        _text_list(payload["host_conventions"], "baseline host conventions")
+        _text_list(payload["preserved_regressions"], "baseline regressions")
+        _digest_list(payload["raw_evidence_digests"], "baseline raw evidence")
+        _text_list(payload["limitations"], "baseline limitations")
+        return
+
+    if artifact_type == "research-pack":
+        _digest(payload["target_snapshot_digest"], "research target snapshot")
+        _digest(payload["baseline_digest"], "research baseline")
+        lanes = _mapping_list(payload["lanes"], "research lanes")
+        if len(lanes) != 3:
+            raise RunStateError("research pack must contain exactly three lanes")
+        lane_ids: set[str] = set()
+        for lane in lanes:
+            if set(lane) != {
+                "lane_id",
+                "question",
+                "model",
+                "reasoning",
+                "source_scope",
+                "evidence_budget",
+                "start_state",
+                "end_state",
+                "limitations",
+                "evidence_cards",
+            }:
+                raise RunStateError("research lane schema is invalid")
+            lane_id = _text(lane["lane_id"], "research lane identity")
+            if lane_id in lane_ids:
+                raise RunStateError("research lane identities must be unique")
+            lane_ids.add(lane_id)
+            _text(lane["question"], "research lane question")
+            if lane["model"] != "GPT-5.6-Luna" or lane["reasoning"] != "max":
+                raise RunStateError("research lane model or reasoning is invalid")
+            _text_list(lane["source_scope"], "research source scope")
+            _exact_integer(lane["evidence_budget"], "research evidence budget", minimum=1)
+            _text(lane["start_state"], "research lane start state")
+            _text(lane["end_state"], "research lane end state")
+            _text_list(lane["limitations"], "research lane limitations")
+            cards = _mapping_list(lane["evidence_cards"], "research evidence cards")
+            for card in cards:
+                if set(card) != {
+                    "card_id",
+                    "claim",
+                    "technique",
+                    "direct_source",
+                    "locator",
+                    "applicable_situation",
+                    "limitation",
+                    "experiment",
+                    "lane_id",
+                    "raw_source_digest",
+                }:
+                    raise RunStateError("research evidence-card schema is invalid")
+                for field in set(card) - {"raw_source_digest"}:
+                    _text(card[field], f"evidence card {field}")
+                if card["lane_id"] != lane_id:
+                    raise RunStateError("evidence card lane binding is invalid")
+                _digest(card["raw_source_digest"], "evidence-card raw source")
+        _text_list(payload["limitations"], "research limitations")
+        return
+
+    if artifact_type == "evidence-sieve":
+        _digest(payload["research_digest"], "sieve research")
+        decisions = _mapping_list(payload["decisions"], "sieve decisions")
+        seen: set[str] = set()
+        for decision in decisions:
+            if set(decision) != {
+                "card_id",
+                "decision",
+                "reason",
+                "deduplication_links",
+            }:
+                raise RunStateError("evidence-sieve decision schema is invalid")
+            card_id = _text(decision["card_id"], "sieve card identity")
+            if card_id in seen or decision["decision"] not in {
+                "adopt",
+                "experiment",
+                "reject",
+            }:
+                raise RunStateError("evidence-sieve decision is duplicate or invalid")
+            seen.add(card_id)
+            _text(decision["reason"], "sieve decision reason")
+            _text_list(decision["deduplication_links"], "sieve deduplication links")
+        for field in ("conflicts", "retained_dissent", "design_relevance", "limitations"):
+            _text_list(payload[field], f"sieve {field}")
+        return
+
+    if artifact_type == "design-record":
+        _digest(payload["research_digest"], "design research")
+        _digest(payload["sieve_digest"], "design sieve")
+        for field in _PAYLOAD_REQUIRED_FIELDS[artifact_type] - {
+            "schema_version",
+            "research_digest",
+            "sieve_digest",
+        }:
+            _text_list(payload[field], f"design {field}")
+        return
+
+    if artifact_type == "skill-contract":
+        _digest(payload["design_digest"], "contract design")
+        _text(payload["purpose"], "contract purpose")
+        _text(payload["success_signal"], "contract success signal")
+        for field in _PAYLOAD_REQUIRED_FIELDS[artifact_type] - {
+            "schema_version",
+            "design_digest",
+            "purpose",
+            "success_signal",
+            "evidence_bindings",
+        }:
+            _text_list(payload[field], f"contract {field}")
+        bindings = _mapping_list(payload["evidence_bindings"], "contract evidence bindings")
+        for binding in bindings:
+            if set(binding) != {"statement", "artifact_id", "digest"}:
+                raise RunStateError("contract evidence binding schema is invalid")
+            _text(binding["statement"], "contract evidence statement")
+            _text(binding["artifact_id"], "contract evidence artifact")
+            _digest(binding["digest"], "contract evidence digest")
+        return
+
+    if artifact_type == "user-confirmation-record":
+        _text(payload["user_identity"], "confirmation user identity")
+        _timestamp(payload["confirmed_at"], "confirmation timestamp")
+        _text(payload["confirmation_text"], "confirmation text")
+        _digest(payload["confirmation_event_digest"], "confirmation event")
+        _text(payload["target_identity"], "confirmation target")
+        _text(payload["contract_artifact_id"], "confirmation contract artifact")
+        _digest(payload["contract_digest"], "confirmation contract")
+        _digest(payload["target_snapshot_digest"], "confirmation target snapshot")
+        if payload["accepted"] is not True:
+            raise RunStateError("user confirmation is not accepted")
+        return
+
+    if artifact_type == "evaluation-pack":
+        if payload["frozen"] is not True:
+            raise RunStateError("evaluation pack is not frozen")
+        for field in (
+            "contract_digest",
+            "confirmation_digest",
+            "target_snapshot_digest",
+            "rubric_digest",
+        ):
+            _digest(payload[field], f"evaluation {field}")
+        if not isinstance(payload["scoring_parameters"], dict) or not payload["scoring_parameters"]:
+            raise RunStateError("evaluation scoring parameters are incomplete")
+        _timestamp(payload["freeze_timestamp"], "evaluation freeze timestamp")
+        partitions = payload["partitions"]
+        if not isinstance(partitions, dict) or set(partitions) != {
+            "visible_development",
+            "frozen_validation",
+            "hidden_release",
+        }:
+            raise RunStateError("evaluation case partitions are invalid")
+        case_ids: set[str] = set()
+        for partition, cases in partitions.items():
+            for case in _mapping_list(cases, f"evaluation {partition} cases"):
+                if set(case) != {
+                    "case_id",
+                    "partition",
+                    "purpose",
+                    "raw_request_digest",
+                    "allowed_context",
+                    "setup_manifest_digest",
+                    "observable_assertions",
+                    "forbidden_effects",
+                    "evidence_requirements",
+                    "pass_fail_rule",
+                }:
+                    raise RunStateError("evaluation case schema is invalid")
+                case_id = _text(case["case_id"], "evaluation case identity")
+                if case_id in case_ids or case["partition"] != partition:
+                    raise RunStateError("evaluation case identity or partition is invalid")
+                case_ids.add(case_id)
+                _text(case["purpose"], "evaluation case purpose")
+                _digest(case["raw_request_digest"], "evaluation raw request")
+                _digest(case["setup_manifest_digest"], "evaluation setup manifest")
+                for field in (
+                    "allowed_context",
+                    "observable_assertions",
+                    "forbidden_effects",
+                    "evidence_requirements",
+                ):
+                    _text_list(case[field], f"evaluation case {field}")
+                _text(case["pass_fail_rule"], "evaluation pass/fail rule")
+        if not case_ids:
+            raise RunStateError("evaluation pack has no frozen cases")
+        return
+
+    if artifact_type == "candidate-record":
+        for field in ("candidate_id", "isolated_locator", "candidate_revision", "writable_role"):
+            _text(payload[field], f"candidate {field}")
+        locator = Path(payload["isolated_locator"])
+        if not locator.is_absolute() or ".." in locator.parts:
+            raise RunStateError("candidate isolated locator must be absolute")
+        for field in (
+            "base_snapshot_digest",
+            "resulting_digest",
+            "diff_digest",
+            "contract_digest",
+            "confirmation_digest",
+            "evaluation_digest",
+            "target_snapshot_digest",
+        ):
+            _digest(payload[field], f"candidate {field}")
+        _text_list(payload["owned_paths"], "candidate owned paths")
+        _digest_list(payload["local_check_evidence"], "candidate local checks")
+        return
+
+    if artifact_type == "trial-pack":
+        _digest(payload["candidate_digest"], "trial candidate")
+        _text(payload["candidate_revision"], "trial candidate revision")
+        _mapping_list(payload["cases"], "trial cases")
+        for field in ("coverage", "isolation_evidence", "leakage_checks"):
+            _text_list(payload[field], f"trial {field}")
+        _digest(payload["aggregate_manifest_digest"], "trial aggregate manifest")
+        if payload["status"] not in {"pass", "fail"}:
+            raise RunStateError("trial status is invalid")
+        _text_list(payload["limitations"], "trial limitations")
+        return
+
+    if artifact_type == "builder-run-conformance-ledger":
+        _digest(payload["candidate_digest"], "conformance candidate")
+        gates = payload["gates"]
+        if not isinstance(gates, dict) or not gates:
+            raise RunStateError("conformance gates are incomplete")
+        for gate_id, gate in gates.items():
+            _text(gate_id, "conformance gate identity")
+            if not isinstance(gate, dict) or set(gate) != {
+                "status",
+                "evidence_digests",
+                "affected_stage",
+                "repair_state",
+                "release_blocking",
+            }:
+                raise RunStateError("conformance gate schema is invalid")
+            if gate["status"] not in {"pass", "fail"} or not isinstance(gate["release_blocking"], bool):
+                raise RunStateError("conformance gate result is invalid")
+            _digest_list(gate["evidence_digests"], "conformance gate evidence")
+            _text(gate["affected_stage"], "conformance affected stage")
+            _text(gate["repair_state"], "conformance repair state")
+        return
+
+    if artifact_type == "review-record":
+        _text(payload["reviewer_identity"], "reviewer identity")
+        _digest(payload["candidate_digest"], "review candidate")
+        _text(payload["candidate_revision"], "review candidate revision")
+        if payload["independent"] is not True or payload["read_only"] is not True:
+            raise RunStateError("review independence attestation is invalid")
+        if not isinstance(payload["input_artifacts"], dict) or not payload["input_artifacts"]:
+            raise RunStateError("review input artifacts are incomplete")
+        for artifact_id, digest in payload["input_artifacts"].items():
+            _text(artifact_id, "review input artifact")
+            _digest(digest, "review input artifact digest")
+        _digest_list(payload["access_check_evidence"], "review access checks")
+        _text(payload["contamination_check"], "review contamination check")
+        _timestamp(payload["reviewed_at"], "review timestamp")
+        if not isinstance(payload["fresh"], bool) or not isinstance(payload["valid"], bool):
+            raise RunStateError("review freshness or validity is malformed")
+        if payload["verdict"] not in {"ready", "not ready", None}:
+            raise RunStateError("review verdict is invalid")
+        if payload["valid"] is False and payload["verdict"] is not None:
+            raise RunStateError("invalid review cannot carry a scoring verdict")
+        for finding in _mapping_list(payload["findings"], "review findings"):
+            if set(finding) != {
+                "severity",
+                "release_blocking",
+                "evidence",
+                "impact",
+                "correction",
+                "affected_target_criteria",
+            }:
+                raise RunStateError("review finding schema is invalid")
+            if finding["severity"] not in {
+                "critical",
+                "important",
+                "high",
+                "medium",
+                "low",
+                "advisory",
+            } or not isinstance(finding["release_blocking"], bool):
+                raise RunStateError("review finding severity is invalid")
+            _digest_list(finding["evidence"], "review finding evidence")
+            _text(finding["impact"], "review finding impact")
+            _text(finding["correction"], "review finding correction")
+            _text_list(finding["affected_target_criteria"], "review finding criteria")
+        return
+
+    if artifact_type == "target-scorecard":
+        for field in (
+            "candidate_digest",
+            "rubric_digest",
+            "evaluation_digest",
+            "review_digest",
+        ):
+            _digest(payload[field], f"scorecard {field}")
+        _text(payload["candidate_revision"], "scorecard candidate revision")
+        for category in _mapping_list(payload["categories"], "scorecard categories"):
+            if set(category) != {
+                "name",
+                "score",
+                "criteria",
+                "frozen_parameter_identifiers",
+                "evidence_identifiers",
+                "related_findings",
+                "repair_history",
+            }:
+                raise RunStateError("scorecard category schema is invalid")
+            _text(category["name"], "scorecard category name")
+            _exact_integer(category["score"], "scorecard score")
+            if not isinstance(category["criteria"], dict) or not category["criteria"] or any(
+                not isinstance(key, str) or not key or not isinstance(value, bool)
+                for key, value in category["criteria"].items()
+            ):
+                raise RunStateError("scorecard criteria are invalid")
+            for field in (
+                "frozen_parameter_identifiers",
+                "evidence_identifiers",
+                "related_findings",
+                "repair_history",
+            ):
+                _text_list(category[field], f"scorecard category {field}")
+        return
+
+    if artifact_type == "verification-record":
+        _text(payload["verifier_identity"], "verifier identity")
+        _digest(payload["candidate_digest"], "verification candidate")
+        _text(payload["candidate_revision"], "verification candidate revision")
+        if payload["independent"] is not True or payload["read_only"] is not True:
+            raise RunStateError("verification independence attestation is invalid")
+        _timestamp(payload["started_at"], "verification start")
+        _timestamp(payload["ended_at"], "verification end")
+        _digest(payload["before_manifest_digest"], "verification before manifest")
+        _digest(payload["after_manifest_digest"], "verification after manifest")
+        if not isinstance(payload["fresh"], bool) or payload["status"] not in {"pass", "fail"}:
+            raise RunStateError("verification freshness or status is invalid")
+        _text(payload["conclusion"], "verification conclusion")
+        commands = _mapping_list(payload["commands"], "verification commands")
+        if not commands:
+            raise RunStateError("verification commands are missing")
+        for command in commands:
+            if set(command) != {"command", "exit_status", "output_digest"}:
+                raise RunStateError("verification command schema is invalid")
+            _text(command["command"], "verification command")
+            _exact_integer(command["exit_status"], "verification exit status")
+            _digest(command["output_digest"], "verification output")
+        return
+
+    if artifact_type == "release-record":
+        _text(payload["target_identity"], "release target identity")
+        _text(payload["candidate_revision"], "release candidate revision")
+        for field in (
+            "candidate_digest",
+            "contract_digest",
+            "confirmation_digest",
+            "evaluation_digest",
+            "conformance_digest",
+            "scorecard_digest",
+            "review_digest",
+            "verification_digest",
+            "release_evidence_manifest_digest",
+        ):
+            _digest(payload[field], f"release {field}")
+        _text_list(payload["retained_limitations"], "release limitations")
+        scopes = _text_list(payload["authorized_delivery_scope"], "release delivery scope")
+        if len(scopes) != len(set(scopes)):
+            raise RunStateError("release delivery scope contains duplicates")
+        return
+
+    if artifact_type == "delivery-acceptance-record":
+        if payload["action"] not in {"installation", "integration"} or payload["accepted"] is not True:
+            raise RunStateError("delivery acceptance result is invalid")
+        for field in ("destination_identity", "finalized_revision", "actor"):
+            _text(payload[field], f"delivery {field}")
+        for field in (
+            "resulting_destination_digest",
+            "user_authority_event_digest",
+            "candidate_digest",
+            "release_digest",
+        ):
+            _digest(payload[field], f"delivery {field}")
+        _digest_list(payload["acceptance_evidence"], "delivery acceptance evidence")
+        _timestamp(payload["timestamp"], "delivery timestamp")
+        return
+
+    if artifact_type == "cleanup-authority-record":
+        _text(payload["workflow_id"], "cleanup workflow")
+        _text(payload["target_identity"], "cleanup target")
+        if payload["action"] != "cleanup" or payload["authorized"] is not True:
+            raise RunStateError("cleanup authority result is invalid")
+        _digest(payload["authority_event_digest"], "cleanup authority event")
+        _text(payload["actor"], "cleanup authority actor")
+        _timestamp(payload["timestamp"], "cleanup authority timestamp")
+        _digest(payload["accepted_delivery_digest"], "cleanup accepted delivery")
+        return
+
+    if artifact_type == "invalidation-record":
+        _text(payload["change_kind"], "invalidation change kind")
+        _text(payload["changed_artifact_id"], "invalidation changed artifact")
+        _digest(payload["changed_artifact_digest"], "invalidation changed artifact")
+        _text(payload["reason"], "invalidation reason")
+        identifiers = _text_list(payload["invalidated_artifact_ids"], "invalidated artifacts")
+        if identifiers != sorted(identifiers) or len(identifiers) != len(set(identifiers)):
+            raise RunStateError("invalidated artifact identifiers are not deterministic")
 
 
 def _identity_records(
@@ -502,8 +1234,15 @@ def _validate_git_identity(value: object) -> dict[str, Any]:
     }
     if set(value) != required:
         raise RunStateError("Git identity schema is incomplete")
-    if any(not isinstance(value[field], str) or not value[field] for field in required - {"present"}):
+    if any(
+        not isinstance(value[field], str) or not value[field]
+        for field in {"repository", "commit", "dirty_state_digest"}
+    ):
         raise RunStateError("Git identity contains empty values")
+    if value["branch"] is not None and (
+        not isinstance(value["branch"], str) or not value["branch"]
+    ):
+        raise RunStateError("Git branch identity must be nonempty text or null")
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value["commit"]):
         raise RunStateError("Git commit identity is not full length")
     if not _DIGEST_RE.fullmatch(value["dirty_state_digest"]):
@@ -552,36 +1291,157 @@ def snapshot_target(target: Path) -> dict[str, Any]:
         raise RunStateError("target must be a regular file or directory")
     entries: list[dict[str, Any]] = []
     total = 0
-    candidates = [locator] if locator.is_file() else sorted(locator.rglob("*"))
-    if len(candidates) > MAX_TARGET_ITEMS:
-        raise RunStateError("target snapshot has too many items")
-    for path in candidates:
-        info = path.lstat()
-        relative = "." if path == locator else path.relative_to(locator).as_posix()
-        if stat.S_ISLNK(info.st_mode):
-            raise RunStateError("target snapshot contains a symlink")
-        if stat.S_ISDIR(info.st_mode):
-            entries.append(
-                {
-                    "path": relative,
-                    "kind": "directory",
-                    "mode": stat.S_IMODE(info.st_mode),
-                    "byte_count": 0,
-                    "digest": None,
-                }
-            )
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            raise RunStateError("target snapshot contains a non-regular entry")
-        payload = path.read_bytes()
+
+    def same_entry(first: os.stat_result, second: os.stat_result) -> bool:
+        return (
+            first.st_dev,
+            first.st_ino,
+            stat.S_IFMT(first.st_mode),
+        ) == (
+            second.st_dev,
+            second.st_ino,
+            stat.S_IFMT(second.st_mode),
+        )
+
+    def read_file(
+        descriptor: int, before: os.stat_result, relative: str
+    ) -> tuple[bytes, os.stat_result]:
+        nonlocal total
+        opened = os.fstat(descriptor)
+        if not same_entry(before, opened) or not stat.S_ISREG(opened.st_mode):
+            raise RunStateError("target snapshot entry was substituted")
+        if opened.st_size < 0 or opened.st_size > MAX_TARGET_BYTES - total:
+            raise RunStateError("target snapshot is oversized")
+        chunks: list[bytes] = []
+        remaining = MAX_TARGET_BYTES - total + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
         total += len(payload)
         if total > MAX_TARGET_BYTES:
             raise RunStateError("target snapshot is oversized")
+        after = os.fstat(descriptor)
+        if (
+            not same_entry(opened, after)
+            or opened.st_size != after.st_size
+            or opened.st_mtime_ns != after.st_mtime_ns
+            or opened.st_ctime_ns != after.st_ctime_ns
+            or len(payload) != after.st_size
+        ):
+            raise RunStateError(f"target snapshot file changed while reading: {relative}")
+        return payload, after
+
+    def add_entry() -> None:
+        if len(entries) >= MAX_TARGET_ITEMS:
+            raise RunStateError("target snapshot has too many items")
+
+    def walk_directory(descriptor: int, prefix: str = "") -> None:
+        try:
+            names = sorted(entry.name for entry in os.scandir(descriptor))
+        except OSError as error:
+            raise RunStateError("cannot enumerate target snapshot") from error
+        for name in names:
+            if name in {"", ".", ".."} or "/" in name or "\x00" in name:
+                raise RunStateError("target snapshot contains an unsafe name")
+            relative = f"{prefix}/{name}" if prefix else name
+            try:
+                before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            except OSError as error:
+                raise RunStateError("target snapshot entry disappeared") from error
+            add_entry()
+            if stat.S_ISLNK(before.st_mode):
+                raise RunStateError("target snapshot contains a symlink")
+            if stat.S_ISDIR(before.st_mode):
+                try:
+                    child = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                except OSError as error:
+                    raise RunStateError("target snapshot directory was substituted") from error
+                try:
+                    if not same_entry(before, os.fstat(child)):
+                        raise RunStateError("target snapshot directory was substituted")
+                    entries.append(
+                        {
+                            "path": relative,
+                            "kind": "directory",
+                            "mode": stat.S_IMODE(before.st_mode),
+                            "byte_count": 0,
+                            "digest": None,
+                        }
+                    )
+                    walk_directory(child, relative)
+                    after = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    if not same_entry(before, after):
+                        raise RunStateError("target snapshot directory changed")
+                finally:
+                    os.close(child)
+                continue
+            if not stat.S_ISREG(before.st_mode):
+                raise RunStateError("target snapshot contains a non-regular entry")
+            if before.st_size < 0 or before.st_size > MAX_TARGET_BYTES - total:
+                raise RunStateError("target snapshot is oversized")
+            try:
+                child = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+                )
+            except OSError as error:
+                raise RunStateError("target snapshot file was substituted") from error
+            try:
+                payload, opened = read_file(child, before, relative)
+            finally:
+                os.close(child)
+            after = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if not same_entry(opened, after):
+                raise RunStateError("target snapshot file changed")
+            entries.append(
+                {
+                    "path": relative,
+                    "kind": "file",
+                    "mode": stat.S_IMODE(opened.st_mode),
+                    "byte_count": len(payload),
+                    "digest": raw_digest(payload),
+                }
+            )
+
+    if stat.S_ISDIR(root_info.st_mode):
+        try:
+            descriptor = os.open(locator, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as error:
+            raise RunStateError("target snapshot root was substituted") from error
+        try:
+            if not same_entry(root_info, os.fstat(descriptor)):
+                raise RunStateError("target snapshot root was substituted")
+            walk_directory(descriptor)
+            if not same_entry(root_info, locator.lstat()):
+                raise RunStateError("target snapshot root changed")
+        finally:
+            os.close(descriptor)
+    else:
+        if root_info.st_size < 0 or root_info.st_size > MAX_TARGET_BYTES:
+            raise RunStateError("target snapshot is oversized")
+        try:
+            descriptor = os.open(locator, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as error:
+            raise RunStateError("target snapshot root was substituted") from error
+        try:
+            add_entry()
+            payload, opened = read_file(descriptor, root_info, ".")
+        finally:
+            os.close(descriptor)
+        if not same_entry(opened, locator.lstat()):
+            raise RunStateError("target snapshot root changed")
         entries.append(
             {
-                "path": relative,
+                "path": ".",
                 "kind": "file",
-                "mode": stat.S_IMODE(info.st_mode),
+                "mode": stat.S_IMODE(opened.st_mode),
                 "byte_count": len(payload),
                 "digest": raw_digest(payload),
             }
@@ -649,7 +1509,18 @@ def _detect_git_identity(target: Path) -> dict[str, Any]:
     if process.returncode:
         return {"present": False}
     repository = Path(process.stdout.strip()).resolve(strict=True)
-    branch = str(_git_output(repository, "symbolic-ref", "--quiet", "--short", "HEAD")).strip()
+    branch_process = subprocess.run(
+        ["git", "-C", os.fspath(repository), "symbolic-ref", "--quiet", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    if branch_process.returncode not in {0, 1}:
+        raise RunStateError(
+            (branch_process.stderr or "Git branch identity command failed").strip()
+        )
+    branch = branch_process.stdout.strip() if branch_process.returncode == 0 else None
     commit = str(_git_output(repository, "rev-parse", "--verify", "HEAD")).strip()
     status_bytes = _git_output(
         repository, "status", "--porcelain=v1", "-z", "--untracked-files=all", binary=True
@@ -802,6 +1673,11 @@ def _create_artifact(
     primary = _safe_artifact_path(primary_path)
     if primary not in files:
         raise RunStateError("primary artifact payload is not retained")
+    if artifact_type in _PAYLOAD_SCHEMA_VERSIONS:
+        primary_record = _decode_canonical_object(
+            files[primary], f"{artifact_type} primary payload"
+        )
+        _validate_artifact_payload(artifact_type, primary_record)
     if not isinstance(producer, str) or not producer.strip():
         raise RunStateError("artifact producer identity is required")
     if not isinstance(limitations, list) or any(
@@ -942,6 +1818,93 @@ def _write_receipt(run: Path, receipt: dict[str, Any]) -> Path:
     return path
 
 
+def _append_transaction(
+    *,
+    run: Path,
+    current: dict[str, Any],
+    event: str,
+    destination_stage: str,
+    authority_event_digest: str | None,
+    existing_bindings: list[dict[str, str]],
+    artifact_requests: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
+    """Publish artifacts and one receipt with the receipt as the commit point."""
+    sequence = current["head_sequence"] + 1
+    transaction_path = run / "transactions" / f"{sequence:08d}.json"
+    artifact_ids = [request["artifact_id"] for request in artifact_requests]
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise RunStateError("append transaction artifact identifiers are duplicated")
+    transaction: dict[str, Any] = {
+        "schema_version": "skill-builder-append-transaction.v1",
+        "workflow_id": current["workflow_id"],
+        "sequence": sequence,
+        "prior_receipt_digest": current["head_transition_digest"],
+        "event": event,
+        "source_stage": current["stage"],
+        "destination_stage": destination_stage,
+        "artifact_ids": sorted(artifact_ids),
+        "receipt": None,
+    }
+    _exclusive_json(transaction_path, transaction)
+    created: dict[str, dict[str, Any]] = {}
+    receipt_path = run / "receipts" / f"{sequence:08d}.json"
+    try:
+        for request in artifact_requests:
+            parameters = dict(request)
+            artifact_id = parameters.pop("artifact_id")
+            envelope = _create_artifact(
+                run=run,
+                workflow_id=current["workflow_id"],
+                target_identity=current["target_identity"]["canonical"],
+                mode=current["mode"]["name"],
+                stage=current["stage"],
+                sequence=sequence,
+                artifact_id=artifact_id,
+                **parameters,
+            )
+            created[artifact_id] = envelope
+        bindings = list(existing_bindings) + [
+            {
+                "artifact_id": artifact_id,
+                "envelope_digest": envelope["envelope_digest"],
+                "status": "accepted",
+            }
+            for artifact_id, envelope in created.items()
+        ]
+        receipt = _new_receipt(
+            workflow_id=current["workflow_id"],
+            target_identity=current["target_identity"]["canonical"],
+            sequence=sequence,
+            prior_receipt_digest=current["head_transition_digest"],
+            event=event,
+            source_stage=current["stage"],
+            destination_stage=destination_stage,
+            relevant_artifact_digests=bindings,
+            target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
+            authority_event_digest=authority_event_digest,
+        )
+        transaction["receipt"] = receipt
+        _atomic_json(transaction_path, transaction)
+        _write_receipt(run, receipt)
+    except BaseException:
+        if not os.path.lexists(receipt_path):
+            for artifact_id in artifact_ids:
+                artifact = _artifact_directory(run, artifact_id)
+                if os.path.lexists(artifact) and not artifact.is_symlink():
+                    _remove_owned_tree(artifact)
+            if os.path.lexists(transaction_path) and not transaction_path.is_symlink():
+                transaction_path.unlink()
+                _fsync_directory(transaction_path.parent)
+        raise
+    # A durable receipt is append-only truth.  Index failure leaves the journal
+    # in place for recovery; neither the receipt nor accepted artifacts roll back.
+    derived = _derive_index(run)
+    _atomic_json(run / "current.json", derived)
+    transaction_path.unlink()
+    _fsync_directory(transaction_path.parent)
+    return derived, created, receipt
+
+
 def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     artifact = _artifact_directory(run, artifact_id)
     _validate_private_directory(artifact, f"artifact {artifact_id}")
@@ -971,20 +1934,25 @@ def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dic
         raise RunStateError("artifact envelope schema is invalid")
     if (
         envelope.get("artifact_id") != artifact_id
+        or not _ARTIFACT_RE.fullmatch(artifact_id)
         or envelope.get("artifact_type") not in _ARTIFACT_TYPES
         or envelope.get("workflow_id") != run.name
         or envelope.get("mode") not in {"create", "improve"}
         or isinstance(envelope.get("created_sequence"), bool)
         or not isinstance(envelope.get("created_sequence"), int)
         or envelope["created_sequence"] < 0
-        or not isinstance(envelope.get("created_stage"), str)
+        or envelope.get("created_stage") not in {*_STAGES, "paused"}
         or not isinstance(envelope.get("producer"), str)
+        or not envelope["producer"].strip()
         or not isinstance(envelope.get("target_identity"), str)
+        or not envelope["target_identity"].strip()
         or not isinstance(envelope.get("limitations"), list)
-        or any(not isinstance(item, str) for item in envelope["limitations"])
+        or any(not isinstance(item, str) or not item.strip() for item in envelope["limitations"])
+        or not isinstance(envelope.get("created_at"), str)
         or envelope.get("envelope_digest") != canonical_digest(envelope, "envelope_digest")
     ):
         raise RunStateError("artifact envelope digest or identity mismatch")
+    _timestamp(envelope["created_at"], "artifact creation timestamp")
     input_bindings = envelope.get("input_bindings")
     if not isinstance(input_bindings, list) or input_bindings != sorted(
         input_bindings,
@@ -999,6 +1967,8 @@ def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dic
             or not _DIGEST_RE.fullmatch(binding.get("digest", ""))
         ):
             raise RunStateError("artifact envelope input binding is malformed")
+    if len({binding["artifact_id"] for binding in input_bindings}) != len(input_bindings):
+        raise RunStateError("artifact envelope input bindings contain duplicates")
     manifest = _read_json(artifact / "manifest.json")
     manifest_fields = {
         "schema_version",
@@ -1029,10 +1999,22 @@ def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dic
     if manifest.get("manifest_digest") != envelope.get("manifest_digest"):
         raise RunStateError("artifact envelope manifest binding mismatch")
     entries = manifest.get("entries")
-    if not isinstance(entries, list) or not entries or len(entries) > MAX_ARTIFACT_ITEMS:
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or len(entries) > MAX_ARTIFACT_ITEMS
+        or isinstance(manifest.get("observed_item_count"), bool)
+        or not isinstance(manifest.get("observed_item_count"), int)
+        or manifest["observed_item_count"] < 1
+        or isinstance(manifest.get("observed_byte_count"), bool)
+        or not isinstance(manifest.get("observed_byte_count"), int)
+        or manifest["observed_byte_count"] < 0
+    ):
         raise RunStateError("raw-artifact manifest has an invalid item count")
     listed: set[str] = set()
+    casefolded: set[str] = set()
     total = 0
+    prior_path: str | None = None
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != {
             "path",
@@ -1052,11 +2034,32 @@ def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dic
         expected_prefix = f"artifacts/{artifact_id}/raw/"
         if not relative.startswith(expected_prefix):
             raise RunStateError("raw-artifact path is outside its collection")
+        local_relative = relative.removeprefix(expected_prefix)
+        if (
+            relative == prior_path
+            or local_relative.casefold() in casefolded
+            or not isinstance(entry.get("media_kind"), str)
+            or not entry["media_kind"].strip()
+            or isinstance(entry.get("byte_count"), bool)
+            or not isinstance(entry.get("byte_count"), int)
+            or entry["byte_count"] < 0
+            or not isinstance(entry.get("digest"), str)
+            or not _DIGEST_RE.fullmatch(entry["digest"])
+            or not isinstance(entry.get("source_role"), str)
+            or not entry["source_role"].strip()
+            or not isinstance(entry.get("retention_class"), str)
+            or not entry["retention_class"].strip()
+        ):
+            raise RunStateError("raw-artifact manifest entry fields are invalid")
+        if prior_path is not None and relative < prior_path:
+            raise RunStateError("raw-artifact manifest entries are not deterministic")
+        prior_path = relative
+        casefolded.add(local_relative.casefold())
         local = run.joinpath(*parts)
         payload = _read_bytes(local, MAX_ARTIFACT_BYTES)
         if entry.get("byte_count") != len(payload) or entry.get("digest") != raw_digest(payload):
             raise RunStateError("raw-artifact payload digest mismatch")
-        listed.add(relative.removeprefix(expected_prefix))
+        listed.add(local_relative)
         total += len(payload)
     actual: set[str] = set()
     for path in (artifact / "raw").rglob("*"):
@@ -1096,10 +2099,63 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
         receipt = _read_json(receipts_dir / name)
         if set(receipt) != _RECEIPT_FIELDS or receipt.get("schema_version") != RECEIPT_SCHEMA:
             raise RunStateError("transition receipt schema is invalid")
-        if receipt.get("sequence") != sequence or receipt.get("receipt_digest") != canonical_digest(receipt, "receipt_digest"):
+        if (
+            isinstance(receipt.get("sequence"), bool)
+            or not isinstance(receipt.get("sequence"), int)
+            or receipt["sequence"] != sequence
+            or not isinstance(receipt.get("workflow_id"), str)
+            or not _WORKFLOW_RE.fullmatch(receipt["workflow_id"])
+            or not isinstance(receipt.get("target_identity"), str)
+            or not receipt["target_identity"].strip()
+            or not isinstance(receipt.get("event"), str)
+            or not receipt["event"].strip()
+            or not isinstance(receipt.get("destination_stage"), str)
+            or not isinstance(receipt.get("target_snapshot_digest"), str)
+            or not _DIGEST_RE.fullmatch(receipt["target_snapshot_digest"])
+            or not isinstance(receipt.get("receipt_digest"), str)
+            or not _DIGEST_RE.fullmatch(receipt["receipt_digest"])
+            or receipt["receipt_digest"]
+            != canonical_digest(receipt, "receipt_digest")
+        ):
             raise RunStateError("transition receipt sequence or digest mismatch")
+        _timestamp(receipt.get("created_at"), "transition receipt timestamp")
+        if receipt.get("prior_receipt_digest") is not None:
+            _digest(receipt["prior_receipt_digest"], "prior receipt")
+        if receipt.get("authority_event_digest") is not None:
+            _digest(receipt["authority_event_digest"], "receipt authority event")
+        relevant = receipt.get("relevant_artifact_digests")
+        if not isinstance(relevant, list):
+            raise RunStateError("receipt artifact bindings must be a list")
+        identities: set[str] = set()
+        for item in relevant:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"artifact_id", "envelope_digest", "status"}
+                or not isinstance(item.get("artifact_id"), str)
+                or not _ARTIFACT_RE.fullmatch(item["artifact_id"])
+                or not isinstance(item.get("envelope_digest"), str)
+                or not _DIGEST_RE.fullmatch(item["envelope_digest"])
+                or item.get("status")
+                not in {"accepted", "superseded", "invalidated"}
+                or item["artifact_id"] in identities
+            ):
+                raise RunStateError("receipt artifact binding schema is invalid")
+            identities.add(item["artifact_id"])
+        if relevant != sorted(
+            relevant, key=lambda item: (item["artifact_id"], item["status"])
+        ):
+            raise RunStateError("receipt artifact bindings are not deterministic")
         if sequence == 0:
-            if receipt.get("prior_receipt_digest") is not None or receipt.get("source_stage") is not None or receipt.get("event") != "initialize":
+            if (
+                receipt.get("prior_receipt_digest") is not None
+                or receipt.get("source_stage") is not None
+                or receipt.get("event") != "initialize"
+                or receipt.get("destination_stage") != "resolved"
+                or receipt.get("authority_event_digest") is not None
+                or len(relevant) != 1
+                or relevant[0].get("artifact_id") != "resolution"
+                or relevant[0].get("status") != "accepted"
+            ):
                 raise RunStateError("genesis receipt is invalid")
         else:
             assert prior is not None
@@ -1125,14 +2181,10 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
             elif event == "invalidate":
                 if source not in _STAGES[:-3] or destination not in _STAGES:
                     raise RunStateError("invalidation receipt has an invalid stage")
-                if _STAGES.index(destination) > _STAGES.index(source):
+                if destination != "abandoned" and _STAGES.index(destination) > _STAGES.index(source):
                     raise RunStateError("invalidation advanced rather than rewound state")
-                statuses = {
-                    item.get("status")
-                    for item in receipt.get("relevant_artifact_digests", [])
-                    if isinstance(item, dict)
-                }
-                if "invalidated" not in statuses or not statuses <= {"accepted", "superseded", "invalidated"}:
+                statuses = [item["status"] for item in relevant]
+                if statuses.count("accepted") != 1 or statuses.count("superseded") != 1:
                     raise RunStateError("invalidation receipt lacks causal artifact status")
             elif event == "finalize":
                 if source != "verified" or destination != "finalized":
@@ -1145,9 +2197,6 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
                     raise RunStateError("cleanup-authority receipt is invalid")
             else:
                 raise RunStateError("receipt event is unsupported")
-        relevant = receipt.get("relevant_artifact_digests")
-        if not isinstance(relevant, list) or relevant != sorted(relevant, key=lambda item: (item.get("artifact_id", ""), item.get("status", "")) if isinstance(item, dict) else ("", "")):
-            raise RunStateError("receipt artifact bindings are not deterministic")
         chain.append(receipt)
         prior = receipt
     return chain
@@ -1166,7 +2215,9 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
 def _artifact_payload_json(run: Path, artifact_id: str) -> dict[str, Any]:
     envelope, _ = _validate_envelope(run, artifact_id)
     payload_path = envelope["payload_path"]
-    return _read_json(run.joinpath(*payload_path.split("/")))
+    payload = _read_json(run.joinpath(*payload_path.split("/")))
+    _validate_artifact_payload(envelope["artifact_type"], payload)
+    return payload
 
 
 def _event_artifact(
@@ -1329,6 +2380,8 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 raise RunStateError("receipt artifact binding schema is invalid")
             artifact_id = item["artifact_id"]
             envelope, _ = _validate_envelope(run, artifact_id)
+            if envelope["artifact_type"] in _PAYLOAD_SCHEMA_VERSIONS:
+                _artifact_payload_json(run, artifact_id)
             if (
                 envelope["workflow_id"] != workflow_id
                 or envelope["target_identity"]
@@ -1350,6 +2403,55 @@ def _derive_index(run: Path) -> dict[str, Any]:
                     ):
                         raise RunStateError("artifact dependency is missing or stale")
             validated_bindings.append((item, envelope))
+        event = receipt["event"]
+        accepted_types = sorted(
+            envelope["artifact_type"]
+            for item, envelope in validated_bindings
+            if item["status"] == "accepted"
+        )
+        if event in _EVENT_ARTIFACT_TYPES:
+            if accepted_types != sorted(_EVENT_ARTIFACT_TYPES[event]) or any(
+                item["status"] != "accepted" for item, _ in validated_bindings
+            ):
+                raise RunStateError(
+                    "receipt event artifact type cardinality is invalid"
+                )
+        elif event == "retain-artifact":
+            if len(validated_bindings) != 1 or validated_bindings[0][0]["status"] != "accepted":
+                raise RunStateError("artifact retention receipt is malformed")
+        elif event in {"pause", "resume"}:
+            if validated_bindings:
+                raise RunStateError("lifecycle receipt unexpectedly binds artifacts")
+        elif event == "record-delivery":
+            if accepted_types != ["delivery-acceptance-record"] or len(validated_bindings) != 1:
+                raise RunStateError("delivery receipt artifact binding is invalid")
+        elif event == "record-cleanup-authority":
+            if accepted_types != ["cleanup-authority-record"] or len(validated_bindings) != 1:
+                raise RunStateError("cleanup-authority receipt artifact binding is invalid")
+        elif event == "finalize":
+            expected_final_types = sorted(
+                (
+                    "candidate-record",
+                    "trial-pack",
+                    "review-record",
+                    "builder-run-conformance-ledger",
+                    "target-scorecard",
+                    "verification-record",
+                    "release-record",
+                    "skill-contract",
+                    "user-confirmation-record",
+                    "evaluation-pack",
+                )
+            )
+            if accepted_types != expected_final_types or len(validated_bindings) != len(
+                expected_final_types
+            ):
+                raise RunStateError("finalization receipt evidence binding is incomplete")
+        elif event == "initialize":
+            if accepted_types != ["resolution-record"] or len(validated_bindings) != 1:
+                raise RunStateError("genesis artifact binding is invalid")
+        elif event != "invalidate":
+            raise RunStateError("receipt event semantics are unsupported")
         for item, envelope in validated_bindings:
             artifact_id = item["artifact_id"]
             artifact_status[artifact_id] = {
@@ -1361,10 +2463,43 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 "producing_sequence": envelope["created_sequence"],
                 "dependency_identifiers": [entry["artifact_id"] for entry in envelope["input_bindings"]],
             }
+    actual_artifacts: set[str] = set()
+    artifacts_directory = run / "artifacts"
+    for path in artifacts_directory.iterdir():
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise RunStateError("artifact namespace contains an unsafe entry")
+        if not _ARTIFACT_RE.fullmatch(path.name):
+            raise RunStateError("artifact namespace contains an unknown entry")
+        actual_artifacts.add(path.name)
+    if actual_artifacts != set(artifact_status):
+        raise RunStateError("artifact namespace contains an orphan or missing artifact")
     head = chain[-1]
     stage = head["destination_stage"]
     active_lock = resolution["active_target_lock"] if stage not in {"finalized", "delivered", "abandoned"} else None
-    queue = json.loads(json.dumps(resolution["queue"], ensure_ascii=False))
+    stored_queue = resolution["queue"]
+    if (
+        not isinstance(stored_queue, dict)
+        or set(stored_queue) != {"order", "states", "targets"}
+        or not isinstance(stored_queue["order"], list)
+        or not isinstance(stored_queue["states"], dict)
+        or not isinstance(stored_queue["targets"], dict)
+        or len(stored_queue["order"]) != len(set(stored_queue["order"]))
+        or set(stored_queue["order"]) != set(stored_queue["states"])
+        or set(stored_queue["order"]) != set(stored_queue["targets"])
+    ):
+        raise RunStateError("resolution queue schema is invalid")
+    for queued_identity, queued_target in stored_queue["targets"].items():
+        if (
+            not isinstance(queued_identity, str)
+            or not isinstance(queued_target, dict)
+            or queued_target.get("canonical") != queued_identity
+        ):
+            raise RunStateError("resolution queue target binding is invalid")
+    queue = {
+        "order": list(stored_queue["order"]),
+        "states": dict(stored_queue["states"]),
+    }
     canonical_target = resolution["target_identity"]["canonical"]
     if stage == "paused":
         queue["states"][canonical_target] = "paused"
@@ -1397,11 +2532,18 @@ def _run_directory(root: Path, workflow_id: str) -> Path:
         raise RunStateError("invalid workflow identifier")
     run = root / "live" / workflow_id
     _validate_private_directory(run, "live run")
-    allowed = {"receipts", "artifacts", "current.json", "final-run-manifest.json"}
+    allowed = {
+        "receipts",
+        "artifacts",
+        "transactions",
+        "current.json",
+        "final-run-manifest.json",
+    }
     if set(path.name for path in run.iterdir()) - allowed:
         raise RunStateError("live run contains an unknown entry")
     _validate_private_directory(run / "receipts", "receipt directory")
     _validate_private_directory(run / "artifacts", "artifact directory")
+    _validate_private_directory(run / "transactions", "transaction directory")
     return run
 
 
@@ -1449,6 +2591,7 @@ def initialize_run(
     queue: list[dict[str, Any]] | None = None,
     owner_identity: str = "main-agent",
     state_root: Path | None = None,
+    _queue_states: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     host, target, granted = _identity_records(host_identity, target_identity, authority)
     if mode not in {"create", "improve"}:
@@ -1471,9 +2614,11 @@ def initialize_run(
     if not isinstance(requested_queue, list) or not requested_queue:
         raise RunStateError("queue must contain at least one target")
     canonical_queue: list[str] = []
+    queue_targets: dict[str, dict[str, Any]] = {}
     for item in requested_queue:
         _, queue_target, _ = _identity_records(host, item, granted)
         canonical_queue.append(queue_target["canonical"])
+        queue_targets[queue_target["canonical"]] = queue_target
     if len(canonical_queue) != len(set(canonical_queue)) or target["canonical"] not in canonical_queue:
         raise RunStateError("queue target identities must be unique and include the active target")
     workflow_id = secrets.token_hex(16)
@@ -1484,12 +2629,29 @@ def initialize_run(
         "acquired_at": created_at,
         "lock_nonce": secrets.token_hex(16),
     }
-    queue_record = {
-        "order": canonical_queue,
-        "states": {
+    queue_states = (
+        dict(_queue_states)
+        if _queue_states is not None
+        else {
             item: ("active" if item == target["canonical"] else "pending")
             for item in canonical_queue
-        },
+        }
+    )
+    if (
+        set(queue_states) != set(canonical_queue)
+        or queue_states.get(target["canonical"]) != "active"
+        or list(queue_states.values()).count("active") != 1
+        or any(
+            value
+            not in {"pending", "active", "paused", "finalized", "delivered", "abandoned"}
+            for value in queue_states.values()
+        )
+    ):
+        raise RunStateError("queue states must bind exactly one active target")
+    queue_record = {
+        "order": canonical_queue,
+        "states": queue_states,
+        "targets": queue_targets,
     }
     mode_record = {
         "name": mode,
@@ -1525,6 +2687,14 @@ def initialize_run(
         _ensure_private_directory(run)
         _ensure_private_directory(run / "receipts")
         _ensure_private_directory(run / "artifacts")
+        _ensure_private_directory(run / "transactions")
+        lock_path = root / "target-locks" / _target_lock_name(target["canonical"])
+        lock_record = {
+            "schema_version": "skill-builder-target-lock.v1",
+            **active_lock,
+            "workflow_id": workflow_id,
+        }
+        lock_published = False
         try:
             envelope = _create_resolution_artifact(
                 run,
@@ -1560,16 +2730,21 @@ def initialize_run(
             _write_receipt(run, genesis)
             index = _derive_index(run)
             _atomic_json(run / "current.json", index)
-            lock_path = root / "target-locks" / _target_lock_name(target["canonical"])
-            _exclusive_json(lock_path, {"schema_version": "skill-builder-target-lock.v1", **active_lock, "workflow_id": workflow_id})
+            _exclusive_json(lock_path, lock_record)
+            lock_published = True
             _fsync_directory(live)
         except BaseException:
             # No caller-visible workflow exists until the genesis chain and index
             # are complete.  Best-effort rollback is confined to the fresh ID.
+            if lock_published and os.path.lexists(lock_path):
+                if lock_path.is_symlink() or _read_json(lock_path) != lock_record:
+                    raise RunStateError(
+                        "fresh target lock changed during initialization rollback"
+                    )
+                lock_path.unlink()
+                _fsync_directory(lock_path.parent)
             if run.exists() and not run.is_symlink():
-                import shutil
-
-                shutil.rmtree(run)
+                _remove_owned_tree(run)
                 _fsync_directory(live)
             raise
         return {
@@ -1581,6 +2756,73 @@ def initialize_run(
             "receipt_digest": genesis["receipt_digest"],
             "target_snapshot_digest": snapshot["snapshot_digest"],
         }
+
+
+def activate_next_target(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    mode: str,
+    absence_evidence: dict[str, Any] | None = None,
+    overlap_map: dict[str, Any] | None = None,
+    target_manifest: dict[str, Any] | None = None,
+    git_identity: dict[str, Any] | None = None,
+    owner_identity: str = "main-agent",
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Activate the next pending identity from a terminal run's durable queue."""
+    if (
+        isinstance(expected_sequence, bool)
+        or not isinstance(expected_sequence, int)
+        or expected_sequence < 0
+    ):
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        if current["stage"] not in {"finalized", "delivered", "abandoned"}:
+            raise RunStateError("unfinished queued work blocks target activation")
+        resolution, _ = _resolution_payload(run, workflow_id)
+        durable_queue = resolution["queue"]
+        pending = [
+            identity
+            for identity in durable_queue["order"]
+            if current["queue"]["states"].get(identity) == "pending"
+        ]
+        if not pending:
+            raise RunStateError("queue has no pending target to activate")
+        next_identity = pending[0]
+        next_target = dict(durable_queue["targets"][next_identity])
+        queue_targets = [
+            dict(durable_queue["targets"][identity])
+            for identity in durable_queue["order"]
+        ]
+        queue_states = dict(current["queue"]["states"])
+        queue_states[next_identity] = "active"
+        host = dict(current["host_identity"])
+        granted = dict(current["authority"])
+
+    activated = initialize_run(
+        host_identity=host,
+        target_identity=next_target,
+        mode=mode,
+        authority=granted,
+        absence_evidence=absence_evidence,
+        overlap_map=overlap_map,
+        target_manifest=target_manifest,
+        git_identity=git_identity,
+        queue=queue_targets,
+        owner_identity=owner_identity,
+        state_root=state_root,
+        _queue_states=queue_states,
+    )
+    activated["operation"] = "activate-next"
+    activated["previous_workflow_id"] = workflow_id
+    return activated
 
 
 def load_run(*, workflow_id: str, state_root: Path | None = None) -> dict[str, Any]:
@@ -1675,53 +2917,26 @@ def retain_artifact(
         artifact = _artifact_directory(run, artifact_id)
         if os.path.lexists(artifact):
             raise RunStateError("immutable artifact already exists")
-        receipt_path: Path | None = None
-        try:
-            envelope = _create_artifact(
-                run=run,
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                mode=current["mode"]["name"],
-                stage=current["stage"],
-                sequence=expected_sequence + 1,
-                artifact_id=artifact_id,
-                artifact_type=artifact_type,
-                files=files,
-                primary_path=primary_path,
-                producer=producer,
-                input_bindings=input_bindings,
-                limitations=limitations,
-            )
-            receipt = _new_receipt(
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                sequence=expected_sequence + 1,
-                prior_receipt_digest=current["head_transition_digest"],
-                event="retain-artifact",
-                source_stage=current["stage"],
-                destination_stage=current["stage"],
-                relevant_artifact_digests=[
-                    {
-                        "artifact_id": artifact_id,
-                        "envelope_digest": envelope["envelope_digest"],
-                        "status": "accepted",
-                    }
-                ],
-                target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
-                authority_event_digest=None,
-            )
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-        except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            if artifact.exists() and not artifact.is_symlink():
-                shutil.rmtree(artifact)
-                _fsync_directory(artifact.parent)
-            _atomic_json(run / "current.json", current)
-            raise
+        derived, created, receipt = _append_transaction(
+            run=run,
+            current=current,
+            event="retain-artifact",
+            destination_stage=current["stage"],
+            authority_event_digest=None,
+            existing_bindings=[],
+            artifact_requests=[
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": artifact_type,
+                    "files": files,
+                    "primary_path": primary_path,
+                    "producer": producer,
+                    "input_bindings": input_bindings,
+                    "limitations": limitations,
+                }
+            ],
+        )
+        envelope = created[artifact_id]
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "retain-artifact",
@@ -1762,12 +2977,12 @@ def transition_run(
             raise RunStateError("event is not allowed from the current stage")
         _validate_target_unchanged(current, root)
         bindings: list[dict[str, str]] = []
-        observed_types: set[str] = set()
+        observed_types: list[str] = []
         for artifact_id in artifact_ids:
             record = current["artifact_index"].get(artifact_id)
             if record is None or record["derived_status"] != "accepted":
                 raise RunStateError("transition artifact is missing or invalidated")
-            observed_types.add(record["type"])
+            observed_types.append(record["type"])
             bindings.append(
                 {
                     "artifact_id": artifact_id,
@@ -1775,8 +2990,12 @@ def transition_run(
                     "status": "accepted",
                 }
             )
-        if not _EVENT_ARTIFACT_TYPES[event] <= observed_types:
-            raise RunStateError("transition lacks its required artifact types")
+        if sorted(observed_types) != sorted(_EVENT_ARTIFACT_TYPES[event]):
+            raise RunStateError(
+                "transition requires exact singular artifact type cardinality"
+            )
+        for artifact_id in artifact_ids:
+            _artifact_payload_json(run, artifact_id)
         if event == "confirm-contract":
             confirmation_id = next(
                 artifact_id
@@ -1803,29 +3022,15 @@ def transition_run(
                 == "candidate-record"
             )
             _validate_candidate_entry(run, current, candidate_id)
-        receipt = _new_receipt(
-            workflow_id=workflow_id,
-            target_identity=current["target_identity"]["canonical"],
-            sequence=expected_sequence + 1,
-            prior_receipt_digest=current["head_transition_digest"],
+        derived, _, _ = _append_transaction(
+            run=run,
+            current=current,
             event=event,
-            source_stage=current["stage"],
             destination_stage=destination_stage,
-            relevant_artifact_digests=bindings,
-            target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
             authority_event_digest=authority_event_digest,
+            existing_bindings=bindings,
+            artifact_requests=[],
         )
-        receipt_path: Path | None = None
-        try:
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-        except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            _atomic_json(run / "current.json", current)
-            raise
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": event,
@@ -1898,29 +3103,15 @@ def _lifecycle_transition(
         else:
             raise RunStateError("unsupported lifecycle transition")
         _validate_target_unchanged(current, root)
-        receipt = _new_receipt(
-            workflow_id=workflow_id,
-            target_identity=current["target_identity"]["canonical"],
-            sequence=expected_sequence + 1,
-            prior_receipt_digest=current["head_transition_digest"],
+        derived, _, _ = _append_transaction(
+            run=run,
+            current=current,
             event=operation,
-            source_stage=current["stage"],
             destination_stage=destination,
-            relevant_artifact_digests=[],
-            target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
             authority_event_digest=None,
+            existing_bindings=[],
+            artifact_requests=[],
         )
-        receipt_path: Path | None = None
-        try:
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-        except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            _atomic_json(run / "current.json", current)
-            raise
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": operation,
@@ -1953,82 +3144,146 @@ def resume_run(
     )
 
 
+_AFTER_BASELINE = {
+    "research-pack",
+    "evidence-sieve",
+    "design-record",
+    "skill-contract",
+    "user-confirmation-record",
+    "evaluation-pack",
+    "candidate-record",
+    "trial-pack",
+    "review-record",
+    "builder-run-conformance-ledger",
+    "target-scorecard",
+    "verification-record",
+    "release-record",
+}
+_AFTER_CONTRACT = {
+    "user-confirmation-record",
+    "evaluation-pack",
+    "candidate-record",
+    "trial-pack",
+    "review-record",
+    "builder-run-conformance-ledger",
+    "target-scorecard",
+    "verification-record",
+    "release-record",
+}
+_AFTER_CANDIDATE = {
+    "trial-pack",
+    "review-record",
+    "builder-run-conformance-ledger",
+    "target-scorecard",
+    "verification-record",
+    "release-record",
+}
 _INVALIDATION_RULES = {
-    "host-target": (
-        "resolved",
-        {
-            "baseline-report",
-            "research-pack",
-            "evidence-sieve",
-            "design-record",
-            "skill-contract",
-            "user-confirmation-record",
-            "evaluation-pack",
-            "candidate-record",
-            "trial-pack",
-            "review-record",
+    "host-target": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
+    "host-identity": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
+    "target-identity": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
+    "mode": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
+    "target-snapshot": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
+    "research": {
+        "changed_types": {"research-pack"},
+        "destination": "baseline",
+        "invalidates": _AFTER_BASELINE - {"research-pack"},
+    },
+    "sieve": {
+        "changed_types": {"evidence-sieve"},
+        "destination": "research",
+        "invalidates": _AFTER_BASELINE - {"research-pack", "evidence-sieve"},
+    },
+    "design": {
+        "changed_types": {"design-record"},
+        "destination": "sieve",
+        "invalidates": _AFTER_CONTRACT | {"skill-contract"},
+    },
+    "contract": {
+        "changed_types": {"skill-contract"},
+        "destination": "design",
+        "invalidates": _AFTER_CONTRACT,
+    },
+    "confirmation": {
+        "changed_types": {"user-confirmation-record"},
+        "destination": "contract",
+        "invalidates": _AFTER_CONTRACT - {"user-confirmation-record"},
+    },
+    "evaluation": {
+        "changed_types": {"evaluation-pack"},
+        "destination": "confirmed",
+        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+    },
+    "target-parameters": {
+        "changed_types": {"evaluation-pack"},
+        "destination": "confirmed",
+        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+    },
+    "rubric": {
+        "changed_types": {"evaluation-pack"},
+        "destination": "confirmed",
+        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+    },
+    "candidate": {
+        "changed_types": {"candidate-record"},
+        "destination": "evaluation",
+        "invalidates": _AFTER_CANDIDATE,
+    },
+    "trial": {
+        "changed_types": {"trial-pack"},
+        "destination": "candidate",
+        "invalidates": _AFTER_CANDIDATE - {"trial-pack"},
+    },
+    "review": {
+        "changed_types": {"review-record"},
+        "destination": "trials",
+        "invalidates": {
             "builder-run-conformance-ledger",
             "target-scorecard",
             "verification-record",
             "release-record",
         },
-    ),
-    "contract": (
-        "contract",
-        {
-            "user-confirmation-record",
-            "evaluation-pack",
-            "candidate-record",
-            "trial-pack",
-            "review-record",
-            "builder-run-conformance-ledger",
-            "target-scorecard",
-            "verification-record",
-            "release-record",
-        },
-    ),
-    "confirmation": (
-        "confirmed",
-        {
-            "evaluation-pack",
-            "candidate-record",
-            "trial-pack",
-            "review-record",
-            "builder-run-conformance-ledger",
-            "target-scorecard",
-            "verification-record",
-            "release-record",
-        },
-    ),
-    "evaluation": (
-        "confirmed",
-        {
-            "candidate-record",
-            "trial-pack",
-            "review-record",
-            "builder-run-conformance-ledger",
-            "target-scorecard",
-            "verification-record",
-            "release-record",
-        },
-    ),
-    "candidate": (
-        "evaluation",
-        {
-            "trial-pack",
-            "review-record",
-            "builder-run-conformance-ledger",
-            "target-scorecard",
-            "verification-record",
-            "release-record",
-        },
-    ),
-    "review": (
-        "trials",
-        {"target-scorecard", "verification-record", "release-record"},
-    ),
-    "verification": ("scored", {"verification-record", "release-record"}),
-    "delivery-intent": ("verified", {"release-record"}),
+    },
+    "verification-input": {
+        "changed_types": {"verification-record"},
+        "destination": "scored",
+        "invalidates": {"release-record"},
+    },
+    "verification-result": {
+        "changed_types": {"verification-record"},
+        "destination": "scored",
+        "invalidates": {"release-record"},
+    },
+    "verification": {
+        "changed_types": {"verification-record"},
+        "destination": "scored",
+        "invalidates": {"release-record"},
+    },
+    "delivery-intent": {
+        "changed_types": {"release-record"},
+        "destination": "verified",
+        "invalidates": set(),
+    },
 }
 
 
@@ -2057,13 +3312,17 @@ def invalidate_run(
             raise RevisionConflict("receipt sequence conflict")
         if current["stage"] not in _STAGES[:-3]:
             raise RunStateError("terminal or paused runs cannot be invalidated")
-        destination, invalidated_types = rule
-        if _STAGES.index(destination) > _STAGES.index(current["stage"]):
+        destination = rule["destination"]
+        invalidated_types = rule["invalidates"]
+        if destination != "abandoned" and _STAGES.index(destination) > _STAGES.index(current["stage"]):
             raise RunStateError("material change does not apply at the current stage")
         changed = current["artifact_index"].get(changed_artifact_id)
         if changed is None or changed["derived_status"] != "accepted":
             raise RunStateError("changed artifact is missing or already invalidated")
-        _validate_target_unchanged(current, root)
+        if changed["type"] not in rule["changed_types"]:
+            raise RunStateError("material change kind does not match changed artifact type")
+        if change_kind != "target-snapshot":
+            _validate_target_unchanged(current, root)
         invalidated_records = [
             record
             for record in current["artifact_index"].values()
@@ -2071,82 +3330,56 @@ def invalidate_run(
             and record["derived_status"] == "accepted"
             and record["artifact_id"] != changed_artifact_id
         ]
-        if not invalidated_records:
-            raise RunStateError("material change has no current downstream evidence to invalidate")
         invalidation_id = f"invalidation-{expected_sequence + 1:08d}"
-        artifact = _artifact_directory(run, invalidation_id)
-        receipt_path: Path | None = None
-        try:
-            payload = {
-                "schema_version": "skill-builder-invalidation.v1",
-                "change_kind": change_kind,
-                "changed_artifact_id": changed_artifact_id,
-                "changed_artifact_digest": changed["digest"],
-                "reason": reason,
-                "invalidated_artifact_ids": sorted(
-                    record["artifact_id"] for record in invalidated_records
-                ),
-            }
-            envelope = _create_artifact(
-                run=run,
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                mode=current["mode"]["name"],
-                stage=current["stage"],
-                sequence=expected_sequence + 1,
-                artifact_id=invalidation_id,
-                artifact_type="invalidation-record",
-                files={"record.json": canonical_json_bytes(payload)},
-                primary_path="record.json",
-                producer="main-agent",
-                input_bindings=[
-                    {"artifact_id": changed_artifact_id, "digest": changed["digest"]}
-                ],
-                limitations=[],
-            )
-            bindings = [
-                {
-                    "artifact_id": invalidation_id,
-                    "envelope_digest": envelope["envelope_digest"],
-                    "status": "accepted",
-                },
-                {
-                    "artifact_id": changed_artifact_id,
-                    "envelope_digest": changed["digest"],
-                    "status": "superseded",
-                },
-            ] + [
+        payload = {
+            "schema_version": "skill-builder-invalidation.v1",
+            "change_kind": change_kind,
+            "changed_artifact_id": changed_artifact_id,
+            "changed_artifact_digest": changed["digest"],
+            "reason": reason,
+            "invalidated_artifact_ids": sorted(
+                record["artifact_id"] for record in invalidated_records
+            ),
+        }
+        existing_bindings = [
+            {
+                "artifact_id": changed_artifact_id,
+                "envelope_digest": changed["digest"],
+                "status": "superseded",
+            },
+            *[
                 {
                     "artifact_id": record["artifact_id"],
                     "envelope_digest": record["digest"],
                     "status": "invalidated",
                 }
                 for record in invalidated_records
-            ]
-            receipt = _new_receipt(
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                sequence=expected_sequence + 1,
-                prior_receipt_digest=current["head_transition_digest"],
-                event="invalidate",
-                source_stage=current["stage"],
-                destination_stage=destination,
-                relevant_artifact_digests=bindings,
-                target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
-                authority_event_digest=None,
-            )
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-        except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            if artifact.exists() and not artifact.is_symlink():
-                shutil.rmtree(artifact)
-                _fsync_directory(artifact.parent)
-            _atomic_json(run / "current.json", current)
-            raise
+            ],
+        ]
+        derived, _, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="invalidate",
+            destination_stage=destination,
+            authority_event_digest=None,
+            existing_bindings=existing_bindings,
+            artifact_requests=[
+                {
+                    "artifact_id": invalidation_id,
+                    "artifact_type": "invalidation-record",
+                    "files": {"record.json": canonical_json_bytes(payload)},
+                    "primary_path": "record.json",
+                    "producer": "main-agent",
+                    "input_bindings": [
+                        {
+                            "artifact_id": changed_artifact_id,
+                            "digest": changed["digest"],
+                        }
+                    ],
+                    "limitations": [],
+                }
+            ],
+        )
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "invalidate",
@@ -2220,7 +3453,7 @@ def _validate_final_evidence(
         or review.get("verdict") != "ready"
         or not isinstance(findings, list)
         or any(
-            isinstance(item, dict) and item.get("severity") in {"high", "medium"}
+            isinstance(item, dict) and item.get("release_blocking") is True
             for item in findings
         )
     ):
@@ -2250,6 +3483,7 @@ def _validate_final_evidence(
     if (
         scorecard.get("candidate_digest") != candidate_digest
         or scorecard.get("candidate_revision") != candidate_revision
+        or scorecard.get("review_digest") != review_envelope["envelope_digest"]
         or not isinstance(categories, list)
         or [item.get("name") if isinstance(item, dict) else None for item in categories]
         != list(_SCORE_CATEGORIES)
@@ -2307,7 +3541,14 @@ def _validate_final_evidence(
     evaluation_id, evaluation_envelope = _event_artifact(
         run, "freeze-evaluation", "evaluation-pack"
     )
+    evaluation = _artifact_payload_json(run, evaluation_id)
+    if (
+        scorecard.get("evaluation_digest") != evaluation_envelope["envelope_digest"]
+        or scorecard.get("rubric_digest") != evaluation.get("rubric_digest")
+    ):
+        raise RunStateError("target scorecard is not bound to the frozen evaluation")
     expected_release = {
+        "target_identity": current["target_identity"]["canonical"],
         "candidate_digest": candidate_digest,
         "candidate_revision": candidate_revision,
         "contract_digest": contract_envelope["envelope_digest"],
@@ -2364,35 +3605,28 @@ def finalize_run(
             }
             for artifact_id in artifact_ids
         ]
-        receipt = _new_receipt(
-            workflow_id=workflow_id,
-            target_identity=current["target_identity"]["canonical"],
-            sequence=expected_sequence + 1,
-            prior_receipt_digest=current["head_transition_digest"],
+        derived, _, _ = _append_transaction(
+            run=run,
+            current=current,
             event="finalize",
-            source_stage="verified",
             destination_stage="finalized",
-            relevant_artifact_digests=bindings,
-            target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
             authority_event_digest=None,
+            existing_bindings=bindings,
+            artifact_requests=[],
         )
-        receipt_path: Path | None = None
         lock_path = root / "target-locks" / _target_lock_name(
             current["target_identity"]["canonical"]
         )
-        try:
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-            _validate_regular(lock_path, "active-target lock")
-            lock_path.unlink()
-            _fsync_directory(lock_path.parent)
-        except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            _atomic_json(run / "current.json", current)
-            raise
+        _validate_regular(lock_path, "active-target lock")
+        expected_lock = {
+            "schema_version": "skill-builder-target-lock.v1",
+            **current["active_target_lock"],
+            "workflow_id": workflow_id,
+        }
+        if _read_json(lock_path) != expected_lock:
+            raise RunStateError("active-target lock changed before finalization")
+        lock_path.unlink()
+        _fsync_directory(lock_path.parent)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "finalize",
@@ -2411,6 +3645,8 @@ def record_delivery(
     expected_sequence: int,
     delivery: dict[str, Any],
     authority_event_digest: str,
+    authority_event: bytes | None = None,
+    evidence_files: dict[str, bytes] | None = None,
     state_root: Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(delivery, dict) or set(delivery) != {
@@ -2438,6 +3674,22 @@ def record_delivery(
         not isinstance(item, str) or not _DIGEST_RE.fullmatch(item) for item in evidence
     ):
         raise RunStateError("delivery acceptance evidence is incomplete")
+    raw_evidence = evidence_files if evidence_files is not None else {}
+    if authority_event is not None or evidence_files is not None:
+        if not isinstance(authority_event, bytes):
+            raise RunStateError("delivery authority event must be retained as raw bytes")
+        if raw_digest(authority_event) != authority_event_digest:
+            raise RunStateError("raw delivery authority does not match its digest")
+        if not isinstance(raw_evidence, dict) or not raw_evidence:
+            raise RunStateError("delivery acceptance evidence files are required")
+        raw_evidence_digests: list[str] = []
+        for name, content in raw_evidence.items():
+            _safe_artifact_path(name)
+            if not isinstance(content, bytes):
+                raise RunStateError("delivery evidence values must be raw bytes")
+            raw_evidence_digests.append(raw_digest(content))
+        if sorted(raw_evidence_digests) != sorted(evidence):
+            raise RunStateError("raw delivery evidence does not match declared digests")
     with _locked_root(state_root, create=False) as root:
         run = _run_directory(root, workflow_id)
         current = _derive_index(run)
@@ -2453,68 +3705,58 @@ def record_delivery(
         )
         if delivery["finalized_revision"] != candidate.get("candidate_revision"):
             raise RunStateError("delivery revision does not match the finalized candidate")
-        release_id, release_envelope, _ = _current_event_artifact(
+        release_id, release_envelope, release = _current_event_artifact(
             run, current, "finalize", "release-record"
         )
+        delivery_scope = f"{delivery['action']}:{delivery['destination_identity']}"
+        if (
+            delivery_scope not in current["authority"]["delivery_effects"]
+            or delivery_scope not in release["authorized_delivery_scope"]
+        ):
+            raise RunStateError("delivery action or destination exceeds recorded authority scope")
         artifact_id = f"delivery-{expected_sequence + 1:08d}"
-        artifact = _artifact_directory(run, artifact_id)
-        receipt_path: Path | None = None
-        try:
-            payload = {
-                "schema_version": "skill-builder-delivery-acceptance.v1",
-                **delivery,
-                "candidate_digest": candidate_envelope["envelope_digest"],
-                "release_digest": release_envelope["envelope_digest"],
-                "timestamp": _now(),
-            }
-            envelope = _create_artifact(
-                run=run,
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                mode=current["mode"]["name"],
-                stage="finalized",
-                sequence=expected_sequence + 1,
-                artifact_id=artifact_id,
-                artifact_type="delivery-acceptance-record",
-                files={"record.json": canonical_json_bytes(payload)},
-                primary_path="record.json",
-                producer=delivery["actor"],
-                input_bindings=[
-                    {"artifact_id": candidate_id, "digest": candidate_envelope["envelope_digest"]},
-                    {"artifact_id": release_id, "digest": release_envelope["envelope_digest"]},
-                ],
-                limitations=[],
+        payload = {
+            "schema_version": "skill-builder-delivery-acceptance.v1",
+            **delivery,
+            "candidate_digest": candidate_envelope["envelope_digest"],
+            "release_digest": release_envelope["envelope_digest"],
+            "timestamp": _now(),
+        }
+        files = {"record.json": canonical_json_bytes(payload)}
+        if authority_event is not None:
+            files["authority-event.bin"] = authority_event
+            files.update(
+                {f"evidence/{name}": content for name, content in raw_evidence.items()}
             )
-            receipt = _new_receipt(
-                workflow_id=workflow_id,
-                target_identity=current["target_identity"]["canonical"],
-                sequence=expected_sequence + 1,
-                prior_receipt_digest=current["head_transition_digest"],
-                event="record-delivery",
-                source_stage="finalized",
-                destination_stage="delivered",
-                relevant_artifact_digests=[
-                    {
-                        "artifact_id": artifact_id,
-                        "envelope_digest": envelope["envelope_digest"],
-                        "status": "accepted",
-                    }
-                ],
-                target_snapshot_digest=current["target_snapshot"]["snapshot_digest"],
-                authority_event_digest=authority_event_digest,
-            )
-            receipt_path = _write_receipt(run, receipt)
-            derived = _derive_index(run)
-            _atomic_json(run / "current.json", derived)
-        except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
-                receipt_path.unlink()
-                _fsync_directory(receipt_path.parent)
-            if artifact.exists() and not artifact.is_symlink():
-                shutil.rmtree(artifact)
-                _fsync_directory(artifact.parent)
-            _atomic_json(run / "current.json", current)
-            raise
+        derived, created, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="record-delivery",
+            destination_stage="delivered",
+            authority_event_digest=authority_event_digest,
+            existing_bindings=[],
+            artifact_requests=[
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": "delivery-acceptance-record",
+                    "files": files,
+                    "primary_path": "record.json",
+                    "producer": delivery["actor"],
+                    "input_bindings": [
+                        {
+                            "artifact_id": candidate_id,
+                            "digest": candidate_envelope["envelope_digest"],
+                        },
+                        {
+                            "artifact_id": release_id,
+                            "digest": release_envelope["envelope_digest"],
+                        },
+                    ],
+                    "limitations": [],
+                }
+            ],
+        )
+        envelope = created[artifact_id]
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "record-delivery",
@@ -2579,7 +3821,10 @@ def record_cleanup_authority(
                 primary_path="record.json",
                 producer=actor,
                 input_bindings=[
-                    {"artifact_id": delivery_id, "digest": delivery_envelope["envelope_digest"]}
+                    {
+                        "artifact_id": delivery_id,
+                        "digest": delivery_envelope["envelope_digest"],
+                    }
                 ],
                 limitations=[],
             )
@@ -2605,7 +3850,11 @@ def record_cleanup_authority(
             derived = _derive_index(run)
             _atomic_json(run / "current.json", derived)
         except BaseException:
-            if receipt_path is not None and receipt_path.exists() and not receipt_path.is_symlink():
+            if (
+                receipt_path is not None
+                and receipt_path.exists()
+                and not receipt_path.is_symlink()
+            ):
                 receipt_path.unlink()
                 _fsync_directory(receipt_path.parent)
             if artifact.exists() and not artifact.is_symlink():
@@ -2665,6 +3914,17 @@ def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
 
 
 def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
+    chain = _load_receipt_chain(run)
+    finalization_receipt = next(
+        (receipt for receipt in reversed(chain) if receipt["event"] == "finalize"),
+        None,
+    )
+    if finalization_receipt is None:
+        raise RunStateError("final run manifest lacks a finalization receipt")
+    _, release_envelope = _event_artifact(run, "finalize", "release-record")
+    _, delivery_envelope = _event_artifact(
+        run, "record-delivery", "delivery-acceptance-record"
+    )
     entries: list[dict[str, Any]] = []
     for path in sorted(run.rglob("*")):
         relative = path.relative_to(run).as_posix()
@@ -2688,6 +3948,9 @@ def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "skill-builder-final-run-manifest.v1",
         "workflow_id": current["workflow_id"],
         "target_identity": current["target_identity"]["canonical"],
+        "finalization_receipt_digest": finalization_receipt["receipt_digest"],
+        "release_record_digest": release_envelope["envelope_digest"],
+        "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
         "head_transition_digest": current["head_transition_digest"],
         "entries": entries,
         "observed_item_count": len(entries),
@@ -2698,22 +3961,123 @@ def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
 
 
 def _remove_owned_tree(path: Path) -> None:
-    info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise RunStateError("cleanup boundary is not an owned directory")
+    """Remove one owned tree without reopening validated descendants by pathname."""
+
+    def directory_descriptor(descriptor: int, label: str) -> os.stat_result:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise RunStateError(f"{label} must be owned and mode 0700")
+        return info
+
+    def same_identity(first: os.stat_result, second: os.stat_result) -> bool:
+        return (
+            first.st_dev,
+            first.st_ino,
+            stat.S_IFMT(first.st_mode),
+        ) == (
+            second.st_dev,
+            second.st_ino,
+            stat.S_IFMT(second.st_mode),
+        )
+
+    def remove_contents(descriptor: int, display: Path) -> None:
+        directory_descriptor(descriptor, "cleanup directory")
+        with os.scandir(descriptor) as iterator:
+            names = sorted(entry.name for entry in iterator)
+        for name in names:
+            child_path = display / name
+            try:
+                observed = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            except OSError as error:
+                raise RunStateError("cleanup entry changed during deletion") from error
+            if stat.S_ISLNK(observed.st_mode):
+                raise RunStateError("cleanup boundary contains a symlink")
+            if stat.S_ISDIR(observed.st_mode):
+                # The pathname validation preserves the public safety contract;
+                # the subsequent openat + identity check closes its race window.
+                _validate_private_directory(child_path, "cleanup directory")
+                child_descriptor: int | None = None
+                try:
+                    child_descriptor = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                    opened = directory_descriptor(
+                        child_descriptor, "cleanup directory"
+                    )
+                    if not same_identity(observed, opened):
+                        raise RunStateError("cleanup directory identity changed")
+                    remove_contents(child_descriptor, child_path)
+                except OSError as error:
+                    raise RunStateError(
+                        "cleanup directory changed during deletion"
+                    ) from error
+                finally:
+                    if child_descriptor is not None:
+                        os.close(child_descriptor)
+                current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not same_identity(opened, current):
+                    raise RunStateError("cleanup directory identity changed")
+                os.rmdir(name, dir_fd=descriptor)
+            elif stat.S_ISREG(observed.st_mode):
+                file_descriptor: int | None = None
+                try:
+                    file_descriptor = os.open(
+                        name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+                    )
+                    opened = os.fstat(file_descriptor)
+                    if (
+                        not same_identity(observed, opened)
+                        or opened.st_uid != os.geteuid()
+                        or stat.S_IMODE(opened.st_mode) != 0o600
+                        or opened.st_nlink != 1
+                    ):
+                        raise RunStateError("cleanup file ownership is invalid")
+                except OSError as error:
+                    raise RunStateError("cleanup file changed during deletion") from error
+                finally:
+                    if file_descriptor is not None:
+                        os.close(file_descriptor)
+                current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not same_identity(opened, current):
+                    raise RunStateError("cleanup file identity changed")
+                os.unlink(name, dir_fd=descriptor)
+            else:
+                raise RunStateError("cleanup boundary contains an unowned file type")
+
     _validate_private_directory(path, "cleanup directory")
-    for child in list(path.iterdir()):
-        child_info = child.lstat()
-        if stat.S_ISLNK(child_info.st_mode):
-            raise RunStateError("cleanup boundary contains a symlink")
-        if stat.S_ISDIR(child_info.st_mode):
-            _remove_owned_tree(child)
-        elif stat.S_ISREG(child_info.st_mode):
-            _validate_regular(child, "cleanup file")
-            child.unlink()
-        else:
-            raise RunStateError("cleanup boundary contains an unowned file type")
-    path.rmdir()
+    parent_descriptor: int | None = None
+    root_descriptor: int | None = None
+    try:
+        parent_descriptor = os.open(
+            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        observed = os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        root_descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        opened = directory_descriptor(root_descriptor, "cleanup boundary")
+        if not same_identity(observed, opened):
+            raise RunStateError("cleanup boundary identity changed")
+        remove_contents(root_descriptor, path)
+        current = os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if not same_identity(opened, current):
+            raise RunStateError("cleanup boundary identity changed")
+        os.rmdir(path.name, dir_fd=parent_descriptor)
+    except OSError as error:
+        raise RunStateError("cleanup boundary changed during deletion") from error
+    finally:
+        if root_descriptor is not None:
+            os.close(root_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
 
 
 def cleanup_run(
@@ -2725,7 +4089,48 @@ def cleanup_run(
 ) -> dict[str, Any]:
     if acknowledge_cleanup is not True:
         raise RunStateError("cleanup requires explicit acknowledgement")
+    if (
+        isinstance(expected_sequence, bool)
+        or not isinstance(expected_sequence, int)
+        or expected_sequence < 0
+    ):
+        raise RunStateError("expected sequence must be a nonnegative integer")
     with _locked_root(state_root, create=False) as root:
+        tombstone_path = root / "tombstones" / f"{workflow_id}.json"
+        run_candidate = root / "live" / workflow_id
+        if os.path.lexists(tombstone_path):
+            tombstone = _validate_tombstone(tombstone_path, workflow_id)
+            if not os.path.lexists(run_candidate):
+                return {
+                    "schema_version": "skill-builder-operation.v1",
+                    "operation": "cleanup",
+                    "workflow_id": workflow_id,
+                    "sequence": expected_sequence,
+                    "stage": "cleaned",
+                    "receipt_digest": tombstone[
+                        "final_transition_receipt_digest"
+                    ],
+                    "tombstone_digest": tombstone["tombstone_digest"],
+                }
+            _validate_private_directory(run_candidate, "live run")
+            run_info = run_candidate.lstat()
+            expected_identity = tombstone["run_directory_identity"]
+            if (
+                run_info.st_dev != expected_identity["device"]
+                or run_info.st_ino != expected_identity["inode"]
+            ):
+                raise RunStateError("cleanup retry run-directory identity changed")
+            _remove_owned_tree(run_candidate)
+            _fsync_directory(root / "live")
+            return {
+                "schema_version": "skill-builder-operation.v1",
+                "operation": "cleanup",
+                "workflow_id": workflow_id,
+                "sequence": expected_sequence,
+                "stage": "cleaned",
+                "receipt_digest": tombstone["final_transition_receipt_digest"],
+                "tombstone_digest": tombstone["tombstone_digest"],
+            }
         run = _run_directory(root, workflow_id)
         current = _derive_index(run)
         if _read_json(run / "current.json") != current:
@@ -2783,7 +4188,6 @@ def cleanup_run(
         tombstone["tombstone_digest"] = canonical_digest(
             tombstone, "tombstone_digest"
         )
-        tombstone_path = root / "tombstones" / f"{workflow_id}.json"
         if os.path.lexists(tombstone_path):
             stored = _validate_tombstone(tombstone_path, workflow_id)
             comparable = dict(tombstone)
@@ -2816,8 +4220,8 @@ def cleanup_run(
 
 
 def _cli_json() -> dict[str, Any]:
-    payload = sys.stdin.buffer.read(MAX_JSON_BYTES + 1)
-    if len(payload) > MAX_JSON_BYTES:
+    payload = sys.stdin.buffer.read(MAX_CLI_JSON_BYTES + 1)
+    if len(payload) > MAX_CLI_JSON_BYTES:
         raise RunStateError("CLI JSON input is oversized")
     try:
         value = json.loads(
@@ -2837,7 +4241,19 @@ def main(argv: list[str] | None = None) -> int:
             "Operate private Skill Builder run state. JSON payloads are read from "
             "stdin. --state-root is for isolated tests only. Raw retain payloads "
             f"are bounded to {MAX_ARTIFACT_ITEMS} items and {MAX_ARTIFACT_BYTES} bytes."
-        )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "request schemas (one strict JSON object on stdin):\n"
+            "  initialize request: host_identity, target_identity, mode, authority, "
+            "and mode evidence; optional queue\n"
+            "  retain request: workflow_id, expected_sequence, artifact_id, "
+            "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
+            "  transition request: workflow_id, expected_sequence, event, "
+            "destination_stage, artifact_ids; optional authority_event_digest\n"
+            "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
+            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence"
+        ),
     )
     parser.add_argument(
         "command",
@@ -2856,6 +4272,7 @@ def main(argv: list[str] | None = None) -> int:
             "deliver",
             "cleanup-authority",
             "cleanup",
+            "activate-next",
         ),
     )
     parser.add_argument(
@@ -2914,6 +4331,8 @@ def main(argv: list[str] | None = None) -> int:
             result = record_delivery(state_root=state_root, **payload)
         elif args.command == "cleanup-authority":
             result = record_cleanup_authority(state_root=state_root, **payload)
+        elif args.command == "activate-next":
+            result = activate_next_target(state_root=state_root, **payload)
         else:
             result = cleanup_run(
                 state_root=state_root,
