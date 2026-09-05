@@ -57,12 +57,32 @@ SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
     "references/evaluation-rubric.md",
 )
-LIFECYCLE_SKILL_NAMES = (
-    "brainstorm",
-    "design",
-    "plan",
-    "implement",
-    "use-expand",
+SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
+    sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
+)
+SKILL_BUILDER_BOUNDARY_SECTION = (
+    "## Boundary\n\n"
+    "`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary "
+    "development, product planning, application design, documentation that is not an "
+    "agent skill, installation-only work, and lifecycle routing. Do not invoke or depend "
+    "on a product lifecycle phase or an ambient authoring skill.\n\n"
+    "Success exists only when one exact revision has a confirmed contract, frozen "
+    "evaluation evidence, isolated trial evidence, builder-run conformance, independent "
+    "review, ten independently satisfied target category scores, verification, and "
+    "retained release evidence. Static validation alone is never completion.\n\n"
+    "Read [artifact contracts](references/artifact-contracts.md) completely at run start "
+    "and again before resuming persisted work. Read [evaluation rubric]"
+    "(references/evaluation-rubric.md) completely before freezing the evaluation pack "
+    "and before every review or scoring pass."
+)
+SKILL_BUILDER_README_LINES = (
+    "- `$skill-builder` creates or improves one exact agent skill through evidence-gated "
+    "research, trials, review, and verification.",
+    "Use $skill-builder to create or improve one exact agent skill with retained evidence.",
+)
+SKILL_BUILDER_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])skill(?:-|[ \t]+)builder(?![A-Za-z0-9])",
+    re.IGNORECASE,
 )
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
@@ -411,9 +431,27 @@ def _required_nonempty_package_file(
 
 def _contains_exact_skill_token(contents: str, token: str) -> bool:
     return re.search(
-        rf"{re.escape(token)}(?![A-Za-z0-9_-])",
+        rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])",
         contents,
     ) is not None
+
+
+def _markdown_level_two_section(contents: str, heading: str) -> str | None:
+    lines = contents.splitlines()
+    marker = f"## {heading}"
+    starts = [index for index, line in enumerate(lines) if line == marker]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]).rstrip()
 
 
 def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
@@ -667,7 +705,7 @@ def _validate_plugin_manifest(
             not isinstance(default_prompt, str)
             or not default_prompt.strip()
             or len(default_prompt) > 160
-            or "$use-expand" not in default_prompt
+            or not _contains_exact_skill_token(default_prompt, "$use-expand")
             or "next lifecycle step" not in default_prompt.lower()
         ):
             errors.append(
@@ -817,19 +855,31 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
         except OSError as error:
             errors.append(f"skill-builder contract could not be read: {error}")
         else:
-            normalized = " ".join(builder.lower().split())
-            independence_clause = "do not invoke or depend on a product lifecycle phase"
-            if SKILL_BUILDER_TOKEN not in builder:
-                errors.append("skill-builder contract must identify $skill-builder directly")
-            if "`$skill-builder` is standalone and explicit-only" not in normalized:
-                errors.append("skill-builder explicit standalone contract is missing")
-            if independence_clause not in normalized:
-                errors.append("skill-builder lifecycle independence contract is missing")
-            if _contains_affirmative_lifecycle_reference(builder):
-                errors.append("skill-builder contract contains lifecycle coupling")
-            if _contains_affirmative_skill_relation(builder, LIFECYCLE_SKILL_NAMES):
+            boundary = _markdown_level_two_section(builder, "Boundary")
+            if boundary != SKILL_BUILDER_BOUNDARY_SECTION:
                 errors.append(
-                    "skill-builder contains an affirmative lifecycle route or dependency"
+                    "skill-builder canonical boundary section must match the pinned contract"
+                )
+            if not _contains_exact_skill_token(builder, SKILL_BUILDER_TOKEN):
+                errors.append("skill-builder contract must identify $skill-builder directly")
+            if any(
+                _contains_exact_skill_token(builder, token)
+                for token in SKILL_BUILDER_FORBIDDEN_TOKENS
+            ):
+                errors.append(
+                    "skill-builder contains another product skill invocation token"
+                )
+            if boundary is None:
+                outside_boundary = builder
+            else:
+                boundary_start = builder.find(boundary)
+                outside_boundary = (
+                    builder[:boundary_start]
+                    + builder[boundary_start + len(boundary) :]
+                )
+            if re.search(r"\blifecycle\b", outside_boundary, re.IGNORECASE):
+                errors.append(
+                    "skill-builder contains lifecycle wording outside the canonical boundary"
                 )
 
     router_path = skills_root / "use-expand" / "SKILL.md"
@@ -839,77 +889,8 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
         except OSError as error:
             errors.append(f"use-expand contract could not be read: {error}")
         else:
-            if _contains_affirmative_skill_relation(router, ("skill-builder",)):
-                errors.append(
-                    "use-expand must not affirmatively route to or depend on skill-builder"
-                )
-
-
-def _contains_affirmative_skill_relation(
-    contents: str,
-    skill_names: tuple[str, ...],
-) -> bool:
-    names = "|".join(re.escape(name) for name in sorted(skill_names, key=len, reverse=True))
-    skill_token = rf"\$?(?:{names})(?![a-z0-9-])"
-    target = rf"(?:(?P<markup>`|\*{{1,3}}|_{{1,3}}){skill_token}(?P=markup)|{skill_token})"
-    relation = re.compile(
-        rf"\b(?:"
-        rf"invok(?:e|es|ed|ing)|"
-        rf"rout(?:e|es|ed|ing)\s+(?:to|through)|"
-        rf"proceed(?:s|ed|ing)?\s+(?:to|with)|"
-        rf"depend(?:s|ed|ing)?\s+(?:on|upon)|"
-        rf"dependenc(?:y|ies)\s+(?:on|upon|:)|"
-        rf"requir(?:e|es|ed|ing)|"
-        rf"hand(?:s|ed|ing)?\s+off\s+to|"
-        rf"(?:select|open|launch|call)(?:s|ed|ing)?|"
-        rf"us(?:e|es|ed|ing)"
-        rf")\s+(?:the\s+)?{target}(?:\s+skill)?",
-        re.IGNORECASE,
-    )
-    for match in relation.finditer(contents):
-        if not _relation_is_explicitly_negated(contents, match.start()):
-            return True
-    return False
-
-
-def _contains_affirmative_lifecycle_reference(contents: str) -> bool:
-    for match in re.finditer(r"\blifecycle\b", contents, re.IGNORECASE):
-        if not _relation_is_explicitly_negated(contents, match.start()):
-            return True
-    return False
-
-
-def _relation_is_explicitly_negated(contents: str, relation_start: int) -> bool:
-    boundary = max(
-        contents.rfind(delimiter, 0, relation_start)
-        for delimiter in ("\n", ".", "!", "?", ";")
-    )
-    prefix = contents[boundary + 1 : relation_start]
-    contrast = tuple(re.finditer(r"\b(?:but|however|instead|then|yet)\b", prefix, re.IGNORECASE))
-    if contrast:
-        prefix = prefix[contrast[-1].end() :]
-    double_negative = re.search(
-        r"(?:"
-        r"(?:\b(?:not|never|cannot)\b|\b(?:don't|doesn't|didn't|can't|won't|wouldn't)\b)"
-        r"[^\n.!?;]*\b(?:without|avoid(?:s|ed|ing)?)\b|"
-        r"\bavoid(?:s|ed|ing)?\b[^\n.!?;]*\bnot\b"
-        r")",
-        prefix,
-        re.IGNORECASE,
-    )
-    if double_negative is not None:
-        return False
-    negations = re.findall(
-        r"(?:"
-        r"\b(?:not|never|without|cannot|no)\b|"
-        r"\b(?:don't|doesn't|didn't|mustn't|shouldn't|can't|won't|wouldn't)\b|"
-        r"\b(?:avoid(?:s|ed|ing)?|forbid(?:s|den|ding)?|prohibit(?:s|ed|ing)?)\b|"
-        r"\bstay(?:s|ed|ing)?\s+inactive\s+for\b"
-        r")",
-        prefix,
-        re.IGNORECASE,
-    )
-    return bool(negations)
+            if SKILL_BUILDER_NAME_PATTERN.search(router):
+                errors.append("use-expand must not name skill-builder")
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -1150,27 +1131,22 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
         errors.append("README contains stale six-skill wording")
     if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
         errors.append("README must advertise $skill-builder")
-    builder_lines = [
-        line.lower()
-        for line in readme.splitlines()
-        if _contains_exact_skill_token(line, SKILL_BUILDER_TOKEN)
-    ]
-    if not any(
-        line.startswith("- `$skill-builder`")
-        and "create" in line
-        and "improve" in line
-        and "one exact agent skill" in line
-        and "evidence" in line
-        for line in builder_lines
-    ):
+    readme_lines = readme.splitlines()
+    builder_mentions = tuple(
+        line for line in readme_lines if SKILL_BUILDER_NAME_PATTERN.search(line)
+    )
+    if builder_mentions != SKILL_BUILDER_README_LINES:
+        errors.append(
+            "README Skill Builder mentions must be exactly the public-list and "
+            "direct-invocation lines"
+        )
+    if SKILL_BUILDER_README_LINES[0] not in readme_lines:
         errors.append(
             "README must describe $skill-builder as the evidence-gated creator or improver "
             "of one exact agent skill"
         )
-    if re.search(r"(?m)^Use \$skill-builder(?![A-Za-z0-9_-])", readme) is None:
+    if SKILL_BUILDER_README_LINES[1] not in readme_lines:
         errors.append("README must include a direct $skill-builder invocation example")
-    if any("lifecycle" in line for line in builder_lines):
-        errors.append("README must not describe $skill-builder as part of the code lifecycle")
 
 
 def _validate_removed_repository_local_skill(
@@ -1303,7 +1279,9 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
     if isinstance(short_description, str) and not 25 <= len(short_description) <= 64:
         errors.append(f"skill {skill_root.name!r} short_description must be 25-64 characters")
     default_prompt = interface.get("default_prompt")
-    if isinstance(default_prompt, str) and f"${skill_root.name}" not in default_prompt:
+    if isinstance(default_prompt, str) and not _contains_exact_skill_token(
+        default_prompt, f"${skill_root.name}"
+    ):
         errors.append(f"skill {skill_root.name!r} default_prompt must invoke the matching skill")
     implicit = policy.get("allow_implicit_invocation")
     if not isinstance(implicit, bool):

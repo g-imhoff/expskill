@@ -73,12 +73,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "stale-six-skill-wording": ("readme", "seven independent skills"),
             "use-expand-route": (
                 "skill-builder",
-                "affirmative lifecycle route or dependency",
+                "another product skill invocation token",
             ),
-            "lifecycle-coupling": ("skill-builder", "lifecycle independence contract"),
+            "lifecycle-coupling": ("skill-builder", "canonical boundary section"),
             "router-coupling": (
                 "use-expand",
-                "affirmatively route to or depend on skill-builder",
+                "must not name skill-builder",
             ),
             "repository-local-duplicate": (".agents/skills/improve-skill", "must be absent"),
         }
@@ -163,58 +163,55 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
                 )
 
-    def test_validator_rejects_affirmative_skill_builder_lifecycle_relations(self) -> None:
-        """Regression: formatting a phase name cannot hide routing or dependency coupling."""
+    def test_validator_rejects_other_product_skill_tokens_in_skill_builder(self) -> None:
+        """Regression: sentiment and formatting cannot permit a cross-skill invocation token."""
 
-        lifecycle_skills = ("brainstorm", "design", "plan", "implement", "use-expand")
-        relation_templates = (
-            "Invoke {skill} after finalization.\n",
-            "Route to `{skill}` after finalization.\n",
-            "Depend on ${skill} for delivery.\n",
-            "Proceed to ${skill} after finalization.\n",
-            "Invoke **${skill}** after finalization.\n",
-            "Cannot finish without invoking ${skill}.\n",
+        additions = (
+            "Invoke $brainstorm after finalization.",
+            "Never route to `$design`.",
+            "Do not stop at finalization: invoke $plan after finalization.",
+            "There is no delay: route through **$implement** after finalization.",
+            "Without delay, invoke $use-expand after finalization.",
+            "Refuse to invoke $grill-me.",
+            "Cannot finish without invoking $unslop.",
         )
-        for lifecycle_skill in lifecycle_skills:
-            for relation in relation_templates:
-                with self.subTest(skill=lifecycle_skill, relation=relation):
-                    root = self._copy_repository()
-                    contract = (
-                        root
-                        / "plugins"
-                        / "codex-dev-flow"
-                        / "skills"
-                        / "skill-builder"
-                        / "SKILL.md"
-                    )
-                    contract.write_text(
-                        contract.read_text(encoding="utf-8")
-                        + "\n"
-                        + relation.format(skill=lifecycle_skill),
-                        encoding="utf-8",
-                    )
-                    errors = tuple(error.lower() for error in validate_repository(root))
-                    self.assertTrue(
-                        any(
-                            "skill-builder" in error
-                            and "affirmative lifecycle route or dependency" in error
-                            for error in errors
-                        ),
-                        f"affirmative {lifecycle_skill!r} relation escaped validation: {errors}",
-                    )
+        for addition in additions:
+            with self.subTest(addition=addition):
+                root = self._copy_repository()
+                contract = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "skill-builder"
+                    / "SKILL.md"
+                )
+                contract.write_text(
+                    contract.read_text(encoding="utf-8") + "\n" + addition + "\n",
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "skill-builder" in error
+                        and "another product skill invocation token" in error
+                        for error in errors
+                    ),
+                    f"cross-skill token escaped validation: {addition!r}: {errors}",
+                )
 
-    def test_validator_rejects_affirmative_router_relations_to_skill_builder(self) -> None:
-        """Regression: bare and formatted builder names stay outside router ownership."""
+    def test_validator_rejects_any_skill_builder_name_in_use_expand(self) -> None:
+        """Regression: the router cannot mention Skill Builder under any sentiment or markup."""
 
-        relations = (
-            "Route to skill-builder after implementation.\n",
-            "Depend on `skill-builder` for authoring.\n",
-            "Invoke $skill-builder after implementation.\n",
-            "Proceed to **$skill-builder** after implementation.\n",
-            "Cannot finish without invoking $skill-builder.\n",
+        additions = (
+            "Route to skill-builder after implementation.",
+            "Never depend on `skill-builder` for authoring.",
+            "There is no exception: invoke $skill-builder after implementation.",
+            "Proceed to **$Skill-Builder** after implementation.",
+            "Cannot finish without invoking Skill Builder.",
         )
-        for relation in relations:
-            with self.subTest(relation=relation):
+        for addition in additions:
+            with self.subTest(addition=addition):
                 root = self._copy_repository()
                 router = (
                     root
@@ -225,50 +222,77 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     / "SKILL.md"
                 )
                 router.write_text(
-                    router.read_text(encoding="utf-8") + "\n" + relation,
+                    router.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
                 errors = tuple(error.lower() for error in validate_repository(root))
                 self.assertTrue(
                     any(
-                        "use-expand" in error
-                        and "affirmatively route to or depend on skill-builder" in error
+                        "use-expand" in error and "must not name skill-builder" in error
                         for error in errors
                     ),
-                    f"affirmative router relation escaped validation: {errors}",
+                    f"Skill Builder name escaped router validation: {addition!r}: {errors}",
                 )
 
-    def test_validator_allows_explicit_negative_lifecycle_boundaries(self) -> None:
-        """Regression: naming forbidden dependencies must not itself create coupling."""
+    def test_validator_pins_the_canonical_skill_builder_boundary_section(self) -> None:
+        """Regression: arbitrary negative prose cannot replace or extend the pinned boundary."""
 
-        root = self._copy_repository()
-        skills = root / "plugins" / "codex-dev-flow" / "skills"
-        builder = skills / "skill-builder" / "SKILL.md"
-        builder.write_text(
-            builder.read_text(encoding="utf-8")
-            + "\nDo not invoke implement.\n"
-            + "Never route to `plan`.\n"
-            + "Must not depend on $design.\n"
-            + "Do not invoke `$use-expand`.\n"
-            + "Avoid invoking $plan.\n"
-            + "This skill is not a lifecycle phase.\n",
-            encoding="utf-8",
+        mutations = (
+            (
+                "replace",
+                "Do not invoke or depend on a product lifecycle phase",
+                "Remain separate from the product lifecycle",
+            ),
+            (
+                "append",
+                "",
+                "\nRemain separate from the lifecycle.\n",
+            ),
+            (
+                "append",
+                "",
+                "\nExclude lifecycle routing.\n",
+            ),
         )
-        router = skills / "use-expand" / "SKILL.md"
-        router.write_text(
-            router.read_text(encoding="utf-8")
-            + "\nDo not route to skill-builder.\n"
-            + "Never depend on `skill-builder`.\n"
-            + "Must not invoke $skill-builder.\n"
-            + "Avoid invoking **$skill-builder**.\n",
-            encoding="utf-8",
-        )
-        self.assertEqual(validate_repository(root), ())
+        for operation, original, replacement in mutations:
+            with self.subTest(operation=operation, replacement=replacement):
+                root = self._copy_repository()
+                contract = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / "skill-builder"
+                    / "SKILL.md"
+                )
+                contents = contract.read_text(encoding="utf-8")
+                if operation == "replace":
+                    contents = contents.replace(original, replacement, 1)
+                else:
+                    contents += replacement
+                contract.write_text(contents, encoding="utf-8")
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "skill-builder" in error
+                        and (
+                            "canonical boundary section" in error
+                            or "lifecycle wording outside" in error
+                        )
+                        for error in errors
+                    ),
+                    f"boundary drift escaped validation: {errors}",
+                )
 
     def test_manifest_requires_the_exact_skill_builder_token(self) -> None:
-        """Regression: a suffixed skill name is not public visibility for the real skill."""
+        """Regression: a collision or wrong-case name is not the public invocation token."""
 
-        for replacement in ("$skill-builder-v2", "$skill-builder-preview"):
+        for replacement in (
+            "prefix$skill-builder",
+            "$skill-builder-v2",
+            "$skill-builder-preview",
+            "$Skill-Builder",
+        ):
             with self.subTest(replacement=replacement):
                 root = self._copy_repository()
                 manifest_path = (
@@ -293,14 +317,92 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         and "advertise $skill-builder" in error
                         for error in errors
                     ),
-                    f"suffixed manifest token {replacement!r} escaped validation: {errors}",
+                    f"manifest token collision {replacement!r} escaped validation: {errors}",
+                )
+
+    def test_metadata_requires_exact_two_sided_invocation_tokens(self) -> None:
+        """Regression: metadata cannot satisfy invocation visibility with a collision token."""
+
+        cases = (
+            ("skill-builder", "prefix$skill-builder"),
+            ("skill-builder", "$skill-builder-v2"),
+            ("skill-builder", "$Skill-Builder"),
+            ("use-expand", "prefix$use-expand"),
+            ("use-expand", "$use-expand-preview"),
+            ("use-expand", "$Use-Expand"),
+        )
+        for skill, replacement in cases:
+            with self.subTest(skill=skill, replacement=replacement):
+                root = self._copy_repository()
+                metadata_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / "skills"
+                    / skill
+                    / "agents"
+                    / "openai.yaml"
+                )
+                metadata_path.write_text(
+                    metadata_path.read_text(encoding="utf-8").replace(
+                        f"${skill}", replacement, 1
+                    ),
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        f"skill '{skill}'" in error
+                        and "default_prompt must invoke the matching skill" in error
+                        for error in errors
+                    ),
+                    f"metadata collision {replacement!r} escaped validation: {errors}",
+                )
+
+    def test_manifest_default_prompt_requires_exact_use_expand_token(self) -> None:
+        """Regression: the router prompt must contain the exact case-sensitive invocation."""
+
+        for replacement in (
+            "prefix$use-expand",
+            "$use-expand-preview",
+            "$Use-Expand",
+        ):
+            with self.subTest(replacement=replacement):
+                root = self._copy_repository()
+                manifest_path = (
+                    root
+                    / "plugins"
+                    / "codex-dev-flow"
+                    / ".codex-plugin"
+                    / "plugin.json"
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["interface"]["defaultPrompt"] = manifest["interface"][
+                    "defaultPrompt"
+                ].replace("$use-expand", replacement)
+                manifest_path.write_text(
+                    json.dumps(manifest, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "defaultprompt" in error and "invoke $use-expand" in error
+                        for error in errors
+                    ),
+                    f"manifest collision {replacement!r} escaped validation: {errors}",
                 )
 
     def test_readme_invocation_requires_the_exact_skill_builder_token(self) -> None:
-        """Regression: a suffixed invocation example cannot stand in for the public skill."""
+        """Regression: a collision or wrong-case example cannot invoke the public skill."""
 
         invocation = "Use $skill-builder to create or improve one exact agent skill"
-        for replacement in ("$skill-builder-v2", "$skill-builder-preview"):
+        for replacement in (
+            "prefix$skill-builder",
+            "$skill-builder-v2",
+            "$skill-builder-preview",
+            "$Skill-Builder",
+        ):
             with self.subTest(replacement=replacement):
                 root = self._copy_repository()
                 readme_path = root / "README.md"
@@ -320,7 +422,33 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         and "direct $skill-builder invocation" in error
                         for error in errors
                     ),
-                    f"suffixed README token {replacement!r} escaped validation: {errors}",
+                    f"README token collision {replacement!r} escaped validation: {errors}",
+                )
+
+    def test_readme_allows_only_the_two_canonical_skill_builder_mentions(self) -> None:
+        """Regression: unmarked Skill Builder prose is structural drift regardless of sentiment."""
+
+        additions = (
+            "Skill Builder remains separate from lifecycle routing.",
+            "Do not route to $skill-builder from the code lifecycle.",
+            "Evidence from skill-builder must never become a lifecycle phase.",
+        )
+        for addition in additions:
+            with self.subTest(addition=addition):
+                root = self._copy_repository()
+                readme_path = root / "README.md"
+                readme_path.write_text(
+                    readme_path.read_text(encoding="utf-8") + "\n" + addition + "\n",
+                    encoding="utf-8",
+                )
+                errors = tuple(error.lower() for error in validate_repository(root))
+                self.assertTrue(
+                    any(
+                        "readme" in error
+                        and "skill builder mentions must be exactly" in error
+                        for error in errors
+                    ),
+                    f"extra README mention escaped validation: {addition!r}: {errors}",
                 )
 
     def test_validator_accepts_the_complete_design_package(self) -> None:
