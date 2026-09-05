@@ -183,10 +183,10 @@ REVIEW_HANDOFF_CLAUSES = (
     "or other repository content.",
     "do not attach binary or opaque review context.",
 )
-REVIEW_HANDOFF_NORMALIZED_SHA256 = {
-    "skills/implement/SKILL.md": "80f29c75b71f466f2d6e8c0b3614a277cc63919be471c24a8a630a057a4860d7",
-    "skills/skill-builder/SKILL.md": "a9e86742a601f5a4fae62dc9498de647c323b66e319c6fe1bf10dcba9f295827",
-    "skills/skill-builder/references/evaluation-rubric.md": "ad2cc4c16f7ce09620193ea3c786adbadb4d5c1c5b5a47601b86827f361a1fe8",
+REVIEW_HANDOFF_CANONICAL_SHA256 = {
+    "skills/implement/SKILL.md": "8a0779199cf7a4527abcc3852948ce98b4126b8f83a0a8c16a437ca8e8301e9c",
+    "skills/skill-builder/SKILL.md": "479ed1df66276d6ef0bd5bc48fe6b9ca08cb3db1090f48f4f4d7cd557e114e1b",
+    "skills/skill-builder/references/evaluation-rubric.md": "30993f64fe0353548b76db6404c491e07c5006e9f7a5a2bb0163121ed2348bc1",
 }
 REVIEW_AGENT_HANDOFF_CLAUSES = (
     "accept only a locator handoff whose aggregate authored review context includes "
@@ -201,13 +201,10 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "do not request a copied diff, source files, test logs, terminal output, or "
     "transcripts.",
 )
-REVIEW_AGENT_INSTRUCTIONS_NORMALIZED_SHA256 = {
+REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
     "devflow-review": "1249b9009ddb500175e7b8b69e895d8fe7db52137d2886057cdc89f7c4786f2a",
     "devflow-spec": "2fb16fbad8293fb617cf5ddc544acdb683623bd8ffb97f06eadd06a940000690",
 }
-REVIEW_MARKDOWN_STRUCTURE = re.compile(
-    r"^(?:\s|#{1,6}(?:\s|$)|[-*+]\s|\d+[.)]\s|>|```|~~~|\||---$|<!--)"
-)
 
 REQUIRED_AGENT_FIELDS = (
     "name",
@@ -489,37 +486,27 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
                 errors.append(
                     f"review handoff contract at {relative} must include {clause!r}"
                 )
-        canonical = _canonical_review_text(contents)
+        canonical = _canonical_review_markdown(contents)
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if digest != REVIEW_HANDOFF_NORMALIZED_SHA256[relative]:
+        if digest != REVIEW_HANDOFF_CANONICAL_SHA256[relative]:
             errors.append(
                 f"review handoff contract at {relative} differs from its validated "
                 "normalized content"
             )
 
 
-def _canonical_review_text(contents: str) -> str:
-    lines = contents.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    blocks: list[str] = []
-    block: list[str] = []
+def _canonical_review_markdown(contents: str) -> str:
+    return contents.replace("\r\n", "\n").replace("\r", "\n")
 
-    def flush() -> None:
-        if not block:
-            return
-        cleaned = [line.rstrip() for line in block]
-        if any(REVIEW_MARKDOWN_STRUCTURE.match(line) for line in cleaned):
-            blocks.append("\n".join(cleaned))
-        else:
-            blocks.append(" ".join(line.strip() for line in cleaned))
-        block.clear()
 
-    for line in lines:
-        if line.strip():
-            block.append(line)
-        else:
-            flush()
-    flush()
-    return "\n\n".join(blocks).strip()
+def _canonical_review_agent_instructions(contents: str) -> str:
+    normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.splitlines()
+    has_structure = any(
+        not line or line.startswith((" ", "\t")) or line.endswith("  ")
+        for line in lines
+    )
+    return normalized if has_structure else " ".join(lines)
 
 
 def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
@@ -1412,9 +1399,9 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
                 errors.append(
                     f"agent profile {expected_name!r} instructions must include {phrase!r}"
                 )
-        expected_digest = REVIEW_AGENT_INSTRUCTIONS_NORMALIZED_SHA256.get(expected_name)
+        expected_digest = REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256.get(expected_name)
         if expected_digest is not None:
-            canonical = _canonical_review_text(instructions)
+            canonical = _canonical_review_agent_instructions(instructions)
             digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             if digest != expected_digest:
                 errors.append(

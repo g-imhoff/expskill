@@ -345,6 +345,44 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_canonical_validation_preserves_markdown_hard_breaks(self) -> None:
+        producer_path = Path("plugins/codex-dev-flow/skills/implement/SKILL.md")
+        root = self.copy_repository()
+        path = root / producer_path
+        contents = path.read_text(encoding="utf-8")
+        old = "The aggregate authored review handoff includes inline dispatch text, follow-up"
+        self.assertIn(old, contents)
+        path.write_text(contents.replace(old, old + "  ", 1), encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(
+            any("review handoff" in error.lower() for error in errors),
+            errors,
+        )
+
+        for name in ("devflow-review", "devflow-spec"):
+            root = self.copy_repository()
+            path = (
+                root
+                / "plugins"
+                / "codex-dev-flow"
+                / "assets"
+                / "agents"
+                / f"{name}.toml"
+            )
+            contents = path.read_text(encoding="utf-8")
+            old = "inline dispatch text, follow-up messages"
+            self.assertIn(old, contents)
+            path.write_text(
+                contents.replace(old, "inline dispatch text,  \nfollow-up messages", 1),
+                encoding="utf-8",
+            )
+            errors = validate_repository(root)
+            with self.subTest(profile=name):
+                self.assertTrue(
+                    any(name in error and "instructions" in error for error in errors),
+                    errors,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
