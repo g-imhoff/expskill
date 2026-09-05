@@ -28,6 +28,7 @@ HELPER_PATH = "scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "scripts/plan_graph.py"
 UNSLOP_HOOK_CONFIG_PATH = "hooks/hooks.json"
 UNSLOP_HOOK_SCRIPT_PATH = "hooks/inject_unslop.py"
+UNSLOP_HOOK_SCRIPT_SHA256 = "6eea44b9a2fcccfe685c5b93c7fd2b3e868bb9618f6764a7e97557dd4f8f6403"
 THIRD_PARTY_LOCK_PATH = "third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
@@ -808,13 +809,19 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     if script_path is None:
         return
     try:
-        script = script_path.read_text(encoding="utf-8")
+        script_bytes = script_path.read_bytes()
+        script = script_bytes.decode("utf-8")
     except OSError as error:
         errors.append(f"Unslop hook script could not be read: {error}")
+        return
+    except UnicodeDecodeError:
+        errors.append("Unslop hook script must be UTF-8 text")
         return
     if not script.strip():
         errors.append("Unslop hook script must be non-empty")
         return
+    if hashlib.sha256(script_bytes).hexdigest() != UNSLOP_HOOK_SCRIPT_SHA256:
+        errors.append("Unslop hook script digest does not match the reviewed implementation")
     try:
         ast.parse(script, filename=str(script_path))
     except SyntaxError as error:
@@ -895,6 +902,57 @@ def _validate_third_party_sources(plugin_root: Path, errors: list[str]) -> None:
                 continue
             if digest != source[digest_field]:
                 errors.append(f"{name} {label} digest does not match the pinned upstream digest")
+
+    _validate_public_third_party_derivations(plugin_root, third_party_root, errors)
+
+
+def _validate_public_third_party_derivations(
+    plugin_root: Path,
+    third_party_root: Path,
+    errors: list[str],
+) -> None:
+    try:
+        unslop_source = (
+            third_party_root / "sources" / "pstack" / "unslop" / "SKILL.md"
+        ).read_bytes()
+        public_unslop = (plugin_root / "skills" / "unslop" / "SKILL.md").read_bytes()
+    except OSError as error:
+        errors.append(f"public Unslop derived-copy validation failed: {error}")
+    else:
+        expected_unslop = unslop_source.replace(
+            b"disable-model-invocation: true\n",
+            b"",
+            1,
+        )
+        if public_unslop != expected_unslop:
+            errors.append("public skill 'unslop' does not match its declared derived upstream copy")
+
+    try:
+        wrapper = (
+            third_party_root / "sources" / "mattpocock" / "grill-me" / "SKILL.md"
+        ).read_bytes()
+        engine = (
+            third_party_root / "sources" / "mattpocock" / "grilling" / "SKILL.md"
+        ).read_bytes()
+        public_grill = (plugin_root / "skills" / "grill-me" / "SKILL.md").read_bytes()
+        wrapper_end = wrapper.index(b"\n---\n", 4) + len(b"\n---\n")
+        engine_end = engine.index(b"\n---\n", 4) + len(b"\n---\n")
+    except (OSError, ValueError) as error:
+        errors.append(f"public Grill Me derived-copy validation failed: {error}")
+    else:
+        frontmatter = wrapper[:wrapper_end].replace(
+            b"disable-model-invocation: true\n",
+            b"",
+            1,
+        )
+        body = engine[engine_end:].lstrip(b"\n")
+        body = body.replace(b"it; don't", b"it. Don't").replace(
+            b"report; ask",
+            b"report. Ask",
+        )
+        expected_grill = frontmatter + b"\n" + body
+        if public_grill != expected_grill:
+            errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
 
 
 def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
