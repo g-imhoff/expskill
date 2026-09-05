@@ -6,7 +6,7 @@ description: Execute an accepted implementation brief through isolated TDD worke
 # Implement
 
 Turn an accepted direct brief or ready Plan Graph work into a locally integrated,
-reviewed implementation. This skill coordinates the work; fresh agents implement
+reviewed implementation. This skill coordinates the work. Fresh agents implement
 and judge it.
 
 Use only for explicit `$implement` or when the active coordinator deliberately
@@ -18,10 +18,10 @@ requests, hands-on UI review, remote delivery, and protected-branch merge.
 Before dispatching, ground the accepted work in the current code and Git state.
 Require:
 
-- a concrete outcome, protected behavior, scope, non-goals, and proof intent;
-- an exact non-protected target branch and starting commit;
-- current dependencies and disjoint ownership for every runnable node;
-- the approved Design deliverables whenever UI is involved; and
+- a concrete outcome, protected behavior, scope, non-goals, and proof intent.
+- an exact non-protected target branch and starting commit.
+- current dependencies and disjoint ownership for every runnable node.
+- the approved Design deliverables whenever UI is involved.
 - authority for local edits, tests, commits, worktrees, and local integration.
 
 Do not reopen settled product or Design decisions. Ask the user only for a
@@ -34,7 +34,7 @@ Do not invent a second state format and do not make workers graph writers. Retur
 compact node results to the active coordinator for graph updates. A complete
 direct brief may run without a Plan Graph.
 
-Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`;
+Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
 `plugins/codex-dev-flow/scripts/plan_graph.py` is only the source-package locator.
 
 ## Execute runnable nodes
@@ -53,7 +53,7 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`;
    or regression before the production change when feasible, make the smallest
    implementation pass, run affected regressions, inspect the diff, and create
    one coherent local commit. An alternative proof needs a concrete technical
-   reason; a missing file, broken command, or unrelated failure is not RED.
+   reason. A missing file, broken command, or unrelated failure is not RED.
 5. Treat the worker result as a candidate, not approval. It must report the exact
    commit, changed paths, commands and results, RED evidence or justified
    alternative, remaining risks, and any scope or decision blocker.
@@ -85,7 +85,7 @@ node blocked instead of looping forever.
 Integrate an accepted node into the non-protected target branch as soon as its
 dependencies make that safe. Revalidate the target head, merge in dependency
 order, run affected checks on the integrated result, and commit target-side work
-as it is accepted. Preserve conflicts for resolution; never force through them.
+as it is accepted. Preserve conflicts for resolution. Never force through them.
 
 Remove an external worktree and its local task branch only after its exact commit
 is present on the target, the integrated checks pass, and the lane is clean. Keep

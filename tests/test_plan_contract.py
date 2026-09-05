@@ -190,7 +190,7 @@ class PlanContractTests(unittest.TestCase):
         for forbidden in ("commit", "push", "merge", "rebase", "stash", "reset", "task worktree"):
             with self.subTest(forbidden=forbidden):
                 self.assertRegex(branch_step, rf"never [^.]*\b{re.escape(forbidden)}\b")
-        self.assertRegex(stopping, r"later authorized lifecycle—not `\$plan`—may push")
+        self.assertRegex(stopping, r"later authorized lifecycle, not `\$plan`, may push")
 
     def test_plan_defines_the_private_canonical_graph_and_adaptive_minimum(self) -> None:
         self.assertTrue(HELPER_PATH.is_file(), HELPER_PATH)

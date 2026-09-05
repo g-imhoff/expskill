@@ -33,12 +33,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             shutil.copytree(ROOT / name, temporary / name)
         return temporary
 
-    def test_readme_and_manifest_expose_four_skills_and_design(self) -> None:
+    def test_readme_and_manifest_expose_six_skills_and_design(self) -> None:
         """Regression: stale phase language hides Design and contradicts the public roster."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
-        skill_wording = re.compile(r"\bfour independent development skills and one optional lifecycle router\b", re.I)
+        skill_wording = re.compile(r"\bsix independent skills and one optional lifecycle router\b", re.I)
         self.assertRegex(" ".join(readme.split()), skill_wording)
         self.assertIn("$design", readme)
         self.assertRegex(description, skill_wording)

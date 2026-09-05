@@ -26,6 +26,9 @@ AGENTS_PATH = "assets/agents"
 POLICY_PATH = "assets/execution-policy.json"
 HELPER_PATH = "scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "scripts/plan_graph.py"
+UNSLOP_HOOK_CONFIG_PATH = "hooks/hooks.json"
+UNSLOP_HOOK_SCRIPT_PATH = "hooks/inject_unslop.py"
+THIRD_PARTY_LOCK_PATH = "third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
 PLUGIN_INTERFACE_FIELDS = {
@@ -43,6 +46,8 @@ PUBLIC_PHASE_TOKENS = {
     "$implement",
     "$use-expand",
     "$design",
+    "$grill-me",
+    "$unslop",
 }
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
@@ -54,6 +59,8 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "plan",
     "implement",
+    "grill-me",
+    "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
@@ -98,6 +105,55 @@ BRAINSTORM_CATALOG_PREAMBLE = (
     "# for any other purpose. See [TRADEMARK.md](TRADEMARK.md) for detailed guidelines.\n"
     "#\n"
 )
+
+EXPECTED_THIRD_PARTY_SOURCES = {
+    "pstack-unslop": {
+        "repository": "https://github.com/cursor/plugins",
+        "revision": "93b00b89ef425a9c1bac0d0b317dfc49c930ac99",
+        "source_path": "pstack/skills/unslop/SKILL.md",
+        "vendored_path": "sources/pstack/unslop/SKILL.md",
+        "sha256": "2789ab80477b7e382292e4d7acca1057784df19713fffb74622ff0f83b2f3733",
+        "license_path": "licenses/pstack-MIT.txt",
+        "license_sha256": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e",
+    },
+    "mattpocock-grill-me": {
+        "repository": "https://github.com/mattpocock/skills",
+        "revision": "3cca18b368ae95cdbdebbff572ccafa662551015",
+        "source_path": "skills/productivity/grill-me/SKILL.md",
+        "vendored_path": "sources/mattpocock/grill-me/SKILL.md",
+        "sha256": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+        "license_path": "licenses/mattpocock-skills-MIT.txt",
+        "license_sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5",
+    },
+    "mattpocock-grilling": {
+        "repository": "https://github.com/mattpocock/skills",
+        "revision": "3cca18b368ae95cdbdebbff572ccafa662551015",
+        "source_path": "skills/productivity/grilling/SKILL.md",
+        "vendored_path": "sources/mattpocock/grilling/SKILL.md",
+        "sha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+        "license_path": "licenses/mattpocock-skills-MIT.txt",
+        "license_sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5",
+    },
+}
+
+EXPECTED_UNSLOP_HOOKS = {
+    "description": "Apply Unslop to prose written by the root conversation.",
+    "hooks": {
+        "SessionStart": [
+            {
+                "matcher": "^(startup|resume|clear|compact)$",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": 'python3 "${PLUGIN_ROOT}/hooks/inject_unslop.py"',
+                        "timeout": 3,
+                        "additionalContextLimit": 5000,
+                    }
+                ],
+            }
+        ]
+    },
+}
 
 EXPECTED_AGENTS = {
     "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
@@ -365,7 +421,10 @@ def validate_repository(root: Path) -> tuple[str, ...]:
 
         _validate_agents(plugin_root, errors)
         _validate_policy(plugin_root, errors)
+        _validate_unslop_hook(plugin_root, errors)
+        _validate_third_party_sources(plugin_root, errors)
         _validate_helper_and_package_layout(plugin_root, errors)
+    _validate_skill_punctuation(repository_root, errors)
     return tuple(errors)
 
 
@@ -485,7 +544,7 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("four", "independent", "development skills", "optional", "lifecycle router"):
+        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
             if phrase not in normalized_description:
                 errors.append(f"plugin description must advertise {phrase!r}")
         if PUBLIC_METADATA_JARGON.search(description):
@@ -703,6 +762,161 @@ def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
     payload = contents[len(preamble) :]
     if hashlib.sha256(payload).hexdigest() != BRAINSTORM_CATALOG_SHA256:
         errors.append("brainstorm catalog payload does not match the pinned upstream digest")
+
+
+def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
+    hooks_root = _required_package_path(
+        plugin_root,
+        "hooks",
+        "Unslop hook directory",
+        "directory",
+        errors,
+    )
+    if hooks_root is None:
+        return
+
+    expected_files = {"hooks.json", "inject_unslop.py"}
+    actual_files = {
+        path.relative_to(hooks_root).as_posix()
+        for path in hooks_root.rglob("*")
+        if path.is_file() or path.is_symlink()
+        if "__pycache__" not in path.relative_to(hooks_root).parts
+    }
+    if actual_files != expected_files:
+        errors.append(
+            "Unslop hook files must be exactly hooks.json and inject_unslop.py"
+        )
+
+    config_path = _required_package_path(
+        plugin_root,
+        UNSLOP_HOOK_CONFIG_PATH,
+        "Unslop hook configuration",
+        "file",
+        errors,
+    )
+    script_path = _required_package_path(
+        plugin_root,
+        UNSLOP_HOOK_SCRIPT_PATH,
+        "Unslop hook script",
+        "file",
+        errors,
+    )
+    if config_path is not None:
+        config = _load_json_object(config_path, "Unslop hook configuration", errors)
+        if config is not None and config != EXPECTED_UNSLOP_HOOKS:
+            errors.append("Unslop hook configuration does not match the root SessionStart contract")
+    if script_path is None:
+        return
+    try:
+        script = script_path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"Unslop hook script could not be read: {error}")
+        return
+    if not script.strip():
+        errors.append("Unslop hook script must be non-empty")
+        return
+    try:
+        ast.parse(script, filename=str(script_path))
+    except SyntaxError as error:
+        errors.append(f"Unslop hook script is not valid Python: {error.msg}")
+    normalized_script = script.lower()
+    for marker in (
+        "sessionstart",
+        '"unslop"',
+        "additionalcontext",
+        "user-facing prose",
+        "machine-readable data",
+        "higher-priority instructions",
+    ):
+        if marker not in normalized_script:
+            errors.append(f"Unslop hook script is missing required marker {marker!r}")
+
+
+def _validate_third_party_sources(plugin_root: Path, errors: list[str]) -> None:
+    third_party_root = _required_package_path(
+        plugin_root,
+        "third-party",
+        "third-party source directory",
+        "directory",
+        errors,
+    )
+    if third_party_root is None:
+        return
+    lock_path = _required_package_path(
+        plugin_root,
+        THIRD_PARTY_LOCK_PATH,
+        "third-party upstream lock",
+        "file",
+        errors,
+    )
+    if lock_path is None:
+        return
+    lock = _load_json_object(lock_path, "third-party upstream lock", errors)
+    if lock is None:
+        return
+    expected_lock = {
+        "schema_version": "third-party-sources.v1",
+        "sources": EXPECTED_THIRD_PARTY_SOURCES,
+    }
+    if lock != expected_lock:
+        errors.append("third-party upstream lock does not match the pinned source contract")
+
+    expected_files = {"upstream-lock.json"}
+    for source in EXPECTED_THIRD_PARTY_SOURCES.values():
+        expected_files.add(source["vendored_path"])
+        expected_files.add(source["license_path"])
+    actual_files = {
+        path.relative_to(third_party_root).as_posix()
+        for path in third_party_root.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    if actual_files != expected_files:
+        errors.append("third-party source package does not contain the exact pinned file set")
+
+    for name, source in EXPECTED_THIRD_PARTY_SOURCES.items():
+        for path_field, digest_field, label in (
+            ("vendored_path", "sha256", "upstream source"),
+            ("license_path", "license_sha256", "upstream license"),
+        ):
+            relative = source[path_field]
+            path = _required_package_path(
+                plugin_root,
+                f"third-party/{relative}",
+                f"{name} {label}",
+                "file",
+                errors,
+            )
+            if path is None:
+                continue
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as error:
+                errors.append(f"{name} {label} could not be read: {error}")
+                continue
+            if digest != source[digest_field]:
+                errors.append(f"{name} {label} digest does not match the pinned upstream digest")
+
+
+def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
+    roots = (
+        repository_root / "plugins" / PLUGIN_NAME / "skills",
+        repository_root / ".agents" / "skills",
+    )
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                contents = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            relative = path.relative_to(repository_root)
+            if "\N{EM DASH}" in contents:
+                errors.append(f"skill text {relative} contains an em dash")
+            if ";" in contents:
+                errors.append(f"skill text {relative} contains a semicolon")
 
 
 def _parse_frontmatter(

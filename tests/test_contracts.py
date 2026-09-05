@@ -19,8 +19,11 @@ PHASE_ROOTS = {
     name: PLUGIN_ROOT / "skills" / name
     for name in (
         "brainstorm",
+        "design",
+        "grill-me",
         "plan",
         "implement",
+        "unslop",
     )
 }
 EXPECTED_AGENTS = {
@@ -34,8 +37,10 @@ EXPECTED_SKILLS = {
     "use-expand",
     "brainstorm",
     "design",
+    "grill-me",
     "plan",
     "implement",
+    "unslop",
 }
 REMOVED_PUBLIC_SKILL = "accept" + "ance"
 REMOVED_PUBLIC_TOKEN = "$" + REMOVED_PUBLIC_SKILL
@@ -302,7 +307,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("four", "independent", "development skills", "optional", "lifecycle router"):
+        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -417,7 +422,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bfour independent development skills and one optional lifecycle router\b"
+            r"\bsix independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -531,6 +536,50 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("apps", manifest)
         self.assertNotIn("icons", manifest)
         self.assertNotIn("authentication", manifest)
+
+    def test_validator_rejects_banned_punctuation_in_any_skill_owned_text(self) -> None:
+        for character, label in (("\N{EM DASH}", "em dash"), (";", "semicolon")):
+            with self.subTest(character=label):
+                root = self.copy_repository()
+                path = root / "plugins" / "codex-dev-flow" / "skills" / "unslop" / "SKILL.md"
+                path.write_text(path.read_text(encoding="utf-8") + f"\nBanned {character} mark.\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any(label in error.lower() for error in errors), errors)
+
+    def test_validator_rejects_missing_or_tampered_unslop_hook(self) -> None:
+        for mutation in ("missing-config", "tampered-command", "missing-script", "extra-source"):
+            with self.subTest(mutation=mutation):
+                root = self.copy_repository()
+                hook_root = root / "plugins" / "codex-dev-flow" / "hooks"
+                if mutation == "missing-config":
+                    (hook_root / "hooks.json").unlink()
+                elif mutation == "tampered-command":
+                    path = hook_root / "hooks.json"
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    payload["hooks"]["SessionStart"][0]["hooks"][0]["command"] = "true"
+                    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                elif mutation == "missing-script":
+                    (hook_root / "inject_unslop.py").unlink()
+                else:
+                    (hook_root / "surprise.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+                errors = validate_repository(root)
+                self.assertTrue(any("unslop hook" in error.lower() for error in errors), errors)
+
+    def test_validator_rejects_tampered_pinned_upstream_source(self) -> None:
+        root = self.copy_repository()
+        path = (
+            root
+            / "plugins"
+            / "codex-dev-flow"
+            / "third-party"
+            / "sources"
+            / "pstack"
+            / "unslop"
+            / "SKILL.md"
+        )
+        path.write_text(path.read_text(encoding="utf-8") + "\nTampered.\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(any("upstream" in error.lower() and "digest" in error.lower() for error in errors), errors)
 
     def test_missing_profile_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -695,7 +744,7 @@ class ContractTests(unittest.TestCase):
                     continue
                 body = skill_path.read_text(encoding="utf-8")
                 self.assertGreater(len(body.splitlines()), 4, name)
-                if name != "brainstorm":
+                if name not in {"brainstorm", "design"}:
                     self.assertNotIn("references/", body.lower(), name)
                 self.assertNotIn("route-code-change", body, name)
                 self.assertNotIn("quick-code-change", body, name)

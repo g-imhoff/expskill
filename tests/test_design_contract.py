@@ -17,7 +17,9 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "plan",
     "design",
+    "grill-me",
     "implement",
+    "unslop",
     "use-expand",
 }
 EXPECTED_DESIGN_FILES = {

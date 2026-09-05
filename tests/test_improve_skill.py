@@ -13,8 +13,10 @@ EXPECTED_PUBLIC_SKILLS = {
     "use-expand",
     "brainstorm",
     "design",
+    "grill-me",
     "plan",
     "implement",
+    "unslop",
 }
 EXPECTED_STAGES = (
     "Establish the stack program",
@@ -148,12 +150,12 @@ class ImproveSkillContractTests(unittest.TestCase):
             with self.subTest(artifact=artifact):
                 self.assertIn(artifact, body)
 
-    def test_upgrade_queue_has_exactly_five_public_targets_and_no_removed_phase(self) -> None:
+    def test_upgrade_queue_has_exactly_seven_public_targets_and_no_removed_phase(self) -> None:
         """Regression: the maintainer queue must not select or preserve acceptance as a target."""
 
         body = self.skill_body().lower()
-        self.assertIn("five production skills", body)
-        self.assertNotIn("seven production skills", body)
+        self.assertIn("seven production skills", body)
+        self.assertNotIn("five production skills", body)
         self.assertNotIn("$" + "acceptance", body)
         self.assertNotIn("→ acceptance", body)
         self.assertNotIn("acceptance →", body)
@@ -299,7 +301,10 @@ class ImproveSkillContractTests(unittest.TestCase):
 
     def test_router_is_last_and_each_skill_is_completed_once(self) -> None:
         body = self.skill_body().lower()
-        self.assertIn("brainstorm → plan → design → implement → use-expand", body)
+        self.assertIn(
+            "brainstorm → plan → design → implement → grill-me → unslop → use-expand",
+            body,
+        )
         self.assertIn("complete one target before selecting another", body)
         self.assertIn("upgrade `use-expand` last", body)
 

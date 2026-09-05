@@ -1,6 +1,6 @@
 ---
 name: improve-skill
-description: Use only when explicitly asked to improve, redesign, or evaluate agent skills in this repository; run the evidence-gated stack improvement program one target at a time and stay inactive for ordinary development work.
+description: Use only when explicitly asked to improve, redesign, or evaluate agent skills in this repository. Run the evidence-gated stack improvement program one target at a time and stay inactive for ordinary development work.
 ---
 
 # Improve Skill
@@ -26,7 +26,7 @@ Keep this maintainer workflow separate from the product skill surface. Do not ad
 Use this mode only to test `$improve-skill`, never to improve or certify the production stack. Its rules override the production-specific instructions in stages 1–13:
 
 1. Create a unique temporary run directory outside the checkout. Copy one disposable fixture into it without symlinks, keep the checked-in fixture read-only, and snapshot the production skill surface before any trial.
-2. In stage 1, build a fixture-only stack map, contract, and one-entry fixture-only queue bound to that copy. This queue substitutes for the production queue; do not select or advance any of the five production skills.
+2. In stage 1, build a fixture-only stack map, contract, and one-entry fixture-only queue bound to that copy. This queue substitutes for the production queue. Do not select or advance any of the seven production skills.
 3. In stages 2–12, write only inside the temporary run directory. Treat every target, candidate, test, repair, review, and verification result as disposable workflow evidence.
 4. In stage 13, replace the production-stack audit with a fixture-only terminal audit. Check the copied fixture, the complete evidence chain, sentinel files, and the unchanged production snapshot.
 5. Emit only a `workflow-validation` record, not a release record. It cannot satisfy target completion, stack completion, or release, even when every fixture gate passes. Never call this stack completion.
@@ -60,7 +60,7 @@ Perform this setup once for the stack, then reuse it for every target:
 2. Record shared invariants in the stack contract. Include direct-invocation rules, side-effect boundaries, handoff schemas, public naming, installation surface, and router constraints.
 3. Record the initial upgrade queue as:
 
-   `brainstorm → plan → design → implement → use-expand`
+   `brainstorm → plan → design → implement → grill-me → unslop → use-expand`
 
 4. Change that order only when dependency evidence requires it. Preserve the rule to upgrade `use-expand` last because it must route against the final phase contracts.
 5. Define the ten-category rubric and release commands before selecting a target.
@@ -73,10 +73,10 @@ Select the first unfinished entry in the upgrade queue. Bind the run to the targ
 
 State:
 
-- the target and its single job;
-- why it is next;
-- owned files;
-- neighbouring skills that must not be absorbed;
+- the target and its single job.
+- why it is next.
+- owned files.
+- neighbouring skills that must not be absorbed.
 - the shared regressions that must remain green.
 
 Do not begin a second target, including research for it, while the current target remains unfinished.
@@ -85,12 +85,12 @@ Do not begin a second target, including research for it, while the current targe
 
 Inspect the current target without changing it. Build the baseline report from:
 
-- its `SKILL.md`, metadata, bundled resources, validators, and tests;
-- at least five realistic should-use prompts;
-- at least five should-not-use or near-neighbour prompts;
-- ambiguous and multi-turn cases;
-- current output, tool, permission, failure, and handoff behavior;
-- line and context cost;
+- its `SKILL.md`, metadata, bundled resources, validators, and tests.
+- at least five realistic should-use prompts.
+- at least five should-not-use or near-neighbour prompts.
+- ambiguous and multi-turn cases.
+- current output, tool, permission, failure, and handoff behavior.
+- line and context cost.
 - known user complaints and preserved strengths.
 
 Run existing deterministic checks. When safe, run the current skill on disposable inputs so later claims compare against real behavior rather than memory. Record current failures and current green regressions separately.
@@ -101,13 +101,13 @@ Spawn at least three independent research agents in parallel or in waves allowed
 
 Assign distinct lanes:
 
-1. **domain techniques**: current professional methods relevant to the target's job;
-2. **agent-skill design**: instruction, interaction, tooling, and comparable skill practices;
+1. **domain techniques**: current professional methods relevant to the target's job.
+2. **agent-skill design**: instruction, interaction, tooling, and comparable skill practices.
 3. **evaluation and failure modes**: adversarial cases, measurement, and common breakdowns.
 
 Start with those three lanes. Enforce a per-target maximum of four research-agent sessions across at most two research waves, 24 evidence cards, and 6,000 words. The only optional fourth session answers one unresolved, decision-relevant question identified by the evidence sieve. Before exceeding any limit, ask exactly one user authorization question and stop.
 
-Give researchers the target purpose and their bounded question. Do not reveal the candidate design, expected conclusion, hidden cases, desired scores, or another researcher's output. Tell them: return evidence only; do not edit the repository; do not draft the skill; cite direct sources; state applicability and limitations.
+Give researchers the target purpose and their bounded question. Do not reveal the candidate design, expected conclusion, hidden cases, desired scores, or another researcher's output. Tell them: return evidence only. Do not edit the repository. Do not draft the skill. Cite direct sources. State applicability and limitations.
 
 Bound each lane to at most six of its strongest evidence cards and 1,500 words. Stop browsing when the lane has direct evidence for its bounded question or additional sources only repeat known claims. Do not start another research wave except for the single allowed follow-up above.
 
@@ -130,15 +130,15 @@ Normalize and deduplicate the research pack without exposing future decisions to
 
 Classify each card:
 
-- `adopt`: direct fit with adequate evidence;
-- `experiment`: plausible but requires a target-specific trial;
+- `adopt`: direct fit with adequate evidence.
+- `experiment`: plausible but requires a target-specific trial.
 - `reject`: irrelevant, duplicated, unsupported, ceremonial, or disproportionate.
 
 Record the reason and conflicts for every classification. Preserve useful dissent instead of resolving it by majority vote. Pass only retained evidence into design.
 
 ## 6. Facilitate the design workshop
 
-Use the retained evidence to facilitate—not dictate—the design. Keep divergence separate from convergence.
+Use the retained evidence to facilitate, not dictate, the design. Keep divergence separate from convergence.
 
 1. Restate the target outcome, non-goals, current failures, and preserved strengths.
 2. Ask exactly one question per turn when a product decision is needed. Do not guess, batch unrelated questions, or advance a dependent stage before the answer.
@@ -154,26 +154,26 @@ If the user declines or cannot resolve a behavior-changing decision, stop the ru
 
 Translate the accepted direction into a skill contract containing exactly these concerns:
 
-- purpose and success signal;
-- triggers and non-triggers;
-- inputs and preconditions;
-- ordered behavior and decision rules;
-- allowed and forbidden actions;
-- tool, permission, and delegation boundaries;
-- output and handoff contract;
-- failure, blocked, and changed-goal behavior;
-- stopping conditions;
+- purpose and success signal.
+- triggers and non-triggers.
+- inputs and preconditions.
+- ordered behavior and decision rules.
+- allowed and forbidden actions.
+- tool, permission, and delegation boundaries.
+- output and handoff contract.
+- failure, blocked, and changed-goal behavior.
+- stopping conditions.
 - required resources and explicit non-goals.
 
-Resolve contradictions with the stack contract before proceeding. Obtain the user's decision for material product choices. Freeze the contract for evaluation work; later changes return here.
+Resolve contradictions with the stack contract before proceeding. Obtain the user's decision for material product choices. Freeze the contract for evaluation work. Later changes return here.
 
 ## 8. Define acceptance before implementation
 
 Create the evaluation pack before any implementation edit. Cover four layers:
 
-1. **static**: package structure, metadata, resource, naming, and forbidden-dependency checks;
-2. **triggering**: positive, negative, near-miss, ambiguous, and conflicting requests;
-3. **behavior**: realistic single-turn and multi-turn trajectories, outputs, tools, writes, recovery, and stop behavior;
+1. **static**: package structure, metadata, resource, naming, and forbidden-dependency checks.
+2. **triggering**: positive, negative, near-miss, ambiguous, and conflicting requests.
+3. **behavior**: realistic single-turn and multi-turn trajectories, outputs, tools, writes, recovery, and stop behavior.
 4. **integration**: direct invocation, neighbouring skills, handoffs, installation, and router constraints.
 
 Divide cases into visible development cases, frozen validation cases, and hidden release cases. Keep hidden cases, expected scores, and planted defects outside candidate and trial contexts. Use deterministic assertions for exact invariants and calibrated human or independent review for open-ended quality.
@@ -186,31 +186,31 @@ Give one writable implementer one accepted brief, one owned target, and the fail
 
 Require the implementer to:
 
-- preserve unrelated work and the public stack contract;
-- change only the target, its target-specific resources and metadata, and tests or validators required by the accepted contract;
-- prefer concise instructions over new resources until repeated evidence justifies them;
-- return changed product decisions instead of silently expanding scope;
+- preserve unrelated work and the public stack contract.
+- change only the target, its target-specific resources and metadata, and tests or validators required by the accepted contract.
+- prefer concise instructions over new resources until repeated evidence justifies them.
+- return changed product decisions instead of silently expanding scope.
 - record the candidate diff and exact local checks.
 
 Do not let researchers implement, implementers self-certify, or one repair alter a different skill.
 
 ## 10. Run fresh-context trials
 
-Test the candidate only in a disposable repository made from a copy or isolated worktree. Never test by editing a production skill. Run every model trial with `codex exec --ephemeral --ignore-user-config --json`; retain the full invocation and JSON event stream. A run missing any isolation flag is invalid evidence.
+Test the candidate only in a disposable repository made from a copy or isolated worktree. Never test by editing a production skill. Run every model trial with `codex exec --ephemeral --ignore-user-config --json`. Retain the full invocation and JSON event stream. A run missing any isolation flag is invalid evidence.
 
 For every trial:
 
-- start a fresh agent context;
-- pass only the candidate skill, realistic request, and necessary task artifacts;
-- withhold the intended answer, diagnosis, hidden cases, prior transcript, sibling output, and scorecard;
-- bind the raw prompt, loaded skill, target revision, tool events, outputs, and resulting filesystem state;
+- start a fresh agent context.
+- pass only the candidate skill, realistic request, and necessary task artifacts.
+- withhold the intended answer, diagnosis, hidden cases, prior transcript, sibling output, and scorecard.
+- bind the raw prompt, loaded skill, target revision, tool events, outputs, and resulting filesystem state.
 - repeat variable scenarios enough to distinguish reliable behavior from one lucky pass.
 
 Write a trial receipt that binds the candidate digest, exact request and prompt digest, loaded-skill digest, fresh context or session identity, tool events, output digest, before-and-after filesystem manifest, and verdict. Reject a receipt when any binding is missing or does not match the retained raw evidence.
 
 Cover typical, ambiguous, edge, adversarial, and multi-turn cases. Treat context leakage, wrong-skill loading, unauthorized writes, false success, and missing trace evidence as failures.
 
-After the fresh trials, obtain an initial independent review of the current contract, candidate, evaluation pack, and raw evidence before initial scoring, even when no repair was needed. Apply the evidence-access, severity, verdict, and blocking rules from stage 12. Use its findings as scoring evidence; do not advance a `not ready` candidate to verification.
+After the fresh trials, obtain an initial independent review of the current contract, candidate, evaluation pack, and raw evidence before initial scoring, even when no repair was needed. Apply the evidence-access, severity, verdict, and blocking rules from stage 12. Use its findings as scoring evidence. Do not advance a `not ready` candidate to verification.
 
 ## 11. Repair the lowest category
 
@@ -246,7 +246,7 @@ Stop rather than score 10 when evidence is missing, a gate is flaky, requirement
 
 After all ten categories reach 10:
 
-1. Run a final same-revision review, even when no repair was needed. Give an independent read-only reviewer the accepted contract, candidate diff, tests, and raw evidence—not the desired verdict. Embed the required artifacts in its prompt or provide explicit read-only access to their exact paths. Verify access before review; an inaccessible artifact invalidates the review instead of counting as a product finding.
+1. Run a final same-revision review, even when no repair was needed. Give an independent read-only reviewer the accepted contract, candidate diff, tests, and raw evidence, not the desired verdict. Embed the required artifacts in its prompt or provide explicit read-only access to their exact paths. Verify access before review. An inaccessible artifact invalidates the review instead of counting as a product finding.
 2. Require severity, evidence, impact, correction, and `ready` or `not ready` for every finding set.
 3. Treat every High or Medium finding as release-blocking. Any `not ready` verdict blocks verification, release, and target completion. Lower each affected category below 10, return it to the repair loop, and rerun affected gates. Only a fresh independent review of the repaired revision can clear the block.
 4. Give an independent verifier the exact accepted commands and current revision. Require exit status and relevant output without tracked-source edits or reliance on another agent's claims.
@@ -259,13 +259,13 @@ Commit, push, merge, publish, or install only when the user has authorized that 
 
 After every target is complete, audit the stack as a system:
 
-- each product skill works through direct invocation;
-- each phase stays independent and performs one job;
-- shared handoffs and evidence remain compatible;
-- the public plugin contains exactly its accepted skills;
-- the router selects and opens exactly one next phase;
-- no phase silently opens the whole pipeline;
-- complete development journeys preserve acceptance, review, verification, and integration gates;
+- each product skill works through direct invocation.
+- each phase stays independent and performs one job.
+- shared handoffs and evidence remain compatible.
+- the public plugin contains exactly its accepted skills.
+- the router selects and opens exactly one next phase.
+- no phase silently opens the whole pipeline.
+- complete development journeys preserve acceptance, review, verification, and integration gates.
 - documentation, metadata, installer, validator, and tests describe the same product.
 
 Run the full release commands from a clean checkout. Preserve the final stack evidence and unresolved limitations. Do not call the program complete when any target, category, hidden case, review, verification command, or shared invariant is unresolved.

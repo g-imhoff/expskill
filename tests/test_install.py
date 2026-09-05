@@ -32,8 +32,10 @@ SKILL_NAMES = (
     "use-expand",
     "brainstorm",
     "design",
+    "grill-me",
     "plan",
     "implement",
+    "unslop",
 )
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
 MANIFEST_VERSION = json.loads(
@@ -88,7 +90,9 @@ def seed_repository(path: Path) -> Path:
     shutil.copytree(ROOT / ".agents", path / ".agents")
     shutil.copytree(source_plugin / ".codex-plugin", destination_plugin / ".codex-plugin")
     shutil.copytree(source_plugin / "assets", destination_plugin / "assets")
+    shutil.copytree(source_plugin / "hooks", destination_plugin / "hooks")
     shutil.copytree(source_plugin / "skills", destination_plugin / "skills")
+    shutil.copytree(source_plugin / "third-party", destination_plugin / "third-party")
     # Seed the same route-neutral plugin inputs that a real marketplace
     # registration receives, including the centralized worktree helper.
     shutil.copytree(source_scripts, destination_plugin / "scripts")
@@ -259,6 +263,26 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((destination / "plan_graph.py").is_file())
             self.assertFalse((destination / "plan_graph.py").is_symlink())
             self.assertGreater((destination / "plan_graph.py").stat().st_size, 0)
+
+    def test_seed_repository_copies_hooks_and_pinned_third_party_sources(self) -> None:
+        """Regression: install fixtures must match the complete plugin package."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = seed_repository(Path(temporary) / "repository")
+            source = ROOT / "plugins" / "codex-dev-flow"
+            destination = repository / "plugins" / "codex-dev-flow"
+            for relative in ("hooks", "third-party"):
+                source_files = {
+                    path.relative_to(source / relative).as_posix(): path.read_bytes()
+                    for path in (source / relative).rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                }
+                destination_files = {
+                    path.relative_to(destination / relative).as_posix(): path.read_bytes()
+                    for path in (destination / relative).rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                }
+                self.assertEqual(destination_files, source_files, relative)
 
     def test_seed_repository_rejects_invalid_route_neutral_helper(self) -> None:
         """Fixture regression: missing, symlinked, or empty helpers fail closed."""
