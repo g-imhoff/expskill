@@ -1853,6 +1853,7 @@ def build_fixture_trace(
         artifact_type = event.get("artifact_type")
         artifact_id = event.get("artifact_id")
         input_artifact_ids = event.get("input_artifact_ids")
+        files = event.get("files")
         if (
             not isinstance(event_name, str)
             or artifact_type is not None
@@ -1866,18 +1867,43 @@ def build_fixture_trace(
                     not isinstance(item, str) for item in input_artifact_ids
                 )
             )
-            or "files" in event and not isinstance(event["files"], list)
+            or "files" in event
+            and (
+                not isinstance(files, list)
+                or any(
+                    not isinstance(item, dict)
+                    or "byte_count" in item
+                    and (
+                        type(item["byte_count"]) is not int
+                        or item["byte_count"] < 0
+                    )
+                    for item in files
+                )
+            )
+            or "mode" in event
+            and not isinstance(event["mode"], str)
         ):
             return invalid_fixture
+        if event_name == "resolve":
+            selected_mode = event.get("selected_mode")
+            if not isinstance(selected_mode, str):
+                return invalid_fixture
         if event_name == "research_pack":
             lanes = event.get("lanes", [])
             if not isinstance(lanes, list) or any(
-                not isinstance(lane, dict) for lane in lanes
+                not isinstance(lane, dict)
+                or not isinstance(lane.get("role"), str)
+                or not lane["role"]
+                for lane in lanes
             ):
                 return invalid_fixture
         if event_name == "evidence_sieved":
             card_count = event.get("card_count", 0)
             if type(card_count) is not int or card_count < 0:
+                return invalid_fixture
+        if event_name == "candidate_edit":
+            revision = event.get("candidate_revision")
+            if trusted_candidate_locator("d" * 32, revision) is None:
                 return invalid_fixture
 
     fixture_workflow = hashlib.sha256(
@@ -10533,6 +10559,104 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                         f"fixture construction leaked {type(error).__name__}: {error}"
                     )
                 self.assertIn("INVALID_EVENT_SCHEMA", codes)
+
+    def test_fixture_builder_rejects_adjacent_json_shapes_without_throwing(self) -> None:
+        """Unhashable controls and malformed manifest counts fail deterministically."""
+
+        payload = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source = payload["traces"]["accepted_exact_improve"]
+        mutants: list[tuple[str, str, list[dict[str, Any]]]] = []
+
+        for selected_mode in ([], {}):
+            trace = copy.deepcopy(source)
+            next(
+                event for event in trace if event.get("event") == "resolve"
+            )["selected_mode"] = selected_mode
+            mutants.append(
+                (
+                    f"selected_mode_{type(selected_mode).__name__}",
+                    "accepted_exact_improve",
+                    trace,
+                )
+            )
+
+        for revision in ("", "../escape"):
+            trace = copy.deepcopy(source)
+            next(
+                event
+                for event in trace
+                if event.get("event") == "candidate_edit"
+            )["candidate_revision"] = revision
+            mutants.append(
+                (
+                    f"candidate_revision_{revision!r}",
+                    "accepted_exact_improve",
+                    trace,
+                )
+            )
+
+        for role in ([], {}):
+            trace = copy.deepcopy(source)
+            research = next(
+                event
+                for event in trace
+                if event.get("event") == "research_pack"
+            )
+            research["lanes"][0]["role"] = role
+            mutants.append(
+                (
+                    f"lane_role_{type(role).__name__}",
+                    "accepted_exact_improve",
+                    trace,
+                )
+            )
+
+        for trace_id in ("accepted_exact_improve", "mutant_manifest_count"):
+            for byte_count in ("128", [], {}):
+                trace = copy.deepcopy(source)
+                candidate = next(
+                    event
+                    for event in trace
+                    if event.get("event") == "candidate_edit"
+                )
+                candidate["artifact_type"] = "candidate-manifest"
+                candidate["files"] = [{"byte_count": byte_count}]
+                mutants.append(
+                    (
+                        f"{trace_id}_byte_count_{type(byte_count).__name__}",
+                        trace_id,
+                        trace,
+                    )
+                )
+
+        for name, trace_id, raw_events in mutants:
+            with self.subTest(mutant=name):
+                try:
+                    built = build_fixture_trace(
+                        "visible", trace_id, raw_events
+                    )
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(built, BUILDER_FIXTURES)
+                    }
+                except (
+                    AttributeError,
+                    IndexError,
+                    KeyError,
+                    StopIteration,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    self.fail(
+                        f"fixture construction leaked {type(error).__name__}: {error}"
+                    )
+                self.assertTrue(
+                    {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
+                )
 
     def test_accepted_fixture_builder_preserves_supplied_events(self) -> None:
         """A hostile event injected into an accepted fixture reaches the oracle."""
