@@ -1,0 +1,12 @@
+{
+  "schema_version": "skill-builder-recorded-verification-control-v1",
+  "evidence_kind": "recorded-fixture-control",
+  "execution_kind": "behavioral-case-runner",
+  "case_execution": "all-frozen-cases",
+  "command": "fixture-behavioral-verification",
+  "raw_output": {
+    "status": "pass",
+    "source": "recorded-trial-control"
+  },
+  "limitation": "Recorded fixture control, not live-agent certification."
+}

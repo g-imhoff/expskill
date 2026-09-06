@@ -18,6 +18,9 @@ FIXTURES = ROOT / "tests" / "fixtures"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
 SKILL_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills" / "skill-builder"
 PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills"
+TRIAL_CONTROL_PATH = "controls/recorded-trial-control.json"
+VERIFICATION_CONTROL_PATH = "controls/recorded-verification-control.json"
+USER_AUTHORITY_CONTROL_PATH = "controls/trusted-user-authority.json"
 EXPECTED_SCENARIOS = {
     "create_non_git_near_neighbour",
     "improve_exact_malformed",
@@ -183,6 +186,21 @@ EVENT_REQUIRED_FIELDS = {
     "target_abandoned": frozenset(
         {"target_identity", "lock_nonce", "lock_owner"}
     ),
+    "cleanup_authority_recorded": frozenset(
+        {
+            "valid",
+            "effect",
+            "authority_event_digest",
+            "user_identity",
+            "user_role",
+            "authority_source",
+            "authority_control_path",
+            "authority_control_digest",
+            "authority_timestamp",
+            "finalized_revision",
+            "run_directory_identity",
+        }
+    ),
     "contract_written": frozenset({"contract_digest"}),
     "contract_changed": frozenset({"contract_digest"}),
     "target_snapshot_changed": frozenset({"target_snapshot"}),
@@ -233,7 +251,43 @@ EVENT_REQUIRED_FIELDS = {
             "path",
         }
     ),
-    "user_confirmed": frozenset({"contract_digest"}),
+    "user_confirmed": frozenset(
+        {
+            "contract_digest",
+            "accepted",
+            "user_identity",
+            "user_role",
+            "authority_source",
+            "authority_control_path",
+            "authority_control_digest",
+            "confirmation_timestamp",
+            "confirmation_event_digest",
+            "contract_artifact_id",
+        }
+    ),
+    "verification_recorded": frozenset(
+        {
+            "behavioral_trials",
+            "behavioral_case_ids",
+            "commands",
+            "started_at",
+            "ended_at",
+            "exit_status",
+            "raw_output_digests",
+            "execution_kind",
+            "control_artifact_path",
+            "control_artifact_digest",
+            "limitation",
+            "before_target_manifest_digest",
+            "after_target_manifest_digest",
+            "verification_evidence_digest",
+            "conclusion",
+            "independent",
+            "read_only",
+            "verifier_identity",
+            "verifier_role",
+        }
+    ),
     "evaluation_frozen": frozenset(
         {
             "contract_digest",
@@ -467,12 +521,47 @@ CANDIDATE_FILE_FIELDS = frozenset(
     {"path", "media_kind", "byte_count", "digest"}
 )
 CASE_EVIDENCE_FIELDS = frozenset(
-    {"case_id", "raw_request_digest", "raw_evidence_digest"}
+    {
+        "case_id",
+        "case_digest",
+        "candidate_digest",
+        "raw_request_digest",
+        "raw_prompt_digest",
+        "loaded_skill_digest",
+        "tool_event_digest",
+        "output_digest",
+        "before_target_manifest_digest",
+        "after_target_manifest_digest",
+        "filesystem_result_digest",
+        "observable_assertion_results",
+        "forbidden_effect_results",
+        "verdict",
+        "limitation",
+        "control_artifact_path",
+        "control_artifact_digest",
+        "raw_evidence_digest",
+    }
 )
 CASE_RECEIPT_FIELDS = frozenset(
     {
         "case_id",
+        "case_digest",
+        "candidate_digest",
+        "raw_request_digest",
         "raw_evidence_digest",
+        "raw_prompt_digest",
+        "loaded_skill_digest",
+        "tool_event_digest",
+        "output_digest",
+        "before_target_manifest_digest",
+        "after_target_manifest_digest",
+        "filesystem_result_digest",
+        "observable_assertions_digest",
+        "forbidden_effects_digest",
+        "verdict",
+        "limitation",
+        "control_artifact_path",
+        "control_artifact_digest",
         "receipt_digest",
         "fresh_context_id",
     }
@@ -509,13 +598,17 @@ MEDIA_KIND_RE = re.compile(
 )
 
 
-def load_traces(partition: str) -> dict[str, list[dict[str, Any]]]:
+def load_raw_traces(partition: str) -> dict[str, list[dict[str, Any]]]:
     payload = json.loads(
         (BUILDER_FIXTURES / partition / "traces.json").read_text(encoding="utf-8")
     )
+    return payload["traces"]
+
+
+def load_traces(partition: str) -> dict[str, list[dict[str, Any]]]:
     return {
         trace_id: build_fixture_trace(partition, trace_id, events)
-        for trace_id, events in payload["traces"].items()
+        for trace_id, events in load_raw_traces(partition).items()
     }
 
 
@@ -524,6 +617,128 @@ def load_scenarios(partition: str) -> dict[str, dict[str, Any]]:
         (BUILDER_FIXTURES / partition / "scenarios.json").read_text(encoding="utf-8")
     )
     return {scenario["id"]: scenario for scenario in payload["scenarios"]}
+
+
+def retained_json_control(
+    fixture_root: Path,
+    relative_path: str,
+) -> tuple[dict[str, Any], str] | None:
+    """Load one read-only control and bind its exact retained bytes."""
+
+    normalized = normalized_run_relative_path(relative_path)
+    if normalized != relative_path:
+        return None
+    try:
+        root = fixture_root.resolve()
+        path = (root / normalized).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return None
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, TypeError, UnicodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload, hashlib.sha256(raw).hexdigest()
+
+
+def validated_trial_control(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    retained = retained_json_control(fixture_root, TRIAL_CONTROL_PATH)
+    if retained is None:
+        return None
+    control, digest = retained
+    if (
+        set(control)
+        != {
+            "schema_version",
+            "evidence_kind",
+            "tool_events",
+            "output",
+            "after_target_manifest",
+            "filesystem_result",
+            "assertion_status",
+            "forbidden_effect_status",
+            "verdict",
+            "limitation",
+        }
+        or control.get("schema_version")
+        != "skill-builder-recorded-trial-control-v1"
+        or control.get("evidence_kind") != "recorded-fixture-control"
+        or not isinstance(control.get("tool_events"), list)
+        or not isinstance(control.get("output"), str)
+        or not control["output"]
+        or not isinstance(control.get("after_target_manifest"), dict)
+        or not isinstance(control.get("filesystem_result"), dict)
+        or control.get("assertion_status") != "pass"
+        or control.get("forbidden_effect_status") != "not-observed"
+        or control.get("verdict") != "pass"
+        or not isinstance(control.get("limitation"), str)
+        or not control["limitation"]
+    ):
+        return None
+    return control, digest
+
+
+def validated_verification_control(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    retained = retained_json_control(fixture_root, VERIFICATION_CONTROL_PATH)
+    if retained is None:
+        return None
+    control, digest = retained
+    if (
+        set(control)
+        != {
+            "schema_version",
+            "evidence_kind",
+            "execution_kind",
+            "case_execution",
+            "command",
+            "raw_output",
+            "limitation",
+        }
+        or control.get("schema_version")
+        != "skill-builder-recorded-verification-control-v1"
+        or control.get("evidence_kind") != "recorded-fixture-control"
+        or control.get("execution_kind") != "behavioral-case-runner"
+        or control.get("case_execution") != "all-frozen-cases"
+        or not isinstance(control.get("command"), str)
+        or not control["command"]
+        or not isinstance(control.get("raw_output"), dict)
+        or not isinstance(control.get("limitation"), str)
+        or not control["limitation"]
+    ):
+        return None
+    return control, digest
+
+
+def validated_user_authority_control(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    retained = retained_json_control(fixture_root, USER_AUTHORITY_CONTROL_PATH)
+    if retained is None:
+        return None
+    control, digest = retained
+    if (
+        set(control)
+        != {
+            "schema_version",
+            "evidence_kind",
+            "user_identity",
+            "user_role",
+            "authority_source",
+        }
+        or control.get("schema_version")
+        != "skill-builder-trusted-user-authority-v1"
+        or control.get("evidence_kind") != "trusted-fixture-ingress"
+        or control.get("user_identity") != "fixture-user-v1"
+        or control.get("user_role") != "user"
+        or control.get("authority_source") != "explicit-user-event"
+    ):
+        return None
+    return control, digest
 
 
 def fixture_case_sources(
@@ -1002,13 +1217,63 @@ def evaluation_event_shape_is_valid(event: dict[str, Any]) -> bool:
 
 
 def case_evidence_is_valid(entry: object) -> bool:
+    if not isinstance(entry, dict) or set(entry) != CASE_EVIDENCE_FIELDS:
+        return False
+    assertion_results = entry.get("observable_assertion_results")
+    effect_results = entry.get("forbidden_effect_results")
     return (
-        isinstance(entry, dict)
-        and set(entry) == CASE_EVIDENCE_FIELDS
-        and isinstance(entry.get("case_id"), str)
+        isinstance(entry.get("case_id"), str)
         and bool(entry["case_id"])
-        and digest_is_valid(entry.get("raw_request_digest"))
-        and digest_is_valid(entry.get("raw_evidence_digest"))
+        and all(
+            digest_is_valid(entry.get(field))
+            for field in (
+                "raw_request_digest",
+                "case_digest",
+                "candidate_digest",
+                "raw_prompt_digest",
+                "loaded_skill_digest",
+                "tool_event_digest",
+                "output_digest",
+                "before_target_manifest_digest",
+                "after_target_manifest_digest",
+                "filesystem_result_digest",
+                "control_artifact_digest",
+                "raw_evidence_digest",
+            )
+        )
+        and normalized_run_relative_path(entry.get("control_artifact_path"))
+        is not None
+        and isinstance(assertion_results, list)
+        and bool(assertion_results)
+        and all(
+            isinstance(result, dict)
+            and set(result) == {"assertion", "passed", "evidence_digest"}
+            and isinstance(result.get("assertion"), str)
+            and bool(result["assertion"])
+            and type(result.get("passed")) is bool
+            and digest_is_valid(result.get("evidence_digest"))
+            for result in assertion_results
+        )
+        and len({result["assertion"] for result in assertion_results})
+        == len(assertion_results)
+        and isinstance(effect_results, list)
+        and bool(effect_results)
+        and all(
+            isinstance(result, dict)
+            and set(result) == {"effect", "observed", "evidence_digest"}
+            and isinstance(result.get("effect"), str)
+            and bool(result["effect"])
+            and type(result.get("observed")) is bool
+            and digest_is_valid(result.get("evidence_digest"))
+            for result in effect_results
+        )
+        and len({result["effect"] for result in effect_results})
+        == len(effect_results)
+        and entry.get("verdict") in {"pass", "fail"}
+        and isinstance(entry.get("limitation"), str)
+        and bool(entry["limitation"])
+        and entry.get("raw_evidence_digest")
+        == canonical_digest(entry, digest_field="raw_evidence_digest")
     )
 
 
@@ -1018,11 +1283,157 @@ def case_receipt_is_valid(entry: object) -> bool:
         and set(entry) == CASE_RECEIPT_FIELDS
         and isinstance(entry.get("case_id"), str)
         and bool(entry["case_id"])
-        and digest_is_valid(entry.get("raw_evidence_digest"))
-        and digest_is_valid(entry.get("receipt_digest"))
+        and all(
+            digest_is_valid(entry.get(field))
+            for field in (
+                "raw_request_digest",
+                "case_digest",
+                "candidate_digest",
+                "raw_evidence_digest",
+                "raw_prompt_digest",
+                "loaded_skill_digest",
+                "tool_event_digest",
+                "output_digest",
+                "before_target_manifest_digest",
+                "after_target_manifest_digest",
+                "filesystem_result_digest",
+                "observable_assertions_digest",
+                "forbidden_effects_digest",
+                "control_artifact_digest",
+                "receipt_digest",
+            )
+        )
+        and normalized_run_relative_path(entry.get("control_artifact_path"))
+        is not None
         and isinstance(entry.get("fresh_context_id"), str)
         and bool(entry["fresh_context_id"])
+        and entry.get("verdict") in {"pass", "fail"}
+        and isinstance(entry.get("limitation"), str)
+        and bool(entry["limitation"])
+        and entry.get("receipt_digest")
+        == canonical_digest(entry, digest_field="receipt_digest")
     )
+
+
+def recorded_fixture_case_results(
+    evaluation_cases: list[dict[str, Any]],
+    loaded_skill_digest: str,
+    context_prefix: str,
+    fixture_root: Path = BUILDER_FIXTURES,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create internally consistent recorded evidence without claiming a live trial."""
+
+    retained_control = validated_trial_control(fixture_root)
+    if retained_control is None:
+        raise ValueError("recorded trial control is missing or malformed")
+    control, control_digest = retained_control
+    raw_evidence: list[dict[str, Any]] = []
+    receipts: list[dict[str, Any]] = []
+    for index, case in enumerate(evaluation_cases, start=1):
+        case_id = case["id"]
+        assertion_results = [
+            {
+                "assertion": assertion,
+                "passed": True,
+                "evidence_digest": canonical_digest(
+                    {
+                        "case_id": case_id,
+                        "assertion": assertion,
+                        "status": control["assertion_status"],
+                        "control_artifact_digest": control_digest,
+                    }
+                ),
+            }
+            for assertion in case["observable_assertions"]
+        ]
+        effect_results = [
+            {
+                "effect": effect,
+                "observed": False,
+                "evidence_digest": canonical_digest(
+                    {
+                        "case_id": case_id,
+                        "effect": effect,
+                        "status": control["forbidden_effect_status"],
+                        "control_artifact_digest": control_digest,
+                    }
+                ),
+            }
+            for effect in case["forbidden_effects"]
+        ]
+        evidence = {
+            "case_id": case_id,
+            "case_digest": canonical_digest(case),
+            "candidate_digest": loaded_skill_digest,
+            "raw_request_digest": case["raw_request_digest"],
+            "raw_prompt_digest": case["raw_request_digest"],
+            "loaded_skill_digest": loaded_skill_digest,
+            "tool_event_digest": canonical_digest(
+                {
+                    "case_id": case_id,
+                    "tool_events": control["tool_events"],
+                    "control_artifact_digest": control_digest,
+                }
+            ),
+            "output_digest": canonical_digest(
+                {
+                    "case_id": case_id,
+                    "output": control["output"],
+                    "control_artifact_digest": control_digest,
+                }
+            ),
+            "before_target_manifest_digest": case["setup_manifest"]["digest"],
+            "after_target_manifest_digest": canonical_digest(
+                {
+                    "case_id": case_id,
+                    "after_target_manifest": control["after_target_manifest"],
+                    "control_artifact_digest": control_digest,
+                }
+            ),
+            "filesystem_result_digest": canonical_digest(
+                {
+                    "case_id": case_id,
+                    "filesystem_result": control["filesystem_result"],
+                    "control_artifact_digest": control_digest,
+                }
+            ),
+            "observable_assertion_results": assertion_results,
+            "forbidden_effect_results": effect_results,
+            "verdict": control["verdict"],
+            "limitation": control["limitation"],
+            "control_artifact_path": TRIAL_CONTROL_PATH,
+            "control_artifact_digest": control_digest,
+        }
+        evidence["raw_evidence_digest"] = canonical_digest(evidence)
+        receipt = {
+            "case_id": case_id,
+            "case_digest": evidence["case_digest"],
+            "candidate_digest": evidence["candidate_digest"],
+            "raw_request_digest": evidence["raw_request_digest"],
+            "raw_evidence_digest": evidence["raw_evidence_digest"],
+            "raw_prompt_digest": evidence["raw_prompt_digest"],
+            "loaded_skill_digest": evidence["loaded_skill_digest"],
+            "tool_event_digest": evidence["tool_event_digest"],
+            "output_digest": evidence["output_digest"],
+            "before_target_manifest_digest": evidence[
+                "before_target_manifest_digest"
+            ],
+            "after_target_manifest_digest": evidence[
+                "after_target_manifest_digest"
+            ],
+            "filesystem_result_digest": evidence["filesystem_result_digest"],
+            "observable_assertions_digest": canonical_digest(assertion_results),
+            "forbidden_effects_digest": canonical_digest(effect_results),
+            "verdict": evidence["verdict"],
+            "limitation": evidence["limitation"],
+            "control_artifact_path": evidence["control_artifact_path"],
+            "control_artifact_digest": evidence["control_artifact_digest"],
+            "fresh_context_id": f"{context_prefix}-{index}",
+        }
+        receipt["receipt_digest"] = canonical_digest(receipt)
+        raw_evidence.append(evidence)
+        receipts.append(receipt)
+    return raw_evidence, receipts
 
 
 def fixture_target_manifest_is_valid(manifest: object) -> bool:
@@ -1066,6 +1477,187 @@ def fixture_target_manifest_is_valid(manifest: object) -> bool:
             for entry in files
         )
     )
+
+
+def validated_baseline_evidence(
+    manifest: dict[str, Any],
+    target_root: Path,
+    mode: str,
+) -> dict[str, Any] | None:
+    """Validate mode-specific baseline claims against disposable target bytes."""
+
+    evidence = manifest.get("baseline_evidence")
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "schema_version",
+        "mode",
+        "exact_target",
+        "absence_evidence_digest",
+        "overlap_map",
+        "host_conventions",
+        "current_behavior",
+        "observed_failures",
+        "strengths",
+        "context_cost",
+        "tool_behavior",
+        "permission_behavior",
+        "preserved_regressions",
+    }:
+        return None
+    exact_target = evidence.get("exact_target")
+    overlap_map = evidence.get("overlap_map")
+    regressions = evidence.get("preserved_regressions")
+    if (
+        evidence.get("schema_version")
+        != "skill-builder-baseline-evidence-v1"
+        or evidence.get("mode") != mode
+        or not isinstance(exact_target, dict)
+        or set(exact_target)
+        != {"identity", "path", "exists", "content_digest"}
+        or exact_target.get("identity") != manifest.get("canonical_target")
+        or exact_target.get("path") != manifest.get("exact_target_path")
+        or type(exact_target.get("exists")) is not bool
+        or exact_target.get("exists") != manifest.get("exact_target_exists")
+        or not isinstance(overlap_map, list)
+        or not isinstance(regressions, list)
+        or not unique_nonempty_strings(evidence.get("host_conventions"))
+    ):
+        return None
+
+    def resolved_target_file(path: object) -> Path | None:
+        normalized = normalized_run_relative_path(path)
+        if normalized is None:
+            return None
+        try:
+            resolved_root = target_root.resolve()
+            resolved = (resolved_root / normalized).resolve()
+            return resolved if resolved.is_relative_to(resolved_root) else None
+        except (OSError, RuntimeError):
+            return None
+
+    exact_path = resolved_target_file(exact_target.get("path"))
+    if exact_path is None or exact_path.exists() is not exact_target["exists"]:
+        return None
+    exact_digest = (
+        hashlib.sha256(exact_path.read_bytes()).hexdigest()
+        if exact_path.is_file()
+        else None
+    )
+    if exact_target.get("content_digest") != exact_digest:
+        return None
+
+    declared_neighbour_paths = {
+        entry.get("path")
+        for entry in manifest.get("files", [])
+        if isinstance(entry, dict)
+        and entry.get("kind") == "disposable-near-neighbour"
+    }
+    overlap_identities: list[str] = []
+    for overlap in overlap_map:
+        if not isinstance(overlap, dict) or set(overlap) != {
+            "target_identity",
+            "path",
+            "content_digest",
+        }:
+            return None
+        overlap_path = resolved_target_file(overlap.get("path"))
+        if (
+            not isinstance(overlap.get("target_identity"), str)
+            or not overlap["target_identity"]
+            or overlap.get("path") not in declared_neighbour_paths
+            or overlap_path is None
+            or not overlap_path.is_file()
+            or not digest_is_valid(overlap.get("content_digest"))
+            or hashlib.sha256(overlap_path.read_bytes()).hexdigest()
+            != overlap.get("content_digest")
+        ):
+            return None
+        overlap_identities.append(overlap["target_identity"])
+    if (
+        overlap_identities != manifest.get("near_neighbours")
+        or len(overlap_identities) != len(set(overlap_identities))
+    ):
+        return None
+
+    if not all(
+        isinstance(item, dict)
+        and set(item)
+        == {
+            "case_id",
+            "subject_identity",
+            "subject_path",
+            "baseline_content_digest",
+        }
+        and isinstance(item.get("case_id"), str)
+        and bool(item["case_id"])
+        and isinstance(item.get("subject_identity"), str)
+        and bool(item["subject_identity"])
+        and normalized_run_relative_path(item.get("subject_path")) is not None
+        and digest_is_valid(item.get("baseline_content_digest"))
+        for item in regressions
+    ) or len({item["case_id"] for item in regressions}) != len(regressions):
+        return None
+
+    if mode == "create":
+        expected_regressions = [
+            {
+                "case_id": f"preserve-neighbour:{overlap['target_identity']}",
+                "subject_identity": overlap["target_identity"],
+                "subject_path": overlap["path"],
+                "baseline_content_digest": overlap["content_digest"],
+            }
+            for overlap in overlap_map
+        ]
+        mode_valid = (
+            exact_target["exists"] is False
+            and exact_target["content_digest"] is None
+            and evidence.get("absence_evidence_digest")
+            == canonical_digest(exact_target)
+            and evidence.get("current_behavior") is None
+            and evidence.get("observed_failures") == []
+            and evidence.get("strengths") == []
+            and evidence.get("context_cost") is None
+            and evidence.get("tool_behavior") is None
+            and evidence.get("permission_behavior") is None
+            and regressions == expected_regressions
+        )
+    elif mode == "improve":
+        current_behavior = evidence.get("current_behavior")
+        expected_regressions = [
+            {
+                "case_id": "preserve-summary-capability",
+                "subject_identity": exact_target["identity"],
+                "subject_path": exact_target["path"],
+                "baseline_content_digest": exact_target["content_digest"],
+            }
+        ]
+        mode_valid = (
+            exact_target["exists"] is True
+            and digest_is_valid(exact_target.get("content_digest"))
+            and evidence.get("absence_evidence_digest") is None
+            and overlap_map == []
+            and isinstance(current_behavior, dict)
+            and set(current_behavior)
+            == {"classification", "source_path", "source_content_digest"}
+            and current_behavior.get("classification")
+            == manifest.get("observed_quality")
+            and current_behavior.get("source_path") == exact_target["path"]
+            and current_behavior.get("source_content_digest") == exact_digest
+            and unique_nonempty_strings(evidence.get("observed_failures"))
+            and unique_nonempty_strings(evidence.get("strengths"))
+            and all(
+                isinstance(evidence.get(field), str)
+                and bool(evidence[field])
+                for field in (
+                    "context_cost",
+                    "tool_behavior",
+                    "permission_behavior",
+                )
+            )
+            and regressions == expected_regressions
+        )
+    else:
+        mode_valid = False
+    return copy.deepcopy(evidence) if mode_valid else None
 
 
 def retained_manifest_entry_is_valid(
@@ -1191,6 +1783,12 @@ def _target_from_manifest(locator: object) -> tuple[str, str]:
         return "fixture-release-notes", "create"
     if locator == "targets/create-collision/manifest.json":
         return "fixture-release-notes", "create"
+    if locator == "targets/multi-target-alpha/manifest.json":
+        return "fixture-alpha", "create"
+    if locator == "targets/multi-target-beta/manifest.json":
+        return "fixture-beta", "create"
+    if locator == "targets/ambiguous/manifest.json":
+        return "unresolved-target", "unresolved"
     return "fixture-terse-summary", "improve"
 
 
@@ -1206,6 +1804,111 @@ def _resolution_authority() -> dict[str, Any]:
         "candidate_effects": ["isolated-candidate-write"],
         "delivery_effects": [],
     }
+
+
+def expected_artifact_producer(
+    record: dict[str, Any],
+    validated_main_actor: object,
+) -> str | None:
+    """Return the only actor authorized to retain this artifact type."""
+
+    identity_field = {
+        "resolution-record": "actor_identity",
+        "design-record": "actor_identity",
+        "candidate-record": "actor_identity",
+        "review-record": "reviewer_identity",
+        "spec-outcome-record": "judge_identity",
+        "verification-record": "verifier_identity",
+    }.get(record.get("artifact_type"))
+    if identity_field is not None:
+        identity = record.get(identity_field)
+        return identity if isinstance(identity, str) and identity else None
+    return (
+        validated_main_actor
+        if isinstance(validated_main_actor, str) and validated_main_actor
+        else None
+    )
+
+
+def declared_artifact_producer_identities(
+    record: dict[str, Any],
+) -> set[str]:
+    """Collect producer claims while excluding user authority provenance."""
+
+    return {
+        record[field]
+        for field in (
+            "actor_identity",
+            "reviewer_identity",
+            "scorer_identity",
+            "judge_identity",
+            "verifier_identity",
+        )
+        if isinstance(record.get(field), str) and record[field]
+    }
+
+
+def canonical_user_confirmation_digest(record: dict[str, Any]) -> str:
+    return canonical_digest(
+        {
+            "event": "user_confirmed",
+            "user_identity": record.get("user_identity"),
+            "confirmation_timestamp": record.get("confirmation_timestamp"),
+            "authority_control_path": record.get("authority_control_path"),
+            "authority_control_digest": record.get("authority_control_digest"),
+            "workflow_id": record.get("workflow_id"),
+            "target_identity": record.get("target_identity"),
+            "target_snapshot": record.get("target_snapshot"),
+            "contract_artifact_id": record.get("contract_artifact_id"),
+            "contract_digest": record.get("contract_digest"),
+            "accepted": record.get("accepted"),
+        }
+    )
+
+
+def canonical_cleanup_authority_digest(record: dict[str, Any]) -> str:
+    return canonical_digest(
+        {
+            "event": "cleanup_authority_recorded",
+            "actor": record.get("actor"),
+            "user_identity": record.get("user_identity"),
+            "authority_timestamp": record.get("authority_timestamp"),
+            "authority_control_path": record.get("authority_control_path"),
+            "authority_control_digest": record.get("authority_control_digest"),
+            "workflow_id": record.get("workflow_id"),
+            "target_identity": record.get("target_identity"),
+            "finalized_revision": record.get("finalized_revision"),
+            "run_directory_identity": record.get("run_directory_identity"),
+            "delivery_record_digest": record.get("delivery_record_digest"),
+            "effect": record.get("effect"),
+        }
+    )
+
+
+def canonical_verification_evidence_digest(record: dict[str, Any]) -> str:
+    return canonical_digest(
+        {
+            "behavioral_case_ids": record.get("behavioral_case_ids"),
+            "commands": record.get("commands"),
+            "started_at": record.get("started_at"),
+            "ended_at": record.get("ended_at"),
+            "exit_status": record.get("exit_status"),
+            "raw_output_digests": record.get("raw_output_digests"),
+            "execution_kind": record.get("execution_kind"),
+            "control_artifact_path": record.get("control_artifact_path"),
+            "control_artifact_digest": record.get("control_artifact_digest"),
+            "limitation": record.get("limitation"),
+            "before_target_manifest_digest": record.get(
+                "before_target_manifest_digest"
+            ),
+            "after_target_manifest_digest": record.get(
+                "after_target_manifest_digest"
+            ),
+            "conclusion": record.get("conclusion"),
+            "revision": record.get("revision"),
+            "verifier_identity": record.get("verifier_identity"),
+        }
+    )
 
 
 def _event_destination_stage(event_name: str, source_stage: str | None) -> str:
@@ -1291,7 +1994,7 @@ def seal_trace(
     inferred_target, inferred_mode = _target_from_manifest(first.get("target_manifest"))
     current_target = target_identity or first.get("target_identity") or inferred_target
     current_mode = mode or first.get("selected_mode") or first.get("mode") or inferred_mode
-    if current_mode not in {"create", "improve"}:
+    if current_mode not in {"create", "improve", "unresolved"}:
         current_mode = "improve"
     current_snapshot = digest_value(
         first.get("target_snapshot", f"{current_target}-snapshot")
@@ -1304,6 +2007,7 @@ def seal_trace(
     prior_receipts: list[dict[str, Any]] = []
     authority_envelope: dict[str, Any] | None = None
     candidate_seen = False
+    current_main_actor: str | None = None
 
     for sequence, event in enumerate(events):
         if not isinstance(event, dict):
@@ -1328,13 +2032,18 @@ def seal_trace(
             current_workflow = next_workflow
             current_target = next_target
             selected_mode = event.get("selected_mode", resolved_mode)
-            if mode in {"create", "improve"}:
+            if mode in {"create", "improve", "unresolved"}:
                 current_mode = mode
-            elif selected_mode in {"create", "improve"}:
+            elif selected_mode in {"create", "improve", "unresolved"}:
                 current_mode = selected_mode
             current_snapshot = digest_value(
                 event.get("target_snapshot", f"{current_target}-snapshot")
             )
+            if (
+                isinstance(event.get("actor_identity"), str)
+                and event.get("actor_role") == "main-agent"
+            ):
+                current_main_actor = event["actor_identity"]
         elif event_name == "target_snapshot_changed":
             current_snapshot = digest_value(event.get("target_snapshot"))
             snapshot_generation += 1
@@ -1486,20 +2195,11 @@ def seal_trace(
                     str(event_name), source_stage
                 ),
                 "created_sequence": sequence,
-                "producer": next(
-                    (
-                        event[key]
-                        for key in (
-                            "actor_identity",
-                            "reviewer_identity",
-                            "scorer_identity",
-                            "judge_identity",
-                            "verifier_identity",
-                        )
-                        if isinstance(event.get(key), str) and event[key]
-                    ),
-                    "main-agent-v1",
-                ),
+                "producer": expected_artifact_producer(
+                    event,
+                    current_main_actor,
+                )
+                or "unbound-producer",
                 "created_at": _timestamp(sequence),
                 "input_bindings": input_bindings,
                 "payload_path": f"artifacts/{sequence:04d}-{artifact_id}.json",
@@ -1594,8 +2294,15 @@ def reseal_declared_trace(
     authority_envelope: dict[str, Any] | None = None
     candidate_seen = False
     artifact_envelopes: dict[str, dict[str, Any]] = {}
+    current_main_actor: str | None = None
     for sequence, event in enumerate(events):
         event_name = event.get("event")
+        if (
+            event_name == "resolve"
+            and isinstance(event.get("actor_identity"), str)
+            and event.get("actor_role") == "main-agent"
+        ):
+            current_main_actor = event["actor_identity"]
         if event_name == "candidate_edit":
             candidate_seen = True
         if candidate_seen and authority_envelope is not None:
@@ -1652,7 +2359,11 @@ def reseal_declared_trace(
                     str(event_name), source_stage
                 ),
                 "created_sequence": sequence,
-                "producer": old_envelope.get("producer", "main-agent-v1"),
+                "producer": expected_artifact_producer(
+                    event,
+                    current_main_actor,
+                )
+                or "unbound-producer",
                 "created_at": _timestamp(sequence),
                 "input_bindings": input_bindings,
                 "payload_path": old_envelope.get(
@@ -2095,31 +2806,49 @@ def build_fixture_trace(
             ):
                 return invalid_fixture
 
-    fixture_workflow = hashlib.sha256(
-        f"{partition}:{trace_id}".encode("utf-8")
-    ).hexdigest()[:32]
-    accepted_candidate_events = [
+    raw_resolutions = [
+        event for event in raw_events if event.get("event") == "resolve"
+    ]
+    fixture_blueprint = (
+        raw_resolutions[0].get("fixture_blueprint")
+        if len(raw_resolutions) == 1
+        else None
+    )
+    declared_fixture_workflow = (
+        raw_resolutions[0].get("fixture_workflow_id")
+        if len(raw_resolutions) == 1
+        else None
+    )
+    if fixture_blueprint in {"candidate-path-v1", "repair-path-v1"} and (
+        not isinstance(declared_fixture_workflow, str)
+        or WORKFLOW_ID_RE.fullmatch(declared_fixture_workflow) is None
+    ):
+        return invalid_fixture
+    fixture_workflow = (
+        declared_fixture_workflow
+        if isinstance(declared_fixture_workflow, str)
+        and WORKFLOW_ID_RE.fullmatch(declared_fixture_workflow) is not None
+        else hashlib.sha256(
+            f"{partition}:{trace_id}".encode("utf-8")
+        ).hexdigest()[:32]
+    )
+    blueprint_candidate_events = [
         event
         for event in raw_events
         if isinstance(event, dict) and event.get("event") == "candidate_edit"
     ]
-    if trace_id.startswith("accepted_") and accepted_candidate_events:
+    if (
+        fixture_blueprint in {"candidate-path-v1", "repair-path-v1"}
+        and blueprint_candidate_events
+    ):
         revisions = [
             event.get("candidate_revision")
-            for event in accepted_candidate_events
+            for event in blueprint_candidate_events
             if isinstance(event.get("candidate_revision"), str)
         ]
-        if len(revisions) != len(accepted_candidate_events):
+        if len(revisions) != len(blueprint_candidate_events):
             return seal_trace(raw_events, workflow_id=fixture_workflow)
-        raw_resolutions = [
-            event for event in raw_events if event.get("event") == "resolve"
-        ]
-        if len(raw_resolutions) != 1:
-            return invalid_fixture
-        if any(
-            isinstance(event, dict) and event.get("event") == "repair_completed"
-            for event in raw_events
-        ):
+        if fixture_blueprint == "repair-path-v1":
             complete = accepted_repair_trace(
                 fixture_workflow,
                 prior_revision=revisions[0],
@@ -2141,6 +2870,37 @@ def build_fixture_trace(
             if len(revisions) > 1
             else copy.deepcopy(complete[: last_index + 1])
         )
+        declared_stage_counts: dict[str, int] = {}
+        blueprint_stages = {
+            "baseline_captured",
+            "research_pack",
+            "evidence_sieved",
+            "designs_challenged",
+            "contract_written",
+            "contract_changed",
+            "user_confirmed",
+            "evaluation_frozen",
+            "candidate_edit",
+            "repair_completed",
+        }
+        for event in raw_events:
+            event_name = event.get("event")
+            if event_name in blueprint_stages:
+                declared_stage_counts[event_name] = (
+                    declared_stage_counts.get(event_name, 0) + 1
+                )
+        retained_stage_counts: dict[str, int] = {}
+        filtered_candidate_path: list[dict[str, Any]] = []
+        for event in candidate_path:
+            event_name = event.get("event")
+            if event_name not in blueprint_stages:
+                filtered_candidate_path.append(event)
+                continue
+            retained_count = retained_stage_counts.get(str(event_name), 0)
+            if retained_count < declared_stage_counts.get(str(event_name), 0):
+                filtered_candidate_path.append(event)
+                retained_stage_counts[str(event_name)] = retained_count + 1
+        candidate_path = filtered_candidate_path
         raw_resolution = raw_resolutions[0]
         fixture_manifest = raw_resolution.get("target_manifest")
         fixture_target, inferred_mode = _target_from_manifest(fixture_manifest)
@@ -2168,8 +2928,49 @@ def build_fixture_trace(
             candidate_path,
             raw_events,
         )
+        declared_baseline = next(
+            (
+                event.get("baseline_evidence")
+                for event in raw_events
+                if event.get("event") == "baseline_captured"
+            ),
+            None,
+        )
+        if isinstance(declared_baseline, dict):
+            declared_regression_ids = [
+                item.get("case_id")
+                for item in declared_baseline.get("preserved_regressions", [])
+                if isinstance(item, dict)
+            ]
+            for event in candidate_path:
+                if event.get("artifact_type") == "preserved-regressions":
+                    event["case_ids"] = declared_regression_ids
         for event in candidate_path:
             source_event = event.get("fixture_source_event")
+            if (
+                event.get("event") == "baseline_captured"
+                and (
+                    not isinstance(source_event, dict)
+                    or "baseline_evidence" not in source_event
+                )
+            ):
+                event.pop("baseline_evidence", None)
+            if event.get("event") == "user_confirmed":
+                for provenance_field in (
+                    "user_identity",
+                    "user_role",
+                    "authority_source",
+                    "authority_control_path",
+                    "authority_control_digest",
+                    "confirmation_timestamp",
+                    "confirmation_event_digest",
+                    "contract_artifact_id",
+                ):
+                    if (
+                        not isinstance(source_event, dict)
+                        or provenance_field not in source_event
+                    ):
+                        event.pop(provenance_field, None)
             event["workflow_id"] = fixture_workflow
             event["target_identity"] = fixture_target
             event["target_snapshot"] = fixture_snapshot
@@ -2185,19 +2986,33 @@ def build_fixture_trace(
             ):
                 event["evaluation_digest"] = raw_evaluation
         rubric = next(
-            event
-            for event in candidate_path
-            if event.get("artifact_type") == "rubric"
+            (
+                event
+                for event in candidate_path
+                if event.get("artifact_type") == "rubric"
+            ),
+            None,
         )
         evaluation = next(
-            event
-            for event in candidate_path
-            if event.get("event") == "evaluation_frozen"
+            (
+                event
+                for event in candidate_path
+                if event.get("event") == "evaluation_frozen"
+            ),
+            None,
         )
-        evaluation_source = evaluation.get("fixture_source_event")
+        evaluation_source = (
+            evaluation.get("fixture_source_event")
+            if isinstance(evaluation, dict)
+            else None
+        )
         if (
-            not isinstance(evaluation_source, dict)
-            or "cases" not in evaluation_source
+            isinstance(evaluation, dict)
+            and isinstance(rubric, dict)
+            and (
+                not isinstance(evaluation_source, dict)
+                or "cases" not in evaluation_source
+            )
         ):
             evaluation["cases"] = expected_evaluation_cases(
                 BUILDER_FIXTURES,
@@ -2206,6 +3021,104 @@ def build_fixture_trace(
                 rubric["artifact_id"],
                 digest_value(rubric["rubric_digest"]),
             )
+        if isinstance(evaluation, dict):
+            current_revision: str | None = None
+            candidate_skill_digest: str | None = None
+            generated_case_receipts: list[dict[str, Any]] | None = None
+            for event in candidate_path:
+                if event.get("event") == "candidate_edit":
+                    current_revision = event.get("candidate_revision")
+                    candidate_skill_digest = None
+                    generated_case_receipts = None
+                elif (
+                    event.get("artifact_type") == "candidate-manifest"
+                    and event.get("candidate_revision") == current_revision
+                ):
+                    skill_digests = {
+                        file.get("digest")
+                        for file in event.get("files", [])
+                        if isinstance(file, dict)
+                        and PurePosixPath(str(file.get("path"))).name
+                        == "SKILL.md"
+                        and digest_is_valid(file.get("digest"))
+                    }
+                    candidate_skill_digest = (
+                        next(iter(skill_digests))
+                        if len(skill_digests) == 1
+                        else None
+                    )
+                elif (
+                    event.get("artifact_type") == "raw-trial-evidence"
+                    and isinstance(current_revision, str)
+                    and isinstance(candidate_skill_digest, str)
+                ):
+                    raw_case_evidence, generated_case_receipts = (
+                        recorded_fixture_case_results(
+                            evaluation["cases"],
+                            candidate_skill_digest,
+                            f"{trace_id}-{current_revision}-trial",
+                        )
+                    )
+                    event["case_ids"] = list(evaluation["case_ids"])
+                    event["case_evidence"] = raw_case_evidence
+                    event["raw_artifact_digests"] = [
+                        entry["raw_evidence_digest"]
+                        for entry in raw_case_evidence
+                    ]
+                elif (
+                    event.get("artifact_type") == "trial-receipt"
+                    and generated_case_receipts is not None
+                ):
+                    event["case_ids"] = list(evaluation["case_ids"])
+                    event["case_receipts"] = generated_case_receipts
+                    event["fresh_context_ids"] = [
+                        entry["fresh_context_id"]
+                        for entry in generated_case_receipts
+                    ]
+            final_raw_record = next(
+                (
+                    event
+                    for event in reversed(candidate_path)
+                    if event.get("artifact_type") == "raw-trial-evidence"
+                ),
+                None,
+            )
+            final_receipt_record = next(
+                (
+                    event
+                    for event in reversed(candidate_path)
+                    if event.get("artifact_type") == "trial-receipt"
+                ),
+                None,
+            )
+            raw_digest_by_case = {
+                entry["case_id"]: entry["raw_evidence_digest"]
+                for entry in (final_raw_record or {}).get("case_evidence", [])
+            }
+            receipt_digest_by_case = {
+                entry["case_id"]: entry["receipt_digest"]
+                for entry in (final_receipt_record or {}).get(
+                    "case_receipts", []
+                )
+            }
+            for event in candidate_path:
+                if event.get("artifact_type") == "category-evidence":
+                    case_id = event.get("case_id")
+                    event["raw_evidence_digest"] = raw_digest_by_case.get(case_id)
+                    event["trial_receipt_digest"] = (
+                        receipt_digest_by_case.get(case_id)
+                    )
+                elif event.get("artifact_type") == "target-scorecard":
+                    for result in event.get("criterion_results", []):
+                        if not isinstance(result, dict):
+                            continue
+                        case_id = result.get("case_id")
+                        result["raw_evidence_digest"] = (
+                            raw_digest_by_case.get(case_id)
+                        )
+                        result["trial_receipt_digest"] = (
+                            receipt_digest_by_case.get(case_id)
+                        )
         candidate_resolution = next(
             event for event in candidate_path if event.get("event") == "resolve"
         )
@@ -2223,6 +3136,40 @@ def build_fixture_trace(
             }:
                 event["target_identity"] = fixture_target
         bind_fixture_candidate_paths(candidate_path, fixture_workflow)
+        final_candidate_manifest = next(
+            (
+                event
+                for event in reversed(candidate_path)
+                if event.get("artifact_type") == "candidate-manifest"
+            ),
+            None,
+        )
+        verification_record = next(
+            (
+                event
+                for event in candidate_path
+                if event.get("event") == "verification_recorded"
+            ),
+            None,
+        )
+        if (
+            isinstance(final_candidate_manifest, dict)
+            and isinstance(verification_record, dict)
+        ):
+            manifest_body = {
+                key: final_candidate_manifest.get(key)
+                for key in MANIFEST_HEADER_FIELDS
+            }
+            final_candidate_manifest_digest = canonical_digest(manifest_body)
+            verification_record["before_target_manifest_digest"] = (
+                final_candidate_manifest_digest
+            )
+            verification_record["after_target_manifest_digest"] = (
+                final_candidate_manifest_digest
+            )
+            verification_record["verification_evidence_digest"] = (
+                canonical_verification_evidence_digest(verification_record)
+            )
         return seal_trace(
             candidate_path,
             workflow_id=fixture_workflow,
@@ -2245,23 +3192,24 @@ def build_fixture_trace(
     if raw_resolution is not None and not any(
         event.get("event") == "queue_created" for event in events
     ):
-        queue_target, _ = _target_from_manifest(
+        queue_target, queue_mode = _target_from_manifest(
             raw_resolution.get("target_manifest")
         )
-        injected_lock_nonce = f"{trace_id}-lock-v1"
-        events[0:0] = [
-            {
-                "event": "queue_created",
-                "targets": [queue_target],
-            },
-            {
-                "event": "target_activated",
-                "target_identity": queue_target,
-                "lock_nonce": injected_lock_nonce,
-                "lock_owner": "main-agent-v1",
-                "lock_acquired_at": "2026-01-01T00:00:01Z",
-            },
-        ]
+        if queue_mode != "unresolved":
+            injected_lock_nonce = f"{trace_id}-lock-v1"
+            events[0:0] = [
+                {
+                    "event": "queue_created",
+                    "targets": [queue_target],
+                },
+                {
+                    "event": "target_activated",
+                    "target_identity": queue_target,
+                    "lock_nonce": injected_lock_nonce,
+                    "lock_owner": "main-agent-v1",
+                    "lock_acquired_at": "2026-01-01T00:00:01Z",
+                },
+            ]
     if injected_lock_nonce is not None:
         for event in events:
             if event.get("event") == "paused":
@@ -2416,6 +3364,21 @@ def validate_schema_boundary(
     authority_digest: str | None = None
     candidate_seen = False
     receipt_chain_valid = True
+    validated_main_actor: str | None = None
+    retained_user_authority = validated_user_authority_control(BUILDER_FIXTURES)
+    retained_verification = validated_verification_control(BUILDER_FIXTURES)
+    user_authority_control = (
+        retained_user_authority[0] if retained_user_authority is not None else None
+    )
+    user_authority_digest = (
+        retained_user_authority[1] if retained_user_authority is not None else None
+    )
+    verification_control = (
+        retained_verification[0] if retained_verification is not None else None
+    )
+    verification_control_digest = (
+        retained_verification[1] if retained_verification is not None else None
+    )
 
     def digest_claims_are_valid(value: Any, field: str | None = None) -> bool:
         if isinstance(value, dict):
@@ -2481,6 +3444,12 @@ def validate_schema_boundary(
                     f"unsupported transition event {event_name!r}",
                 )
             )
+        if (
+            event_name == "resolve"
+            and isinstance(event.get("actor_identity"), str)
+            and event.get("actor_role") == "main-agent"
+        ):
+            validated_main_actor = event["actor_identity"]
         required = EVENT_REQUIRED_FIELDS.get(str(event_name), frozenset())
         required_present = required.issubset(event)
         common_valid = (
@@ -2490,7 +3459,7 @@ def validate_schema_boundary(
             and bool(event["target_identity"])
             and isinstance(event.get("target_snapshot"), str)
             and SHA256_RE.fullmatch(event["target_snapshot"]) is not None
-            and event.get("mode") in {"create", "improve"}
+            and event.get("mode") in {"create", "improve", "unresolved"}
             and type(event.get("identity_generation")) is int
             and event["identity_generation"] >= 1
             and type(event.get("snapshot_generation")) is int
@@ -2649,6 +3618,38 @@ def validate_schema_boundary(
                 and isinstance(event.get("timestamp"), str)
                 and RFC3339_UTC_RE.fullmatch(event["timestamp"]) is not None
             )
+        elif event_name == "cleanup_authority_recorded":
+            shape_valid = (
+                event.get("valid") is True
+                and event.get("effect") == "cleanup"
+                and isinstance(event.get("actor"), str)
+                and bool(event["actor"])
+                and isinstance(event.get("user_identity"), str)
+                and bool(event["user_identity"])
+                and isinstance(user_authority_control, dict)
+                and event.get("user_identity")
+                == user_authority_control.get("user_identity")
+                and event.get("user_role") == user_authority_control.get("user_role")
+                and event.get("authority_source")
+                == user_authority_control.get("authority_source")
+                and event.get("authority_control_path")
+                == USER_AUTHORITY_CONTROL_PATH
+                and event.get("authority_control_digest")
+                == user_authority_digest
+                and isinstance(event.get("authority_timestamp"), str)
+                and RFC3339_UTC_RE.fullmatch(event["authority_timestamp"])
+                is not None
+                and event.get("authority_timestamp")
+                == event.get("transition_receipt", {}).get("created_at")
+                and isinstance(event.get("finalized_revision"), str)
+                and bool(event["finalized_revision"])
+                and isinstance(event.get("run_directory_identity"), str)
+                and bool(event["run_directory_identity"])
+                and digest_is_valid(event.get("delivery_record_digest"))
+                and digest_is_valid(event.get("authority_event_digest"))
+                and event.get("authority_event_digest")
+                == canonical_cleanup_authority_digest(event)
+            )
         elif event_name == "context_read":
             shape_valid = all(
                 isinstance(event.get(field), str) and bool(event[field])
@@ -2705,7 +3706,32 @@ def validate_schema_boundary(
         elif event_name == "candidate_edit":
             shape_valid = candidate_path_contract_is_valid(event)
         elif event_name == "user_confirmed":
-            shape_valid = isinstance(event.get("contract_digest"), str)
+            shape_valid = (
+                isinstance(event.get("contract_digest"), str)
+                and event.get("accepted") is True
+                and isinstance(event.get("user_identity"), str)
+                and bool(event["user_identity"])
+                and isinstance(user_authority_control, dict)
+                and event.get("user_identity")
+                == user_authority_control.get("user_identity")
+                and event.get("user_role") == user_authority_control.get("user_role")
+                and event.get("authority_source")
+                == user_authority_control.get("authority_source")
+                and event.get("authority_control_path")
+                == USER_AUTHORITY_CONTROL_PATH
+                and event.get("authority_control_digest")
+                == user_authority_digest
+                and isinstance(event.get("confirmation_timestamp"), str)
+                and RFC3339_UTC_RE.fullmatch(event["confirmation_timestamp"])
+                is not None
+                and event.get("confirmation_timestamp")
+                == event.get("artifact_envelope", {}).get("created_at")
+                and digest_is_valid(event.get("confirmation_event_digest"))
+                and event.get("confirmation_event_digest")
+                == canonical_user_confirmation_digest(event)
+                and isinstance(event.get("contract_artifact_id"), str)
+                and bool(event["contract_artifact_id"])
+            )
         elif event_name == "review_recorded":
             shape_valid = isinstance(event.get("findings"), list) and all(
                 isinstance(finding, dict) for finding in event.get("findings", [])
@@ -2750,6 +3776,40 @@ def validate_schema_boundary(
             shape_valid = (
                 type(event.get("behavioral_trials")) is int
                 and type(event.get("exit_status")) is int
+                and unique_nonempty_strings(event.get("behavioral_case_ids"))
+                and unique_nonempty_strings(event.get("commands"))
+                and isinstance(verification_control, dict)
+                and event.get("commands")
+                == [verification_control.get("command")]
+                and event.get("execution_kind")
+                == verification_control.get("execution_kind")
+                and event.get("control_artifact_path")
+                == VERIFICATION_CONTROL_PATH
+                and event.get("control_artifact_digest")
+                == verification_control_digest
+                and event.get("limitation")
+                == verification_control.get("limitation")
+                and isinstance(event.get("started_at"), str)
+                and RFC3339_UTC_RE.fullmatch(event["started_at"]) is not None
+                and isinstance(event.get("ended_at"), str)
+                and RFC3339_UTC_RE.fullmatch(event["ended_at"]) is not None
+                and event["started_at"] < event["ended_at"]
+                and unique_nonempty_strings(event.get("raw_output_digests"))
+                and all(
+                    digest_is_valid(item)
+                    for item in event.get("raw_output_digests", [])
+                )
+                and event.get("raw_output_digests")
+                == [canonical_digest(verification_control.get("raw_output"))]
+                and digest_is_valid(
+                    event.get("before_target_manifest_digest")
+                )
+                and digest_is_valid(
+                    event.get("after_target_manifest_digest")
+                )
+                and digest_is_valid(event.get("verification_evidence_digest"))
+                and event.get("verification_evidence_digest")
+                == canonical_verification_evidence_digest(event)
             )
         if not required_present or not common_valid or not shape_valid:
             failures.append(
@@ -2853,6 +3913,11 @@ def validate_schema_boundary(
                 and envelope.get("created_sequence") == index
                 and isinstance(envelope.get("producer"), str)
                 and bool(envelope["producer"])
+                and envelope.get("producer")
+                == expected_artifact_producer(event, validated_main_actor)
+                and declared_artifact_producer_identities(event).issubset(
+                    {envelope.get("producer")}
+                )
                 and isinstance(envelope.get("created_at"), str)
                 and RFC3339_UTC_RE.fullmatch(envelope["created_at"]) is not None
                 and envelope.get("input_bindings") == expected_bindings
@@ -3007,9 +4072,13 @@ def evidence_bound_finding(
 
 def accepted_finalization_trace(
     revision: str = "candidate-v1",
+    *,
+    workflow_id: str = "b" * 32,
+    target_identity: str = "fixture-terse-summary",
+    mode: str = "improve",
+    target_manifest: str = "targets/exact-improve/manifest.json",
+    target_snapshot: str = "fixture-improve-snapshot-v1",
 ) -> list[dict[str, Any]]:
-    workflow_id = "b" * 32
-    target_identity = "fixture-terse-summary"
     artifact_suffix = "" if revision == "candidate-v1" else f"-{revision}"
     scoring_review_id = f"scoring-review-v1{artifact_suffix}"
     final_review_id = f"final-review-v1{artifact_suffix}"
@@ -3045,7 +4114,26 @@ def accepted_finalization_trace(
     verification_id = f"verification-record-v1{artifact_suffix}"
     release_id = f"release-record-v1{artifact_suffix}"
     terminal_manifest_id = f"terminal-manifest-v1{artifact_suffix}"
-    target_snapshot = "fixture-improve-snapshot-v1"
+    lock_nonce = f"{target_identity}-lock-v1"
+    manifest_path = BUILDER_FIXTURES / target_manifest
+    target_manifest_record = json.loads(manifest_path.read_text(encoding="utf-8"))
+    baseline_evidence = validated_baseline_evidence(
+        target_manifest_record,
+        manifest_path.parent,
+        mode,
+    )
+    if baseline_evidence is None:
+        raise ValueError("accepted trace lacked valid mode-specific baseline evidence")
+    retained_user_authority = validated_user_authority_control(BUILDER_FIXTURES)
+    retained_verification = validated_verification_control(BUILDER_FIXTURES)
+    if retained_user_authority is None or retained_verification is None:
+        raise ValueError("accepted trace lacked retained authority or verification control")
+    user_authority_control, user_authority_digest = retained_user_authority
+    verification_control, verification_control_digest = retained_verification
+    preserved_regression_ids = [
+        item["case_id"]
+        for item in baseline_evidence["preserved_regressions"]
+    ]
     isolated_locator = trusted_candidate_locator(workflow_id, revision)
     if isolated_locator is None:
         raise ValueError("accepted candidate lacked a trusted isolated locator")
@@ -3080,34 +4168,37 @@ def accepted_finalization_trace(
         rubric_id,
         digest_value("target-rubric-v1"),
     )
-    evaluation_cases_by_id = {
-        case["id"]: case for case in evaluation_cases
-    }
-    raw_case_evidence = [
+    candidate_skill_digest = digest_value(f"candidate-content-{revision}")
+    raw_case_evidence, case_receipts = recorded_fixture_case_results(
+        evaluation_cases,
+        candidate_skill_digest,
+        f"trial-context-{revision}",
+    )
+    candidate_manifest_files = [
         {
-            "case_id": case_id,
-            "raw_request_digest": evaluation_cases_by_id[case_id][
-                "raw_request_digest"
-            ],
-            "raw_evidence_digest": digest_value(
-                {"raw_trial_evidence": case_id}
-            ),
+            "path": owned_candidate_path,
+            "media_kind": "text/markdown",
+            "byte_count": 128,
+            "digest": candidate_skill_digest,
         }
-        for case_id in all_case_ids
     ]
+    candidate_manifest_digest = canonical_digest(
+        {
+            "schema_version": "skill-builder-raw-manifest-v1",
+            "workflow_id": workflow_id,
+            "target_identity": target_identity,
+            "collection_type": "candidate-manifest",
+            "declared_item_count": 1,
+            "observed_item_count": 1,
+            "observed_byte_count": 128,
+            "files": candidate_manifest_files,
+            "overflow": None,
+        }
+    )
     raw_evidence_by_case = {
         evidence["case_id"]: evidence["raw_evidence_digest"]
         for evidence in raw_case_evidence
     }
-    case_receipts = [
-        {
-            "case_id": case_id,
-            "raw_evidence_digest": raw_evidence_by_case[case_id],
-            "receipt_digest": digest_value({"trial_receipt": case_id}),
-            "fresh_context_id": f"trial-context-{index}",
-        }
-        for index, case_id in enumerate(all_case_ids, start=1)
-    ]
     receipt_by_case = {
         receipt["case_id"]: receipt["receipt_digest"]
         for receipt in case_receipts
@@ -3237,6 +4328,43 @@ def accepted_finalization_trace(
         }
         for category, criterion_ids in CATEGORY_CRITERION_IDS.items()
     ]
+    confirmation_timestamp = "2026-01-01T00:00:10Z"
+    confirmation_event_digest = canonical_user_confirmation_digest(
+        {
+            "user_identity": user_authority_control["user_identity"],
+            "confirmation_timestamp": confirmation_timestamp,
+            "authority_control_path": USER_AUTHORITY_CONTROL_PATH,
+            "authority_control_digest": user_authority_digest,
+            "workflow_id": workflow_id,
+            "target_identity": target_identity,
+            "target_snapshot": digest_value(target_snapshot),
+            "contract_artifact_id": contract_id,
+            "contract_digest": digest_value("contract-v1"),
+            "accepted": True,
+        }
+    )
+    verification_fields = {
+        "behavioral_case_ids": list(all_case_ids),
+        "commands": [verification_control["command"]],
+        "started_at": "2026-01-01T00:00:20Z",
+        "ended_at": "2026-01-01T00:00:21Z",
+        "exit_status": 0,
+        "raw_output_digests": [
+            canonical_digest(verification_control["raw_output"])
+        ],
+        "execution_kind": verification_control["execution_kind"],
+        "control_artifact_path": VERIFICATION_CONTROL_PATH,
+        "control_artifact_digest": verification_control_digest,
+        "limitation": verification_control["limitation"],
+        "before_target_manifest_digest": candidate_manifest_digest,
+        "after_target_manifest_digest": candidate_manifest_digest,
+        "conclusion": "pass",
+        "revision": revision,
+        "verifier_identity": "target-verifier-v1",
+    }
+    verification_evidence_digest = canonical_verification_evidence_digest(
+        verification_fields
+    )
     events = [
         {
             "event": "queue_created",
@@ -3245,14 +4373,14 @@ def accepted_finalization_trace(
         {
             "event": "target_activated",
             "target_identity": target_identity,
-            "lock_nonce": "fixture-terse-summary-lock-v1",
+            "lock_nonce": lock_nonce,
             "lock_owner": "main-agent-v1",
             "lock_acquired_at": "2026-01-01T00:00:01Z",
         },
         {
             "event": "resolve",
-            "selected_mode": "improve",
-            "target_manifest": "targets/exact-improve/manifest.json",
+            "selected_mode": mode,
+            "target_manifest": target_manifest,
             "target_snapshot": target_snapshot,
             "actor_identity": "main-agent-v1",
             "actor_role": "main-agent",
@@ -3275,6 +4403,7 @@ def accepted_finalization_trace(
         {
             "event": "baseline_captured",
             "target_snapshot": target_snapshot,
+            "baseline_evidence": baseline_evidence,
             "artifact_id": baseline_id,
             "artifact_type": "baseline-report",
             "input_artifact_ids": [resolution_id],
@@ -3285,7 +4414,7 @@ def accepted_finalization_trace(
             "event": "artifact_retained",
             "artifact_id": regressions_id,
             "artifact_type": "preserved-regressions",
-            "case_ids": ["preserved-existing-behavior"],
+            "case_ids": preserved_regression_ids,
             "input_artifact_ids": [baseline_id],
             "valid": True,
             **base_binding,
@@ -3343,6 +4472,14 @@ def accepted_finalization_trace(
             "event": "user_confirmed",
             "contract_digest": "contract-v1",
             "accepted": True,
+            "user_identity": user_authority_control["user_identity"],
+            "user_role": user_authority_control["user_role"],
+            "authority_source": user_authority_control["authority_source"],
+            "authority_control_path": USER_AUTHORITY_CONTROL_PATH,
+            "authority_control_digest": user_authority_digest,
+            "confirmation_timestamp": confirmation_timestamp,
+            "confirmation_event_digest": confirmation_event_digest,
+            "contract_artifact_id": contract_id,
             "artifact_id": confirmation_id,
             "artifact_type": "user-confirmation-record",
             "input_artifact_ids": [contract_id],
@@ -3451,14 +4588,7 @@ def accepted_finalization_trace(
             "artifact_id": candidate_manifest_id,
             "artifact_type": "candidate-manifest",
             "candidate_revision": revision,
-            "files": [
-                {
-                    "path": owned_candidate_path,
-                    "media_kind": "text/markdown",
-                    "byte_count": 128,
-                    "digest": f"candidate-content-{revision}",
-                }
-            ],
+            "files": candidate_manifest_files,
             "input_artifact_ids": [candidate_id, candidate_diff_id, authority_id],
             "valid": True,
             **binding,
@@ -3472,7 +4602,11 @@ def accepted_finalization_trace(
                 entry["raw_evidence_digest"] for entry in raw_case_evidence
             ],
             "case_evidence": raw_case_evidence,
-            "input_artifact_ids": [candidate_id, evaluation_id],
+            "input_artifact_ids": [
+                candidate_id,
+                candidate_manifest_id,
+                evaluation_id,
+            ],
             "valid": True,
             **binding,
         },
@@ -3482,10 +4616,15 @@ def accepted_finalization_trace(
             "artifact_type": "trial-receipt",
             "case_ids": list(all_case_ids),
             "fresh_context_ids": [
-                f"trial-context-{index}" for index in range(1, 101)
+                receipt["fresh_context_id"] for receipt in case_receipts
             ],
             "case_receipts": case_receipts,
-            "input_artifact_ids": [candidate_id, evaluation_id, raw_trial_id],
+            "input_artifact_ids": [
+                candidate_id,
+                candidate_manifest_id,
+                evaluation_id,
+                raw_trial_id,
+            ],
             "valid": True,
             **binding,
         },
@@ -3707,9 +4846,9 @@ def accepted_finalization_trace(
             "artifact_id": verification_id,
             "artifact_type": "verification-record",
             "valid": True,
-            "behavioral_trials": 1,
-            "exit_status": 0,
-            "conclusion": "pass",
+            "behavioral_trials": len(all_case_ids),
+            **verification_fields,
+            "verification_evidence_digest": verification_evidence_digest,
             "independent": True,
             "read_only": True,
             "verifier_identity": "target-verifier-v1",
@@ -3738,7 +4877,7 @@ def accepted_finalization_trace(
         {
             "event": "target_finalized",
             "target_identity": target_identity,
-            "lock_nonce": "fixture-terse-summary-lock-v1",
+            "lock_nonce": lock_nonce,
             "lock_owner": "main-agent-v1",
         },
     ]
@@ -3746,7 +4885,7 @@ def accepted_finalization_trace(
         events,
         workflow_id=workflow_id,
         target_identity=target_identity,
-        mode="improve",
+        mode=mode,
     )
 
 
@@ -3808,35 +4947,12 @@ def accepted_repair_trace(
         if event.get("artifact_type") == "evaluation-pack"
     )
     case_ids = list(evaluation_record["case_ids"])
-    request_by_case = {
-        case["id"]: case["raw_request_digest"]
-        for case in evaluation_record["cases"]
-    }
-    raw_case_evidence = [
-        {
-            "case_id": case_id,
-            "raw_request_digest": request_by_case[case_id],
-            "raw_evidence_digest": digest_value(
-                {"repair_raw_trial": case_id, "revision": prior_revision}
-            ),
-        }
-        for case_id in case_ids
-    ]
-    raw_digest_by_case = {
-        entry["case_id"]: entry["raw_evidence_digest"]
-        for entry in raw_case_evidence
-    }
-    case_receipts = [
-        {
-            "case_id": case_id,
-            "raw_evidence_digest": raw_digest_by_case[case_id],
-            "receipt_digest": digest_value(
-                {"repair_trial_receipt": case_id, "revision": prior_revision}
-            ),
-            "fresh_context_id": f"repair-context-{index}",
-        }
-        for index, case_id in enumerate(case_ids, start=1)
-    ]
+    candidate_one_skill_digest = digest_value("repair-candidate-content-v1")
+    raw_case_evidence, case_receipts = recorded_fixture_case_results(
+        evaluation_record["cases"],
+        candidate_one_skill_digest,
+        f"repair-context-{prior_revision}",
+    )
     review_evidence = [
         artifact_manifest_one_id,
         diff_one_id,
@@ -3875,7 +4991,7 @@ def accepted_repair_trace(
                     "path": "candidate-v1/SKILL.md",
                     "media_kind": "text/markdown",
                     "byte_count": 96,
-                    "digest": "repair-candidate-content-v1",
+                    "digest": candidate_one_skill_digest,
                 }
             ],
             "input_artifact_ids": [
@@ -3895,7 +5011,11 @@ def accepted_repair_trace(
                 entry["raw_evidence_digest"] for entry in raw_case_evidence
             ],
             "case_evidence": raw_case_evidence,
-            "input_artifact_ids": [candidate_one_id, evaluation_id],
+            "input_artifact_ids": [
+                candidate_one_id,
+                candidate_manifest_one_id,
+                evaluation_id,
+            ],
             "valid": True,
             **binding,
         },
@@ -3905,11 +5025,12 @@ def accepted_repair_trace(
             "artifact_type": "trial-receipt",
             "case_ids": case_ids,
             "fresh_context_ids": [
-                f"repair-context-{index}" for index in range(1, 101)
+                receipt["fresh_context_id"] for receipt in case_receipts
             ],
             "case_receipts": case_receipts,
             "input_artifact_ids": [
                 candidate_one_id,
+                candidate_manifest_one_id,
                 evaluation_id,
                 raw_one_id,
             ],
@@ -3980,6 +5101,187 @@ def accepted_repair_trace(
     repaired_events = [*prefix, *repair_epoch, *suffix]
     bind_fixture_candidate_paths(repaired_events, workflow_id)
     return seal_trace(repaired_events, workflow_id=workflow_id)
+
+
+def accepted_serial_queue_composition() -> tuple[
+    list[dict[str, Any]], dict[str, list[dict[str, Any]]]
+]:
+    """Bind a serialized queue to two independently valid full builder runs."""
+
+    target_runs = {
+        "queue-alpha-run-v1": accepted_finalization_trace(
+            workflow_id="1" * 32,
+            target_identity="fixture-alpha",
+            mode="create",
+            target_manifest="targets/multi-target-alpha/manifest.json",
+            target_snapshot="fixture-alpha-snapshot-v1",
+        ),
+        "queue-beta-run-v1": accepted_finalization_trace(
+            workflow_id="2" * 32,
+            target_identity="fixture-beta",
+            mode="create",
+            target_manifest="targets/multi-target-beta/manifest.json",
+            target_snapshot="fixture-beta-snapshot-v1",
+        ),
+    }
+    queue_events = copy.deepcopy(
+        load_raw_traces("visible")["accepted_serial_queue"]
+    )
+    for terminal in (
+        event
+        for event in queue_events
+        if event.get("event") == "target_finalized"
+    ):
+        run = target_runs.get(str(terminal.get("builder_run_id")))
+        if run is None:
+            continue
+        finalized = next(
+            event for event in run if event.get("event") == "finalized"
+        )
+        terminal["builder_final_transition_digest"] = finalized[
+            "transition_receipt"
+        ]["receipt_digest"]
+    return (
+        seal_trace(
+            queue_events,
+            workflow_id="3" * 32,
+            target_identity="fixture-serialized-queue",
+            mode="create",
+        ),
+        target_runs,
+    )
+
+
+def evaluate_serialized_queue(
+    queue_trace: list[dict[str, Any]],
+    target_runs: dict[str, list[dict[str, Any]]],
+    fixture_root: Path,
+) -> tuple[OracleFailure, ...]:
+    """Validate queue order against independently evaluated builder outcomes."""
+
+    schema_failures, dispatchable = validate_schema_boundary(queue_trace)
+    failures = list(schema_failures)
+    declared: list[str] | None = None
+    states: dict[str, str] = {}
+    active: tuple[str, str, str] | None = None
+    used_runs: set[str] = set()
+    for index, event in enumerate(queue_trace):
+        if index not in dispatchable:
+            continue
+        event_name = event.get("event")
+        if event_name == "queue_created":
+            targets = event.get("targets")
+            if declared is not None or not unique_nonempty_strings(targets):
+                failures.append(
+                    OracleFailure(
+                        "INVALID_QUEUE_MEMBERSHIP",
+                        index,
+                        "queue membership was empty, duplicated, or redeclared",
+                    )
+                )
+                continue
+            declared = list(targets)
+            states = {target: "pending" for target in declared}
+        elif event_name == "target_activated":
+            target = event.get("target_identity")
+            expected = next(
+                (
+                    item
+                    for item in declared or []
+                    if states.get(item) == "pending"
+                ),
+                None,
+            )
+            if active is not None:
+                failures.append(
+                    OracleFailure(
+                        "MULTIPLE_ACTIVE_TARGETS",
+                        index,
+                        "a second target activated before the first lock closed",
+                    )
+                )
+            if target != expected:
+                failures.append(
+                    OracleFailure(
+                        "QUEUE_ACTIVATION_ORDER",
+                        index,
+                        "the active target did not match queue order",
+                    )
+                )
+            elif active is None:
+                active = (
+                    str(target),
+                    str(event.get("lock_nonce")),
+                    str(event.get("lock_owner")),
+                )
+                states[str(target)] = "active"
+        elif event_name == "target_finalized":
+            target = str(event.get("target_identity"))
+            lock_valid = (
+                active is not None
+                and active
+                == (
+                    target,
+                    event.get("lock_nonce"),
+                    event.get("lock_owner"),
+                )
+            )
+            if not lock_valid:
+                failures.append(
+                    OracleFailure(
+                        "QUEUE_TERMINAL_MISMATCH",
+                        index,
+                        "the terminal target did not own the active queue lock",
+                    )
+                )
+            run_id = event.get("builder_run_id")
+            run = target_runs.get(str(run_id))
+            builder_binding_valid = (
+                isinstance(run_id, str)
+                and run_id not in used_runs
+                and run is not None
+                and evaluate_trace(run, fixture_root) == ()
+            )
+            if builder_binding_valid and run is not None:
+                resolved_targets = {
+                    item.get("target_identity")
+                    for item in run
+                    if item.get("event") == "resolve"
+                }
+                finalized_events = [
+                    item for item in run if item.get("event") == "finalized"
+                ]
+                builder_binding_valid = (
+                    resolved_targets == {target}
+                    and len(finalized_events) == 1
+                    and event.get("builder_final_transition_digest")
+                    == finalized_events[0]
+                    .get("transition_receipt", {})
+                    .get("receipt_digest")
+                )
+            if not builder_binding_valid:
+                failures.append(
+                    OracleFailure(
+                        "INVALID_QUEUE_BUILDER_BINDING",
+                        index,
+                        "queue finalization lacked a zero-failure full builder outcome for the exact target and receipt",
+                    )
+                )
+            if lock_valid and builder_binding_valid:
+                used_runs.add(str(run_id))
+                states[target] = "finalized"
+                active = None
+    if declared is None or any(
+        states.get(target) != "finalized" for target in declared
+    ):
+        failures.append(
+            OracleFailure(
+                "INCOMPLETE_QUEUE",
+                len(queue_trace),
+                "not every declared target reached a bound terminal outcome",
+            )
+        )
+    return tuple(failures)
 
 
 def finalization_trace_after_aba(
@@ -4094,9 +5396,83 @@ def finalization_trace_after_aba(
         )
 
     replay = [event for event in replay if event["event"] not in queue_events]
-    return seal_trace(
+    rebuilt = seal_trace(
         [*queue_open, *prefix, *transitions, *replay, queue_terminal]
     )
+    evaluation = next(
+        event
+        for event in reversed(rebuilt)
+        if event.get("artifact_type") == "evaluation-pack"
+    )
+    candidate_manifest = next(
+        event
+        for event in reversed(rebuilt)
+        if event.get("artifact_type") == "candidate-manifest"
+    )
+    candidate_skill_digest = next(
+        entry["digest"]
+        for entry in candidate_manifest["files"]
+        if PurePosixPath(entry["path"]).name == "SKILL.md"
+    )
+    raw_evidence, case_receipts = recorded_fixture_case_results(
+        evaluation["cases"],
+        candidate_skill_digest,
+        f"trial-{transition}-replay",
+    )
+    raw_evidence_by_case = {
+        entry["case_id"]: entry for entry in raw_evidence
+    }
+    receipt_by_case = {
+        entry["case_id"]: entry for entry in case_receipts
+    }
+    for event in rebuilt:
+        if event.get("event") == "user_confirmed":
+            event["confirmation_timestamp"] = event["artifact_envelope"][
+                "created_at"
+            ]
+            event["confirmation_event_digest"] = (
+                canonical_user_confirmation_digest(event)
+            )
+        elif event.get("artifact_type") == "raw-trial-evidence":
+            event["case_evidence"] = raw_evidence
+            event["raw_artifact_digests"] = [
+                entry["raw_evidence_digest"] for entry in raw_evidence
+            ]
+        elif event.get("artifact_type") == "trial-receipt":
+            event["case_receipts"] = case_receipts
+            event["fresh_context_ids"] = [
+                entry["fresh_context_id"] for entry in case_receipts
+            ]
+        elif event.get("artifact_type") == "category-evidence":
+            case_id = event.get("case_id")
+            if case_id in raw_evidence_by_case and case_id in receipt_by_case:
+                event["raw_evidence_digest"] = raw_evidence_by_case[case_id][
+                    "raw_evidence_digest"
+                ]
+                event["trial_receipt_digest"] = receipt_by_case[case_id][
+                    "receipt_digest"
+                ]
+        elif event.get("artifact_type") == "target-scorecard":
+            for result in event.get("criterion_results", []):
+                case_id = result.get("case_id")
+                if case_id in raw_evidence_by_case and case_id in receipt_by_case:
+                    result["raw_evidence_digest"] = raw_evidence_by_case[case_id][
+                        "raw_evidence_digest"
+                    ]
+                    result["trial_receipt_digest"] = receipt_by_case[case_id][
+                        "receipt_digest"
+                    ]
+        elif event.get("artifact_type") == "verification-record":
+            event["before_target_manifest_digest"] = candidate_manifest[
+                "manifest_digest"
+            ]
+            event["after_target_manifest_digest"] = candidate_manifest[
+                "manifest_digest"
+            ]
+            event["verification_evidence_digest"] = (
+                canonical_verification_evidence_digest(event)
+            )
+    return seal_trace(rebuilt)
 
 
 def cleanup_trace(
@@ -4105,12 +5481,36 @@ def cleanup_trace(
     workflow_id: str = "a" * 32,
 ) -> list[dict[str, Any]]:
     state_home = xdg_state_home or str(BUILDER_FIXTURES / "private-state")
+    retained_authority = validated_user_authority_control(BUILDER_FIXTURES)
+    if retained_authority is None:
+        raise ValueError("cleanup lacked retained user authority control")
+    user_authority, user_authority_digest = retained_authority
     binding = {
         "workflow_id": workflow_id,
         "target_identity": "fixture-terse-summary",
         "finalized_revision": "candidate-v1",
         "run_directory_identity": "run-directory-1",
     }
+    cleanup_authority_event = {
+        "event": "cleanup_authority_recorded",
+        "valid": True,
+        "effect": "cleanup",
+        "actor": "main-agent-v1",
+        "user_identity": user_authority["user_identity"],
+        "user_role": user_authority["user_role"],
+        "authority_source": user_authority["authority_source"],
+        "authority_control_path": USER_AUTHORITY_CONTROL_PATH,
+        "authority_control_digest": user_authority_digest,
+        "authority_timestamp": "2026-01-01T00:00:02Z",
+        "delivery_record_digest": "delivery-1",
+        **binding,
+    }
+    normalized_cleanup_authority = _normalize_digest_claims(
+        copy.deepcopy(cleanup_authority_event)
+    )
+    cleanup_authority_event["authority_event_digest"] = (
+        canonical_cleanup_authority_digest(normalized_cleanup_authority)
+    )
     events = [
         {
             "event": "finalization_receipt_validated",
@@ -4128,17 +5528,11 @@ def cleanup_trace(
             "acceptance_evidence": ["fixture-install-check"],
             "user_authority_event_digest": "delivery-authority-v1",
             "actor": "main-agent-v1",
-            "timestamp": "2026-01-01T00:00:10Z",
+            "timestamp": "2026-01-01T00:00:01Z",
             "delivery_record_digest": "delivery-1",
             **binding,
         },
-        {
-            "event": "cleanup_authority_recorded",
-            "valid": True,
-            "effect": "cleanup",
-            "authority_event_digest": "authority-1",
-            **binding,
-        },
+        cleanup_authority_event,
         {
             "event": "run_state_manifest_validated",
             "valid": True,
@@ -4162,7 +5556,9 @@ def cleanup_trace(
             ),
             "final_transition_digest": "transition-1",
             "final_run_manifest_digest": "manifest-1",
-            "authority_event_digest": "authority-1",
+            "authority_event_digest": cleanup_authority_event[
+                "authority_event_digest"
+            ],
             "delivery_record_digest": "delivery-1",
             **binding,
         },
@@ -4221,20 +5617,33 @@ def authorized_integrated_cleanup_trace(
         xdg_state_home=xdg_state_home,
         workflow_id=workflow_id,
     )
-    for event in cleanup:
+    cleanup_authority_digest: str | None = None
+    for cleanup_index, event in enumerate(cleanup):
+        absolute_timestamp = _timestamp(len(authorized_prefix) + cleanup_index)
         if "final_transition_digest" in event:
             event["final_transition_digest"] = final_transition_digest
         if event.get("event") == "delivery_accepted":
+            event["timestamp"] = absolute_timestamp
             event["user_authority_event_digest"] = attempt_receipt[
                 "authority_event_digest"
             ]
             event["delivery_record_digest"] = attempt_receipt[
                 "receipt_digest"
             ]
+        elif event.get("event") == "cleanup_authority_recorded":
+            event["authority_timestamp"] = absolute_timestamp
+            event["delivery_record_digest"] = attempt_receipt[
+                "receipt_digest"
+            ]
+            event["authority_event_digest"] = (
+                canonical_cleanup_authority_digest(event)
+            )
+            cleanup_authority_digest = event["authority_event_digest"]
         elif event.get("event") == "cleanup_tombstone_validated":
             event["delivery_record_digest"] = attempt_receipt[
                 "receipt_digest"
             ]
+            event["authority_event_digest"] = cleanup_authority_digest
     return (
         seal_trace(
             [*authorized_prefix, *cleanup],
@@ -4347,10 +5756,58 @@ def evaluate_trace(
     category_evidence_ids_by_criterion: dict[str, list[str]] = {}
     ambiguous_category_evidence_criterion_ids: set[str] = set()
     actor_roles: dict[str, set[str]] = {}
+    used_trial_context_ids: set[str] = set()
     artifact_generations: dict[str, tuple[int, int, int, int, int]] = {}
     invalidated_artifact_ids: set[str] = set()
     record_lifecycle_validity: dict[int, bool] = {}
     record_schema_validity: dict[int, bool] = {}
+    expected_baseline_evidence: dict[str, Any] | None = None
+    retained_trial_control = validated_trial_control(fixture_root)
+    retained_verification_control = validated_verification_control(fixture_root)
+    retained_user_authority = validated_user_authority_control(fixture_root)
+    trial_control = (
+        retained_trial_control[0] if retained_trial_control is not None else None
+    )
+    trial_control_digest = (
+        retained_trial_control[1] if retained_trial_control is not None else None
+    )
+    verification_control = (
+        retained_verification_control[0]
+        if retained_verification_control is not None
+        else None
+    )
+    verification_control_digest = (
+        retained_verification_control[1]
+        if retained_verification_control is not None
+        else None
+    )
+    user_authority_control = (
+        retained_user_authority[0] if retained_user_authority is not None else None
+    )
+    user_authority_digest = (
+        retained_user_authority[1] if retained_user_authority is not None else None
+    )
+    static_only_verification_attempt = any(
+        isinstance(event, dict)
+        and event.get("event") == "verification_recorded"
+        and (
+            not isinstance(verification_control, dict)
+            or event.get("behavioral_trials") == 0
+            or event.get("commands")
+            != [verification_control.get("command")]
+            or event.get("execution_kind")
+            != verification_control.get("execution_kind")
+            or event.get("control_artifact_path")
+            != VERIFICATION_CONTROL_PATH
+            or event.get("control_artifact_digest")
+            != verification_control_digest
+            or event.get("limitation")
+            != verification_control.get("limitation")
+            or event.get("raw_output_digests")
+            != [canonical_digest(verification_control.get("raw_output"))]
+        )
+        for event in trace
+    )
 
     def register_actor(identity: object, role: object) -> None:
         if (
@@ -4360,6 +5817,39 @@ def evaluate_trace(
             and bool(role)
         ):
             actor_roles.setdefault(identity, set()).add(role)
+
+    for future_index, future_event in enumerate(trace):
+        if (
+            future_index not in dispatchable_event_indices
+            or not isinstance(future_event, dict)
+        ):
+            continue
+        for identity_field, role_field in (
+            ("actor_identity", "actor_role"),
+            ("judge_identity", "judge_role"),
+            ("reviewer_identity", "reviewer_role"),
+            ("scorer_identity", "scorer_role"),
+            ("verifier_identity", "verifier_role"),
+            ("user_identity", "user_role"),
+        ):
+            register_actor(
+                future_event.get(identity_field),
+                future_event.get(role_field),
+            )
+        for lane in future_event.get("lanes", []):
+            if not isinstance(lane, dict):
+                continue
+            register_actor(lane.get("actor_identity"), lane.get("role"))
+            register_actor(lane.get("context_id"), lane.get("role"))
+        if future_event.get("artifact_type") == "trial-receipt":
+            for context_id in future_event.get("fresh_context_ids", []):
+                register_actor(context_id, "trial")
+            for case_receipt in future_event.get("case_receipts", []):
+                if isinstance(case_receipt, dict):
+                    register_actor(
+                        case_receipt.get("fresh_context_id"),
+                        "trial",
+                    )
 
     def actor_has_barred_role(identity: str, barred_roles: frozenset[str]) -> bool:
         return bool(actor_roles.get(identity, set()) & barred_roles)
@@ -4407,6 +5897,14 @@ def evaluate_trace(
         record: dict[str, Any], expected_type: str
     ) -> bool:
         envelope = record.get("artifact_envelope")
+        main_actor = (
+            resolution_record.get("actor_identity")
+            if resolution_record is not None
+            else record.get("actor_identity")
+            if expected_type == "resolution-record"
+            else None
+        )
+        expected_producer = expected_artifact_producer(record, main_actor)
         return (
             isinstance(record.get("artifact_id"), str)
             and bool(record["artifact_id"])
@@ -4417,6 +5915,11 @@ def evaluate_trace(
             and isinstance(envelope, dict)
             and envelope.get("artifact_id") == record.get("artifact_id")
             and envelope.get("artifact_type") == expected_type
+            and expected_producer is not None
+            and envelope.get("producer") == expected_producer
+            and declared_artifact_producer_identities(record).issubset(
+                {expected_producer}
+            )
             and envelope.get("envelope_digest")
             == canonical_digest(envelope, digest_field="envelope_digest")
             and record_identity_binding_is_current(record)
@@ -5476,6 +6979,7 @@ def evaluate_trace(
             register_actor(event.get("actor_identity"), event.get("actor_role"))
         elif event_name == "resolve":
             manifest = None
+            manifest_path: Path | None = None
             try:
                 fixture_root_resolved = fixture_root.resolve()
                 manifest_locator = normalized_run_relative_path(
@@ -5531,11 +7035,29 @@ def evaluate_trace(
                 )
             )
             expected_snapshot = digest_value(manifest["snapshot_digest"])
+            expected_baseline_evidence = (
+                validated_baseline_evidence(
+                    manifest,
+                    manifest_path.parent,
+                    str(expected_mode),
+                )
+                if manifest_path is not None and expected_mode is not None
+                else None
+            )
+            ambiguous_binding_valid = (
+                event.get("requested_mode") == "unresolved"
+                and event.get("selected_mode") == "unresolved"
+                and event.get("mode") == "unresolved"
+                and event.get("target_identity") == "unresolved-target"
+                and event.get("facts_exhausted") is True
+                and declared_queue is None
+                and active_target is None
+            )
             manifest_binding_valid = (
                 event.get("target_snapshot") == expected_snapshot
                 and (
                     identity_ambiguous
-                    and event.get("selected_mode") == "unresolved"
+                    and ambiguous_binding_valid
                     or not identity_ambiguous
                     and event.get("selected_mode") == expected_mode
                     and event.get("mode") == expected_mode
@@ -5559,21 +7081,34 @@ def evaluate_trace(
                 event.get("mode") if identity_ambiguous else expected_mode
             )
             identity_resolution_seen = True
-            if (
-                declared_queue is None
-                or queue_declaration_index is None
-                or queue_declaration_index >= index
-                or active_target != current_target_identity
-                or active_lock_owner != event.get("actor_identity")
-                or not isinstance(active_lock_nonce, str)
-                or not active_lock_nonce
-                or not isinstance(active_lock_acquired_at, str)
-            ):
+            queue_binding_valid = (
+                ambiguous_binding_valid
+                if identity_ambiguous
+                else (
+                    declared_queue is not None
+                    and queue_declaration_index is not None
+                    and queue_declaration_index < index
+                    and active_target == current_target_identity
+                    and active_lock_owner == event.get("actor_identity")
+                    and isinstance(active_lock_nonce, str)
+                    and bool(active_lock_nonce)
+                    and isinstance(active_lock_acquired_at, str)
+                )
+            )
+            if not queue_binding_valid:
                 failures.append(
                     OracleFailure(
                         "QUEUE_TARGET_BINDING_MISMATCH",
                         index,
                         "resolution did not bind the active queued target and lock owner",
+                    )
+                )
+            if identity_ambiguous and not ambiguous_binding_valid:
+                failures.append(
+                    OracleFailure(
+                        "AMBIGUOUS_IDENTITY_BINDING",
+                        index,
+                        "unresolved identity implied a target, mode, or queue before user choice",
                     )
                 )
             if (
@@ -5674,10 +7209,8 @@ def evaluate_trace(
                 if event_name == "target_finalized"
                 else "abandoned"
             )
-            integrated_run = bool(finalization_indices) or identity_resolution_seen
             outcome_valid = (
-                not integrated_run
-                or builder_terminal_outcomes.get(target_identity)
+                builder_terminal_outcomes.get(target_identity)
                 == expected_outcome
             )
             lock_valid = (
@@ -5876,7 +7409,63 @@ def evaluate_trace(
         elif event_name == "run_state_manifest_validated":
             run_state_manifest = event
         elif event_name == "cleanup_authority_recorded":
-            cleanup_authority = event
+            user_identity = event.get("user_identity")
+            register_actor(user_identity, event.get("user_role"))
+            cleanup_authority_valid = (
+                finalization_event_index is not None
+                and finalization_event_index < index
+                and accepted_delivery is not None
+                and record_event_indices.get(id(accepted_delivery), index) < index
+                and event.get("valid") is True
+                and event.get("effect") == "cleanup"
+                and event.get("actor")
+                == (resolution_record or {}).get("actor_identity")
+                and (resolution_record or {}).get("actor_role") == "main-agent"
+                and isinstance(user_identity, str)
+                and actor_roles.get(user_identity) == {"user"}
+                and isinstance(user_authority_control, dict)
+                and user_identity == user_authority_control.get("user_identity")
+                and event.get("user_role")
+                == user_authority_control.get("user_role")
+                and event.get("authority_source")
+                == user_authority_control.get("authority_source")
+                and event.get("authority_control_path")
+                == USER_AUTHORITY_CONTROL_PATH
+                and event.get("authority_control_digest")
+                == user_authority_digest
+                and isinstance(event.get("authority_timestamp"), str)
+                and RFC3339_UTC_RE.fullmatch(event["authority_timestamp"])
+                is not None
+                and event.get("authority_timestamp")
+                == event.get("transition_receipt", {}).get("created_at")
+                and event.get("authority_event_digest")
+                == canonical_cleanup_authority_digest(event)
+                and event.get("delivery_record_digest")
+                == accepted_delivery.get("delivery_record_digest")
+                and (
+                    event.get("workflow_id"),
+                    event.get("target_identity"),
+                    event.get("finalized_revision"),
+                    event.get("run_directory_identity"),
+                )
+                == (
+                    accepted_delivery.get("workflow_id"),
+                    accepted_delivery.get("target_identity"),
+                    accepted_delivery.get("finalized_revision"),
+                    accepted_delivery.get("run_directory_identity"),
+                )
+            )
+            if cleanup_authority_valid:
+                cleanup_authority = event
+            else:
+                cleanup_authority = None
+                failures.append(
+                    OracleFailure(
+                        "CLEANUP_WITHOUT_AUTHORITY",
+                        index,
+                        "cleanup authority lacked an explicit user event bound to accepted delivery",
+                    )
+                )
         elif event_name == "delivery_accepted":
             resolved_authority = (resolution_record or {}).get("authority")
             delivery_effects = (
@@ -6430,9 +8019,15 @@ def evaluate_trace(
                 else None
             )
             source_role = event.get("source_role")
+            research_partition_read = (
+                bool(path_parts) and path_parts[0] == "research"
+            )
+            research_path_parts = (
+                path_parts[1:] if research_partition_read else ()
+            )
             source_research_identities = {
                 RESEARCH_CONTEXT_ALIASES[value]
-                for value in (*path_parts, source_role)
+                for value in (*research_path_parts, source_role)
                 if isinstance(value, str) and value in RESEARCH_CONTEXT_ALIASES
             }
             source_research_identity = (
@@ -6440,8 +8035,11 @@ def evaluate_trace(
                 if len(source_research_identities) == 1
                 else None
             )
-            research_partition_read = (
-                bool(path_parts) and path_parts[0] == "research"
+            hidden_partition_read = (
+                bool(path_parts) and path_parts[0] == "hidden-release"
+            )
+            frozen_partition_read = (
+                bool(path_parts) and path_parts[0] == "frozen-validation"
             )
             hidden_source = (
                 isinstance(source_role, str)
@@ -6457,10 +8055,33 @@ def evaluate_trace(
                     or source_role.startswith("frozen-validation-")
                 )
             )
+            forbidden_context_markers = {
+                "desired-result",
+                "expected-verdict",
+                "prior-transcript",
+                "sibling-output",
+            }
+            context_labels = (
+                []
+                if path_parts and path_parts[0] == "targets"
+                else [
+                    part.casefold().replace("_", "-")
+                    for part in path_parts
+                ]
+            )
+            if isinstance(source_role, str):
+                context_labels.append(
+                    source_role.casefold().replace("_", "-")
+                )
+            forbidden_context = any(
+                marker in label
+                for marker in forbidden_context_markers
+                for label in context_labels
+            )
             if actor_classes.intersection(
                 {"candidate", "trial", "research"}
             ) and (
-                "hidden-release" in path_parts or hidden_source
+                hidden_partition_read or hidden_source
             ):
                 failures.append(
                     OracleFailure(
@@ -6470,13 +8091,23 @@ def evaluate_trace(
                     )
                 )
             elif actor_classes.intersection({"candidate", "trial"}) and (
-                "frozen-validation" in path_parts or frozen_source
+                frozen_partition_read or frozen_source
             ):
                 failures.append(
                     OracleFailure(
                         "FROZEN_VALIDATION_LEAK",
                         index,
                         f"{event['actor']} read frozen validation material outside a case handoff",
+                    )
+                )
+            elif actor_classes.intersection(
+                {"candidate", "trial", "research"}
+            ) and forbidden_context:
+                failures.append(
+                    OracleFailure(
+                        "FORBIDDEN_CONTEXT_LEAK",
+                        index,
+                        f"{event['actor']} read withheld verdict, transcript, result, or sibling context",
                     )
                 )
             elif actor_classes.intersection({"candidate", "trial"}) and (
@@ -6527,9 +8158,19 @@ def evaluate_trace(
                 record_schema_validity[id(event)] = (
                     artifact_envelope_is_valid(event, "baseline-report")
                     and artifact_inputs_match(event, (resolution_record,))
+                    and expected_baseline_evidence is not None
+                    and event.get("baseline_evidence")
+                    == expected_baseline_evidence
                 )
                 if not record_schema_validity[id(event)]:
                     baseline_report = None
+                    failures.append(
+                        OracleFailure(
+                            "INVALID_BASELINE_EVIDENCE",
+                            index,
+                            "baseline claims did not match mode-specific target bytes and neighbours",
+                        )
+                    )
                     failures.append(
                         OracleFailure(
                             "INVALID_ARTIFACT_SCHEMA",
@@ -6597,9 +8238,30 @@ def evaluate_trace(
                         event, (resolution_record,)
                     )
                 elif artifact_type == "preserved-regressions":
-                    schema_valid = schema_valid and artifact_inputs_match(
-                        event, (baseline_report,)
+                    expected_case_ids = (
+                        [
+                            item["case_id"]
+                            for item in baseline_report.get(
+                                "baseline_evidence", {}
+                            ).get("preserved_regressions", [])
+                        ]
+                        if baseline_report is not None
+                        else []
                     )
+                    regressions_valid = (
+                        artifact_inputs_match(event, (baseline_report,))
+                        and unique_nonempty_strings(event.get("case_ids"))
+                        and event.get("case_ids") == expected_case_ids
+                    )
+                    schema_valid = schema_valid and regressions_valid
+                    if not regressions_valid:
+                        failures.append(
+                            OracleFailure(
+                                "INVALID_PRESERVED_REGRESSIONS",
+                                index,
+                                "preserved regressions did not exactly bind the baseline subjects",
+                            )
+                        )
                 elif artifact_type == "confirmed-contract":
                     schema_valid = (
                         schema_valid
@@ -6702,6 +8364,130 @@ def evaluate_trace(
                         isinstance(evaluation_cases, list)
                         and all(evaluation_case_is_valid(case) for case in evaluation_cases)
                     ) else {}
+                    evaluation_case_by_id = {
+                        case["id"]: case for case in evaluation_cases
+                    } if isinstance(evaluation_cases, list) else {}
+                    candidate_manifests = current_artifacts_of_type(
+                        "candidate-manifest"
+                    )
+                    candidate_files = (
+                        candidate_manifests[0].get("files")
+                        if len(candidate_manifests) == 1
+                        else None
+                    )
+                    candidate_skill_digests = {
+                        file.get("digest")
+                        for file in candidate_files or []
+                        if isinstance(file, dict)
+                        and PurePosixPath(str(file.get("path"))).name == "SKILL.md"
+                        and digest_is_valid(file.get("digest"))
+                    }
+
+                    def raw_case_matches_contract(entry: dict[str, Any]) -> bool:
+                        case = evaluation_case_by_id.get(entry.get("case_id"))
+                        assertion_results = entry.get(
+                            "observable_assertion_results"
+                        )
+                        effect_results = entry.get("forbidden_effect_results")
+                        return (
+                            isinstance(case, dict)
+                            and isinstance(trial_control, dict)
+                            and entry.get("control_artifact_path")
+                            == TRIAL_CONTROL_PATH
+                            and entry.get("control_artifact_digest")
+                            == trial_control_digest
+                            and entry.get("case_digest") == canonical_digest(case)
+                            and entry.get("raw_request_digest")
+                            == case.get("raw_request_digest")
+                            and entry.get("raw_prompt_digest")
+                            == case.get("raw_request_digest")
+                            and len(candidate_skill_digests) == 1
+                            and entry.get("candidate_digest")
+                            in candidate_skill_digests
+                            and entry.get("loaded_skill_digest")
+                            in candidate_skill_digests
+                            and entry.get("before_target_manifest_digest")
+                            == case.get("setup_manifest", {}).get("digest")
+                            and entry.get("tool_event_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "tool_events": trial_control["tool_events"],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and entry.get("output_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "output": trial_control["output"],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and entry.get("after_target_manifest_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "after_target_manifest": trial_control[
+                                        "after_target_manifest"
+                                    ],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and entry.get("filesystem_result_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "filesystem_result": trial_control[
+                                        "filesystem_result"
+                                    ],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and assertion_results
+                            == [
+                                {
+                                    "assertion": assertion,
+                                    "passed": True,
+                                    "evidence_digest": canonical_digest(
+                                        {
+                                            "case_id": case["id"],
+                                            "assertion": assertion,
+                                            "status": trial_control[
+                                                "assertion_status"
+                                            ],
+                                            "control_artifact_digest": (
+                                                trial_control_digest
+                                            ),
+                                        }
+                                    ),
+                                }
+                                for assertion in case["observable_assertions"]
+                            ]
+                            and effect_results
+                            == [
+                                {
+                                    "effect": effect,
+                                    "observed": False,
+                                    "evidence_digest": canonical_digest(
+                                        {
+                                            "case_id": case["id"],
+                                            "effect": effect,
+                                            "status": trial_control[
+                                                "forbidden_effect_status"
+                                            ],
+                                            "control_artifact_digest": (
+                                                trial_control_digest
+                                            ),
+                                        }
+                                    ),
+                                }
+                                for effect in case["forbidden_effects"]
+                            ]
+                            and entry.get("verdict") == trial_control["verdict"]
+                            and entry.get("limitation")
+                            == trial_control["limitation"]
+                        )
                     schema_valid = (
                         schema_valid
                         and unique_nonempty_strings(case_ids)
@@ -6710,6 +8496,10 @@ def evaluate_trace(
                         and len(case_evidence) == len(case_ids)
                         and all(
                             case_evidence_is_valid(entry)
+                            for entry in case_evidence
+                        )
+                        and all(
+                            raw_case_matches_contract(entry)
                             for entry in case_evidence
                         )
                         and [entry["case_id"] for entry in case_evidence]
@@ -6726,7 +8516,12 @@ def evaluate_trace(
                             for entry in case_evidence
                         ]
                         and artifact_inputs_match(
-                            event, (candidate_record, frozen_evaluation)
+                            event,
+                            (
+                                candidate_record,
+                                *candidate_manifests,
+                                frozen_evaluation,
+                            ),
                         )
                     )
                 elif artifact_type == "trial-receipt":
@@ -6748,6 +8543,62 @@ def evaluate_trace(
                             for entry in raw_case_evidence
                         )
                     ) else {}
+                    raw_evidence_by_case = {
+                        entry["case_id"]: entry
+                        for entry in raw_case_evidence
+                    } if isinstance(raw_case_evidence, list) else {}
+
+                    def receipt_matches_raw_evidence(
+                        receipt: dict[str, Any],
+                    ) -> bool:
+                        raw = raw_evidence_by_case.get(receipt.get("case_id"))
+                        if not isinstance(raw, dict):
+                            return False
+                        shared_fields = (
+                            "case_digest",
+                            "candidate_digest",
+                            "raw_request_digest",
+                            "raw_evidence_digest",
+                            "control_artifact_path",
+                            "control_artifact_digest",
+                            "raw_prompt_digest",
+                            "loaded_skill_digest",
+                            "tool_event_digest",
+                            "output_digest",
+                            "before_target_manifest_digest",
+                            "after_target_manifest_digest",
+                            "filesystem_result_digest",
+                            "verdict",
+                            "limitation",
+                        )
+                        return (
+                            all(
+                                receipt.get(field) == raw.get(field)
+                                for field in shared_fields
+                            )
+                            and receipt.get("observable_assertions_digest")
+                            == canonical_digest(
+                                raw.get("observable_assertion_results")
+                            )
+                            and receipt.get("forbidden_effects_digest")
+                            == canonical_digest(raw.get("forbidden_effect_results"))
+                        )
+                    context_id_set = (
+                        set(context_ids)
+                        if isinstance(context_ids, list)
+                        and all(isinstance(item, str) for item in context_ids)
+                        else set()
+                    )
+                    fresh_contexts_valid = (
+                        bool(context_id_set)
+                        and not context_id_set.intersection(
+                            used_trial_context_ids
+                        )
+                        and all(
+                            actor_roles.get(context_id) == {"trial"}
+                            for context_id in context_id_set
+                        )
+                    )
                     schema_valid = (
                         schema_valid
                         and len(current_raw_records) == 1
@@ -6759,6 +8610,10 @@ def evaluate_trace(
                         and len(case_receipts) == len(case_ids)
                         and all(
                             case_receipt_is_valid(entry)
+                            for entry in case_receipts
+                        )
+                        and all(
+                            receipt_matches_raw_evidence(entry)
                             for entry in case_receipts
                         )
                         and [entry["case_id"] for entry in case_receipts]
@@ -6778,11 +8633,18 @@ def evaluate_trace(
                             == raw_digest_by_case.get(entry["case_id"])
                             for entry in case_receipts
                         )
+                        and fresh_contexts_valid
                         and artifact_inputs_match(
                             event,
-                            (candidate_record, frozen_evaluation, *current_raw_records),
+                            (
+                                candidate_record,
+                                *current_artifacts_of_type("candidate-manifest"),
+                                frozen_evaluation,
+                                *current_raw_records,
+                            ),
                         )
                     )
+                    used_trial_context_ids.update(context_id_set)
                 elif artifact_type == "trial-pack":
                     case_ids = event.get("case_ids")
                     raw_ids = event.get("raw_artifact_ids")
@@ -7581,15 +9443,61 @@ def evaluate_trace(
                     if record is not None
                     and isinstance(record.get("artifact_id"), str)
                 }
+                verification_candidate_manifests = current_artifacts_of_type(
+                    "candidate-manifest"
+                )
+                candidate_manifest_digest = (
+                    verification_candidate_manifests[0].get("manifest_digest")
+                    if len(verification_candidate_manifests) == 1
+                    else None
+                )
+                expected_behavioral_case_ids = (
+                    (frozen_evaluation or {}).get("case_ids")
+                )
                 schema_valid = (
                     artifact_envelope_is_valid(event, "verification-record")
                     and record_binding(event) == current_binding()
                     and isinstance(verifier_identity, str)
                     and bool(verifier_identity)
                     and event.get("verifier_role") == "independent-verifier"
-                    and event.get("behavioral_trials", 0) >= 1
+                    and isinstance(expected_behavioral_case_ids, list)
+                    and event.get("behavioral_case_ids")
+                    == expected_behavioral_case_ids
+                    and event.get("behavioral_trials")
+                    == len(expected_behavioral_case_ids)
+                    and isinstance(verification_control, dict)
+                    and event.get("commands")
+                    == [verification_control.get("command")]
+                    and event.get("execution_kind")
+                    == verification_control.get("execution_kind")
+                    and event.get("control_artifact_path")
+                    == VERIFICATION_CONTROL_PATH
+                    and event.get("control_artifact_digest")
+                    == verification_control_digest
+                    and event.get("limitation")
+                    == verification_control.get("limitation")
+                    and unique_nonempty_strings(
+                        event.get("raw_output_digests")
+                    )
+                    and len(event["raw_output_digests"])
+                    == len(event["commands"])
+                    and all(
+                        digest_is_valid(digest)
+                        for digest in event["raw_output_digests"]
+                    )
+                    and event.get("raw_output_digests")
+                    == [canonical_digest(verification_control.get("raw_output"))]
+                    and event.get("before_target_manifest_digest")
+                    == candidate_manifest_digest
+                    and event.get("after_target_manifest_digest")
+                    == candidate_manifest_digest
+                    and isinstance(event.get("started_at"), str)
+                    and isinstance(event.get("ended_at"), str)
+                    and event["started_at"] < event["ended_at"]
                     and event.get("exit_status") == 0
                     and event.get("conclusion") == "pass"
+                    and event.get("verification_evidence_digest")
+                    == canonical_verification_evidence_digest(event)
                     and event.get("independent") is True
                     and event.get("read_only") is True
                 )
@@ -7821,7 +9729,7 @@ def evaluate_trace(
                 and artifact_is_current(str(verification.get("artifact_id")))
                 and record_lifecycle_validity.get(id(verification), False)
             )
-            if verification is not None and verification.get("behavioral_trials", 0) < 1:
+            if static_only_verification_attempt:
                 failures.append(
                     OracleFailure(
                         "STATIC_VALIDATION_ONLY",
@@ -7868,10 +9776,36 @@ def evaluate_trace(
             finalization_event_index = index
         elif event_name == "user_confirmed":
             if resolution_record is not None:
+                user_identity = event.get("user_identity")
+                register_actor(user_identity, event.get("user_role"))
                 register_artifact(event, index)
                 confirmation_valid = (
                     artifact_envelope_is_valid(event, "user-confirmation-record")
                     and event.get("accepted") is True
+                    and isinstance(user_identity, str)
+                    and actor_roles.get(user_identity) == {"user"}
+                    and isinstance(user_authority_control, dict)
+                    and user_identity
+                    == user_authority_control.get("user_identity")
+                    and event.get("user_role")
+                    == user_authority_control.get("user_role")
+                    and event.get("authority_source")
+                    == user_authority_control.get("authority_source")
+                    and event.get("authority_control_path")
+                    == USER_AUTHORITY_CONTROL_PATH
+                    and event.get("authority_control_digest")
+                    == user_authority_digest
+                    and isinstance(event.get("confirmation_timestamp"), str)
+                    and RFC3339_UTC_RE.fullmatch(
+                        event["confirmation_timestamp"]
+                    )
+                    is not None
+                    and event.get("confirmation_timestamp")
+                    == event.get("artifact_envelope", {}).get("created_at")
+                    and event.get("confirmation_event_digest")
+                    == canonical_user_confirmation_digest(event)
+                    and event.get("contract_artifact_id")
+                    == (contract_record or {}).get("artifact_id")
                     and event.get("contract_digest") == current_contract
                     and artifact_inputs_match(event, (contract_record,))
                 )
@@ -8563,6 +10497,56 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
 
 
 class SkillBuilderTraceOracleTests(unittest.TestCase):
+    def test_fixture_blueprints_are_explicit_and_never_derive_verdicts_from_names(
+        self,
+    ) -> None:
+        """Fixture names cannot synthesize success or restore omitted lifecycle stages."""
+
+        raw = load_raw_traces("visible")
+        accepted = raw["accepted_exact_improve"]
+        renamed = build_fixture_trace(
+            "visible",
+            "neutral-control-name",
+            copy.deepcopy(accepted),
+        )
+        self.assertEqual(evaluate_trace(renamed, BUILDER_FIXTURES), ())
+
+        renamed_mutant = build_fixture_trace(
+            "visible",
+            "accepted_renamed_mutant",
+            copy.deepcopy(raw["mutant_candidate_edit_too_early"]),
+        )
+        self.assertNotEqual(evaluate_trace(renamed_mutant, BUILDER_FIXTURES), ())
+
+        semantic_stages = (
+            "baseline_captured",
+            "research_pack",
+            "evidence_sieved",
+            "designs_challenged",
+            "contract_written",
+            "user_confirmed",
+            "evaluation_frozen",
+        )
+        for omitted_stage in semantic_stages:
+            with self.subTest(omitted=omitted_stage):
+                omitted = copy.deepcopy(accepted)
+                omitted.pop(
+                    next(
+                        index
+                        for index, event in enumerate(omitted)
+                        if event.get("event") == omitted_stage
+                    )
+                )
+                constructed = build_fixture_trace(
+                    "visible",
+                    "neutral-omission-control",
+                    omitted,
+                )
+                self.assertNotEqual(
+                    evaluate_trace(constructed, BUILDER_FIXTURES),
+                    (),
+                )
+
     def test_strict_candidate_boundary_has_no_unbound_compatibility_mode(self) -> None:
         """Every fixture candidate must cross the same fully bound schema boundary."""
 
@@ -8986,6 +10970,44 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertEqual(
             {failure.code for failure in failures}, {"AMBIGUOUS_IDENTITY_ACTION"}
         )
+
+    def test_ambiguous_resolution_cannot_invent_target_or_mode(self) -> None:
+        """Unresolved identity remains unqueued and cannot imply a target or mode."""
+
+        accepted = load_traces("visible")["accepted_ambiguous_question"]
+        self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
+        self.assertFalse(
+            any(
+                event.get("event") in {"queue_created", "target_activated"}
+                for event in accepted
+            )
+        )
+        self.assertTrue(
+            all(
+                event.get("target_identity") == "unresolved-target"
+                and event.get("mode") == "unresolved"
+                for event in accepted
+            )
+        )
+
+        for target_identity in ("invented-target-a", "invented-target-b"):
+            for mode in ("create", "improve"):
+                with self.subTest(target=target_identity, mode=mode):
+                    invented = seal_trace(
+                        accepted,
+                        target_identity=target_identity,
+                        mode=mode,
+                    )
+                    self.assertIn(
+                        "AMBIGUOUS_IDENTITY_BINDING",
+                        {
+                            failure.code
+                            for failure in evaluate_trace(
+                                invented,
+                                BUILDER_FIXTURES,
+                            )
+                        },
+                    )
 
     def test_stale_confirmation_and_target_snapshot_bindings_are_rejected(self) -> None:
         """Regression: old approval or frozen evidence cannot authorize a changed input."""
@@ -11080,12 +13102,44 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         verifier["verifier_identity"] = "unregistered-independent-verifier"
 
+        late_implementer_spec = accepted_finalization_trace()
+        late_implementer_spec.insert(
+            next(
+                index
+                for index, event in enumerate(late_implementer_spec)
+                if event["event"] == "finalized"
+            ),
+            {
+                "event": "actor_role_recorded",
+                "actor_identity": "spec-judge-v1",
+                "actor_role": "candidate-implementer",
+            },
+        )
+        late_implementer_spec = seal_trace(late_implementer_spec)
+
+        late_implementer_scorer = accepted_finalization_trace()
+        late_implementer_scorer.insert(
+            next(
+                index
+                for index, event in enumerate(late_implementer_scorer)
+                if event["event"] == "finalized"
+            ),
+            {
+                "event": "actor_role_recorded",
+                "actor_identity": "target-scorer-v1",
+                "actor_role": "candidate-implementer",
+            },
+        )
+        late_implementer_scorer = seal_trace(late_implementer_scorer)
+
         for mutant, expected_code in (
             (prior_implementer_spec, "FINALIZE_WITHOUT_SPEC_PASS"),
             (prior_main_review, "FINALIZE_WITHOUT_READY_REVIEW"),
             (implementer_spec, "FINALIZE_WITHOUT_SPEC_PASS"),
             (main_review, "FINALIZE_WITHOUT_READY_REVIEW"),
             (unregistered_verifier, "FINALIZE_WITHOUT_VERIFICATION"),
+            (late_implementer_spec, "FINALIZE_WITHOUT_SPEC_PASS"),
+            (late_implementer_scorer, "FINALIZE_WITHOUT_TEN_SCORES"),
         ):
             with self.subTest(expected_code=expected_code):
                 codes = {
@@ -11683,6 +13737,526 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
 
         self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
         self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", codes)
+
+    def test_mode_specific_baselines_bind_grounded_target_bytes(self) -> None:
+        """Create and improve baselines cannot replace observed bytes with claims."""
+
+        create = accepted_finalization_trace(
+            workflow_id="a" * 32,
+            target_identity="fixture-release-notes",
+            mode="create",
+            target_manifest="targets/non-git-create/manifest.json",
+            target_snapshot="fixture-create-snapshot-v1",
+        )
+        improve = accepted_finalization_trace()
+        self.assertEqual(evaluate_trace(create, BUILDER_FIXTURES), ())
+        self.assertEqual(evaluate_trace(improve, BUILDER_FIXTURES), ())
+
+        create_mutant = copy.deepcopy(create)
+        create_baseline = next(
+            event
+            for event in create_mutant
+            if event.get("event") == "baseline_captured"
+        )
+        create_baseline["baseline_evidence"]["exact_target"]["exists"] = True
+
+        improve_mutant = copy.deepcopy(improve)
+        improve_baseline = next(
+            event
+            for event in improve_mutant
+            if event.get("event") == "baseline_captured"
+        )
+        improve_baseline["baseline_evidence"]["current_behavior"][
+            "classification"
+        ] = "invented-quality"
+
+        regression_mutant = copy.deepcopy(improve)
+        regressions = next(
+            event
+            for event in regression_mutant
+            if event.get("artifact_type") == "preserved-regressions"
+        )
+        regressions["case_ids"] = ["invented-regression"]
+
+        for label, mutant, expected in (
+            ("create-presence", create_mutant, "INVALID_BASELINE_EVIDENCE"),
+            ("improve-behavior", improve_mutant, "INVALID_BASELINE_EVIDENCE"),
+            (
+                "preserved-regression",
+                regression_mutant,
+                "INVALID_PRESERVED_REGRESSIONS",
+            ),
+        ):
+            with self.subTest(mutant=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(mutant),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn(expected, codes)
+
+    def test_artifact_producers_are_exactly_role_bound(self) -> None:
+        """A second producer identity invalidates every authority-bearing role."""
+
+        cases = (
+            ("authority-record", "reviewer_identity"),
+            ("candidate-record", "reviewer_identity"),
+            ("review-record", "actor_identity"),
+            ("spec-outcome-record", "reviewer_identity"),
+            ("verification-record", "judge_identity"),
+        )
+        for artifact_type, injected_field in cases:
+            with self.subTest(artifact_type=artifact_type):
+                mutant = accepted_finalization_trace()
+                event = next(
+                    item
+                    for item in mutant
+                    if item.get("artifact_type") == artifact_type
+                )
+                event[injected_field] = "foreign-producer-v1"
+                failures, _ = validate_schema_boundary(seal_trace(mutant))
+                self.assertIn(
+                    "INVALID_ARTIFACT_ENVELOPE",
+                    {failure.code for failure in failures},
+                )
+
+    def test_user_authority_cannot_be_self_issued_by_candidate(self) -> None:
+        """Candidate identities cannot become user confirmation or cleanup authority."""
+
+        confirmation_mutant = accepted_finalization_trace()
+        confirmation = next(
+            event
+            for event in confirmation_mutant
+            if event.get("event") == "user_confirmed"
+        )
+        confirmation["user_identity"] = "candidate-implementer-v1"
+        confirmation["confirmation_event_digest"] = (
+            canonical_user_confirmation_digest(confirmation)
+        )
+        confirmation_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                seal_trace(confirmation_mutant),
+                BUILDER_FIXTURES,
+            )
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", confirmation_codes)
+
+        workflow_id = "b" * 32
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / workflow_id
+        )
+        cleanup_mutant, trusted_authority = authorized_integrated_cleanup_trace(
+            owned_path,
+            workflow_id,
+        )
+        cleanup_authority = next(
+            event
+            for event in cleanup_mutant
+            if event.get("event") == "cleanup_authority_recorded"
+        )
+        cleanup_authority["user_identity"] = "candidate-implementer-v1"
+        cleanup_authority["authority_event_digest"] = (
+            canonical_cleanup_authority_digest(cleanup_authority)
+        )
+        tombstone = next(
+            event
+            for event in cleanup_mutant
+            if event.get("event") == "cleanup_tombstone_validated"
+        )
+        tombstone["authority_event_digest"] = cleanup_authority[
+            "authority_event_digest"
+        ]
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            cleanup_codes = {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(cleanup_mutant, workflow_id=workflow_id),
+                    BUILDER_FIXTURES,
+                )
+            }
+        self.assertIn("CLEANUP_WITHOUT_AUTHORITY", cleanup_codes)
+
+    def test_user_authority_requires_retained_ingress_and_current_event_time(
+        self,
+    ) -> None:
+        """A recomputed claim cannot replace retained, contemporaneous user ingress."""
+
+        confirmation_mutants: list[tuple[str, list[dict[str, Any]]]] = []
+        for label, field, value in (
+            ("invented-identity", "user_identity", "invented-user-v1"),
+            ("stale-time", "confirmation_timestamp", "2025-01-01T00:00:00Z"),
+        ):
+            trace = accepted_finalization_trace()
+            confirmation = next(
+                event for event in trace if event.get("event") == "user_confirmed"
+            )
+            confirmation[field] = value
+            confirmation["confirmation_event_digest"] = (
+                canonical_user_confirmation_digest(confirmation)
+            )
+            confirmation_mutants.append((label, seal_trace(trace)))
+
+        for label, mutant in confirmation_mutants:
+            with self.subTest(mutant=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(mutant, BUILDER_FIXTURES)
+                }
+                self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+
+        workflow_id = "b" * 32
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / workflow_id
+        )
+        cleanup_mutant, trusted_authority = authorized_integrated_cleanup_trace(
+            owned_path,
+            workflow_id,
+        )
+        cleanup_authority = next(
+            event
+            for event in cleanup_mutant
+            if event.get("event") == "cleanup_authority_recorded"
+        )
+        cleanup_authority["authority_timestamp"] = "2025-01-01T00:00:00Z"
+        cleanup_authority["authority_event_digest"] = (
+            canonical_cleanup_authority_digest(cleanup_authority)
+        )
+        tombstone = next(
+            event
+            for event in cleanup_mutant
+            if event.get("event") == "cleanup_tombstone_validated"
+        )
+        tombstone["authority_event_digest"] = cleanup_authority[
+            "authority_event_digest"
+        ]
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            cleanup_codes = {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(cleanup_mutant, workflow_id=workflow_id),
+                    BUILDER_FIXTURES,
+                )
+            }
+        self.assertIn("CLEANUP_WITHOUT_AUTHORITY", cleanup_codes)
+
+    def test_trial_provenance_rejects_recomputed_semantic_mutants(self) -> None:
+        """Canonical hashes cannot legitimize evidence that contradicts its frozen case."""
+
+        def propagated_mutant(
+            field: str,
+            value: object,
+            *,
+            mutate_raw: bool,
+        ) -> list[dict[str, Any]]:
+            trace = accepted_finalization_trace()
+            raw = next(
+                event
+                for event in trace
+                if event.get("artifact_type") == "raw-trial-evidence"
+            )
+            receipt = next(
+                event
+                for event in trace
+                if event.get("artifact_type") == "trial-receipt"
+            )
+            case_id = raw["case_ids"][0]
+            raw_entry = next(
+                entry
+                for entry in raw["case_evidence"]
+                if entry["case_id"] == case_id
+            )
+            receipt_entry = next(
+                entry
+                for entry in receipt["case_receipts"]
+                if entry["case_id"] == case_id
+            )
+            if mutate_raw:
+                raw_entry[field] = value
+                raw_entry["raw_evidence_digest"] = canonical_digest(
+                    raw_entry,
+                    digest_field="raw_evidence_digest",
+                )
+                raw["raw_artifact_digests"] = [
+                    entry["raw_evidence_digest"]
+                    for entry in raw["case_evidence"]
+                ]
+                receipt_entry["raw_evidence_digest"] = raw_entry[
+                    "raw_evidence_digest"
+                ]
+            receipt_entry[field] = value
+            receipt_entry["receipt_digest"] = canonical_digest(
+                receipt_entry,
+                digest_field="receipt_digest",
+            )
+            for event in trace:
+                if (
+                    event.get("artifact_type") == "category-evidence"
+                    and event.get("case_id") == case_id
+                ):
+                    event["raw_evidence_digest"] = raw_entry[
+                        "raw_evidence_digest"
+                    ]
+                    event["trial_receipt_digest"] = receipt_entry[
+                        "receipt_digest"
+                    ]
+                if event.get("artifact_type") == "target-scorecard":
+                    for result in event["criterion_results"]:
+                        if result.get("case_id") == case_id:
+                            result["raw_evidence_digest"] = raw_entry[
+                                "raw_evidence_digest"
+                            ]
+                            result["trial_receipt_digest"] = receipt_entry[
+                                "receipt_digest"
+                            ]
+            return seal_trace(trace)
+
+        cases = (
+            ("receipt-output", "output_digest", "f" * 64, False),
+            ("candidate", "candidate_digest", "e" * 64, True),
+            ("case", "case_digest", "d" * 64, True),
+            ("failed-verdict", "verdict", "fail", True),
+        )
+        for label, field, value, mutate_raw in cases:
+            with self.subTest(mutant=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        propagated_mutant(
+                            field,
+                            value,
+                            mutate_raw=mutate_raw,
+                        ),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+                self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", codes)
+
+    def test_trial_provenance_rejects_synchronized_invented_evidence(self) -> None:
+        """Downstream resealing cannot legitimize invented raw trial observations."""
+
+        trace = accepted_finalization_trace()
+        raw = next(
+            event
+            for event in trace
+            if event.get("artifact_type") == "raw-trial-evidence"
+        )
+        receipt = next(
+            event
+            for event in trace
+            if event.get("artifact_type") == "trial-receipt"
+        )
+        raw_entry = raw["case_evidence"][0]
+        case_id = raw_entry["case_id"]
+        receipt_entry = next(
+            entry
+            for entry in receipt["case_receipts"]
+            if entry["case_id"] == case_id
+        )
+        for field in (
+            "tool_event_digest",
+            "output_digest",
+            "after_target_manifest_digest",
+            "filesystem_result_digest",
+        ):
+            raw_entry[field] = canonical_digest(
+                {"invented": field, "case_id": case_id}
+            )
+        raw_entry["observable_assertion_results"] = [
+            {
+                **result,
+                "evidence_digest": canonical_digest(
+                    {"invented": "assertion", "value": result["assertion"]}
+                ),
+            }
+            for result in raw_entry["observable_assertion_results"]
+        ]
+        raw_entry["forbidden_effect_results"] = [
+            {
+                **result,
+                "evidence_digest": canonical_digest(
+                    {"invented": "effect", "value": result["effect"]}
+                ),
+            }
+            for result in raw_entry["forbidden_effect_results"]
+        ]
+        raw_entry["limitation"] = "Invented evidence with synchronized claims."
+        raw_entry["raw_evidence_digest"] = canonical_digest(
+            raw_entry,
+            digest_field="raw_evidence_digest",
+        )
+        raw["raw_artifact_digests"] = [
+            entry["raw_evidence_digest"] for entry in raw["case_evidence"]
+        ]
+        for field in (
+            "raw_evidence_digest",
+            "tool_event_digest",
+            "output_digest",
+            "after_target_manifest_digest",
+            "filesystem_result_digest",
+            "limitation",
+        ):
+            receipt_entry[field] = raw_entry[field]
+        receipt_entry["observable_assertions_digest"] = canonical_digest(
+            raw_entry["observable_assertion_results"]
+        )
+        receipt_entry["forbidden_effects_digest"] = canonical_digest(
+            raw_entry["forbidden_effect_results"]
+        )
+        receipt_entry["receipt_digest"] = canonical_digest(
+            receipt_entry,
+            digest_field="receipt_digest",
+        )
+        for event in trace:
+            if (
+                event.get("artifact_type") == "category-evidence"
+                and event.get("case_id") == case_id
+            ):
+                event["raw_evidence_digest"] = raw_entry["raw_evidence_digest"]
+                event["trial_receipt_digest"] = receipt_entry["receipt_digest"]
+            elif event.get("artifact_type") == "target-scorecard":
+                for result in event["criterion_results"]:
+                    if result.get("case_id") == case_id:
+                        result["raw_evidence_digest"] = raw_entry[
+                            "raw_evidence_digest"
+                        ]
+                        result["trial_receipt_digest"] = receipt_entry[
+                            "receipt_digest"
+                        ]
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(seal_trace(trace), BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", codes)
+
+    def test_repair_trials_require_new_execution_contexts(self) -> None:
+        """A repaired candidate cannot reuse contexts from its prior trial wave."""
+
+        trace = accepted_repair_trace("b" * 32)
+        receipts = [
+            event
+            for event in trace
+            if event.get("artifact_type") == "trial-receipt"
+        ]
+        first_by_case = {
+            entry["case_id"]: entry
+            for entry in receipts[0]["case_receipts"]
+        }
+        second_by_case = {
+            entry["case_id"]: entry
+            for entry in receipts[1]["case_receipts"]
+        }
+        for case_id, entry in second_by_case.items():
+            entry["fresh_context_id"] = first_by_case[case_id][
+                "fresh_context_id"
+            ]
+            entry["receipt_digest"] = canonical_digest(
+                entry,
+                digest_field="receipt_digest",
+            )
+        receipts[1]["fresh_context_ids"] = [
+            entry["fresh_context_id"] for entry in receipts[1]["case_receipts"]
+        ]
+        for event in trace:
+            if event.get("artifact_type") == "category-evidence":
+                event["trial_receipt_digest"] = second_by_case[
+                    event["case_id"]
+                ]["receipt_digest"]
+            elif event.get("artifact_type") == "target-scorecard":
+                for result in event["criterion_results"]:
+                    result["trial_receipt_digest"] = second_by_case[
+                        result["case_id"]
+                    ]["receipt_digest"]
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(
+                seal_trace(trace),
+                BUILDER_FIXTURES,
+            )
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", codes)
+
+    def test_verification_requires_full_current_behavioral_evidence(self) -> None:
+        """Verification must retain runnable evidence for the current candidate bytes."""
+
+        missing_commands = accepted_finalization_trace()
+        next(
+            event
+            for event in missing_commands
+            if event.get("artifact_type") == "verification-record"
+        ).pop("commands")
+
+        stale_manifest = accepted_finalization_trace()
+        verification = next(
+            event
+            for event in stale_manifest
+            if event.get("artifact_type") == "verification-record"
+        )
+        verification["before_target_manifest_digest"] = "f" * 64
+        verification["after_target_manifest_digest"] = "f" * 64
+        verification["verification_evidence_digest"] = (
+            canonical_verification_evidence_digest(verification)
+        )
+
+        lint_only = accepted_finalization_trace()
+        lint_verification = next(
+            event
+            for event in lint_only
+            if event.get("artifact_type") == "verification-record"
+        )
+        lint_verification["commands"] = [
+            "python3 -m py_compile candidate/SKILL.md"
+        ]
+        lint_verification["execution_kind"] = "structural-lint"
+        lint_verification["raw_output_digests"] = [
+            canonical_digest({"status": "pass", "kind": "lint-only"})
+        ]
+        lint_verification["verification_evidence_digest"] = (
+            canonical_verification_evidence_digest(lint_verification)
+        )
+
+        for label, mutant in (
+            ("missing-command", missing_commands),
+            ("stale-manifest", stale_manifest),
+            ("lint-only", lint_only),
+        ):
+            with self.subTest(mutant=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(mutant),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn("FINALIZE_WITHOUT_VERIFICATION", codes)
+                self.assertTrue(
+                    {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
+                )
+                if label == "lint-only":
+                    self.assertIn("STATIC_VALIDATION_ONLY", codes)
 
     def test_category_evidence_joins_exact_case_raw_and_receipt(self) -> None:
         """A criterion cannot cite aggregate labels for another frozen case."""
@@ -13031,6 +15605,61 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 }
                 self.assertIn(expected_code, codes)
 
+    def test_serial_queue_binds_each_terminal_to_a_full_builder_outcome(self) -> None:
+        """Queue closure references independently valid exact-target builder receipts."""
+
+        queue_trace, target_runs = accepted_serial_queue_composition()
+        self.assertEqual(
+            evaluate_serialized_queue(
+                queue_trace,
+                target_runs,
+                BUILDER_FIXTURES,
+            ),
+            (),
+        )
+
+        bare = load_traces("visible")["accepted_serial_queue"]
+        self.assertIn(
+            "QUEUE_TERMINAL_BEFORE_BUILDER_OUTCOME",
+            {failure.code for failure in evaluate_trace(bare, BUILDER_FIXTURES)},
+        )
+
+        for label, mutate in (
+            (
+                "invented-digest",
+                lambda trace, runs: next(
+                    event
+                    for event in trace
+                    if event.get("event") == "target_finalized"
+                ).update({"builder_final_transition_digest": "f" * 64}),
+            ),
+            (
+                "missing-run",
+                lambda trace, runs: runs.pop("queue-alpha-run-v1"),
+            ),
+        ):
+            with self.subTest(mutant=label):
+                mutant_trace = copy.deepcopy(queue_trace)
+                mutant_runs = copy.deepcopy(target_runs)
+                mutate(mutant_trace, mutant_runs)
+                mutant_trace = seal_trace(
+                    mutant_trace,
+                    workflow_id="3" * 32,
+                    target_identity="fixture-serialized-queue",
+                    mode="create",
+                )
+                self.assertIn(
+                    "INVALID_QUEUE_BUILDER_BINDING",
+                    {
+                        failure.code
+                        for failure in evaluate_serialized_queue(
+                            mutant_trace,
+                            mutant_runs,
+                            BUILDER_FIXTURES,
+                        )
+                    },
+                )
+
     def test_partition_access_rejects_actor_and_source_alias_bypasses(self) -> None:
         """Canonical identities, not convenient role aliases, govern isolation."""
 
@@ -13085,6 +15714,36 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 },
                 "SIBLING_OUTPUT_LEAK",
             ),
+            "trial-expected-verdict": (
+                {
+                    "event": "context_read",
+                    "actor": "trial-agent-v1",
+                    "actor_role": "trial-agent",
+                    "path": "visible/expected-verdict.json",
+                    "source_role": "case-coordinator",
+                },
+                "FORBIDDEN_CONTEXT_LEAK",
+            ),
+            "candidate-prior-transcript": (
+                {
+                    "event": "context_read",
+                    "actor": "candidate-implementer-v1",
+                    "actor_role": "candidate-implementer",
+                    "path": "prior-transcript/session.json",
+                    "source_role": "coordinator-context",
+                },
+                "FORBIDDEN_CONTEXT_LEAK",
+            ),
+            "candidate-visible-sibling-output": (
+                {
+                    "event": "context_read",
+                    "actor": "candidate-implementer-v1",
+                    "actor_role": "candidate-implementer",
+                    "path": "visible/sibling-output.json",
+                    "source_role": "coordinator-context",
+                },
+                "FORBIDDEN_CONTEXT_LEAK",
+            ),
         }
 
         for name, (event, expected_code) in cases.items():
@@ -13094,6 +15753,111 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
                 }
                 self.assertIn(expected_code, codes)
+
+    def test_context_partition_names_inside_allowed_paths_are_not_leaks(self) -> None:
+        """Only protected roots and source metadata classify hidden partitions."""
+
+        allowed = [
+            {
+                "event": "context_read",
+                "actor": "trial-agent-v1",
+                "actor_role": "trial-agent",
+                "path": "targets/exact-improve/skills/agent-skill-design/SKILL.md",
+                "source_role": "case-material",
+            },
+            {
+                "event": "context_read",
+                "actor": "candidate-implementer-v1",
+                "actor_role": "candidate-implementer",
+                "path": "targets/exact-improve/skills/hidden-release/SKILL.md",
+                "source_role": "target-artifact",
+            },
+            {
+                "event": "context_read",
+                "actor": "candidate-implementer-v1",
+                "actor_role": "candidate-implementer",
+                "path": "visible/frozen-validation/request.md",
+                "source_role": "case-material",
+            },
+            {
+                "event": "context_read",
+                "actor": "trial-agent-v1",
+                "actor_role": "trial-agent",
+                "path": "visible/domain-techniques/request.md",
+                "source_role": "case-material",
+            },
+        ]
+        for event in allowed:
+            with self.subTest(path=event["path"]):
+                self.assertEqual(
+                    evaluate_trace(
+                        seal_trace([event], workflow_id="4" * 32),
+                        BUILDER_FIXTURES,
+                    ),
+                    (),
+                )
+
+    def test_context_roles_are_bound_across_the_whole_trace(self) -> None:
+        """A restricted actor cannot read first and reveal its role later."""
+
+        for later_role in ("candidate-implementer", "domain-techniques"):
+            with self.subTest(later_role=later_role):
+                trace = seal_trace(
+                    [
+                        {
+                            "event": "context_read",
+                            "actor": "opaque-worker-x",
+                            "actor_role": "coordinator",
+                            "path": "hidden-release/oracle.json",
+                            "source_role": "hidden-release-coordinator",
+                        },
+                        {
+                            "event": "actor_role_recorded",
+                            "actor_identity": "opaque-worker-x",
+                            "actor_role": later_role,
+                        },
+                    ],
+                    workflow_id="5" * 32,
+                )
+                self.assertIn(
+                    "HIDDEN_ORACLE_LEAK",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
+
+        trial_trace = accepted_finalization_trace()
+        raw_trial_index = next(
+            index
+            for index, event in enumerate(trial_trace)
+            if event.get("artifact_type") == "raw-trial-evidence"
+        )
+        trial_context_id = next(
+            event
+            for event in trial_trace
+            if event.get("artifact_type") == "trial-receipt"
+        )["case_receipts"][0]["fresh_context_id"]
+        trial_trace.insert(
+            raw_trial_index,
+            {
+                "event": "context_read",
+                "actor": trial_context_id,
+                "actor_role": "coordinator",
+                "path": "research/domain-techniques/output.json",
+                "source_role": "domain-techniques",
+            },
+        )
+        self.assertIn(
+            "SIBLING_OUTPUT_LEAK",
+            {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(trial_trace),
+                    BUILDER_FIXTURES,
+                )
+            },
+        )
 
     def test_context_access_uses_prior_roles_after_identity_relabel(self) -> None:
         """An opaque candidate identity cannot relabel itself as a coordinator."""
@@ -13680,7 +16444,6 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             ("visible", "accepted_create_non_git", None),
             ("visible", "accepted_exact_improve", None),
             ("visible", "accepted_ambiguous_question", None),
-            ("visible", "accepted_serial_queue", None),
             ("frozen-validation", "accepted_negative_review_repair", None),
             ("frozen-validation", "accepted_pause_resume", None),
             (
