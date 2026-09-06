@@ -406,11 +406,28 @@ def _validate_command(command: list[str]) -> None:
         _error("missing-command", "run requires a literal product command after --")
     if any(not value or "\x00" in value or "\n" in value or "<<" in value for value in command):
         _error("inline-command-forbidden", "command arguments must be literal single-line argv")
-    executable = Path(command[0]).name
-    if executable in {"sh", "bash", "zsh"} and any(value in {"-c", "-lc"} for value in command[1:]):
-        _error("inline-command-forbidden", "inline shells are forbidden")
-    if executable.startswith("python") and len(command) > 1 and command[1] in {"-c", "-"}:
-        _error("inline-command-forbidden", "inline Python execution is forbidden")
+    for index, value in enumerate(command):
+        executable = Path(value).name
+        arguments = command[index + 1 :]
+        if executable in {"sh", "bash", "zsh"} and any(
+            argument in {"-c", "-lc"}
+            or re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", argument) is not None
+            for argument in arguments
+        ):
+            _error("inline-command-forbidden", "inline shells are forbidden")
+        if executable.startswith("python") and any(
+            argument == "-"
+            or argument.startswith("-c")
+            or re.fullmatch(r"-[bBdEhiIOPqRsSuvVx]*c", argument) is not None
+            for argument in arguments
+        ):
+            _error("inline-command-forbidden", "inline Python execution is forbidden")
+        if executable == "env" and any(
+            argument in {"-S", "--split-string"}
+            or argument.startswith("--split-string=")
+            for argument in arguments
+        ):
+            _error("inline-command-forbidden", "inline environment commands are forbidden")
 
 
 def _directory_flags() -> int:
