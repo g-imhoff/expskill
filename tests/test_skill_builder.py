@@ -2141,12 +2141,6 @@ def build_fixture_trace(
             if len(revisions) > 1
             else copy.deepcopy(complete[: last_index + 1])
         )
-        if len(revisions) == 1:
-            candidate_path = [
-                event
-                for event in candidate_path
-                if event.get("event") not in {"queue_created", "target_activated"}
-            ]
         raw_resolution = raw_resolutions[0]
         fixture_manifest = raw_resolution.get("target_manifest")
         fixture_target, inferred_mode = _target_from_manifest(fixture_manifest)
@@ -2243,6 +2237,40 @@ def build_fixture_trace(
             or event.get("event") == "review_recorded"
         ):
             event["fixture_source_event"] = copy.deepcopy(source_event)
+    raw_resolution = next(
+        (event for event in events if event.get("event") == "resolve"),
+        None,
+    )
+    injected_lock_nonce: str | None = None
+    if raw_resolution is not None and not any(
+        event.get("event") == "queue_created" for event in events
+    ):
+        queue_target, _ = _target_from_manifest(
+            raw_resolution.get("target_manifest")
+        )
+        injected_lock_nonce = f"{trace_id}-lock-v1"
+        events[0:0] = [
+            {
+                "event": "queue_created",
+                "targets": [queue_target],
+            },
+            {
+                "event": "target_activated",
+                "target_identity": queue_target,
+                "lock_nonce": injected_lock_nonce,
+                "lock_owner": "main-agent-v1",
+                "lock_acquired_at": "2026-01-01T00:00:01Z",
+            },
+        ]
+    if injected_lock_nonce is not None:
+        for event in events:
+            if event.get("event") == "paused":
+                event.setdefault("lock_nonce", injected_lock_nonce)
+                event.setdefault("lock_owner", "main-agent-v1")
+            elif event.get("event") == "resumed":
+                event.setdefault("lock_nonce", f"{trace_id}-lock-v2")
+                event.setdefault("lock_owner", "main-agent-v1")
+                event.setdefault("lock_acquired_at", "2026-01-01T00:00:02Z")
     type_by_event = {
         "resolve": "resolution-record",
         "baseline_captured": "baseline-report",
@@ -4067,7 +4095,7 @@ def finalization_trace_after_aba(
 
     replay = [event for event in replay if event["event"] not in queue_events]
     return seal_trace(
-        [*prefix, *transitions, *queue_open, *replay, queue_terminal]
+        [*queue_open, *prefix, *transitions, *replay, queue_terminal]
     )
 
 
@@ -4146,6 +4174,69 @@ def cleanup_trace(
         },
     ]
     return seal_trace(events, workflow_id=workflow_id)
+
+
+def authorized_integrated_cleanup_trace(
+    run_directory: str,
+    workflow_id: str = "b" * 32,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build a finalized control with an authorized delivery and cleanup tail."""
+
+    trusted_authority = _resolution_authority()
+    trusted_authority["delivery_effects"] = ["install"]
+    with mock.patch(
+        f"{__name__}._resolution_authority",
+        return_value=trusted_authority,
+    ):
+        finalized = accepted_finalization_trace()
+    authority_record = next(
+        event
+        for event in finalized
+        if event.get("artifact_type") == "authority-record"
+    )
+    authority_record["authorized_delivery_scope"] = "fixture-terse-summary"
+    delivery_attempt = {
+        "event": "delivery_attempt",
+        "destination_scope": "fixture-terse-summary",
+        "effect": "install",
+        "actor": "main-agent-v1",
+    }
+    authorized_prefix = seal_trace(
+        [*finalized, delivery_attempt],
+        workflow_id=workflow_id,
+    )
+    final_transition_digest = next(
+        event["transition_receipt"]["receipt_digest"]
+        for event in authorized_prefix
+        if event.get("event") == "finalized"
+    )
+    attempt_receipt = next(
+        event["transition_receipt"]
+        for event in authorized_prefix
+        if event.get("event") == "delivery_attempt"
+    )
+    cleanup = cleanup_trace(run_directory, workflow_id=workflow_id)
+    for event in cleanup:
+        if "final_transition_digest" in event:
+            event["final_transition_digest"] = final_transition_digest
+        if event.get("event") == "delivery_accepted":
+            event["user_authority_event_digest"] = attempt_receipt[
+                "authority_event_digest"
+            ]
+            event["delivery_record_digest"] = attempt_receipt[
+                "receipt_digest"
+            ]
+        elif event.get("event") == "cleanup_tombstone_validated":
+            event["delivery_record_digest"] = attempt_receipt[
+                "receipt_digest"
+            ]
+    return (
+        seal_trace(
+            [*authorized_prefix, *cleanup],
+            workflow_id=workflow_id,
+        ),
+        trusted_authority,
+    )
 
 
 def evaluate_trace(
@@ -4228,6 +4319,7 @@ def evaluate_trace(
     category_scores: dict[str, tuple[dict[str, Any], bool]] = {}
     target_scorecard: dict[str, Any] | None = None
     release_evidence: dict[str, Any] | None = None
+    authorized_delivery_attempt: dict[str, Any] | None = None
     cleanup_authority: dict[str, Any] | None = None
     accepted_delivery: dict[str, Any] | None = None
     cleanup_tombstone: dict[str, Any] | None = None
@@ -5462,9 +5554,15 @@ def evaluate_trace(
                 event.get("mode") if identity_ambiguous else expected_mode
             )
             identity_resolution_seen = True
-            if declared_queue is not None and (
-                active_target != current_target_identity
+            if (
+                declared_queue is None
+                or queue_declaration_index is None
+                or queue_declaration_index >= index
+                or active_target != current_target_identity
                 or active_lock_owner != event.get("actor_identity")
+                or not isinstance(active_lock_nonce, str)
+                or not active_lock_nonce
+                or not isinstance(active_lock_acquired_at, str)
             ):
                 failures.append(
                     OracleFailure(
@@ -5775,7 +5873,69 @@ def evaluate_trace(
         elif event_name == "cleanup_authority_recorded":
             cleanup_authority = event
         elif event_name == "delivery_accepted":
-            accepted_delivery = event
+            if not finalization_indices:
+                accepted_delivery = event
+            else:
+                resolved_authority = (resolution_record or {}).get(
+                    "authority"
+                )
+                delivery_effects = (
+                    resolved_authority.get("delivery_effects", [])
+                    if isinstance(resolved_authority, dict)
+                    else []
+                )
+                attempt_receipt = (
+                    authorized_delivery_attempt.get("transition_receipt")
+                    if authorized_delivery_attempt is not None
+                    else None
+                )
+                delivery_acceptance_valid = (
+                    finalization_event_index is not None
+                    and finalization_event_index < index
+                    and active_target is None
+                    and current_target_identity is not None
+                    and queue_states.get(current_target_identity)
+                    == "finalized"
+                    and authorized_delivery_attempt is not None
+                    and record_event_indices.get(
+                        id(authorized_delivery_attempt), index
+                    )
+                    < index
+                    and event.get("workflow_id") == current_workflow_id
+                    and event.get("target_identity")
+                    == current_target_identity
+                    and event.get("finalized_revision")
+                    == current_candidate_revision
+                    and event.get("actor")
+                    == (resolution_record or {}).get("actor_identity")
+                    and (resolution_record or {}).get("actor_role")
+                    == "main-agent"
+                    and event.get("actor")
+                    == authorized_delivery_attempt.get("actor")
+                    and event.get("destination_identity")
+                    == current_target_identity
+                    and event.get("destination_identity")
+                    == authorized_delivery_attempt.get("destination_scope")
+                    and event.get("action")
+                    == authorized_delivery_attempt.get("effect")
+                    and event.get("action") in delivery_effects
+                    and isinstance(attempt_receipt, dict)
+                    and event.get("user_authority_event_digest")
+                    == attempt_receipt.get("authority_event_digest")
+                    and event.get("delivery_record_digest")
+                    == attempt_receipt.get("receipt_digest")
+                )
+                if delivery_acceptance_valid:
+                    accepted_delivery = event
+                else:
+                    accepted_delivery = None
+                    failures.append(
+                        OracleFailure(
+                            "UNAUTHORIZED_DELIVERY",
+                            index,
+                            "delivery acceptance lacked a prior authorized main-agent delivery receipt",
+                        )
+                    )
         elif event_name == "cleanup_tombstone_validated":
             cleanup_tombstone = event
         elif event_name == "cleanup_attempt":
@@ -5794,6 +5954,15 @@ def evaluate_trace(
                 actual_finalized_event.get("transition_receipt")
                 if isinstance(actual_finalized_event, dict)
                 else None
+            )
+            integrated_queue_closed = (
+                not finalization_indices
+                or (
+                    active_target is None
+                    and current_target_identity is not None
+                    and queue_states.get(current_target_identity)
+                    == "finalized"
+                )
             )
             actual_finalization_anchor_valid = (
                 not finalization_indices
@@ -5818,6 +5987,7 @@ def evaluate_trace(
                     == actual_finalized_receipt.get("receipt_digest")
                     and finalization_indices[0]
                     < record_event_indices.get(id(finalization_receipt), -1)
+                    and integrated_queue_closed
                 )
             )
             state_home = (
@@ -6002,7 +6172,10 @@ def evaluate_trace(
                         "cleanup target was not derived from a validated helper-owned XDG run manifest",
                     )
                 )
-            if authority_valid and delivery_valid and tombstone_valid and not provenance_valid:
+            if not provenance_valid and (
+                bool(finalization_indices)
+                or authority_valid and delivery_valid and tombstone_valid
+            ):
                 failures.append(
                     OracleFailure(
                         "INVALID_CLEANUP_PROVENANCE",
@@ -6022,7 +6195,7 @@ def evaluate_trace(
                 }
                 for node in dependency_graph
             }
-        elif event_name == "goal_changed" and scenario is not None:
+        elif event_name == "goal_changed":
             if dependency_graph is None:
                 failures.append(
                     OracleFailure(
@@ -6033,9 +6206,6 @@ def evaluate_trace(
                 )
             else:
                 graph_artifacts = set(dependency_graph)
-                scenario_required = set(scenario["required_invalidations"])
-                scenario_preserved = set(scenario["preserved_artifacts"])
-                expected_artifacts = scenario_required | scenario_preserved
                 change = event.get("change")
                 affected: set[str] = set()
                 changed = True
@@ -6053,9 +6223,6 @@ def evaluate_trace(
                 graph_valid = (
                     isinstance(change, str)
                     and bool(change)
-                    and change == scenario.get("change")
-                    and graph_artifacts == expected_artifacts
-                    and affected == scenario_required
                     and (
                         not identity_resolution_seen
                         or (
@@ -6069,6 +6236,22 @@ def evaluate_trace(
                         )
                     )
                 )
+                if scenario is not None:
+                    scenario_required = set(
+                        scenario["required_invalidations"]
+                    )
+                    scenario_preserved = set(
+                        scenario["preserved_artifacts"]
+                    )
+                    expected_artifacts = (
+                        scenario_required | scenario_preserved
+                    )
+                    graph_valid = (
+                        graph_valid
+                        and change == scenario.get("change")
+                        and graph_artifacts == expected_artifacts
+                        and affected == scenario_required
+                    )
                 if not graph_valid:
                     failures.append(
                         OracleFailure(
@@ -6096,7 +6279,11 @@ def evaluate_trace(
                         )
                     )
 
-                if identity_resolution_seen and dependency_graph_artifact_ids:
+                if (
+                    graph_valid
+                    and identity_resolution_seen
+                    and dependency_graph_artifact_ids
+                ):
                     invalidated_artifact_ids.update(
                         artifact_id
                         for node in affected
@@ -6113,8 +6300,11 @@ def evaluate_trace(
 
                 retained = event.get("retained")
                 retained_valid = (
-                    unique_nonempty_strings(retained)
-                    and set(retained) == graph_artifacts - observed
+                    "retained" not in event
+                    or (
+                        unique_nonempty_strings(retained)
+                        and set(retained) == graph_artifacts - observed
+                    )
                 )
                 if not retained_valid:
                     failures.append(
@@ -6185,6 +6375,10 @@ def evaluate_trace(
             delivery_authorized = (
                 finalization_event_index is not None
                 and finalization_event_index < index
+                and active_target is None
+                and current_target_identity is not None
+                and queue_states.get(current_target_identity)
+                == "finalized"
                 and authority_binding_is_current(event)
                 and event.get("workflow_id") == current_workflow_id
                 and event.get("target_identity") == current_target_identity
@@ -6202,6 +6396,8 @@ def evaluate_trace(
                         f"{event['effect']} was outside canonical delivery authority or target scope",
                     )
                 )
+            else:
+                authorized_delivery_attempt = event
         elif event_name == "context_read":
             path = normalized_run_relative_path(event.get("path"))
             path_parts = PurePosixPath(path).parts if path is not None else ()
@@ -6247,6 +6443,9 @@ def evaluate_trace(
                 if len(source_research_identities) == 1
                 else None
             )
+            research_partition_read = (
+                bool(path_parts) and path_parts[0] == "research"
+            )
             hidden_source = (
                 isinstance(source_role, str)
                 and (
@@ -6285,11 +6484,25 @@ def evaluate_trace(
                 )
             elif (
                 "research" in actor_classes
-                and bool(source_research_identities)
                 and (
-                    governing_research_identity is None
-                    or source_research_identity is None
-                    or source_research_identity != governing_research_identity
+                    (
+                        research_partition_read
+                        and (
+                            len(source_research_identities) != 1
+                            or governing_research_identity is None
+                            or source_research_identity
+                            != governing_research_identity
+                        )
+                    )
+                    or (
+                        bool(source_research_identities)
+                        and (
+                            governing_research_identity is None
+                            or source_research_identity is None
+                            or source_research_identity
+                            != governing_research_identity
+                        )
+                    )
                 )
             ):
                 failures.append(
@@ -8059,6 +8272,10 @@ def evaluate_trace(
     if (
         queue_declaration_index is not None
         and declared_queue is not None
+        and (
+            not identity_resolution_seen
+            or finalization_event_index is not None
+        )
         and any(
             queue_states.get(target) not in {"finalized", "abandoned"}
             for target in declared_queue
@@ -9157,22 +9374,17 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             / "runs"
             / workflow_id
         )
+        finalized_and_cleaned, cleanup_authority = (
+            authorized_integrated_cleanup_trace(owned_path, workflow_id)
+        )
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=cleanup_authority,
+        ):
+            self.assertEqual(
+                evaluate_trace(finalized_and_cleaned, BUILDER_FIXTURES), ()
+            )
         cleanup_tail = cleanup_trace(owned_path, workflow_id=workflow_id)
-        final_transition_digest = next(
-            event["transition_receipt"]["receipt_digest"]
-            for event in finalized
-            if event.get("event") == "finalized"
-        )
-        for event in cleanup_tail:
-            if "final_transition_digest" in event:
-                event["final_transition_digest"] = final_transition_digest
-        finalized_and_cleaned = seal_trace(
-            [*finalized, *cleanup_tail],
-            workflow_id=workflow_id,
-        )
-        self.assertEqual(
-            evaluate_trace(finalized_and_cleaned, BUILDER_FIXTURES), ()
-        )
         self.assertEqual(
             evaluate_trace(cleanup_tail, BUILDER_FIXTURES), ()
         )
@@ -9394,8 +9606,20 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertEqual(evaluate_trace(wrapped_run(), BUILDER_FIXTURES), ())
 
         pause_base = load_traces("frozen-validation")["accepted_pause_resume"]
-        pause_resolve = copy.deepcopy(pause_base[0])
-        pause_event = copy.deepcopy(pause_base[1])
+        pause_resolve = copy.deepcopy(
+            next(
+                event
+                for event in pause_base
+                if event.get("event") == "resolve"
+            )
+        )
+        pause_event = copy.deepcopy(
+            next(
+                event
+                for event in pause_base
+                if event.get("event") == "paused"
+            )
+        )
         pause_event.update(
             {
                 "lock_nonce": "lock-current",
@@ -9438,6 +9662,80 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             & handoff_codes
         )
 
+    def test_integrated_queue_order_and_cleanup_require_closed_lock(self) -> None:
+        """Integrated work acquires its queue lock before resolution and closes it before cleanup."""
+
+        for anchor_event in ("resolve", "candidate_edit", "finalized"):
+            with self.subTest(late_queue=anchor_event):
+                trace = accepted_finalization_trace()
+                queue_events = [
+                    copy.deepcopy(event)
+                    for event in trace
+                    if event.get("event") in {"queue_created", "target_activated"}
+                ]
+                trace = [
+                    event
+                    for event in trace
+                    if event.get("event") not in {"queue_created", "target_activated"}
+                ]
+                anchor_index = next(
+                    index
+                    for index, event in enumerate(trace)
+                    if event.get("event") == anchor_event
+                )
+                insertion_index = (
+                    anchor_index
+                    if anchor_event == "finalized"
+                    else anchor_index + 1
+                )
+                trace[insertion_index:insertion_index] = queue_events
+                self.assertIn(
+                    "QUEUE_TARGET_BINDING_MISMATCH",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(
+                            seal_trace(trace), BUILDER_FIXTURES
+                        )
+                    },
+                )
+
+        workflow_id = "b" * 32
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / workflow_id
+        )
+        trace = accepted_finalization_trace()
+        queue_terminal = trace.pop(
+            next(
+                index
+                for index, event in enumerate(trace)
+                if event.get("event") == "target_finalized"
+            )
+        )
+        final_transition_digest = next(
+            event["transition_receipt"]["receipt_digest"]
+            for event in trace
+            if event.get("event") == "finalized"
+        )
+        cleanup = cleanup_trace(owned_path, workflow_id=workflow_id)
+        for event in cleanup:
+            if "final_transition_digest" in event:
+                event["final_transition_digest"] = final_transition_digest
+        trace.extend([*cleanup, queue_terminal])
+        self.assertIn(
+            "INVALID_CLEANUP_PROVENANCE",
+            {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(trace, workflow_id=workflow_id), BUILDER_FIXTURES
+                )
+            },
+        )
+
     def test_cleanup_tail_is_anchored_to_actual_finalization(self) -> None:
         """Cleanup provenance must bind the actual terminal revision and receipt."""
 
@@ -9451,24 +9749,31 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             / workflow_id
         )
 
-        finalized = accepted_finalization_trace()
-        final_transition_digest = next(
-            event["transition_receipt"]["receipt_digest"]
-            for event in finalized
-            if event.get("event") == "finalized"
+        accepted, trusted_authority = authorized_integrated_cleanup_trace(
+            owned_path,
+            workflow_id,
         )
-
-        def cleanup_tail() -> list[dict[str, Any]]:
-            tail = cleanup_trace(owned_path, workflow_id=workflow_id)
-            for event in tail:
-                if "final_transition_digest" in event:
-                    event["final_transition_digest"] = final_transition_digest
-            return tail
-
-        foreign_revision = [
-            *accepted_finalization_trace(),
-            *cleanup_tail(),
+        cleanup_event_names = {
+            "delivery_attempt",
+            "finalization_receipt_validated",
+            "delivery_accepted",
+            "cleanup_authority_recorded",
+            "run_state_manifest_validated",
+            "cleanup_tombstone_validated",
+            "cleanup_attempt",
+        }
+        finalized = [
+            copy.deepcopy(event)
+            for event in accepted
+            if event.get("event") not in cleanup_event_names
         ]
+        cleanup_tail = [
+            copy.deepcopy(event)
+            for event in accepted
+            if event.get("event") in cleanup_event_names
+        ]
+
+        foreign_revision = copy.deepcopy(accepted)
         for event in foreign_revision:
             if event.get("event") in {
                 "finalization_receipt_validated",
@@ -9480,10 +9785,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             }:
                 event["finalized_revision"] = "foreign-revision"
 
-        invented_transition = [
-            *accepted_finalization_trace(),
-            *cleanup_tail(),
-        ]
+        invented_transition = copy.deepcopy(accepted)
         for event in invented_transition:
             if "final_transition_digest" in event:
                 event["final_transition_digest"] = "f" * 64
@@ -9500,38 +9802,42 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         premature_before_final = [
             *finalized[:final_index],
-            *cleanup_tail(),
+            *copy.deepcopy(cleanup_tail),
             *finalized[final_index:],
         ]
         premature_before_manifest = [
             *finalized[:terminal_manifest_index],
-            *cleanup_tail(),
+            *copy.deepcopy(cleanup_tail),
             *finalized[terminal_manifest_index:],
         ]
 
-        for label, trace in {
-            "foreign-revision": foreign_revision,
-            "invented-final-transition": invented_transition,
-            "cleanup-before-finalized": premature_before_final,
-            "cleanup-before-terminal-manifest": premature_before_manifest,
-        }.items():
-            with self.subTest(mutant=label):
-                codes = {
-                    failure.code
-                    for failure in evaluate_trace(
-                        seal_trace(trace, workflow_id=workflow_id),
-                        BUILDER_FIXTURES,
-                    )
-                }
-                self.assertIn("INVALID_CLEANUP_PROVENANCE", codes)
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            for label, trace in {
+                "foreign-revision": foreign_revision,
+                "invented-final-transition": invented_transition,
+                "cleanup-before-finalized": premature_before_final,
+                "cleanup-before-terminal-manifest": premature_before_manifest,
+            }.items():
+                with self.subTest(mutant=label):
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(
+                            seal_trace(trace, workflow_id=workflow_id),
+                            BUILDER_FIXTURES,
+                        )
+                    }
+                    self.assertIn("INVALID_CLEANUP_PROVENANCE", codes)
 
-        accepted_tail = seal_trace(
-            [*finalized, *cleanup_tail()],
-            workflow_id=workflow_id,
-        )
-        self.assertEqual(evaluate_trace(accepted_tail, BUILDER_FIXTURES), ())
+            self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
         self.assertEqual(
-            evaluate_trace(cleanup_tail(), BUILDER_FIXTURES), ()
+            evaluate_trace(
+                cleanup_trace(owned_path, workflow_id=workflow_id),
+                BUILDER_FIXTURES,
+            ),
+            (),
         )
 
     def test_delivery_acceptance_requires_complete_terminal_evidence(self) -> None:
@@ -9581,6 +9887,131 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                         )
                     },
                 )
+
+    def test_integrated_delivery_acceptance_requires_real_authority(self) -> None:
+        """Integrated delivery acceptance binds an authorized main-agent delivery receipt."""
+
+        def delivery_acceptance() -> dict[str, Any]:
+            return {
+                "event": "delivery_accepted",
+                "valid": True,
+                "accepted": True,
+                "action": "install",
+                "destination_identity": "fixture-terse-summary",
+                "resulting_destination_digest": "installed-target-v1",
+                "acceptance_evidence": ["fixture-install-check"],
+                "user_authority_event_digest": "delivery-authority-v1",
+                "actor": "main-agent-v1",
+                "timestamp": "2026-01-01T00:00:10Z",
+                "delivery_record_digest": "delivery-record-v1",
+                "finalized_revision": "candidate-v1",
+                "run_directory_identity": "run-directory-1",
+            }
+
+        unauthorized_cases: dict[str, list[dict[str, Any]]] = {}
+        default_trace = accepted_finalization_trace()
+        default_trace.append(delivery_acceptance())
+        unauthorized_cases["default-no-authority"] = default_trace
+
+        premature = accepted_finalization_trace()
+        final_index = next(
+            index
+            for index, event in enumerate(premature)
+            if event.get("event") == "finalized"
+        )
+        premature.insert(final_index, delivery_acceptance())
+        unauthorized_cases["before-finalized"] = premature
+
+        for label, trace in unauthorized_cases.items():
+            with self.subTest(invalid=label):
+                self.assertIn(
+                    "UNAUTHORIZED_DELIVERY",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(
+                            seal_trace(trace), BUILDER_FIXTURES
+                        )
+                    },
+                )
+
+        trusted_authority = _resolution_authority()
+        trusted_authority["delivery_effects"] = ["install"]
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            authorized = accepted_finalization_trace()
+            authority_record = next(
+                event
+                for event in authorized
+                if event.get("artifact_type") == "authority-record"
+            )
+            authority_record["authorized_delivery_scope"] = (
+                "fixture-terse-summary"
+            )
+            authorized.extend(
+                [
+                    {
+                        "event": "delivery_attempt",
+                        "destination_scope": "fixture-terse-summary",
+                        "effect": "install",
+                        "actor": "main-agent-v1",
+                    },
+                    delivery_acceptance(),
+                ]
+            )
+            authorized = seal_trace(authorized)
+            attempt = next(
+                event
+                for event in authorized
+                if event.get("event") == "delivery_attempt"
+            )
+            acceptance = next(
+                event
+                for event in authorized
+                if event.get("event") == "delivery_accepted"
+            )
+            acceptance["user_authority_event_digest"] = attempt[
+                "transition_receipt"
+            ]["authority_event_digest"]
+            acceptance["delivery_record_digest"] = attempt[
+                "transition_receipt"
+            ]["receipt_digest"]
+            authorized = seal_trace(authorized)
+            self.assertEqual(
+                evaluate_trace(authorized, BUILDER_FIXTURES), ()
+            )
+
+            mutations = {
+                "candidate-actor": ("actor", "candidate-implementer-v1"),
+                "foreign-destination": (
+                    "destination_identity",
+                    "foreign-target",
+                ),
+                "arbitrary-action": ("action", "delete-production"),
+                "invented-authority": (
+                    "user_authority_event_digest",
+                    "invented-authority",
+                ),
+            }
+            for label, (field, value) in mutations.items():
+                with self.subTest(invalid=label):
+                    mutant = copy.deepcopy(authorized)
+                    mutant_acceptance = next(
+                        event
+                        for event in mutant
+                        if event.get("event") == "delivery_accepted"
+                    )
+                    mutant_acceptance[field] = value
+                    self.assertIn(
+                        "UNAUTHORIZED_DELIVERY",
+                        {
+                            failure.code
+                            for failure in evaluate_trace(
+                                seal_trace(mutant), BUILDER_FIXTURES
+                            )
+                        },
+                    )
 
     def test_finalization_rejects_foreign_workflow_and_target_gate_records(self) -> None:
         """Regression: matching revision strings cannot join another run or target."""
@@ -10478,7 +10909,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
 
         self.assertEqual(evaluate_trace(accepted_finalization_trace(), BUILDER_FIXTURES), ())
 
-        for transition in ("workflow", "target", "snapshot"):
+        for transition in ("workflow", "snapshot"):
             with self.subTest(transition=transition, generation="current"):
                 current = finalization_trace_after_aba(
                     transition, stale_prerequisites=False
@@ -10493,6 +10924,33 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     failure.code for failure in evaluate_trace(stale, BUILDER_FIXTURES)
                 }
                 self.assertIn("STALE_PREREQUISITE_GENERATION", codes)
+
+        target_current_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                finalization_trace_after_aba(
+                    "target",
+                    stale_prerequisites=False,
+                ),
+                BUILDER_FIXTURES,
+            )
+        }
+        self.assertEqual(
+            target_current_codes,
+            {"QUEUE_TARGET_BINDING_MISMATCH"},
+        )
+        target_stale_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                finalization_trace_after_aba(
+                    "target",
+                    stale_prerequisites=True,
+                ),
+                BUILDER_FIXTURES,
+            )
+        }
+        self.assertIn("QUEUE_TARGET_BINDING_MISMATCH", target_stale_codes)
+        self.assertIn("STALE_PREREQUISITE_GENERATION", target_stale_codes)
 
     def test_structured_actor_registry_blocks_self_certification(self) -> None:
         """Regression: changing a role label cannot erase an actor's prior ownership."""
@@ -12702,6 +13160,29 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     "source_role": "domain-techniques",
                 },
             ],
+            "unknown-research-output": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-unknown-lane-reader",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-unknown-lane-reader",
+                    "actor_role": "domain-techniques",
+                    "path": "research/unknown-lane/output.json",
+                    "source_role": "coordinator-context",
+                },
+            ],
+            "ambiguous-research-root": [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-unbound-domain-reader",
+                    "actor_role": "domain-techniques",
+                    "path": "research/output.json",
+                    "source_role": "coordinator-context",
+                }
+            ],
         }
         for label, events in denied_cases.items():
             with self.subTest(denied=label):
@@ -13068,17 +13549,38 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "retained": list(scenario["preserved_artifacts"]),
             },
         ]
-        codes = {
-            failure.code
-            for failure in evaluate_trace(
-                seal_trace(trace), BUILDER_FIXTURES, scenario
-            )
-        }
-        self.assertTrue(
+        sealed = seal_trace(trace)
+        for frozen_scenario in (scenario, None):
+            with self.subTest(scenario_bound=frozen_scenario is not None):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        sealed, BUILDER_FIXTURES, frozen_scenario
+                    )
+                }
+                self.assertTrue(
+                    {
+                        "FINALIZE_WITHOUT_CONFORMANCE",
+                        "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
+                    }.issubset(codes)
+                )
+
+        label_only = seal_trace(
+            [
+                {
+                    "event": "goal_changed",
+                    "change": "delivery_intent",
+                    "invalidated": ["authority", "release.delivery"],
+                }
+            ],
+            workflow_id="6" * 32,
+        )
+        self.assertIn(
+            "INVALIDATION_WITHOUT_DEPENDENCY_STATE",
             {
-                "FINALIZE_WITHOUT_CONFORMANCE",
-                "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
-            }.issubset(codes)
+                failure.code
+                for failure in evaluate_trace(label_only, BUILDER_FIXTURES)
+            },
         )
 
     def test_accepted_create_improve_repair_resume_queue_and_blindness_traces(self) -> None:
