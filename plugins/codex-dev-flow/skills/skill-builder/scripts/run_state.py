@@ -36,9 +36,13 @@ INDEX_SCHEMA = "skill-builder-index.v1"
 ENVELOPE_SCHEMA = "skill-builder-artifact-envelope.v1"
 MANIFEST_SCHEMA = "skill-builder-raw-manifest.v1"
 LEGACY_RESOLUTION_SCHEMA = "skill-builder-resolution.v1"
-RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
+PREVIOUS_RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
+RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
 LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
-CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
+PREVIOUS_CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
+CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
+LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
+SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -126,11 +130,15 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "skill-contract": "skill-builder-contract.v1",
     "user-confirmation-record": "skill-builder-user-confirmation.v1",
     "evaluation-pack": "skill-builder-evaluation-pack.v1",
-    "candidate-record": {LEGACY_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA},
+    "candidate-record": {
+        LEGACY_CANDIDATE_SCHEMA,
+        PREVIOUS_CANDIDATE_SCHEMA,
+        CANDIDATE_SCHEMA,
+    },
     "trial-pack": "skill-builder-trial-pack.v1",
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
     "review-record": "skill-builder-review.v1",
-    "target-scorecard": "skill-builder-scorecard.v1",
+    "target-scorecard": {LEGACY_SCORECARD_SCHEMA, SCORECARD_SCHEMA},
     "verification-record": "skill-builder-verification.v1",
     "release-record": "skill-builder-release.v1",
     "delivery-acceptance-record": "skill-builder-delivery-acceptance.v1",
@@ -760,10 +768,11 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     expected_versions = (
         {expected_version} if isinstance(expected_version, str) else expected_version
     )
-    if (
-        set(payload) != expected_fields
-        or payload.get("schema_version") not in expected_versions
-    ):
+    schema_version = payload.get("schema_version")
+    versioned_fields = set(expected_fields)
+    if artifact_type == "candidate-record" and schema_version == CANDIDATE_SCHEMA:
+        versioned_fields.add("loaded_skill_digest")
+    if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
     if artifact_type == "baseline-report":
@@ -985,6 +994,12 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             "target_snapshot_digest",
         ):
             _digest(payload[field], f"candidate {field}")
+        if payload["schema_version"] == CANDIDATE_SCHEMA:
+            _digest(payload["loaded_skill_digest"], "candidate loaded skill")
+            if payload["loaded_skill_digest"] == payload["resulting_digest"]:
+                raise RunStateError(
+                    "candidate loaded-skill content cannot be its owned-result descriptor"
+                )
         _text_list(payload["owned_paths"], "candidate owned paths")
         _digest_list(payload["local_check_evidence"], "candidate local checks")
         return
@@ -1130,30 +1145,80 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             _digest(payload[field], f"scorecard {field}")
         _text(payload["candidate_revision"], "scorecard candidate revision")
         for category in _mapping_list(payload["categories"], "scorecard categories"):
-            if set(category) != {
-                "name",
-                "score",
-                "criteria",
-                "frozen_parameter_identifiers",
-                "evidence_identifiers",
-                "related_findings",
-                "repair_history",
-            }:
+            if payload["schema_version"] == LEGACY_SCORECARD_SCHEMA:
+                if set(category) != {
+                    "name",
+                    "score",
+                    "criteria",
+                    "frozen_parameter_identifiers",
+                    "evidence_identifiers",
+                    "related_findings",
+                    "repair_history",
+                }:
+                    raise RunStateError("scorecard category schema is invalid")
+            elif set(category) != {"name", "score", "criteria", "repair_history"}:
                 raise RunStateError("scorecard category schema is invalid")
             _text(category["name"], "scorecard category name")
             _exact_integer(category["score"], "scorecard score")
-            if not isinstance(category["criteria"], dict) or not category["criteria"] or any(
-                not isinstance(key, str) or not key or not isinstance(value, bool)
-                for key, value in category["criteria"].items()
-            ):
+            criteria = category["criteria"]
+            if not isinstance(criteria, dict) or not criteria:
                 raise RunStateError("scorecard criteria are invalid")
-            for field in (
-                "frozen_parameter_identifiers",
-                "evidence_identifiers",
-                "related_findings",
-                "repair_history",
-            ):
-                _text_list(category[field], f"scorecard category {field}")
+            if payload["schema_version"] == LEGACY_SCORECARD_SCHEMA:
+                if any(
+                    not isinstance(key, str)
+                    or not key
+                    or not isinstance(value, bool)
+                    for key, value in criteria.items()
+                ):
+                    raise RunStateError("scorecard criteria are invalid")
+                for field in (
+                    "frozen_parameter_identifiers",
+                    "evidence_identifiers",
+                    "related_findings",
+                ):
+                    _text_list(category[field], f"scorecard category {field}")
+            else:
+                criterion_fields = {
+                    "passed",
+                    "frozen_parameter_identifiers",
+                    "case_ids",
+                    "raw_artifact_digests",
+                    "trial_receipt_ids",
+                    "review_finding_ids",
+                    "candidate_revision",
+                    "review_artifact_id",
+                    "review_digest",
+                }
+                for criterion_id, result in criteria.items():
+                    _text(criterion_id, "scorecard criterion identity")
+                    if not isinstance(result, dict) or set(result) != criterion_fields:
+                        raise RunStateError("scorecard criterion-result schema is invalid")
+                    if not isinstance(result["passed"], bool):
+                        raise RunStateError("scorecard criterion result is invalid")
+                    for field in ("frozen_parameter_identifiers", "case_ids"):
+                        values = _text_list(
+                            result[field], f"scorecard criterion {field}"
+                        )
+                        if values != sorted(values) or len(values) != len(set(values)):
+                            raise RunStateError(
+                                f"scorecard criterion {field} is not deterministic"
+                            )
+                    for field in (
+                        "raw_artifact_digests",
+                        "trial_receipt_ids",
+                        "review_finding_ids",
+                    ):
+                        values = _digest_list(
+                            result[field], f"scorecard criterion {field}"
+                        )
+                        if values != sorted(values):
+                            raise RunStateError(
+                                f"scorecard criterion {field} is not deterministic"
+                            )
+                    _text(result["candidate_revision"], "scorecard criterion candidate")
+                    _text(result["review_artifact_id"], "scorecard criterion review")
+                    _digest(result["review_digest"], "scorecard criterion review")
+            _text_list(category["repair_history"], "scorecard category repair history")
         return
 
     if artifact_type == "verification-record":
@@ -1626,6 +1691,7 @@ def _create_resolution_artifact(
         "schema_version": RESOLUTION_SCHEMA,
         "workflow_id": workflow_id,
         "candidate_record_schema": CANDIDATE_SCHEMA,
+        "scorecard_schema": SCORECARD_SCHEMA,
         "host_identity": host,
         "target_identity": target,
         "mode": mode,
@@ -1749,6 +1815,15 @@ def _create_artifact(
             if primary_record["schema_version"] != required_schema:
                 raise RunStateError(
                     "candidate schema does not match the run's versioned semantics"
+                )
+        if artifact_type == "target-scorecard":
+            resolution, _ = _resolution_payload(run, workflow_id)
+            required_schema = resolution.get(
+                "scorecard_schema", LEGACY_SCORECARD_SCHEMA
+            )
+            if primary_record["schema_version"] != required_schema:
+                raise RunStateError(
+                    "scorecard schema does not match the run's versioned semantics"
                 )
     if not isinstance(producer, str) or not producer.strip():
         raise RunStateError("artifact producer identity is required")
@@ -2292,19 +2367,33 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
         "active_target_lock",
     }
     schema_version = payload.get("schema_version")
-    expected_fields = (
-        common_fields
-        if schema_version == LEGACY_RESOLUTION_SCHEMA
-        else common_fields | {"candidate_record_schema"}
-    )
+    if schema_version == LEGACY_RESOLUTION_SCHEMA:
+        expected_fields = common_fields
+        version_markers_valid = True
+    elif schema_version == PREVIOUS_RESOLUTION_SCHEMA:
+        expected_fields = common_fields | {"candidate_record_schema"}
+        version_markers_valid = (
+            payload.get("candidate_record_schema") == PREVIOUS_CANDIDATE_SCHEMA
+        )
+    else:
+        expected_fields = common_fields | {
+            "candidate_record_schema",
+            "scorecard_schema",
+        }
+        version_markers_valid = (
+            payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            and payload.get("scorecard_schema") == SCORECARD_SCHEMA
+        )
     if (
-        schema_version not in {LEGACY_RESOLUTION_SCHEMA, RESOLUTION_SCHEMA}
+        schema_version
+        not in {
+            LEGACY_RESOLUTION_SCHEMA,
+            PREVIOUS_RESOLUTION_SCHEMA,
+            RESOLUTION_SCHEMA,
+        }
         or set(payload) != expected_fields
         or payload.get("workflow_id") != workflow_id
-        or (
-            schema_version == RESOLUTION_SCHEMA
-            and payload.get("candidate_record_schema") != CANDIDATE_SCHEMA
-        )
+        or not version_markers_valid
     ):
         raise RunStateError("resolution payload identity mismatch")
     return payload, envelope
@@ -2438,6 +2527,11 @@ def _validate_trial_binding(
         "after_target_manifest_digest": "after-manifest",
         "filesystem_result_digest": "filesystem-result",
     }
+    expected_loaded_skill_digest = (
+        candidate["loaded_skill_digest"]
+        if candidate["schema_version"] == CANDIDATE_SCHEMA
+        else candidate["resulting_digest"]
+    )
     for trial_case, frozen_case in zip(trial_cases, frozen_cases, strict=True):
         case_id = trial_case["case_id"]
         if not _ARTIFACT_RE.fullmatch(case_id):
@@ -2450,9 +2544,12 @@ def _validate_trial_binding(
             or trial_case["request_digest"] != frozen_case["raw_request_digest"]
             or trial_case["before_target_manifest_digest"]
             != frozen_case["setup_manifest_digest"]
-            or trial_case["loaded_skill_digest"] != candidate["resulting_digest"]
         ):
             raise RunStateError("trial case binding is stale or substituted")
+        if trial_case["loaded_skill_digest"] != expected_loaded_skill_digest:
+            raise RunStateError(
+                "trial loaded-skill content identity is stale or substituted"
+            )
         for field, file_stem in raw_fields.items():
             if (
                 raw_digests.get(f"evidence/{case_id}/{file_stem}.bin")
@@ -2723,7 +2820,17 @@ def _validate_score_bindings(
         run, "initialize", "resolution-record", event_artifacts
     )
     candidate = _artifact_payload_json(run, candidate_id)
+    trials = _artifact_payload_json(run, trials_id)
+    review = _artifact_payload_json(run, review_id)
     evaluation = _artifact_payload_json(run, evaluation_id)
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    required_scorecard_schema = resolution.get(
+        "scorecard_schema", LEGACY_SCORECARD_SCHEMA
+    )
+    if scorecard["schema_version"] != required_scorecard_schema:
+        raise RunStateError(
+            "scorecard schema does not match the run's versioned semantics"
+        )
     if conformance["candidate_digest"] != candidate_envelope["envelope_digest"]:
         raise RunStateError("conformance candidate binding is stale")
     _require_input_bindings(
@@ -2762,6 +2869,52 @@ def _validate_score_bindings(
             conformance_id: conformance_envelope["envelope_digest"],
         },
         "target scorecard",
+    )
+    if scorecard["schema_version"] == LEGACY_SCORECARD_SCHEMA:
+        return
+
+    frozen_parameter_ids = sorted(evaluation["scoring_parameters"])
+    if not frozen_parameter_ids:
+        raise RunStateError("scorecard lacks frozen scoring-parameter evidence")
+    for parameter_id in frozen_parameter_ids:
+        _text(parameter_id, "evaluation scoring parameter identity")
+    cases_by_id = {case["case_id"]: case for case in trials["cases"]}
+    frozen_case_ids = sorted(cases_by_id)
+    if not frozen_case_ids:
+        raise RunStateError("scorecard lacks frozen case evidence")
+    review_finding_ids: dict[str, list[str]] = {}
+    for finding in review["findings"]:
+        finding_id = raw_digest(canonical_json_bytes(finding))
+        for criterion_id in finding["affected_target_criteria"]:
+            review_finding_ids.setdefault(criterion_id, []).append(finding_id)
+
+    raw_claims: list[str] = []
+    for category in scorecard["categories"]:
+        for criterion_id, result in category["criteria"].items():
+            selected_cases = [cases_by_id[case_id] for case_id in frozen_case_ids]
+            expected_raw_digests = sorted(
+                {case["output_digest"] for case in selected_cases}
+            )
+            expected_trial_receipts = sorted(
+                raw_digest(canonical_json_bytes(case)) for case in selected_cases
+            )
+            expected_finding_ids = sorted(set(review_finding_ids.get(criterion_id, [])))
+            if (
+                result["frozen_parameter_identifiers"] != frozen_parameter_ids
+                or result["case_ids"] != frozen_case_ids
+                or result["raw_artifact_digests"] != expected_raw_digests
+                or result["trial_receipt_ids"] != expected_trial_receipts
+                or result["review_finding_ids"] != expected_finding_ids
+                or result["candidate_revision"] != candidate["candidate_revision"]
+                or result["review_artifact_id"] != review_id
+                or result["review_digest"] != review_envelope["envelope_digest"]
+            ):
+                raise RunStateError(
+                    "scorecard criterion evidence is incomplete, stale, or substituted"
+                )
+            raw_claims.extend(result["raw_artifact_digests"])
+    _require_retained_raw_digests(
+        run, trials_id, sorted(set(raw_claims)), "scorecard criterion evidence"
     )
 
 
@@ -2946,6 +3099,14 @@ def _validate_candidate_entry(
     resolution_id, resolution_envelope = _event_artifact(
         run, "initialize", "resolution-record", event_artifacts
     )
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    required_candidate_schema = resolution.get(
+        "candidate_record_schema", LEGACY_CANDIDATE_SCHEMA
+    )
+    if candidate["schema_version"] != required_candidate_schema:
+        raise RunStateError(
+            "candidate schema does not match the run's versioned semantics"
+        )
     confirmation_authority = (
         event_artifacts.get("confirm-contract", {}).get("authority_event_digest")
         if event_artifacts is not None
@@ -3502,7 +3663,8 @@ def _validate_delivery_destination(
     if delivery.get("resulting_destination_digest") != manifest["manifest_digest"]:
         raise RunStateError("delivery destination digest does not match the exact target")
     if (
-        candidate.get("schema_version") == CANDIDATE_SCHEMA
+        candidate.get("schema_version")
+        in {PREVIOUS_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA}
         and candidate.get("resulting_digest")
         != _owned_result_digest(index, manifest, candidate.get("owned_paths"))
     ):
@@ -4635,12 +4797,22 @@ def _validate_final_evidence(
         raise RunStateError("target scorecard binding or categories are invalid")
     for category in categories:
         criteria = category.get("criteria")
+        criterion_results_pass = (
+            all(value is True for value in criteria.values())
+            if scorecard.get("schema_version") == LEGACY_SCORECARD_SCHEMA
+            else all(
+                isinstance(value, dict) and value.get("passed") is True
+                for value in criteria.values()
+            )
+            if isinstance(criteria, dict)
+            else False
+        )
         if (
             category.get("score") != 10
             or isinstance(category.get("score"), bool)
             or not isinstance(criteria, dict)
             or set(criteria) != _SCORE_CRITERIA[category["name"]]
-            or any(value is not True for value in criteria.values())
+            or not criterion_results_pass
         ):
             raise RunStateError("every target score and binary criterion must pass at 10")
     verification_id, verification_envelope, verification = _current_event_artifact(
