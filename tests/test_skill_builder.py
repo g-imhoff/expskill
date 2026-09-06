@@ -153,6 +153,12 @@ def accepted_finalization_trace(
 ) -> list[dict[str, Any]]:
     workflow_id = "b" * 32
     target_identity = "fixture-terse-summary"
+    artifact_suffix = "" if revision == "candidate-v1" else f"-{revision}"
+    gate_proof_id = f"accepted-gate-proof{artifact_suffix}"
+    category_proof_ids = {
+        category: f"accepted-{category.replace(' ', '-')}-proof{artifact_suffix}"
+        for category in CATEGORY_CRITERION_IDS
+    }
     binding = {
         "workflow_id": workflow_id,
         "target_identity": target_identity,
@@ -162,7 +168,7 @@ def accepted_finalization_trace(
     }
     gate_proof = {
         "event": "artifact_retained",
-        "artifact_id": "accepted-gate-proof",
+        "artifact_id": gate_proof_id,
         "artifact_type": "trial-receipt",
         "valid": True,
         **binding,
@@ -170,7 +176,7 @@ def accepted_finalization_trace(
     category_proofs = [
         {
             "event": "artifact_retained",
-            "artifact_id": f"accepted-{category.replace(' ', '-')}-proof",
+            "artifact_id": category_proof_ids[category],
             "artifact_type": "category-evidence",
             "category": category,
             "criterion_ids": sorted(criterion_ids),
@@ -190,7 +196,7 @@ def accepted_finalization_trace(
                 {
                     "id": criterion_id,
                     "passed": True,
-                    "evidence": [f"accepted-{category.replace(' ', '-')}-proof"],
+                    "evidence": [category_proof_ids[category]],
                 }
                 for criterion_id in sorted(criterion_ids)
             ],
@@ -243,7 +249,7 @@ def accepted_finalization_trace(
                 {
                     "id": gate_id,
                     "passed": True,
-                    "evidence": ["accepted-gate-proof"],
+                    "evidence": [gate_proof_id],
                 }
                 for gate_id in sorted(CONFORMANCE_GATE_IDS)
             ],
@@ -263,7 +269,7 @@ def accepted_finalization_trace(
             "supplied_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
             "accessed_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
             "forbidden_artifacts_accessed": [],
-            "evidence": ["accepted-gate-proof"],
+            "evidence": [gate_proof_id],
             **binding,
         },
         *scores,
@@ -281,7 +287,7 @@ def accepted_finalization_trace(
             "supplied_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
             "accessed_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
             "forbidden_artifacts_accessed": [],
-            "evidence": ["accepted-gate-proof"],
+            "evidence": [gate_proof_id],
             **binding,
         },
         {
@@ -290,7 +296,7 @@ def accepted_finalization_trace(
             "outcome": "pass",
             "independent": True,
             "read_only": True,
-            "evidence": ["accepted-gate-proof"],
+            "evidence": [gate_proof_id],
             **binding,
         },
         {
@@ -300,13 +306,13 @@ def accepted_finalization_trace(
             "conclusion": "pass",
             "independent": True,
             "read_only": True,
-            "evidence": ["accepted-gate-proof"],
+            "evidence": [gate_proof_id],
             **binding,
         },
         {
             "event": "release_evidence_retained",
             "valid": True,
-            "evidence": ["accepted-gate-proof"],
+            "evidence": [gate_proof_id],
             **binding,
         },
         {"event": "finalized", **binding},
@@ -422,6 +428,8 @@ def evaluate_trace(
     pending_repair: dict[str, Any] | None = None
     record_event_indices: dict[int, int] = {}
     seen_finding_ids: set[str] = set()
+    seen_artifact_ids: set[str] = set()
+    ambiguous_artifact_ids: set[str] = set()
 
     def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any, Any, Any]:
         return (
@@ -464,6 +472,7 @@ def evaluate_trace(
             and all(
                 isinstance(artifact_id, str)
                 and artifact_id in retained_artifacts
+                and artifact_id not in ambiguous_artifact_ids
                 and retained_artifacts[artifact_id].get("valid") is True
                 and record_binding(retained_artifacts[artifact_id]) == binding
                 and (
@@ -926,7 +935,7 @@ def evaluate_trace(
                 )
         elif event_name == "artifact_retained":
             artifact_id = event["artifact_id"]
-            if artifact_id in retained_artifacts:
+            if artifact_id in seen_artifact_ids:
                 failures.append(
                     OracleFailure(
                         "DUPLICATE_ARTIFACT_ID",
@@ -934,6 +943,9 @@ def evaluate_trace(
                         "a retained artifact reused an immutable identity",
                     )
                 )
+                ambiguous_artifact_ids.add(artifact_id)
+            else:
+                seen_artifact_ids.add(artifact_id)
             retained_artifacts[artifact_id] = event
         elif event_name == "builder_conformance_recorded":
             conformance_record = event
@@ -2194,6 +2206,40 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         replacement["category"] = "safety"
         replacement["criterion_ids"] = ["SA1"]
         trace.insert(-1, replacement)
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+
+        self.assertIn("DUPLICATE_ARTIFACT_ID", failure_codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", failure_codes)
+
+    def test_artifact_identity_cannot_be_reused_after_candidate_revision(self) -> None:
+        """Regression: clearing revision evidence must preserve run-wide identities."""
+
+        first_revision = accepted_finalization_trace()
+        second_revision = accepted_finalization_trace("candidate-v2")
+        candidate_index = next(
+            index
+            for index, event in enumerate(second_revision)
+            if event["event"] == "candidate_edit"
+        )
+        second_revision = second_revision[candidate_index:]
+        workflow_proof = next(
+            event
+            for event in second_revision
+            if event.get("category") == "workflow quality"
+        )
+        workflow_proof["artifact_id"] = "accepted-workflow-quality-proof"
+        workflow_score = next(
+            event
+            for event in second_revision
+            if event["event"] == "category_scored"
+            and event["category"] == "workflow quality"
+        )
+        for criterion in workflow_score["criteria"]:
+            criterion["evidence"] = ["accepted-workflow-quality-proof"]
+        trace = first_revision[:-1] + second_revision
 
         failure_codes = {
             failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
