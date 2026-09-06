@@ -59,8 +59,19 @@ MAX_TARGET_BYTES = 64 * 1024 * 1024
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _WORKFLOW_RE = re.compile(r"[0-9a-f]{32}\Z")
 _ARTIFACT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_IMMUTABLE_PUBLICATION_TEMP_RE = re.compile(
+    r"\.publish-[1-9][0-9]*-[0-9a-f]{16}-([0-9a-f]{16})\Z"
+)
+_LEGACY_PUBLICATION_TEMP_RE = re.compile(
+    r"\.tmp-[1-9][0-9]*-[0-9a-f]{16}\Z"
+)
+_ATOMIC_PUBLICATION_TEMP_RE = re.compile(
+    r"\.current-[1-9][0-9]*-[0-9a-f]{16}\Z"
+)
 _PUBLICATION_TEMP_RE = re.compile(
-    r"\.(?:tmp|current)-[0-9]+-[0-9a-f]{16}\Z"
+    r"(?:\.publish-[1-9][0-9]*-[0-9a-f]{16}-[0-9a-f]{16}"
+    r"|\.tmp-[1-9][0-9]*-[0-9a-f]{16}"
+    r"|\.current-[1-9][0-9]*-[0-9a-f]{16})\Z"
 )
 _ARTIFACT_TYPES = {
     "resolution-record",
@@ -536,6 +547,20 @@ def _same_filesystem_entry(
     )
 
 
+def _publication_destination_tag(name: str) -> str:
+    return raw_digest(os.fsencode(name))[:16]
+
+
+def _immutable_temp_names_destination(
+    temporary_name: str, destination_name: str
+) -> bool:
+    match = _IMMUTABLE_PUBLICATION_TEMP_RE.fullmatch(temporary_name)
+    return (
+        match is not None
+        and match.group(1) == _publication_destination_tag(destination_name)
+    )
+
+
 def _normalize_interrupted_publications(path: Path) -> None:
     """Remove only provable helper publication residue inside one owned tree."""
     _validate_private_directory(path, "publication recovery boundary")
@@ -641,14 +666,31 @@ def _normalize_interrupted_publications(path: Path) -> None:
                 and _same_filesystem_entry(info, observed[sibling])
             ]
             if info.st_nlink == 2:
-                if (
-                    len(siblings) != 1
-                    or _PUBLICATION_TEMP_RE.fullmatch(siblings[0])
-                ):
+                if len(siblings) != 1:
                     raise RunStateError(
                         "publication residue lacks one exact final pathname"
                     )
                 final_name = siblings[0]
+                name_is_source = _immutable_temp_names_destination(
+                    name, final_name
+                )
+                sibling_is_source = _immutable_temp_names_destination(
+                    final_name, name
+                )
+                if name_is_source and sibling_is_source:
+                    raise RunStateError(
+                        "publication link pair has ambiguous destination binding"
+                    )
+                if sibling_is_source:
+                    continue
+                if not name_is_source:
+                    if (
+                        not _LEGACY_PUBLICATION_TEMP_RE.fullmatch(name)
+                        or _PUBLICATION_TEMP_RE.fullmatch(final_name)
+                    ):
+                        raise RunStateError(
+                            "publication residue lacks one exact final pathname"
+                        )
                 final_info = observed[final_name]
                 validate_private_file(final_info)
                 final_descriptor = opened_file(
@@ -668,6 +710,7 @@ def _normalize_interrupted_publications(path: Path) -> None:
                         raise RunStateError(
                             "published file did not normalize to one pathname"
                         )
+                    validate_private_file(final_after)
                 finally:
                     os.close(final_descriptor)
                 continue
@@ -732,7 +775,10 @@ def _write_all(descriptor: int, payload: bytes) -> None:
 
 
 def _exclusive_bytes(path: Path, payload: bytes) -> None:
-    temporary = path.parent / f".tmp-{os.getpid()}-{secrets.token_hex(8)}"
+    destination_tag = _publication_destination_tag(path.name)
+    temporary = path.parent / (
+        f".publish-{os.getpid()}-{secrets.token_hex(8)}-{destination_tag}"
+    )
     descriptor: int | None = None
     published = False
     try:
@@ -4972,11 +5018,19 @@ def discover_run(
                 and derived["target_identity"] == target
             ):
                 matches.append(derived)
-        if len(matches) != 1:
+        active_matches = [
+            match
+            for match in matches
+            if match["stage"] not in {"finalized", "delivered", "abandoned"}
+        ]
+        selected_matches = active_matches if active_matches else matches
+        if len(selected_matches) != 1:
             raise RunStateError(
-                "run not found" if not matches else "canonical discovery is ambiguous"
+                "run not found"
+                if not selected_matches
+                else "canonical discovery is ambiguous"
             )
-        match = matches[0]
+        match = selected_matches[0]
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "discover",

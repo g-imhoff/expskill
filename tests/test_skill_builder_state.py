@@ -470,6 +470,8 @@ def crash_retain_during_artifact_link(
     state_root: str,
     workflow_id: str,
     payload_base64: str,
+    payload_name: str = "record.json",
+    artifact_id: str = "crash-partial-baseline",
 ) -> None:
     helper = load_helper()
     original_link = helper.os.link
@@ -487,9 +489,9 @@ def crash_retain_during_artifact_link(
         )
         path = Path(destination)
         if (
-            path.name == "record.json"
+            path.name == payload_name
             and path.parent.name == "raw"
-            and path.parent.parent.name == "crash-partial-baseline"
+            and path.parent.parent.name == artifact_id
         ):
             os._exit(HARD_EXIT_CODE)
 
@@ -506,10 +508,10 @@ def crash_retain_during_artifact_link(
     helper.retain_artifact(
         workflow_id=workflow_id,
         expected_sequence=0,
-        artifact_id="crash-partial-baseline",
+        artifact_id=artifact_id,
         artifact_type="baseline-report",
-        files={"record.json": base64.b64decode(payload_base64)},
-        primary_path="record.json",
+        files={payload_name: base64.b64decode(payload_base64)},
+        primary_path=payload_name,
         producer="main-agent",
         input_bindings=bindings,
         limitations=[],
@@ -4314,6 +4316,53 @@ def test_recovery_normalizes_hard_exit_artifact_link_pair(
     assert list((run / "transactions").iterdir()) == []
 
 
+def test_recovery_normalizes_link_pair_when_payload_name_looks_temporary(
+    tmp_path: Path,
+) -> None:
+    """An arbitrary payload name cannot hide the helper's publication link."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    payload = valid_create_baseline_payload(
+        helper, state_root, started["workflow_id"]
+    )
+    payload_name = ".tmp-123-0123456789abcdef"
+    artifact_id = "crash-temp-shaped-baseline"
+    run_hard_exit_process(
+        crash_retain_during_artifact_link,
+        str(state_root),
+        started["workflow_id"],
+        base64.b64encode(fixture_canonical_bytes(payload)).decode("ascii"),
+        payload_name,
+        artifact_id,
+    )
+    run = state_root / "live" / started["workflow_id"]
+    raw = run / "artifacts" / artifact_id / "raw"
+    entries = list(raw.iterdir())
+    assert len(entries) == 2
+    assert {entry.stat().st_ino for entry in entries} == {
+        entries[0].stat().st_ino
+    }
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+
+    assert recovered["stage"] == "resolved"
+    assert not (run / "artifacts" / artifact_id).exists()
+    assert list((run / "transactions").iterdir()) == []
+
+
 def test_recovery_removes_hard_exit_atomic_index_temp(
     tmp_path: Path,
 ) -> None:
@@ -4500,6 +4549,18 @@ def test_abandonment_releases_lock_and_recovery_reconciles_crash_window(
         state_root=state_root,
     )
     assert replacement["workflow_id"] != started["workflow_id"]
+    lock_path.unlink()
+
+    discovered = helper.discover_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=identity,
+        state_root=state_root,
+    )
+
+    assert discovered["workflow_id"] == replacement["workflow_id"]
+    assert discovered["stage"] == "resolved"
+    restored_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert restored_lock["workflow_id"] == replacement["workflow_id"]
 
 
 def test_oversized_structured_artifact_is_rejected_before_receipt_commit(
