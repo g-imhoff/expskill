@@ -1,0 +1,7 @@
+{
+  "schema_version": "skill-builder-trusted-user-authority-v1",
+  "evidence_kind": "trusted-fixture-ingress",
+  "user_identity": "fixture-user-v1",
+  "user_role": "user",
+  "authority_source": "explicit-user-event"
+}
