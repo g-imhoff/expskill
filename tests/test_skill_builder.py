@@ -525,9 +525,15 @@ def evaluate_trace(
         binding: tuple[Any, Any, Any, Any, Any],
         category: str,
         criterion_id: str,
+        *,
+        current_epoch: bool = False,
     ) -> bool:
         return (
-            evidence_resolves(evidence_ids, binding)
+            evidence_resolves(
+                evidence_ids,
+                binding,
+                current_epoch=current_epoch,
+            )
             and isinstance(evidence_ids, list)
             and all(
                 retained_artifacts[artifact_id].get("category") == category
@@ -919,7 +925,16 @@ def evaluate_trace(
                     )
                 )
         elif event_name == "artifact_retained":
-            retained_artifacts[event["artifact_id"]] = event
+            artifact_id = event["artifact_id"]
+            if artifact_id in retained_artifacts:
+                failures.append(
+                    OracleFailure(
+                        "DUPLICATE_ARTIFACT_ID",
+                        index,
+                        "a retained artifact reused an immutable identity",
+                    )
+                )
+            retained_artifacts[artifact_id] = event
         elif event_name == "builder_conformance_recorded":
             conformance_record = event
         elif event_name == "spec_outcome_recorded":
@@ -1194,9 +1209,11 @@ def evaluate_trace(
                     and record_postdates_candidate(score_event)
                     and record_binding(score_event) == expected_binding
                     and all(
-                        evidence_resolves(
+                        category_evidence_resolves(
                             criterion.get("evidence"),
                             expected_binding,
+                            score_event.get("category"),
+                            criterion.get("id"),
                             current_epoch=True,
                         )
                         for criterion in score_event.get("criteria", [])
@@ -2161,6 +2178,29 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     for failure in evaluate_trace(mutant, BUILDER_FIXTURES)
                 }
                 self.assertIn("FALSE_CATEGORY_TEN", failure_codes)
+
+    def test_post_score_duplicate_artifact_cannot_substitute_category_scope(self) -> None:
+        """Regression: an immutable evidence identity cannot change scope after scoring."""
+
+        trace = accepted_finalization_trace()
+        replacement = dict(
+            next(
+                event
+                for event in trace
+                if event.get("artifact_id")
+                == "accepted-workflow-quality-proof"
+            )
+        )
+        replacement["category"] = "safety"
+        replacement["criterion_ids"] = ["SA1"]
+        trace.insert(-1, replacement)
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+
+        self.assertIn("DUPLICATE_ARTIFACT_ID", failure_codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", failure_codes)
 
     def test_review_provenance_and_supplied_artifact_boundaries_are_enforced(self) -> None:
         """Regression: review independence requires cross-event identity and access proof."""
