@@ -1706,20 +1706,7 @@ def merge_accepted_fixture_events(
                 continue
             basis = by_id.get(raw_criterion.get("id"))
             criterion = copy.deepcopy(basis) if isinstance(basis, dict) else {}
-            criterion.update(
-                {
-                    key: copy.deepcopy(value)
-                    for key, value in raw_criterion.items()
-                    if key != "evidence"
-                }
-            )
-            criterion["fixture_source_evidence"] = copy.deepcopy(
-                raw_criterion.get("evidence")
-            )
-            if not raw_criterion.get("evidence"):
-                criterion["evidence"] = copy.deepcopy(
-                    raw_criterion.get("evidence")
-                )
+            criterion.update(copy.deepcopy(raw_criterion))
             enriched.append(criterion)
         return enriched
 
@@ -1817,10 +1804,13 @@ def merge_accepted_fixture_events(
         for event in merged_events:
             if event.get("event") != "evidence_sieved":
                 continue
-            event["card_count"] = research_card_count
-            decisions = event.get("decisions")
-            if not isinstance(decisions, list) or len(decisions) != research_card_count:
-                event["decisions"] = ["adopt"] * research_card_count
+            source_event = event.get("fixture_source_event")
+            if not isinstance(source_event, dict) or "card_count" not in source_event:
+                event["card_count"] = research_card_count
+            if not isinstance(source_event, dict) or "decisions" not in source_event:
+                card_count = event.get("card_count")
+                if type(card_count) is int and card_count >= 0:
+                    event["decisions"] = ["adopt"] * card_count
     return merged_events
 
 
@@ -1904,6 +1894,50 @@ def build_fixture_trace(
         if event_name == "candidate_edit":
             revision = event.get("candidate_revision")
             if trusted_candidate_locator("d" * 32, revision) is None:
+                return invalid_fixture
+        if event_name == "review_recorded":
+            findings = event.get("findings")
+            if not isinstance(findings, list) or any(
+                not isinstance(finding, dict)
+                or not isinstance(finding.get("id"), str)
+                or "affected_categories" in finding
+                and (
+                    not isinstance(finding["affected_categories"], list)
+                    or any(
+                        not isinstance(category, str)
+                        for category in finding["affected_categories"]
+                    )
+                )
+                or "affected_criteria" in finding
+                and (
+                    not isinstance(finding["affected_criteria"], list)
+                    or any(
+                        not isinstance(criterion, str)
+                        for criterion in finding["affected_criteria"]
+                    )
+                )
+                for finding in findings
+            ):
+                return invalid_fixture
+        if event_name == "category_scored":
+            criteria = event.get("criteria")
+            if (
+                not isinstance(event.get("category"), str)
+                or not isinstance(criteria, list)
+                or any(
+                    not isinstance(criterion, dict)
+                    or not isinstance(criterion.get("id"), str)
+                    or "evidence" in criterion
+                    and (
+                        not isinstance(criterion["evidence"], list)
+                        or any(
+                            not isinstance(evidence_id, str)
+                            for evidence_id in criterion["evidence"]
+                        )
+                    )
+                    for criterion in criteria
+                )
+            ):
                 return invalid_fixture
 
     fixture_workflow = hashlib.sha256(
@@ -10657,6 +10691,142 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 self.assertTrue(
                     {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
                 )
+
+    def test_fixture_builder_rejects_nested_json_shapes_without_throwing(self) -> None:
+        """Nested review and score identities must reach schema failure safely."""
+
+        payload = json.loads(
+            (BUILDER_FIXTURES / "frozen-validation" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source = payload["traces"]["accepted_negative_review_repair"]
+        mutants: list[tuple[str, list[dict[str, Any]]]] = []
+
+        for finding_id in ([], {}):
+            trace = copy.deepcopy(source)
+            review = next(
+                event
+                for event in trace
+                if event.get("event") == "review_recorded"
+                and event.get("findings")
+            )
+            review["findings"][0]["id"] = finding_id
+            mutants.append(
+                (f"finding_id_{type(finding_id).__name__}", trace)
+            )
+
+        trace = copy.deepcopy(source)
+        review = next(
+            event
+            for event in trace
+            if event.get("event") == "review_recorded"
+            and event.get("findings")
+        )
+        review["findings"][0]["affected_categories"] = [[]]
+        mutants.append(("nested_affected_category", trace))
+
+        for criterion_id in ([], {}):
+            trace = copy.deepcopy(source)
+            score = next(
+                event
+                for event in trace
+                if event.get("event") == "category_scored"
+            )
+            score["criteria"][0]["id"] = criterion_id
+            mutants.append(
+                (f"criterion_id_{type(criterion_id).__name__}", trace)
+            )
+
+        for name, raw_events in mutants:
+            with self.subTest(mutant=name):
+                try:
+                    built = build_fixture_trace(
+                        "frozen-validation",
+                        "accepted_negative_review_repair",
+                        raw_events,
+                    )
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(built, BUILDER_FIXTURES)
+                    }
+                except (
+                    AttributeError,
+                    IndexError,
+                    KeyError,
+                    StopIteration,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    self.fail(
+                        f"fixture construction leaked {type(error).__name__}: {error}"
+                    )
+                self.assertIn("INVALID_EVENT_SCHEMA", codes)
+
+    def test_accepted_fixture_builder_preserves_sieve_and_score_evidence(self) -> None:
+        """Explicit malformed values must reach the oracle without replacement."""
+
+        visible = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        sieve_source = copy.deepcopy(
+            visible["traces"]["accepted_exact_improve"]
+        )
+        source_sieve = next(
+            event
+            for event in sieve_source
+            if event.get("event") == "evidence_sieved"
+        )
+        source_sieve["card_count"] = 999
+        source_sieve["decisions"] = ["reject"]
+
+        built_sieve = build_fixture_trace(
+            "visible", "accepted_exact_improve", sieve_source
+        )
+        built_sieve_event = next(
+            event
+            for event in built_sieve
+            if event.get("event") == "evidence_sieved"
+        )
+        self.assertEqual(built_sieve_event["card_count"], 999)
+        self.assertEqual(built_sieve_event["decisions"], ["reject"])
+        self.assertTrue(evaluate_trace(built_sieve, BUILDER_FIXTURES))
+
+        frozen = json.loads(
+            (
+                BUILDER_FIXTURES
+                / "frozen-validation"
+                / "traces.json"
+            ).read_text(encoding="utf-8")
+        )
+        score_source = copy.deepcopy(
+            frozen["traces"]["accepted_negative_review_repair"]
+        )
+        source_score = next(
+            event
+            for event in score_source
+            if event.get("event") == "category_scored"
+        )
+        source_score["criteria"][0]["evidence"] = ["hostile-cross-case"]
+
+        built_score = build_fixture_trace(
+            "frozen-validation",
+            "accepted_negative_review_repair",
+            score_source,
+        )
+        built_score_event = next(
+            event
+            for event in built_score
+            if event.get("event") == "category_scored"
+            and event.get("category") == "safety"
+        )
+        self.assertEqual(
+            built_score_event["criteria"][0]["evidence"],
+            ["hostile-cross-case"],
+        )
+        self.assertTrue(evaluate_trace(built_score, BUILDER_FIXTURES))
 
     def test_accepted_fixture_builder_preserves_supplied_events(self) -> None:
         """A hostile event injected into an accepted fixture reaches the oracle."""
