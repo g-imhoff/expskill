@@ -76,6 +76,26 @@ REVIEW_REQUIRED_ARTIFACTS = frozenset(
         "rubric",
     }
 )
+GATE_EVIDENCE_TYPES = frozenset({"raw-trial-evidence", "trial-receipt"})
+CATEGORY_EVIDENCE_TYPES = frozenset(
+    {"category-evidence", "raw-trial-evidence", "trial-receipt"}
+)
+AUTHORING_AND_SCORING_ACTOR_ROLES = frozenset(
+    {
+        *RESEARCH_ROLES,
+        "candidate-implementer",
+        "designer",
+        "researcher",
+        "skill-designer",
+        "target-scorer",
+    }
+)
+REVIEW_BARRED_ACTOR_ROLES = frozenset(
+    {*AUTHORING_AND_SCORING_ACTOR_ROLES, "independent-verifier"}
+)
+VERIFIER_BARRED_ACTOR_ROLES = frozenset(
+    {*AUTHORING_AND_SCORING_ACTOR_ROLES, "independent-target-reviewer"}
+)
 
 
 def load_traces(partition: str) -> dict[str, list[dict[str, Any]]]:
@@ -155,6 +175,8 @@ def accepted_finalization_trace(
     target_identity = "fixture-terse-summary"
     artifact_suffix = "" if revision == "candidate-v1" else f"-{revision}"
     gate_proof_id = f"accepted-gate-proof{artifact_suffix}"
+    scoring_review_id = f"scoring-review-v1{artifact_suffix}"
+    final_review_id = f"final-review-v1{artifact_suffix}"
     category_proof_ids = {
         category: f"accepted-{category.replace(' ', '-')}-proof{artifact_suffix}"
         for category in CATEGORY_CRITERION_IDS
@@ -190,8 +212,9 @@ def accepted_finalization_trace(
             "event": "category_scored",
             "category": category,
             "score": 10,
-            "review_id": "scoring-review-v1",
+            "review_id": scoring_review_id,
             "scorer_identity": "target-scorer-v1",
+            "scorer_role": "target-scorer",
             "criteria": [
                 {
                     "id": criterion_id,
@@ -238,6 +261,7 @@ def accepted_finalization_trace(
             "event": "candidate_edit",
             "candidate_revision": revision,
             "actor_identity": "candidate-implementer-v1",
+            "actor_role": "candidate-implementer",
             "workflow_id": workflow_id,
             "target_identity": target_identity,
         },
@@ -258,7 +282,7 @@ def accepted_finalization_trace(
         {
             "event": "review_recorded",
             "phase": "scoring",
-            "review_id": "scoring-review-v1",
+            "review_id": scoring_review_id,
             "reviewer_identity": "scoring-reviewer-v1",
             "reviewer_role": "independent-target-reviewer",
             "valid": True,
@@ -276,7 +300,7 @@ def accepted_finalization_trace(
         {
             "event": "review_recorded",
             "phase": "final",
-            "review_id": "final-review-v1",
+            "review_id": final_review_id,
             "reviewer_identity": "final-reviewer-v1",
             "reviewer_role": "independent-target-reviewer",
             "valid": True,
@@ -306,6 +330,8 @@ def accepted_finalization_trace(
             "conclusion": "pass",
             "independent": True,
             "read_only": True,
+            "verifier_identity": "target-verifier-v1",
+            "verifier_role": "independent-verifier",
             "evidence": [gate_proof_id],
             **binding,
         },
@@ -396,7 +422,11 @@ def evaluate_trace(
     failures: list[OracleFailure] = []
     current_contract: str | None = None
     confirmed_contract: str | None = None
+    contract_epoch = 0
+    confirmed_contract_epoch: int | None = None
+    frozen_contract_epoch: int | None = None
     frozen_evaluation: dict[str, Any] | None = None
+    evaluation_epoch = 0
     current_snapshot: str | None = None
     research_lanes: list[dict[str, Any]] | None = None
     active_target: str | None = None
@@ -408,6 +438,7 @@ def evaluate_trace(
     current_target_identity: str | None = None
     current_candidate_revision: str | None = None
     current_candidate_implementer: str | None = None
+    current_candidate_implementer_role: str | None = None
     retained_artifacts: dict[str, dict[str, Any]] = {}
     conformance_record: dict[str, Any] | None = None
     scoring_review: dict[str, Any] | None = None
@@ -421,6 +452,8 @@ def evaluate_trace(
     run_state_manifest: dict[str, Any] | None = None
     finalization_receipt: dict[str, Any] | None = None
     current_candidate_event_index: int | None = None
+    candidate_contract_epoch: int | None = None
+    candidate_evaluation_epoch: int | None = None
     candidate_snapshot_epoch: int | None = None
     frozen_snapshot_epoch: int | None = None
     snapshot_epoch = 0
@@ -430,6 +463,21 @@ def evaluate_trace(
     seen_finding_ids: set[str] = set()
     seen_artifact_ids: set[str] = set()
     ambiguous_artifact_ids: set[str] = set()
+    seen_review_ids: set[str] = set()
+    ambiguous_review_ids: set[str] = set()
+    actor_roles: dict[str, set[str]] = {}
+
+    def register_actor(identity: object, role: object) -> None:
+        if (
+            isinstance(identity, str)
+            and bool(identity)
+            and isinstance(role, str)
+            and bool(role)
+        ):
+            actor_roles.setdefault(identity, set()).add(role)
+
+    def actor_has_barred_role(identity: str, barred_roles: frozenset[str]) -> bool:
+        return bool(actor_roles.get(identity, set()) & barred_roles)
 
     def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any, Any, Any]:
         return (
@@ -463,9 +511,12 @@ def evaluate_trace(
     def evidence_resolves(
         evidence_ids: object,
         binding: tuple[Any, Any, Any, Any, Any],
+        consumer: dict[str, Any],
         *,
+        acceptable_types: frozenset[str] = GATE_EVIDENCE_TYPES,
         current_epoch: bool = False,
     ) -> bool:
+        consumer_index = record_event_indices.get(id(consumer), -1)
         return (
             isinstance(evidence_ids, list)
             and bool(evidence_ids)
@@ -474,7 +525,13 @@ def evaluate_trace(
                 and artifact_id in retained_artifacts
                 and artifact_id not in ambiguous_artifact_ids
                 and retained_artifacts[artifact_id].get("valid") is True
+                and retained_artifacts[artifact_id].get("artifact_type")
+                in acceptable_types
                 and record_binding(retained_artifacts[artifact_id]) == binding
+                and record_event_indices.get(
+                    id(retained_artifacts[artifact_id]), consumer_index
+                )
+                < consumer_index
                 and (
                     not current_epoch
                     or record_postdates_candidate(retained_artifacts[artifact_id])
@@ -506,10 +563,14 @@ def evaluate_trace(
     ) -> bool:
         if review is None:
             return False
+        review_id = review.get("review_id")
         reviewer_identity = review.get("reviewer_identity")
         return (
             record_postdates_candidate(review)
             and record_binding(review) == binding
+            and isinstance(review_id, str)
+            and bool(review_id)
+            and review_id not in ambiguous_review_ids
             and review.get("valid") is True
             and review.get("verdict") == "ready"
             and review.get("independent") is True
@@ -519,12 +580,18 @@ def evaluate_trace(
             and review.get("reviewer_role") == "independent-target-reviewer"
             and isinstance(current_candidate_implementer, str)
             and bool(current_candidate_implementer)
+            and current_candidate_implementer_role == "candidate-implementer"
             and reviewer_identity != current_candidate_implementer
             and reviewer_identity not in scorer_identities
+            and not actor_has_barred_role(
+                reviewer_identity,
+                REVIEW_BARRED_ACTOR_ROLES,
+            )
             and review_access_is_valid(review)
             and evidence_resolves(
                 review.get("evidence"),
                 binding,
+                review,
                 current_epoch=True,
             )
         )
@@ -534,6 +601,7 @@ def evaluate_trace(
         binding: tuple[Any, Any, Any, Any, Any],
         category: str,
         criterion_id: str,
+        consumer: dict[str, Any],
         *,
         current_epoch: bool = False,
     ) -> bool:
@@ -541,6 +609,8 @@ def evaluate_trace(
             evidence_resolves(
                 evidence_ids,
                 binding,
+                consumer,
+                acceptable_types=CATEGORY_EVIDENCE_TYPES,
                 current_epoch=current_epoch,
             )
             and isinstance(evidence_ids, list)
@@ -571,6 +641,28 @@ def evaluate_trace(
         verification = None
         release_evidence = None
 
+    def invalidate_candidate_epoch() -> None:
+        nonlocal current_candidate_revision
+        nonlocal current_candidate_implementer
+        nonlocal current_candidate_implementer_role
+        nonlocal current_candidate_event_index
+        nonlocal candidate_contract_epoch
+        nonlocal candidate_evaluation_epoch
+        nonlocal candidate_snapshot_epoch
+        nonlocal pending_repair
+        if current_candidate_event_index is None:
+            return
+        clear_revision_dependent_records()
+        current_candidate_revision = None
+        current_candidate_implementer = None
+        current_candidate_implementer_role = None
+        current_candidate_event_index = None
+        candidate_contract_epoch = None
+        candidate_evaluation_epoch = None
+        candidate_snapshot_epoch = None
+        pending_repair = None
+        material_findings.clear()
+
     for index, event in enumerate(trace):
         event_name = event["event"]
         record_event_indices[id(event)] = index
@@ -579,6 +671,8 @@ def evaluate_trace(
             "builder_conformance_recorded",
             "candidate_edit",
             "category_scored",
+            "contract_changed",
+            "contract_written",
             "evaluation_frozen",
             "finalized",
             "release_evidence_retained",
@@ -638,18 +732,13 @@ def evaluate_trace(
             if event["target_identity"] == active_target:
                 active_target = None
         elif event_name in {"contract_written", "contract_changed"}:
+            invalidate_candidate_epoch()
+            contract_epoch += 1
             current_contract = event["contract_digest"]
         elif event_name == "target_snapshot_changed":
             current_snapshot = event["target_snapshot"]
             snapshot_epoch += 1
-            if current_candidate_event_index is not None:
-                clear_revision_dependent_records()
-                current_candidate_revision = None
-                current_candidate_implementer = None
-                current_candidate_event_index = None
-                candidate_snapshot_epoch = None
-                pending_repair = None
-                material_findings.clear()
+            invalidate_candidate_epoch()
         elif event_name == "paused":
             pause_record = event
         elif event_name == "resumed":
@@ -954,6 +1043,20 @@ def evaluate_trace(
         elif event_name == "release_evidence_retained":
             release_evidence = event
         elif event_name == "review_recorded":
+            register_actor(event.get("reviewer_identity"), event.get("reviewer_role"))
+            review_id = event.get("review_id")
+            if isinstance(review_id, str) and bool(review_id):
+                if review_id in seen_review_ids:
+                    failures.append(
+                        OracleFailure(
+                            "DUPLICATE_REVIEW_ID",
+                            index,
+                            "a review record reused an immutable identity",
+                        )
+                    )
+                    ambiguous_review_ids.add(review_id)
+                else:
+                    seen_review_ids.add(review_id)
             if event.get("phase") == "scoring":
                 scoring_review = event
             if event.get("phase") == "final":
@@ -1032,6 +1135,8 @@ def evaluate_trace(
             binding = record_binding(event)
             expected_ids = CATEGORY_CRITERION_IDS.get(event["category"])
             scorer_identity = event.get("scorer_identity")
+            scorer_role = event.get("scorer_role")
+            register_actor(scorer_identity, scorer_role)
             full_bound_run = current_workflow_id is not None
             scoring_review_valid = (
                 not full_bound_run
@@ -1039,6 +1144,7 @@ def evaluate_trace(
                     event.get("review_id") == scoring_review.get("review_id")
                     and isinstance(scorer_identity, str)
                     and bool(scorer_identity)
+                    and scorer_role == "target-scorer"
                     and record_event_indices[id(scoring_review)] < index
                     and review_is_valid(
                         scoring_review,
@@ -1060,9 +1166,15 @@ def evaluate_trace(
                             binding,
                             event["category"],
                             criterion["id"],
+                            event,
                         )
                         if full_bound_run
-                        else evidence_resolves(criterion["evidence"], binding)
+                        else evidence_resolves(
+                            criterion["evidence"],
+                            binding,
+                            event,
+                            acceptable_types=CATEGORY_EVIDENCE_TYPES,
+                        )
                     )
                     for criterion in criteria
                 )
@@ -1095,6 +1207,7 @@ def evaluate_trace(
                     )
                 )
         elif event_name == "verification_recorded":
+            register_actor(event.get("verifier_identity"), event.get("verifier_role"))
             verification = event
         elif event_name == "finalized":
             expected_binding = current_binding()
@@ -1107,6 +1220,8 @@ def evaluate_trace(
                 or record_binding(event) != expected_binding
                 or frozen_evaluation is None
                 or frozen_evaluation.get("contract_digest") != current_contract
+                or candidate_contract_epoch != contract_epoch
+                or candidate_evaluation_epoch != evaluation_epoch
             ):
                 failures.append(
                     OracleFailure(
@@ -1150,6 +1265,7 @@ def evaluate_trace(
                     and evidence_resolves(
                         gate.get("evidence"),
                         expected_binding,
+                        conformance_record,
                         current_epoch=True,
                     )
                     for gate in conformance_record.get("gates", [])
@@ -1173,6 +1289,12 @@ def evaluate_trace(
                 review_is_valid(final_review, expected_binding, scorer_identities)
                 and final_review.get("phase") == "final"
                 and not material_findings
+                and set(category_scores) == set(CATEGORY_CRITERION_IDS)
+                and all(
+                    record_event_indices[id(score_event)]
+                    < record_event_indices[id(final_review)]
+                    for score_event, _ in category_scores.values()
+                )
             )
             if not review_valid:
                 failures.append(
@@ -1194,6 +1316,7 @@ def evaluate_trace(
                 and evidence_resolves(
                     spec_outcome.get("evidence"),
                     expected_binding,
+                    spec_outcome,
                     current_epoch=True,
                 )
             )
@@ -1226,6 +1349,7 @@ def evaluate_trace(
                             expected_binding,
                             score_event.get("category"),
                             criterion.get("id"),
+                            score_event,
                             current_epoch=True,
                         )
                         for criterion in score_event.get("criteria", [])
@@ -1244,6 +1368,13 @@ def evaluate_trace(
 
             verification_valid = (
                 verification is not None
+                and isinstance(verification.get("verifier_identity"), str)
+                and bool(verification.get("verifier_identity"))
+                and verification.get("verifier_role") == "independent-verifier"
+                and not actor_has_barred_role(
+                    verification["verifier_identity"],
+                    VERIFIER_BARRED_ACTOR_ROLES,
+                )
                 and record_postdates_candidate(verification)
                 and record_binding(verification) == expected_binding
                 and verification.get("behavioral_trials", 0) >= 1
@@ -1254,6 +1385,7 @@ def evaluate_trace(
                 and evidence_resolves(
                     verification.get("evidence"),
                     expected_binding,
+                    verification,
                     current_epoch=True,
                 )
             )
@@ -1282,6 +1414,7 @@ def evaluate_trace(
                 and evidence_resolves(
                     release_evidence.get("evidence"),
                     expected_binding,
+                    release_evidence,
                     current_epoch=True,
                 )
             )
@@ -1296,10 +1429,20 @@ def evaluate_trace(
             finalization_event_index = index
         elif event_name == "user_confirmed":
             confirmed_contract = event["contract_digest"]
+            confirmed_contract_epoch = contract_epoch
         elif event_name == "research_pack":
             research_lanes = event["lanes"]
+            for lane in research_lanes:
+                research_identity = lane.get("actor_identity", lane.get("context_id"))
+                register_actor(research_identity, "researcher")
+                register_actor(research_identity, lane.get("role"))
+        elif event_name == "designs_challenged":
+            register_actor(event.get("actor_identity"), event.get("actor_role"))
         elif event_name == "evaluation_frozen":
+            invalidate_candidate_epoch()
+            evaluation_epoch += 1
             frozen_evaluation = event
+            frozen_contract_epoch = contract_epoch
             frozen_snapshot_epoch = snapshot_epoch
         elif event_name == "candidate_edit":
             if identity_ambiguous:
@@ -1319,7 +1462,10 @@ def evaluate_trace(
                         "candidate edit occurred before explicit confirmation of the current contract",
                     )
                 )
-            elif current_contract is not None and confirmed_contract != current_contract:
+            elif current_contract is not None and (
+                confirmed_contract != current_contract
+                or confirmed_contract_epoch != contract_epoch
+            ):
                 failures.append(
                     OracleFailure(
                         "STALE_CONFIRMATION",
@@ -1338,7 +1484,10 @@ def evaluate_trace(
             else:
                 if (
                     current_contract is not None
-                    and frozen_evaluation["contract_digest"] != current_contract
+                    and (
+                        frozen_evaluation["contract_digest"] != current_contract
+                        or frozen_contract_epoch != contract_epoch
+                    )
                 ):
                     failures.append(
                         OracleFailure(
@@ -1434,7 +1583,14 @@ def evaluate_trace(
             clear_revision_dependent_records()
             current_candidate_revision = candidate_revision
             current_candidate_implementer = event.get("actor_identity")
+            current_candidate_implementer_role = event.get("actor_role")
+            register_actor(
+                current_candidate_implementer,
+                current_candidate_implementer_role,
+            )
             current_candidate_event_index = index
+            candidate_contract_epoch = contract_epoch
+            candidate_evaluation_epoch = evaluation_epoch
             candidate_snapshot_epoch = frozen_snapshot_epoch
 
     return tuple(failures)
@@ -2247,6 +2403,204 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
 
         self.assertIn("DUPLICATE_ARTIFACT_ID", failure_codes)
         self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", failure_codes)
+
+    def test_final_review_requires_prior_evidence_and_completed_scoring(self) -> None:
+        """Regression: a final review cannot consume future proof or future scores."""
+
+        retrospective_review = accepted_finalization_trace()
+        candidate_index = next(
+            index
+            for index, event in enumerate(retrospective_review)
+            if event["event"] == "candidate_edit"
+        )
+        final_review_index = next(
+            index
+            for index, event in enumerate(retrospective_review)
+            if event["event"] == "review_recorded"
+            and event.get("phase") == "final"
+        )
+        final_review = retrospective_review.pop(final_review_index)
+        retrospective_review.insert(candidate_index + 1, final_review)
+
+        premature_review = accepted_finalization_trace()
+        final_review_index = next(
+            index
+            for index, event in enumerate(premature_review)
+            if event["event"] == "review_recorded"
+            and event.get("phase") == "final"
+        )
+        final_review = premature_review.pop(final_review_index)
+        scoring_review_index = next(
+            index
+            for index, event in enumerate(premature_review)
+            if event["event"] == "review_recorded"
+            and event.get("phase") == "scoring"
+        )
+        premature_review.insert(scoring_review_index, final_review)
+
+        for label, trace in (
+            ("retrospective-evidence", retrospective_review),
+            ("premature-scoring", premature_review),
+        ):
+            with self.subTest(mutant=label):
+                failure_codes = {
+                    failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                }
+                self.assertIn("FINALIZE_WITHOUT_READY_REVIEW", failure_codes)
+
+    def test_category_score_rejects_structural_only_evidence(self) -> None:
+        """Regression: static structure is not an acceptable category proof type."""
+
+        structural_category = accepted_finalization_trace()
+        workflow_proof = next(
+            event
+            for event in structural_category
+            if event.get("category") == "workflow quality"
+        )
+        workflow_proof["artifact_type"] = "structural-validation"
+
+        failure_codes = {
+            failure.code
+            for failure in evaluate_trace(structural_category, BUILDER_FIXTURES)
+        }
+
+        self.assertIn("FALSE_CATEGORY_TEN", failure_codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", failure_codes)
+
+    def test_contract_and_evaluation_transitions_invalidate_candidate_epoch(self) -> None:
+        """Regression: value ABA cannot revive gates from an older transition epoch."""
+
+        contract_aba = accepted_finalization_trace()
+        contract_aba[-1:-1] = [
+            {"event": "contract_changed", "contract_digest": "contract-v2"},
+            {"event": "contract_written", "contract_digest": "contract-v1"},
+        ]
+
+        evaluation_aba = accepted_finalization_trace()
+        evaluation_aba[-1:-1] = [
+            {
+                "event": "evaluation_frozen",
+                "contract_digest": "contract-v1",
+                "evaluation_digest": "evaluation-v2",
+                "target_snapshot": "fixture-improve-snapshot-v1",
+            },
+            {
+                "event": "evaluation_frozen",
+                "contract_digest": "contract-v1",
+                "evaluation_digest": "evaluation-v1",
+                "target_snapshot": "fixture-improve-snapshot-v1",
+            },
+        ]
+
+        for label, trace in (
+            ("contract-aba", contract_aba),
+            ("evaluation-aba", evaluation_aba),
+        ):
+            with self.subTest(mutant=label):
+                failure_codes = {
+                    failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                }
+                self.assertIn("FINALIZATION_BINDING_MISMATCH", failure_codes)
+                self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", failure_codes)
+
+    def test_review_and_verification_reject_barred_actor_identities(self) -> None:
+        """Regression: attestations cannot hide prior researcher or implementer roles."""
+
+        researcher_review = accepted_finalization_trace()
+        final_review = next(
+            event
+            for event in researcher_review
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        final_review["reviewer_identity"] = "research-1"
+
+        designer_review = accepted_finalization_trace()
+        contract_index = next(
+            index
+            for index, event in enumerate(designer_review)
+            if event["event"] == "contract_written"
+        )
+        designer_review.insert(
+            contract_index,
+            {
+                "event": "designs_challenged",
+                "actor_identity": "target-designer-v1",
+                "actor_role": "skill-designer",
+            },
+        )
+        designer_final_review = next(
+            event
+            for event in designer_review
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        designer_final_review["reviewer_identity"] = "target-designer-v1"
+
+        implementer_verification = accepted_finalization_trace()
+        verification = next(
+            event
+            for event in implementer_verification
+            if event["event"] == "verification_recorded"
+        )
+        verification["verifier_identity"] = "candidate-implementer-v1"
+        verification["verifier_role"] = "independent-verifier"
+
+        for label, trace, expected_code in (
+            (
+                "researcher-as-final-reviewer",
+                researcher_review,
+                "FINALIZE_WITHOUT_READY_REVIEW",
+            ),
+            (
+                "designer-as-final-reviewer",
+                designer_review,
+                "FINALIZE_WITHOUT_READY_REVIEW",
+            ),
+            (
+                "implementer-as-verifier",
+                implementer_verification,
+                "FINALIZE_WITHOUT_VERIFICATION",
+            ),
+        ):
+            with self.subTest(mutant=label):
+                failure_codes = {
+                    failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                }
+                self.assertIn(expected_code, failure_codes)
+
+    def test_review_identity_cannot_be_reused_after_candidate_revision(self) -> None:
+        """Regression: review identities are immutable for the complete builder run."""
+
+        for phase, reused_id, expected_code in (
+            ("scoring", "scoring-review-v1", "FINALIZE_WITHOUT_TEN_SCORES"),
+            ("final", "final-review-v1", "FINALIZE_WITHOUT_READY_REVIEW"),
+        ):
+            with self.subTest(phase=phase):
+                first_revision = accepted_finalization_trace()
+                second_revision = accepted_finalization_trace("candidate-v2")
+                candidate_index = next(
+                    index
+                    for index, event in enumerate(second_revision)
+                    if event["event"] == "candidate_edit"
+                )
+                second_revision = second_revision[candidate_index:]
+                reused_review = next(
+                    event
+                    for event in second_revision
+                    if event["event"] == "review_recorded"
+                    and event.get("phase") == phase
+                )
+                reused_review["review_id"] = reused_id
+                if phase == "scoring":
+                    for event in second_revision:
+                        if event["event"] == "category_scored":
+                            event["review_id"] = reused_id
+                trace = first_revision[:-1] + second_revision
+
+                failure_codes = {
+                    failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                }
+                self.assertIn("DUPLICATE_REVIEW_ID", failure_codes)
+                self.assertIn(expected_code, failure_codes)
 
     def test_review_provenance_and_supplied_artifact_boundaries_are_enforced(self) -> None:
         """Regression: review independence requires cross-event identity and access proof."""
