@@ -2707,7 +2707,7 @@ def _append_transaction(
                 _fsync_directory(transaction_path.parent)
         raise
     # A durable receipt is append-only truth.  Index failure leaves the journal
-    # in place for recovery; neither the receipt nor accepted artifacts roll back.
+    # in place for recovery. Neither the receipt nor accepted artifacts roll back.
     derived = _derive_index(run)
     _atomic_json(run / "current.json", derived)
     transaction_path.unlink()
@@ -6628,7 +6628,7 @@ def _remove_owned_tree(path: Path) -> None:
             if stat.S_ISLNK(observed.st_mode):
                 raise RunStateError("cleanup boundary contains a symlink")
             if stat.S_ISDIR(observed.st_mode):
-                # The pathname validation preserves the public safety contract;
+                # The pathname validation preserves the public safety contract.
                 # the subsequent openat + identity check closes its race window.
                 _validate_private_directory(child_path, "cleanup directory")
                 child_descriptor: int | None = None
@@ -6967,11 +6967,11 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "request schemas (one strict JSON object on stdin):\n"
             "  initialize request: host_identity, target_identity, mode, authority, "
-            "and mode evidence; optional queue\n"
+            "and mode evidence, with an optional queue\n"
             "  retain request: workflow_id, expected_sequence, artifact_id, "
             "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
             "  transition request: workflow_id, expected_sequence, event, "
-            "destination_stage, artifact_ids; optional authority_event_digest\n"
+            "destination_stage, artifact_ids, and optional authority_event_digest\n"
             "  deliver request: workflow_id, expected_sequence, delivery, "
             "authority_event_digest, authority_event_base64, evidence_files_base64\n"
             "  cleanup-authority request: workflow_id, expected_sequence, "
