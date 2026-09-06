@@ -73,7 +73,7 @@ TRIAL_DIGEST_FIELDS = {
 
 def trial_evidence_bytes(case_id: str, kind: str) -> bytes:
     if kind == "loaded-skill":
-        return candidate_result_bytes()
+        return CANDIDATE_SKILL_BYTES
     return f"{case_id}:{kind}\n".encode("utf-8")
 
 
@@ -363,19 +363,33 @@ def install_target_and_digest(
     return helper.snapshot_target(target)["manifest_digest"]
 
 
-def mark_run_as_legacy_candidate_v1(
-    helper: ModuleType, state_root: Path, workflow_id: str
+def rewrite_current_resolution_version(
+    helper: ModuleType,
+    state_root: Path,
+    workflow_id: str,
+    *,
+    resolution_schema: str,
+    candidate_schema: str,
+    scorecard_schema: str | None,
 ) -> None:
-    """Rewrite only genesis bytes to the format emitted by the parent helper."""
+    """Rewrite only genesis bytes to a previously emitted resolution format."""
     run = state_root / "live" / workflow_id
     artifact = run / "artifacts" / "resolution"
     payload_path = artifact / "raw" / "payload.json"
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
-    if payload["schema_version"] == "skill-builder-resolution.v1":
+    if payload["schema_version"] == resolution_schema:
         return
-    assert payload["schema_version"] == "skill-builder-resolution.v2"
-    assert payload.pop("candidate_record_schema") == "skill-builder-candidate.v2"
-    payload["schema_version"] = "skill-builder-resolution.v1"
+    assert payload["schema_version"] == "skill-builder-resolution.v3"
+    assert payload.pop("candidate_record_schema") == "skill-builder-candidate.v3"
+    assert payload.pop("scorecard_schema") == "skill-builder-scorecard.v2"
+    payload["schema_version"] = resolution_schema
+    if resolution_schema != "skill-builder-resolution.v1":
+        payload["candidate_record_schema"] = candidate_schema
+    assert (scorecard_schema is None) == (
+        resolution_schema != "skill-builder-resolution.v3"
+    )
+    if scorecard_schema is not None:
+        payload["scorecard_schema"] = scorecard_schema
     payload_bytes = helper.canonical_json_bytes(payload)
     payload_path.write_bytes(payload_bytes)
 
@@ -407,6 +421,97 @@ def mark_run_as_legacy_candidate_v1(
     receipt_path.write_bytes(helper.canonical_json_bytes(receipt))
     derived = helper._derive_index(run)
     (run / "current.json").write_bytes(helper.canonical_json_bytes(derived))
+
+
+def mark_run_as_legacy_candidate_v1(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> None:
+    rewrite_current_resolution_version(
+        helper,
+        state_root,
+        workflow_id,
+        resolution_schema="skill-builder-resolution.v1",
+        candidate_schema="skill-builder-candidate.v1",
+        scorecard_schema=None,
+    )
+
+
+def mark_run_as_historical_candidate_v2(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> None:
+    rewrite_current_resolution_version(
+        helper,
+        state_root,
+        workflow_id,
+        resolution_schema="skill-builder-resolution.v2",
+        candidate_schema="skill-builder-candidate.v2",
+        scorecard_schema=None,
+    )
+
+
+def rewrite_artifact_payload_and_receipts(
+    helper: ModuleType,
+    *,
+    state_root: Path,
+    workflow_id: str,
+    artifact_id: str,
+    payload: dict[str, object],
+    rewrite_receipts: bool,
+) -> None:
+    """Re-envelope test bytes and optionally make the append-only chain self-consistent."""
+    run = state_root / "live" / workflow_id
+    artifact = run / "artifacts" / artifact_id
+    payload_path = artifact / "raw" / "record.json"
+    payload_bytes = fixture_canonical_bytes(payload)
+    payload_path.write_bytes(payload_bytes)
+
+    manifest_path = artifact / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    record_entry = next(
+        entry
+        for entry in manifest["entries"]
+        if entry["path"].endswith("/raw/record.json")
+    )
+    record_entry["byte_count"] = len(payload_bytes)
+    record_entry["digest"] = fixture_digest(payload_bytes)
+    manifest["observed_byte_count"] = sum(
+        entry["byte_count"] for entry in manifest["entries"]
+    )
+    manifest["manifest_digest"] = helper.canonical_digest(
+        manifest, "manifest_digest"
+    )
+    manifest_path.write_bytes(helper.canonical_json_bytes(manifest))
+
+    envelope_path = artifact / "envelope.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    old_envelope_digest = envelope["envelope_digest"]
+    envelope["payload_digest"] = fixture_digest(payload_bytes)
+    envelope["manifest_digest"] = manifest["manifest_digest"]
+    envelope["envelope_digest"] = helper.canonical_digest(
+        envelope, "envelope_digest"
+    )
+    envelope_path.write_bytes(helper.canonical_json_bytes(envelope))
+
+    if not rewrite_receipts:
+        return
+    prior_digest: str | None = None
+    for receipt_path in sorted((run / "receipts").glob("*.json")):
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if receipt["sequence"] > 0:
+            assert prior_digest is not None
+            receipt["prior_receipt_digest"] = prior_digest
+        for binding in receipt["relevant_artifact_digests"]:
+            if (
+                binding["artifact_id"] == artifact_id
+                and binding["envelope_digest"] == old_envelope_digest
+            ):
+                binding["envelope_digest"] = envelope["envelope_digest"]
+        receipt["receipt_digest"] = helper.canonical_digest(
+            receipt, "receipt_digest"
+        )
+        receipt_path.write_bytes(helper.canonical_json_bytes(receipt))
+        prior_digest = receipt["receipt_digest"]
+    (run / "current.json").write_text("{broken", encoding="utf-8")
 
 
 def stage_payload(
@@ -579,11 +684,12 @@ def candidate_payload(
     confirmation_digest: str,
     evaluation_digest: str,
     snapshot_digest: str,
-    schema_version: str = "skill-builder-candidate.v2",
+    schema_version: str = "skill-builder-candidate.v3",
     resulting_bytes: bytes | None = None,
+    loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     owned_paths: list[str] | None = None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": schema_version,
         "candidate_id": candidate_id,
         "isolated_locator": str((tmp_path / "candidate").resolve()),
@@ -601,6 +707,9 @@ def candidate_payload(
         "evaluation_digest": evaluation_digest,
         "target_snapshot_digest": snapshot_digest,
     }
+    if schema_version == "skill-builder-candidate.v3":
+        payload["loaded_skill_digest"] = fixture_digest(loaded_skill_bytes)
+    return payload
 
 
 def trial_payload(
@@ -609,11 +718,7 @@ def trial_payload(
     *,
     loaded_skill_bytes: bytes | None = None,
 ) -> dict[str, object]:
-    loaded_skill = (
-        candidate_result_bytes()
-        if loaded_skill_bytes is None
-        else loaded_skill_bytes
-    )
+    loaded_skill = CANDIDATE_SKILL_BYTES if loaded_skill_bytes is None else loaded_skill_bytes
     cases: list[dict[str, object]] = []
     partitions = (
         "visible_development",
@@ -723,16 +828,14 @@ def scorecard_payload(
     triggering_score: int = 10,
     revision: str = "candidate-1",
     criteria_overrides: dict[str, dict[str, bool]] | None = None,
+    schema_version: str = "skill-builder-scorecard.v2",
+    review_findings: list[dict[str, object]] | None = None,
+    criterion_evidence_overrides: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     overrides = criteria_overrides or {}
-    return {
-        "schema_version": "skill-builder-scorecard.v1",
-        "candidate_digest": candidate_digest,
-        "candidate_revision": revision,
-        "rubric_digest": "f" * 64,
-        "evaluation_digest": evaluation_digest,
-        "review_digest": review_digest,
-        "categories": [
+    evidence_overrides = criterion_evidence_overrides or {}
+    if schema_version == "skill-builder-scorecard.v1":
+        categories = [
             {
                 "name": name,
                 "score": triggering_score if name == "triggering" else 10,
@@ -745,7 +848,59 @@ def scorecard_payload(
                 "repair_history": [],
             }
             for name in SCORE_CATEGORIES
-        ],
+        ]
+    else:
+        cases = trial_payload(candidate_digest, revision)["cases"]
+        assert isinstance(cases, list)
+        case_ids = sorted(case["case_id"] for case in cases)
+        raw_artifact_digests = sorted({case["output_digest"] for case in cases})
+        trial_receipt_ids = sorted(
+            fixture_digest(fixture_canonical_bytes(case)) for case in cases
+        )
+        findings = review_findings or []
+        categories = []
+        for name in SCORE_CATEGORIES:
+            criterion_states = overrides.get(
+                name, {criterion: True for criterion in SCORE_CRITERIA[name]}
+            )
+            criterion_results: dict[str, object] = {}
+            for criterion_id, passed in criterion_states.items():
+                finding_ids = sorted(
+                    {
+                        fixture_digest(fixture_canonical_bytes(finding))
+                        for finding in findings
+                        if criterion_id in finding["affected_target_criteria"]
+                    }
+                )
+                criterion_result = {
+                    "passed": passed,
+                    "frozen_parameter_identifiers": ["maximum"],
+                    "case_ids": case_ids,
+                    "raw_artifact_digests": raw_artifact_digests,
+                    "trial_receipt_ids": trial_receipt_ids,
+                    "review_finding_ids": finding_ids,
+                    "candidate_revision": revision,
+                    "review_artifact_id": "final-review",
+                    "review_digest": review_digest,
+                }
+                criterion_result.update(evidence_overrides.get(criterion_id, {}))
+                criterion_results[criterion_id] = criterion_result
+            categories.append(
+                {
+                    "name": name,
+                    "score": triggering_score if name == "triggering" else 10,
+                    "criteria": criterion_results,
+                    "repair_history": [],
+                }
+            )
+    return {
+        "schema_version": schema_version,
+        "candidate_digest": candidate_digest,
+        "candidate_revision": revision,
+        "rubric_digest": "f" * 64,
+        "evaluation_digest": evaluation_digest,
+        "review_digest": review_digest,
+        "categories": categories,
     }
 
 
@@ -852,10 +1007,11 @@ def build_candidate_stage(
     *,
     queued_targets: list[dict[str, str]] | None = None,
     granted_authority: dict[str, object] | None = None,
-    candidate_schema_version: str = "skill-builder-candidate.v2",
+    candidate_schema_version: str = "skill-builder-candidate.v3",
     candidate_resulting_bytes: bytes | None = None,
     candidate_owned_paths: list[str] | None = None,
     legacy_candidate_v1: bool = False,
+    historical_candidate_v2: bool = False,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
@@ -871,8 +1027,12 @@ def build_candidate_stage(
         state_root=state_root,
     )
     workflow_id = started["workflow_id"]
+    if legacy_candidate_v1 and historical_candidate_v2:
+        raise AssertionError("candidate compatibility modes are mutually exclusive")
     if legacy_candidate_v1:
         mark_run_as_legacy_candidate_v1(helper, state_root, workflow_id)
+    elif historical_candidate_v2:
+        mark_run_as_historical_candidate_v2(helper, state_root, workflow_id)
     sequence = 0
     for artifact_id, artifact_type, event, stage in (
         ("baseline", "baseline-report", "capture-baseline", "baseline"),
@@ -1002,11 +1162,14 @@ def build_verified_stage(
     review_findings: list[dict[str, object]] | None = None,
     conformance_gate_ids: tuple[str, ...] = CONFORMANCE_GATES,
     scorecard_criteria_overrides: dict[str, dict[str, bool]] | None = None,
-    candidate_schema_version: str = "skill-builder-candidate.v2",
+    scorecard_evidence_overrides: dict[str, dict[str, object]] | None = None,
+    scorecard_schema_version: str | None = None,
+    candidate_schema_version: str = "skill-builder-candidate.v3",
     candidate_resulting_bytes: bytes | None = None,
     candidate_owned_paths: list[str] | None = None,
     trial_loaded_skill_bytes: bytes | None = None,
     legacy_candidate_v1: bool = False,
+    historical_candidate_v2: bool = False,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root, workflow_id, sequence, candidate = build_candidate_stage(
         helper,
@@ -1017,6 +1180,7 @@ def build_verified_stage(
         candidate_resulting_bytes=candidate_resulting_bytes,
         candidate_owned_paths=candidate_owned_paths,
         legacy_candidate_v1=legacy_candidate_v1,
+        historical_candidate_v2=historical_candidate_v2,
     )
     trials = retain_json(
         helper,
@@ -1089,6 +1253,17 @@ def build_verified_stage(
             review_digest=review["artifact_digest"],
             triggering_score=triggering_score,
             criteria_overrides=scorecard_criteria_overrides,
+            schema_version=(
+                scorecard_schema_version
+                if scorecard_schema_version is not None
+                else (
+                    "skill-builder-scorecard.v1"
+                    if legacy_candidate_v1 or historical_candidate_v2
+                    else "skill-builder-scorecard.v2"
+                )
+            ),
+            review_findings=review_findings,
+            criterion_evidence_overrides=scorecard_evidence_overrides,
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -4427,11 +4602,17 @@ def test_new_runs_require_versioned_candidate_result_semantics(tmp_path: Path) -
             candidate_schema_version="skill-builder-candidate.v1",
             candidate_resulting_bytes=CANDIDATE_SKILL_BYTES,
         )
+    with pytest.raises(helper.RunStateError, match="candidate|schema|version"):
+        build_candidate_stage(
+            helper,
+            tmp_path / "previous",
+            candidate_schema_version="skill-builder-candidate.v2",
+        )
 
     state_root, workflow_id, _, _ = build_candidate_stage(
         helper,
         tmp_path / "current",
-        candidate_schema_version="skill-builder-candidate.v2",
+        candidate_schema_version="skill-builder-candidate.v3",
         candidate_resulting_bytes=candidate_result_bytes(
             schema_version="skill-builder-owned-result.v2"
         ),
@@ -4439,6 +4620,344 @@ def test_new_runs_require_versioned_candidate_result_semantics(tmp_path: Path) -
     assert helper.load_run(
         workflow_id=workflow_id, state_root=state_root
     )["stage"] == "candidate"
+
+
+def test_v3_trials_reject_owned_result_descriptor_as_loaded_skill(
+    tmp_path: Path,
+) -> None:
+    """The delivery descriptor is not the skill content loaded by a trial."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path
+    )
+    descriptor = candidate_result_bytes()
+    trials = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="descriptor-trials",
+        artifact_type="trial-pack",
+        payload=trial_payload(
+            candidate["artifact_digest"], loaded_skill_bytes=descriptor
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        trial_loaded_skill_bytes=descriptor,
+    )
+
+    with pytest.raises(helper.RunStateError, match="loaded|skill|candidate"):
+        helper.transition_run(
+            workflow_id=workflow_id,
+            expected_sequence=trials["sequence"],
+            event="complete-trials",
+            destination_stage="trials",
+            artifact_ids=["descriptor-trials"],
+            state_root=state_root,
+        )
+
+
+def test_v3_trials_accept_exact_bound_loaded_skill_content(tmp_path: Path) -> None:
+    """Current trials load the candidate skill bytes, separate from delivery identity."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path
+    )
+    trials = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="content-trials",
+        artifact_type="trial-pack",
+        payload=trial_payload(candidate["artifact_digest"]),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    advanced = helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=trials["sequence"],
+        event="complete-trials",
+        destination_stage="trials",
+        artifact_ids=["content-trials"],
+        state_root=state_root,
+    )
+
+    assert advanced["stage"] == "trials"
+    assert helper.recover_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "trials"
+
+
+def test_historical_v2_candidate_and_trial_semantics_remain_replayable(
+    tmp_path: Path,
+) -> None:
+    """The committed v2 descriptor-as-result format remains a stable replay format."""
+    helper = load_helper()
+    descriptor = candidate_result_bytes()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper,
+        tmp_path,
+        candidate_schema_version="skill-builder-candidate.v2",
+        candidate_resulting_bytes=descriptor,
+        historical_candidate_v2=True,
+    )
+    trials = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="historical-v2-trials",
+        artifact_type="trial-pack",
+        payload=trial_payload(
+            candidate["artifact_digest"], loaded_skill_bytes=descriptor
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        trial_loaded_skill_bytes=descriptor,
+    )
+    helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=trials["sequence"],
+        event="complete-trials",
+        destination_stage="trials",
+        artifact_ids=["historical-v2-trials"],
+        state_root=state_root,
+    )
+
+    assert helper.load_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "trials"
+    assert helper.recover_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "trials"
+
+
+def test_shared_candidate_gate_rejects_resolution_v2_candidate_v1_live(
+    tmp_path: Path,
+) -> None:
+    """Re-enveloping a candidate must not bypass the resolution version marker."""
+    helper = load_helper()
+    state_root, workflow_id, _, _ = build_candidate_stage(
+        helper,
+        tmp_path,
+        candidate_schema_version="skill-builder-candidate.v2",
+        historical_candidate_v2=True,
+    )
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    run = state_root / "live" / workflow_id
+    payload = helper._artifact_payload_json(run, "candidate")
+    payload["schema_version"] = "skill-builder-candidate.v1"
+    payload.pop("loaded_skill_digest", None)
+    rewrite_artifact_payload_and_receipts(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        artifact_id="candidate",
+        payload=payload,
+        rewrite_receipts=False,
+    )
+
+    with pytest.raises(helper.RunStateError, match="candidate|schema|version"):
+        helper._validate_transition_semantics(
+            run, current, "accept-candidate", ["candidate"], None
+        )
+
+
+def test_recovery_rejects_resolution_v2_candidate_v1_replay(
+    tmp_path: Path,
+) -> None:
+    """A self-consistently rehashed downgrade must fail shared replay semantics."""
+    helper = load_helper()
+    state_root, workflow_id, _, _ = build_candidate_stage(
+        helper,
+        tmp_path,
+        candidate_schema_version="skill-builder-candidate.v2",
+        historical_candidate_v2=True,
+    )
+    run = state_root / "live" / workflow_id
+    payload = helper._artifact_payload_json(run, "candidate")
+    payload["schema_version"] = "skill-builder-candidate.v1"
+    payload.pop("loaded_skill_digest", None)
+    rewrite_artifact_payload_and_receipts(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        artifact_id="candidate",
+        payload=payload,
+        rewrite_receipts=True,
+    )
+
+    with pytest.raises(helper.RunStateError, match="candidate|schema|version"):
+        helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="candidate|schema|version"):
+        helper.recover_run(workflow_id=workflow_id, state_root=state_root)
+
+
+def test_current_run_rejects_legacy_aggregate_boolean_scorecard(
+    tmp_path: Path,
+) -> None:
+    """Aggregate text claims and booleans are not per-criterion score evidence."""
+    helper = load_helper()
+
+    with pytest.raises(helper.RunStateError, match="scorecard|schema|criterion|evidence"):
+        build_verified_stage(
+            helper,
+            tmp_path,
+            scorecard_schema_version="skill-builder-scorecard.v1",
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("frozen_parameter_identifiers", ["invented-parameter"]),
+        ("case_ids", ["case-1"]),
+        ("raw_artifact_digests", ["a" * 64]),
+        ("trial_receipt_ids", ["b" * 64]),
+        ("review_finding_ids", ["c" * 64]),
+        ("candidate_revision", "candidate-substitution"),
+        ("review_artifact_id", "review-decoy"),
+        ("review_digest", "d" * 64),
+    ),
+)
+def test_scorecard_requires_each_criterion_evidence_identity_live(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """A structured result cannot borrow or invent any required evidence identity."""
+    helper = load_helper()
+
+    with pytest.raises(helper.RunStateError, match="scorecard|criterion|evidence"):
+        build_verified_stage(
+            helper,
+            tmp_path,
+            scorecard_evidence_overrides={"TR1": {field: value}},
+        )
+
+
+def test_recovery_revalidates_each_scorecard_criterion_evidence_identity(
+    tmp_path: Path,
+) -> None:
+    """Self-consistent envelope hashes cannot bypass criterion evidence on replay."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path
+    )
+    trials = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="trials",
+        artifact_type="trial-pack",
+        payload=trial_payload(candidate["artifact_digest"]),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    sequence = helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=trials["sequence"],
+        event="complete-trials",
+        destination_stage="trials",
+        artifact_ids=["trials"],
+        state_root=state_root,
+    )["sequence"]
+    review = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="final-review",
+        artifact_type="review-record",
+        payload=review_payload(candidate["artifact_digest"]),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    sequence = helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=review["sequence"],
+        event="accept-review",
+        destination_stage="reviewed",
+        artifact_ids=["final-review"],
+        state_root=state_root,
+    )["sequence"]
+    conformance = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="conformance",
+        artifact_type="builder-run-conformance-ledger",
+        payload=conformance_payload(candidate["artifact_digest"]),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    evaluation_digest = helper.load_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["artifact_index"]["evaluation"]["digest"]
+    scorecard = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=conformance["sequence"],
+        artifact_id="scores",
+        artifact_type="target-scorecard",
+        payload=scorecard_payload(
+            candidate_digest=candidate["artifact_digest"],
+            evaluation_digest=evaluation_digest,
+            review_digest=review["artifact_digest"],
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=scorecard["sequence"],
+        event="accept-scores",
+        destination_stage="scored",
+        artifact_ids=["conformance", "scores"],
+        state_root=state_root,
+    )
+    run = state_root / "live" / workflow_id
+    forged = helper._artifact_payload_json(run, "scores")
+    forged["categories"][0]["criteria"]["TR1"]["raw_artifact_digests"] = [
+        "e" * 64
+    ]
+    rewrite_artifact_payload_and_receipts(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        artifact_id="scores",
+        payload=forged,
+        rewrite_receipts=True,
+    )
+
+    with pytest.raises(helper.RunStateError, match="scorecard|criterion|evidence"):
+        helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="scorecard|criterion|evidence"):
+        helper.recover_run(workflow_id=workflow_id, state_root=state_root)
+
+
+def test_finalized_historical_v2_run_remains_loadable_and_recoverable(
+    tmp_path: Path,
+) -> None:
+    """Resolution v2 keeps its candidate v2 and scorecard v1 replay meanings."""
+    helper = load_helper()
+    descriptor = candidate_result_bytes()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path,
+        candidate_schema_version="skill-builder-candidate.v2",
+        candidate_resulting_bytes=descriptor,
+        trial_loaded_skill_bytes=descriptor,
+        historical_candidate_v2=True,
+    )
+    helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+
+    assert helper.load_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "finalized"
+    assert helper.recover_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "finalized"
 
 
 def test_delivered_legacy_v1_run_remains_loadable_recoverable_and_cleanable(
