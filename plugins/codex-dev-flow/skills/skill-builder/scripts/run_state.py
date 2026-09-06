@@ -41,8 +41,13 @@ RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
 LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
 PREVIOUS_CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
 CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
+LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
+TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
+LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
+REVIEW_SCHEMA = "skill-builder-review.v2"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
 SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
+LOADABLE_CONTENT_SCHEMA = "skill-builder-loadable-content.v1"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -135,9 +140,9 @@ _PAYLOAD_SCHEMA_VERSIONS = {
         PREVIOUS_CANDIDATE_SCHEMA,
         CANDIDATE_SCHEMA,
     },
-    "trial-pack": "skill-builder-trial-pack.v1",
+    "trial-pack": {LEGACY_TRIAL_SCHEMA, TRIAL_SCHEMA},
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
-    "review-record": "skill-builder-review.v1",
+    "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA},
     "target-scorecard": {LEGACY_SCORECARD_SCHEMA, SCORECARD_SCHEMA},
     "verification-record": "skill-builder-verification.v1",
     "release-record": "skill-builder-release.v1",
@@ -1098,9 +1103,22 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("review independence attestation is invalid")
         if not isinstance(payload["input_artifacts"], dict) or not payload["input_artifacts"]:
             raise RunStateError("review input artifacts are incomplete")
-        for artifact_id, digest in payload["input_artifacts"].items():
-            _text(artifact_id, "review input artifact")
-            _digest(digest, "review input artifact digest")
+        if payload["schema_version"] == LEGACY_REVIEW_SCHEMA:
+            for artifact_id, digest in payload["input_artifacts"].items():
+                _text(artifact_id, "review input artifact")
+                _digest(digest, "review input artifact digest")
+        else:
+            for role, binding in payload["input_artifacts"].items():
+                _text(role, "review input role")
+                if not isinstance(binding, dict) or set(binding) != {
+                    "artifact_id",
+                    "artifact_digest",
+                    "component_digest",
+                }:
+                    raise RunStateError("review input provenance schema is invalid")
+                _text(binding["artifact_id"], "review input artifact")
+                _digest(binding["artifact_digest"], "review input artifact digest")
+                _digest(binding["component_digest"], "review input component digest")
         _digest_list(payload["access_check_evidence"], "review access checks")
         _text(payload["contamination_check"], "review contamination check")
         _timestamp(payload["reviewed_at"], "review timestamp")
@@ -1691,6 +1709,8 @@ def _create_resolution_artifact(
         "schema_version": RESOLUTION_SCHEMA,
         "workflow_id": workflow_id,
         "candidate_record_schema": CANDIDATE_SCHEMA,
+        "trial_pack_schema": TRIAL_SCHEMA,
+        "review_record_schema": REVIEW_SCHEMA,
         "scorecard_schema": SCORECARD_SCHEMA,
         "host_identity": host,
         "target_identity": target,
@@ -1762,6 +1782,144 @@ def _safe_artifact_path(value: object) -> str:
     return value
 
 
+def _reject_owned_result_descriptor(payload: bytes, label: str) -> None:
+    try:
+        decoded = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return
+    if (
+        isinstance(decoded, dict)
+        and decoded.get("schema_version")
+        in {"skill-builder-owned-result.v1", "skill-builder-owned-result.v2"}
+    ):
+        raise RunStateError(f"{label} uses an owned-result descriptor as skill content")
+
+
+def _loadable_skill_digest(
+    entries: list[dict[str, Any]], label: str
+) -> str:
+    normalized: list[dict[str, Any]] = []
+    paths: set[str] = set()
+    casefolded: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {
+            "path",
+            "byte_count",
+            "digest",
+        }:
+            raise RunStateError(f"{label} inventory is invalid")
+        path = _safe_artifact_path(entry.get("path"))
+        if path in paths or path.casefold() in casefolded:
+            raise RunStateError(f"{label} inventory contains a duplicate path")
+        byte_count = entry.get("byte_count")
+        if (
+            isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count < 0
+        ):
+            raise RunStateError(f"{label} byte count is invalid")
+        digest = _digest(entry.get("digest"), f"{label} content")
+        paths.add(path)
+        casefolded.add(path.casefold())
+        normalized.append(
+            {"path": path, "byte_count": byte_count, "digest": digest}
+        )
+    if "SKILL.md" not in paths:
+        raise RunStateError(f"{label} does not retain loadable SKILL.md content")
+    record = {
+        "schema_version": LOADABLE_CONTENT_SCHEMA,
+        "entries": sorted(normalized, key=lambda item: item["path"]),
+    }
+    return raw_digest(canonical_json_bytes(record))
+
+
+def _loadable_skill_digest_from_files(
+    files: dict[str, bytes], prefix: str, label: str
+) -> str:
+    package: list[dict[str, Any]] = []
+    skill_payload: bytes | None = None
+    for path, payload in files.items():
+        if not path.startswith(prefix):
+            continue
+        relative = path.removeprefix(prefix)
+        if not relative:
+            raise RunStateError(f"{label} path is invalid")
+        package.append(
+            {
+                "path": relative,
+                "byte_count": len(payload),
+                "digest": raw_digest(payload),
+            }
+        )
+        if relative == "SKILL.md":
+            skill_payload = payload
+    digest = _loadable_skill_digest(package, label)
+    if skill_payload is None:
+        raise RunStateError(f"{label} does not retain loadable SKILL.md content")
+    _reject_owned_result_descriptor(skill_payload, label)
+    return digest
+
+
+def _loadable_skill_digest_from_manifest(
+    run: Path,
+    artifact_id: str,
+    prefix: str,
+    label: str,
+    manifest: dict[str, Any],
+) -> str:
+    raw_prefix = f"artifacts/{artifact_id}/raw/{prefix}"
+    package: list[dict[str, Any]] = []
+    skill_payload: bytes | None = None
+    for entry in manifest["entries"]:
+        if not entry["path"].startswith(raw_prefix):
+            continue
+        relative = entry["path"].removeprefix(raw_prefix)
+        if not relative:
+            raise RunStateError(f"{label} path is invalid")
+        package.append(
+            {
+                "path": relative,
+                "byte_count": entry["byte_count"],
+                "digest": entry["digest"],
+            }
+        )
+        if relative == "SKILL.md":
+            skill_payload = _read_bytes(
+                run.joinpath(*entry["path"].split("/")), MAX_ARTIFACT_BYTES
+            )
+    digest = _loadable_skill_digest(package, label)
+    if skill_payload is None:
+        raise RunStateError(f"{label} does not retain loadable SKILL.md content")
+    _reject_owned_result_descriptor(skill_payload, label)
+    return digest
+
+
+def _loadable_skill_digest_from_artifact(
+    run: Path, artifact_id: str, prefix: str, label: str
+) -> str:
+    _, manifest = _validate_envelope(run, artifact_id)
+    return _loadable_skill_digest_from_manifest(
+        run, artifact_id, prefix, label, manifest
+    )
+
+
+def _loadable_skill_digest_from_target_manifest(
+    manifest: dict[str, Any], label: str
+) -> str:
+    if manifest.get("target_kind") != "directory":
+        raise RunStateError(f"{label} is not a loadable skill package")
+    package = [
+        {
+            "path": entry["path"],
+            "byte_count": entry["byte_count"],
+            "digest": entry["digest"],
+        }
+        for entry in manifest["entries"]
+        if entry.get("kind") == "file"
+    ]
+    return _loadable_skill_digest(package, label)
+
+
 def _create_artifact(
     *,
     run: Path,
@@ -1815,6 +1973,43 @@ def _create_artifact(
             if primary_record["schema_version"] != required_schema:
                 raise RunStateError(
                     "candidate schema does not match the run's versioned semantics"
+                )
+            if primary_record["schema_version"] == CANDIDATE_SCHEMA:
+                retained_digest = _loadable_skill_digest_from_files(
+                    files, "candidate-package/", "candidate package"
+                )
+                actual_manifest = snapshot_target(
+                    Path(primary_record["isolated_locator"])
+                )
+                actual_digest = _loadable_skill_digest_from_target_manifest(
+                    actual_manifest, "isolated candidate package"
+                )
+                if not (
+                    primary_record["loaded_skill_digest"]
+                    == retained_digest
+                    == actual_digest
+                ):
+                    raise RunStateError(
+                        "candidate loaded-skill digest does not match its actual "
+                        "retained package"
+                    )
+        if artifact_type == "trial-pack":
+            resolution, _ = _resolution_payload(run, workflow_id)
+            required_schema = resolution.get(
+                "trial_pack_schema", LEGACY_TRIAL_SCHEMA
+            )
+            if primary_record["schema_version"] != required_schema:
+                raise RunStateError(
+                    "trial-pack schema does not match the run's versioned semantics"
+                )
+        if artifact_type == "review-record":
+            resolution, _ = _resolution_payload(run, workflow_id)
+            required_schema = resolution.get(
+                "review_record_schema", LEGACY_REVIEW_SCHEMA
+            )
+            if primary_record["schema_version"] != required_schema:
+                raise RunStateError(
+                    "review schema does not match the run's versioned semantics"
                 )
         if artifact_type == "target-scorecard":
             resolution, _ = _resolution_payload(run, workflow_id)
@@ -2378,10 +2573,14 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
     else:
         expected_fields = common_fields | {
             "candidate_record_schema",
+            "trial_pack_schema",
+            "review_record_schema",
             "scorecard_schema",
         }
         version_markers_valid = (
             payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            and payload.get("trial_pack_schema") == TRIAL_SCHEMA
+            and payload.get("review_record_schema") == REVIEW_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
         )
     if (
@@ -2418,6 +2617,19 @@ def _require_input_bindings(
     }
     if any(observed.get(artifact_id) != digest for artifact_id, digest in required.items()):
         raise RunStateError(f"{label} input binding is missing or stale")
+
+
+def _require_exact_input_bindings(
+    envelope: dict[str, Any],
+    required: dict[str, str],
+    label: str,
+) -> None:
+    observed = {
+        binding["artifact_id"]: binding["digest"]
+        for binding in envelope["input_bindings"]
+    }
+    if observed != required:
+        raise RunStateError(f"{label} input provenance is missing, extra, or stale")
 
 
 def _validate_baseline_binding(
@@ -2476,7 +2688,12 @@ def _validate_trial_binding(
     trial_id: str,
     event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    trial_envelope, raw_digests = _artifact_raw_digests(run, trial_id)
+    trial_envelope, trial_manifest = _validate_envelope(run, trial_id)
+    raw_prefix = f"artifacts/{trial_id}/raw/"
+    raw_digests = {
+        entry["path"].removeprefix(raw_prefix): entry["digest"]
+        for entry in trial_manifest["entries"]
+    }
     trials = _artifact_payload_json(run, trial_id)
     candidate_id, candidate_envelope = _event_artifact(
         run, "accept-candidate", "candidate-record", event_artifacts
@@ -2489,6 +2706,14 @@ def _validate_trial_binding(
     resolution_id, resolution_envelope = _event_artifact(
         run, "initialize", "resolution-record", event_artifacts
     )
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    required_trial_schema = resolution.get(
+        "trial_pack_schema", LEGACY_TRIAL_SCHEMA
+    )
+    if trials["schema_version"] != required_trial_schema:
+        raise RunStateError(
+            "trial-pack schema does not match the run's versioned semantics"
+        )
     if (
         trials["candidate_digest"] != candidate_envelope["envelope_digest"]
         or trials["candidate_revision"] != candidate["candidate_revision"]
@@ -2520,7 +2745,6 @@ def _validate_trial_binding(
     raw_fields = {
         "request_digest": "request",
         "raw_prompt_digest": "prompt",
-        "loaded_skill_digest": "loaded-skill",
         "tool_event_digest": "tool-events",
         "output_digest": "output",
         "before_target_manifest_digest": "before-manifest",
@@ -2550,6 +2774,23 @@ def _validate_trial_binding(
             raise RunStateError(
                 "trial loaded-skill content identity is stale or substituted"
             )
+        if trials["schema_version"] == TRIAL_SCHEMA:
+            retained_loaded_digest = _loadable_skill_digest_from_manifest(
+                run,
+                trial_id,
+                f"evidence/{case_id}/loaded-skill/",
+                f"trial case {case_id} loaded skill",
+                trial_manifest,
+            )
+            if retained_loaded_digest != trial_case["loaded_skill_digest"]:
+                raise RunStateError(
+                    "trial loaded-skill content is missing or substituted"
+                )
+        elif (
+            raw_digests.get(f"evidence/{case_id}/loaded-skill.bin")
+            != trial_case["loaded_skill_digest"]
+        ):
+            raise RunStateError("trial raw evidence binding is missing or stale")
         for field, file_stem in raw_fields.items():
             if (
                 raw_digests.get(f"evidence/{case_id}/{file_stem}.bin")
@@ -2750,6 +2991,18 @@ def _validate_review_binding(
 ) -> None:
     review_envelope, _ = _validate_envelope(run, review_id)
     review = _artifact_payload_json(run, review_id)
+    baseline_id, baseline_envelope = _event_artifact(
+        run, "capture-baseline", "baseline-report", event_artifacts
+    )
+    contract_id, contract_envelope = _event_artifact(
+        run, "accept-contract", "skill-contract", event_artifacts
+    )
+    confirmation_id, confirmation_envelope = _event_artifact(
+        run, "confirm-contract", "user-confirmation-record", event_artifacts
+    )
+    evaluation_id, evaluation_envelope = _event_artifact(
+        run, "freeze-evaluation", "evaluation-pack", event_artifacts
+    )
     candidate_id, candidate_envelope = _event_artifact(
         run, "accept-candidate", "candidate-record", event_artifacts
     )
@@ -2759,31 +3012,167 @@ def _validate_review_binding(
     resolution_id, resolution_envelope = _event_artifact(
         run, "initialize", "resolution-record", event_artifacts
     )
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    required_review_schema = resolution.get(
+        "review_record_schema", LEGACY_REVIEW_SCHEMA
+    )
+    if review["schema_version"] != required_review_schema:
+        raise RunStateError(
+            "review schema does not match the run's versioned semantics"
+        )
+    baseline = _artifact_payload_json(run, baseline_id)
+    evaluation = _artifact_payload_json(run, evaluation_id)
     candidate = _artifact_payload_json(run, candidate_id)
     if (
         review["candidate_digest"] != candidate_envelope["envelope_digest"]
         or review["candidate_revision"] != candidate["candidate_revision"]
-        or review["input_artifacts"].get(candidate_id)
-        != candidate_envelope["envelope_digest"]
     ):
-        raise RunStateError("review candidate or input binding is stale")
-    for artifact_id, digest in review["input_artifacts"].items():
+        raise RunStateError("review candidate binding is stale")
+
+    sources = {
+        baseline_id: baseline_envelope,
+        contract_id: contract_envelope,
+        confirmation_id: confirmation_envelope,
+        evaluation_id: evaluation_envelope,
+        candidate_id: candidate_envelope,
+        trials_id: trials_envelope,
+    }
+    for artifact_id, envelope in sources.items():
         record = current["artifact_index"].get(artifact_id)
         if (
             record is None
             or record["derived_status"] != "accepted"
-            or record["digest"] != digest
+            or record["digest"] != envelope["envelope_digest"]
         ):
-            raise RunStateError("review input artifact binding is stale")
-    _require_input_bindings(
-        review_envelope,
-        {
-            resolution_id: resolution_envelope["envelope_digest"],
-            candidate_id: candidate_envelope["envelope_digest"],
-            trials_id: trials_envelope["envelope_digest"],
-        },
-        "review record",
-    )
+            raise RunStateError("review input artifact is invalidated or stale")
+
+    if review["schema_version"] == LEGACY_REVIEW_SCHEMA:
+        if (
+            review["input_artifacts"].get(candidate_id)
+            != candidate_envelope["envelope_digest"]
+        ):
+            raise RunStateError("review candidate or input binding is stale")
+        for artifact_id, digest in review["input_artifacts"].items():
+            record = current["artifact_index"].get(artifact_id)
+            if (
+                record is None
+                or record["derived_status"] != "accepted"
+                or record["digest"] != digest
+            ):
+                raise RunStateError("review input artifact binding is stale")
+        _require_input_bindings(
+            review_envelope,
+            {
+                resolution_id: resolution_envelope["envelope_digest"],
+                candidate_id: candidate_envelope["envelope_digest"],
+                trials_id: trials_envelope["envelope_digest"],
+            },
+            "review record",
+        )
+    else:
+        _, candidate_manifest = _validate_envelope(run, candidate_id)
+        _, trials_manifest = _validate_envelope(run, trials_id)
+
+        def binding(
+            artifact_id: str,
+            envelope: dict[str, Any],
+            component_digest: str,
+        ) -> dict[str, str]:
+            return {
+                "artifact_id": artifact_id,
+                "artifact_digest": envelope["envelope_digest"],
+                "component_digest": component_digest,
+            }
+
+        expected_provenance = {
+            "confirmed_contract": binding(
+                contract_id,
+                contract_envelope,
+                contract_envelope["envelope_digest"],
+            ),
+            "contract_confirmation": binding(
+                confirmation_id,
+                confirmation_envelope,
+                confirmation_envelope["envelope_digest"],
+            ),
+            "host_rules": binding(
+                baseline_id,
+                baseline_envelope,
+                canonical_digest(
+                    {"host_rules": baseline["host_conventions"]}
+                ),
+            ),
+            "candidate_revision": binding(
+                candidate_id,
+                candidate_envelope,
+                canonical_digest(
+                    {"candidate_revision": candidate["candidate_revision"]}
+                ),
+            ),
+            "candidate_artifact": binding(
+                candidate_id,
+                candidate_envelope,
+                candidate_envelope["envelope_digest"],
+            ),
+            "frozen_evaluation": binding(
+                evaluation_id,
+                evaluation_envelope,
+                evaluation_envelope["envelope_digest"],
+            ),
+            "candidate_diff": binding(
+                candidate_id,
+                candidate_envelope,
+                candidate["diff_digest"],
+            ),
+            "candidate_result": binding(
+                candidate_id,
+                candidate_envelope,
+                candidate["resulting_digest"],
+            ),
+            "raw_trial_evidence": binding(
+                trials_id,
+                trials_envelope,
+                trials_manifest["manifest_digest"],
+            ),
+            "preserved_regressions": binding(
+                baseline_id,
+                baseline_envelope,
+                canonical_digest(
+                    {
+                        "preserved_regressions": baseline[
+                            "preserved_regressions"
+                        ]
+                    }
+                ),
+            ),
+            "artifact_manifest": binding(
+                candidate_id,
+                candidate_envelope,
+                candidate_manifest["manifest_digest"],
+            ),
+            "evaluation_rubric": binding(
+                evaluation_id,
+                evaluation_envelope,
+                evaluation["rubric_digest"],
+            ),
+        }
+        if review["input_artifacts"] != expected_provenance:
+            raise RunStateError(
+                "review input provenance is missing, extra, substituted, or stale"
+            )
+        _require_exact_input_bindings(
+            review_envelope,
+            {
+                resolution_id: resolution_envelope["envelope_digest"],
+                baseline_id: baseline_envelope["envelope_digest"],
+                contract_id: contract_envelope["envelope_digest"],
+                confirmation_id: confirmation_envelope["envelope_digest"],
+                evaluation_id: evaluation_envelope["envelope_digest"],
+                candidate_id: candidate_envelope["envelope_digest"],
+                trials_id: trials_envelope["envelope_digest"],
+            },
+            "review record",
+        )
     claims = list(review["access_check_evidence"])
     claims.extend(
         digest
@@ -3107,6 +3496,17 @@ def _validate_candidate_entry(
         raise RunStateError(
             "candidate schema does not match the run's versioned semantics"
         )
+    if candidate["schema_version"] == CANDIDATE_SCHEMA:
+        retained_loaded_digest = _loadable_skill_digest_from_artifact(
+            run,
+            candidate_id,
+            "candidate-package/",
+            "candidate package",
+        )
+        if candidate["loaded_skill_digest"] != retained_loaded_digest:
+            raise RunStateError(
+                "candidate loaded-skill digest does not match its retained package"
+            )
     confirmation_authority = (
         event_artifacts.get("confirm-contract", {}).get("authority_event_digest")
         if event_artifacts is not None
@@ -3669,6 +4069,16 @@ def _validate_delivery_destination(
         != _owned_result_digest(index, manifest, candidate.get("owned_paths"))
     ):
         raise RunStateError("delivery content does not match the finalized candidate result")
+    if (
+        candidate.get("schema_version") == CANDIDATE_SCHEMA
+        and candidate.get("loaded_skill_digest")
+        != _loadable_skill_digest_from_target_manifest(
+            manifest, "delivery destination"
+        )
+    ):
+        raise RunStateError(
+            "delivery content does not match the exact loadable skill used by trials"
+        )
 
 
 def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
