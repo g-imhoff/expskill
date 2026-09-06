@@ -510,10 +510,30 @@
         "event": "resolve",
         "requested_mode": "improve",
         "selected_mode": "improve",
+        "fixture_blueprint": "repair-path-v1",
+        "fixture_workflow_id": "c7ebfde1f925258b1267b2c7106480f3",
         "target_manifest": "targets/exact-improve/manifest.json",
         "target_snapshot": "fixture-improve-snapshot-v1"
       },
-      {"event": "baseline_captured", "target_snapshot": "fixture-improve-snapshot-v1"},
+      {
+        "event": "baseline_captured",
+        "target_snapshot": "fixture-improve-snapshot-v1",
+        "baseline_evidence": {
+          "schema_version": "skill-builder-baseline-evidence-v1",
+          "mode": "improve",
+          "exact_target": {"identity": "fixture-terse-summary", "path": "skills/fixture-terse-summary/SKILL.md", "exists": true, "content_digest": "5441bd5bb38b8d11bbf8898b4e654d7ddd994b0c2b89aef048d1bba6a3c298c0"},
+          "absence_evidence_digest": null,
+          "overlap_map": [],
+          "host_conventions": ["frontmatter-name-description", "single-level-skill-directory"],
+          "current_behavior": {"classification": "underspecified", "source_path": "skills/fixture-terse-summary/SKILL.md", "source_content_digest": "5441bd5bb38b8d11bbf8898b4e654d7ddd994b0c2b89aef048d1bba6a3c298c0"},
+          "observed_failures": ["missing-explicit-input-output-contract"],
+          "strengths": ["explicit-summary-purpose"],
+          "context_cost": "minimal",
+          "tool_behavior": "unspecified",
+          "permission_behavior": "unspecified",
+          "preserved_regressions": [{"case_id": "preserve-summary-capability", "subject_identity": "fixture-terse-summary", "subject_path": "skills/fixture-terse-summary/SKILL.md", "baseline_content_digest": "5441bd5bb38b8d11bbf8898b4e654d7ddd994b0c2b89aef048d1bba6a3c298c0"}]
+        }
+      },
       {
         "event": "research_pack",
         "lanes": [
@@ -522,8 +542,10 @@
           {"role": "evaluation-methods", "context_id": "repair-evaluation", "blind": true, "evidence_cards": 2, "contaminated_by": []}
         ]
       },
+      {"event": "evidence_sieved", "card_count": 6},
+      {"event": "designs_challenged", "alternative_count": 2},
       {"event": "contract_written", "contract_digest": "repair-contract-v1"},
-      {"event": "user_confirmed", "contract_digest": "repair-contract-v1", "target_identity": "fixture-terse-summary"},
+      {"event": "user_confirmed", "contract_digest": "repair-contract-v1", "target_identity": "fixture-terse-summary", "accepted": true, "user_identity": "fixture-user-v1", "user_role": "user", "authority_source": "explicit-user-event", "confirmation_timestamp": "2026-01-01T00:00:10Z", "confirmation_event_digest": "4e3579d31ddb9c9fc81eda1e60aefaba5e87a5db34f45aba1cf62efb3a0d67e8", "contract_artifact_id": "skill-contract-v1"},
       {
         "event": "evaluation_frozen",
         "evaluation_digest": "repair-evaluation-v1",

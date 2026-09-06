@@ -10,6 +10,42 @@
     "fixture-change-summary"
   ],
   "snapshot_digest": "fixture-create-snapshot-v1",
+  "baseline_evidence": {
+    "schema_version": "skill-builder-baseline-evidence-v1",
+    "mode": "create",
+    "exact_target": {
+      "identity": "fixture-release-notes",
+      "path": "skills/fixture-release-notes/SKILL.md",
+      "exists": false,
+      "content_digest": null
+    },
+    "absence_evidence_digest": "0da558e365c42d0f7d905ea445ea97483e6d74dfd488e9c78e9b7d834360d622",
+    "overlap_map": [
+      {
+        "target_identity": "fixture-change-summary",
+        "path": "skills/fixture-change-summary/SKILL.md",
+        "content_digest": "9ae3a0a23f46107937cbea0663f36cf216810ee86837e596d23ccdefff4c8e05"
+      }
+    ],
+    "host_conventions": [
+      "frontmatter-name-description",
+      "single-level-skill-directory"
+    ],
+    "current_behavior": null,
+    "observed_failures": [],
+    "strengths": [],
+    "context_cost": null,
+    "tool_behavior": null,
+    "permission_behavior": null,
+    "preserved_regressions": [
+      {
+        "case_id": "preserve-neighbour:fixture-change-summary",
+        "subject_identity": "fixture-change-summary",
+        "subject_path": "skills/fixture-change-summary/SKILL.md",
+        "baseline_content_digest": "9ae3a0a23f46107937cbea0663f36cf216810ee86837e596d23ccdefff4c8e05"
+      }
+    ]
+  },
   "files": [
     {
       "path": "skills/fixture-change-summary/SKILL.md",
