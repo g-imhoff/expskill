@@ -442,6 +442,13 @@
     ],
     "mutant_resume_without_validation": [
       {
+        "event": "resolve",
+        "requested_mode": "improve",
+        "selected_mode": "improve",
+        "target_manifest": "targets/exact-improve/manifest.json",
+        "target_snapshot": "fixture-improve-snapshot-v1"
+      },
+      {
         "event": "paused",
         "target_identity": "fixture-terse-summary",
         "state_validated": true,
@@ -476,9 +483,26 @@
     ],
     "mutant_over_invalidates_goal_change": [
       {
+        "event": "dependency_graph_recorded",
+        "dependencies": {
+          "baseline": [],
+          "research": ["baseline"],
+          "contract": ["baseline", "research"],
+          "evaluation": ["contract"],
+          "candidate": ["contract", "evaluation"],
+          "trials": ["candidate", "evaluation"],
+          "review": ["trials"],
+          "scores": ["review"],
+          "verification": ["candidate"],
+          "authority": ["delivery_intent"],
+          "release.delivery": ["authority"]
+        }
+      },
+      {
         "event": "goal_changed",
         "change": "delivery_intent",
-        "invalidated": ["authority", "release.delivery", "research"]
+        "invalidated": ["authority", "release.delivery", "research"],
+        "retained": ["baseline", "contract", "evaluation", "candidate", "trials", "review", "scores", "verification"]
       }
     ],
     "accepted_negative_review_repair": [
@@ -557,11 +581,39 @@
       }
     ],
     "accepted_pause_resume": [
+      {
+        "event": "resolve",
+        "requested_mode": "improve",
+        "selected_mode": "improve",
+        "target_manifest": "targets/exact-improve/manifest.json",
+        "target_snapshot": "fixture-improve-snapshot-v1"
+      },
       {"event": "paused", "target_identity": "fixture-terse-summary", "state_validated": true, "target_snapshot": "fixture-improve-snapshot-v1"},
       {"event": "resumed", "target_identity": "fixture-terse-summary", "chain_revalidated": true, "identity_revalidated": true, "snapshot_revalidated": true, "evidence_revalidated": true}
     ],
     "accepted_selective_invalidation": [
-      {"event": "goal_changed", "change": "delivery_intent", "invalidated": ["authority", "release.delivery"]}
+      {
+        "event": "dependency_graph_recorded",
+        "dependencies": {
+          "baseline": [],
+          "research": ["baseline"],
+          "contract": ["baseline", "research"],
+          "evaluation": ["contract"],
+          "candidate": ["contract", "evaluation"],
+          "trials": ["candidate", "evaluation"],
+          "review": ["trials"],
+          "scores": ["review"],
+          "verification": ["candidate"],
+          "authority": ["delivery_intent"],
+          "release.delivery": ["authority"]
+        }
+      },
+      {
+        "event": "goal_changed",
+        "change": "delivery_intent",
+        "invalidated": ["authority", "release.delivery"],
+        "retained": ["baseline", "research", "contract", "evaluation", "candidate", "trials", "review", "scores", "verification"]
+      }
     ]
   }
 }

@@ -139,6 +139,7 @@ KNOWN_EVENTS = frozenset(
         "contract_written",
         "delivery_accepted",
         "delivery_attempt",
+        "dependency_graph_recorded",
         "designs_challenged",
         "evaluation_frozen",
         "evidence_sieved",
@@ -171,7 +172,8 @@ EVENT_REQUIRED_FIELDS = {
     "resolve": frozenset(
         {"target_manifest", "selected_mode", "target_snapshot", "authority"}
     ),
-    "target_activated": frozenset({"target_identity"}),
+    "queue_created": frozenset({"targets"}),
+    "target_activated": frozenset({"target_identity", "lock_nonce"}),
     "target_finalized": frozenset({"target_identity"}),
     "target_abandoned": frozenset({"target_identity"}),
     "contract_written": frozenset({"contract_digest"}),
@@ -188,6 +190,7 @@ EVENT_REQUIRED_FIELDS = {
         }
     ),
     "goal_changed": frozenset({"invalidated"}),
+    "dependency_graph_recorded": frozenset({"dependencies"}),
     "write": frozenset({"destination_scope", "effect", "actor", "path"}),
     "delivery_attempt": frozenset({"destination_scope", "effect", "actor"}),
     "context_read": frozenset(
@@ -708,6 +711,44 @@ def unique_nonempty_strings(value: object) -> bool:
         and all(isinstance(item, str) and bool(item) for item in value)
         and len(value) == len(set(value))
     )
+
+
+RESEARCH_CONTEXT_ALIASES = {
+    "domain-techniques": "domain-techniques",
+    "research-domain": "domain-techniques",
+    "agent-skill-design": "agent-skill-design",
+    "research-design": "agent-skill-design",
+    "evaluation-methods": "evaluation-methods",
+    "research-evaluation": "evaluation-methods",
+}
+
+
+def canonical_research_context_identity(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value in RESEARCH_CONTEXT_ALIASES:
+            return RESEARCH_CONTEXT_ALIASES[value]
+    return None
+
+
+def canonical_context_actor_class(actor: object, actor_role: object) -> str | None:
+    values = tuple(
+        value for value in (actor, actor_role) if isinstance(value, str)
+    )
+    if any(
+        value == "candidate" or value.startswith("candidate-implementer")
+        for value in values
+    ):
+        return "candidate"
+    if any(
+        value == "trial" or value.startswith("trial-agent") for value in values
+    ):
+        return "trial"
+    if (
+        canonical_research_context_identity(*values) is not None
+        or any(value in {"research", "researcher"} for value in values)
+    ):
+        return "research"
+    return None
 
 
 def normalized_run_relative_path(value: object) -> str | None:
@@ -1250,7 +1291,12 @@ def seal_trace(
             snapshot_generation += 1
 
         event["workflow_id"] = current_workflow
-        event["target_identity"] = current_target
+        if event_name not in {
+            "target_activated",
+            "target_finalized",
+            "target_abandoned",
+        } or not isinstance(event.get("target_identity"), str):
+            event["target_identity"] = current_target
         event["target_snapshot"] = current_snapshot
         event["mode"] = current_mode
         if type(event.get("identity_generation")) is not int:
@@ -1287,27 +1333,25 @@ def seal_trace(
             if artifact_type in {"artifact-manifest", "terminal-manifest"}:
                 prior_ids = list(artifact_envelopes)
                 source_event = event.get("fixture_source_event")
+                declared_source_fields = (
+                    set(source_event) if isinstance(source_event, dict) else set()
+                )
                 if (
-                    not isinstance(source_event, dict)
-                    or "manifested_artifact_ids" not in source_event
+                    "manifested_artifact_ids" not in declared_source_fields
                 ):
                     event["manifested_artifact_ids"] = prior_ids
-                if (
-                    not isinstance(source_event, dict)
-                    or "input_artifact_ids" not in source_event
-                ):
+                if "input_artifact_ids" not in declared_source_fields:
                     event["input_artifact_ids"] = prior_ids
-                if (
-                    not isinstance(source_event, dict)
-                    or "files" not in source_event
-                ):
+                if "files" not in declared_source_fields:
                     event["files"] = _manifest_files(artifact_envelopes)
             if artifact_type in MANIFEST_ARTIFACT_TYPES:
                 files = event.get("files", [])
-                manifest_body = {
+                source_event = event.get("fixture_source_event")
+                declared_source_fields = (
+                    set(source_event) if isinstance(source_event, dict) else set()
+                )
+                manifest_defaults = {
                     "schema_version": "skill-builder-raw-manifest-v1",
-                    "workflow_id": current_workflow,
-                    "target_identity": current_target,
                     "collection_type": artifact_type,
                     "declared_item_count": len(files),
                     "observed_item_count": len(files),
@@ -1316,14 +1360,26 @@ def seal_trace(
                         for item in files
                         if isinstance(item, dict)
                     ),
-                    "files": files,
                     "overflow": None,
                 }
-                event.update(manifest_body)
+                for field, value in manifest_defaults.items():
+                    if field not in declared_source_fields:
+                        event[field] = value
+                event["workflow_id"] = current_workflow
+                event["target_identity"] = current_target
+                manifest_body = {
+                    key: event.get(key) for key in MANIFEST_HEADER_FIELDS
+                }
                 event["manifest_digest"] = canonical_digest(manifest_body)
             if event_name == "review_recorded":
                 review_ids = event.get("evidence", [])
                 if isinstance(review_ids, list):
+                    source_event = event.get("fixture_source_event")
+                    declared_source_fields = (
+                        set(source_event)
+                        if isinstance(source_event, dict)
+                        else set()
+                    )
                     review_bindings = [
                         {
                             "artifact_id": review_id,
@@ -1335,13 +1391,18 @@ def seal_trace(
                         for review_id in review_ids
                         if review_id in artifact_envelopes
                     ]
-                    event["review_artifact_bindings"] = review_bindings
-                    event["supplied_artifacts"] = [
-                        binding["artifact_id"] for binding in review_bindings
-                    ]
-                    event["accessed_artifacts"] = [
-                        binding["artifact_id"] for binding in review_bindings
-                    ]
+                    review_defaults = {
+                        "review_artifact_bindings": review_bindings,
+                        "supplied_artifacts": [
+                            binding["artifact_id"] for binding in review_bindings
+                        ],
+                        "accessed_artifacts": [
+                            binding["artifact_id"] for binding in review_bindings
+                        ],
+                    }
+                    for field, value in review_defaults.items():
+                        if field not in declared_source_fields:
+                            event[field] = value
             input_ids = event.setdefault("input_artifact_ids", [])
             if not isinstance(input_ids, list):
                 input_ids = []
@@ -1432,7 +1493,7 @@ def seal_trace(
         receipt = {
             "schema_version": "skill-builder-transition-receipt-v1",
             "workflow_id": current_workflow,
-            "target_identity": current_target,
+            "target_identity": event.get("target_identity"),
             "sequence": sequence,
             "prior_receipt_digest": prior_receipt_digest,
             "event": event_name,
@@ -1745,7 +1806,11 @@ def merge_accepted_fixture_events(
         canonical = merged_events[match_index]
         canonical["fixture_source_event"] = copy.deepcopy(raw_event)
         for key, value in raw_event.items():
-            if key not in generated_fields and key not in {
+            preserves_manifest_input = (
+                key == "input_artifact_ids"
+                and canonical.get("artifact_type") in MANIFEST_ARTIFACT_TYPES
+            )
+            if (key not in generated_fields or preserves_manifest_input) and key not in {
                 "event",
                 "findings",
                 "criteria",
@@ -1856,6 +1921,7 @@ def build_fixture_trace(
         artifact_type = event.get("artifact_type")
         artifact_id = event.get("artifact_id")
         input_artifact_ids = event.get("input_artifact_ids")
+        manifested_artifact_ids = event.get("manifested_artifact_ids")
         files = event.get("files")
         if (
             not isinstance(event_name, str)
@@ -1870,6 +1936,9 @@ def build_fixture_trace(
                     not isinstance(item, str) for item in input_artifact_ids
                 )
             )
+            or artifact_type in {"artifact-manifest", "terminal-manifest"}
+            and "manifested_artifact_ids" in event
+            and not unique_nonempty_strings(manifested_artifact_ids)
             or "files" in event
             and (
                 not isinstance(files, list)
@@ -2101,6 +2170,12 @@ def build_fixture_trace(
         )
 
     events = copy.deepcopy(raw_events)
+    for event, source_event in zip(events, raw_events):
+        if (
+            event.get("artifact_type") in MANIFEST_ARTIFACT_TYPES
+            or event.get("event") == "review_recorded"
+        ):
+            event["fixture_source_event"] = copy.deepcopy(source_event)
     type_by_event = {
         "resolve": "resolution-record",
         "baseline_captured": "baseline-report",
@@ -2366,12 +2441,23 @@ def validate_schema_boundary(
                     for role, effects in authority.get("delegation", {}).items()
                 )
             )
-        elif event_name in {
-            "target_activated",
-            "target_finalized",
-            "target_abandoned",
-        }:
-            shape_valid = isinstance(event.get("target_identity"), str)
+        elif event_name == "queue_created":
+            queue_targets = event.get("targets")
+            shape_valid = isinstance(queue_targets, list) and all(
+                isinstance(target, str) for target in queue_targets
+            )
+        elif event_name == "target_activated":
+            shape_valid = (
+                isinstance(event.get("target_identity"), str)
+                and bool(event["target_identity"])
+                and isinstance(event.get("lock_nonce"), str)
+                and bool(event["lock_nonce"])
+            )
+        elif event_name in {"target_finalized", "target_abandoned"}:
+            shape_valid = (
+                isinstance(event.get("target_identity"), str)
+                and bool(event["target_identity"])
+            )
         elif event_name in {"contract_written", "contract_changed"}:
             shape_valid = isinstance(event.get("contract_digest"), str)
         elif event_name == "target_snapshot_changed":
@@ -2392,8 +2478,31 @@ def validate_schema_boundary(
                 )
             )
         elif event_name == "goal_changed":
-            shape_valid = isinstance(event.get("invalidated"), list) and all(
-                isinstance(item, str) for item in event.get("invalidated", [])
+            invalidated = event.get("invalidated")
+            retained = event.get("retained")
+            shape_valid = (
+                unique_nonempty_strings(invalidated)
+                and (
+                    "change" not in event
+                    or isinstance(event.get("change"), str)
+                    and bool(event["change"])
+                )
+                and (
+                    "retained" not in event
+                    or unique_nonempty_strings(retained)
+                )
+            )
+        elif event_name == "dependency_graph_recorded":
+            dependencies = event.get("dependencies")
+            shape_valid = (
+                isinstance(dependencies, dict)
+                and bool(dependencies)
+                and all(
+                    isinstance(artifact, str)
+                    and bool(artifact)
+                    and unique_nonempty_strings(inputs)
+                    for artifact, inputs in dependencies.items()
+                )
             )
         elif event_name == "write":
             shape_valid = (
@@ -3931,6 +4040,10 @@ def evaluate_trace(
     prerequisite_generation_invalid = False
     research_lanes: list[dict[str, Any]] | None = None
     active_target: str | None = None
+    declared_queue: list[str] | None = None
+    queue_position = 0
+    queue_declaration_index: int | None = None
+    dependency_graph: dict[str, list[str]] | None = None
     material_findings: dict[str, tuple[set[str], Any, int]] = {}
     verification: dict[str, Any] | None = None
     pause_record: dict[str, Any] | None = None
@@ -4828,13 +4941,9 @@ def evaluate_trace(
         return (
             isinstance(manifest_id, str)
             and artifact_is_current(manifest_id)
-            and isinstance(manifested_ids, list)
-            and all(isinstance(artifact_id, str) for artifact_id in manifested_ids)
-            and len(manifested_ids) == len(set(manifested_ids))
+            and unique_nonempty_strings(manifested_ids)
             and set(manifested_ids) == expected_ids
-            and isinstance(input_ids, list)
-            and all(isinstance(artifact_id, str) for artifact_id in input_ids)
-            and len(input_ids) == len(set(input_ids))
+            and unique_nonempty_strings(input_ids)
             and set(input_ids) == expected_ids
             and all(
                 record_event_indices.get(id(retained_artifacts[artifact_id]), -1)
@@ -4870,11 +4979,15 @@ def evaluate_trace(
                 )
                 for artifact_id in expected_ids
             )
-            and set(
-                terminal_manifest_record.get("manifested_artifact_ids", [])
+            and unique_nonempty_strings(
+                terminal_manifest_record.get("manifested_artifact_ids")
             )
+            and set(terminal_manifest_record["manifested_artifact_ids"])
             == expected_ids
-            and set(terminal_manifest_record.get("input_artifact_ids", []))
+            and unique_nonempty_strings(
+                terminal_manifest_record.get("input_artifact_ids")
+            )
+            and set(terminal_manifest_record["input_artifact_ids"])
             == expected_ids
             and all(
                 record_event_indices.get(id(artifact), -1) <= manifest_index
@@ -5225,20 +5338,60 @@ def evaluate_trace(
                 )
             else:
                 run_lifecycle_state = "active"
+        elif event_name == "queue_created":
+            targets = event.get("targets")
+            queue_declaration_index = index
+            if declared_queue is not None or not targets or not unique_nonempty_strings(
+                targets
+            ):
+                failures.append(
+                    OracleFailure(
+                        "INVALID_QUEUE_MEMBERSHIP",
+                        index,
+                        "queue membership was empty, duplicated, or redeclared",
+                    )
+                )
+            else:
+                declared_queue = list(targets)
+                queue_position = 0
         elif event_name == "target_activated":
+            target_identity = event["target_identity"]
+            expected_target = (
+                declared_queue[queue_position]
+                if declared_queue is not None
+                and queue_position < len(declared_queue)
+                else None
+            )
             if active_target is not None:
                 failures.append(
                     OracleFailure(
                         "MULTIPLE_ACTIVE_TARGETS",
                         index,
-                        f"target {event['target_identity']} activated while {active_target} still owns the lock",
+                        f"target {target_identity} activated while {active_target} still owns the lock",
                     )
                 )
-            else:
-                active_target = event["target_identity"]
+            if target_identity != expected_target:
+                failures.append(
+                    OracleFailure(
+                        "QUEUE_ACTIVATION_ORDER",
+                        index,
+                        f"target {target_identity!r} did not match next declared target {expected_target!r}",
+                    )
+                )
+            elif active_target is None:
+                active_target = target_identity
         elif event_name in {"target_finalized", "target_abandoned"}:
             if event["target_identity"] == active_target:
                 active_target = None
+                queue_position += 1
+            else:
+                failures.append(
+                    OracleFailure(
+                        "QUEUE_TERMINAL_MISMATCH",
+                        index,
+                        f"terminal target {event['target_identity']!r} did not own the active lock",
+                    )
+                )
         elif event_name in {"contract_written", "contract_changed"}:
             invalidate_contract_and_downstream()
             contract_epoch += 1
@@ -5268,9 +5421,10 @@ def evaluate_trace(
             invalidate_identity_or_snapshot_chain()
         elif event_name == "paused":
             pause_binding_matches_active = (
-                current_workflow_id is None
-                and not identity_resolution_seen
-                or event.get("workflow_id") == current_workflow_id
+                identity_resolution_seen
+                and resolution_record is not None
+                and record_schema_validity.get(id(resolution_record), False)
+                and event.get("workflow_id") == current_workflow_id
                 and event.get("target_identity") == current_target_identity
                 and event.get("target_snapshot") == current_snapshot
                 and event.get("mode") == current_mode
@@ -5315,9 +5469,10 @@ def evaluate_trace(
                 and pause_record.get("snapshot_generation")
                 == event.get("snapshot_generation")
                 and (
-                    current_workflow_id is None
-                    and not identity_resolution_seen
-                    or event.get("workflow_id") == current_workflow_id
+                    identity_resolution_seen
+                    and resolution_record is not None
+                    and record_schema_validity.get(id(resolution_record), False)
+                    and event.get("workflow_id") == current_workflow_id
                     and event.get("target_identity")
                     == current_target_identity
                     and event.get("target_snapshot") == current_snapshot
@@ -5541,25 +5696,83 @@ def evaluate_trace(
                         "cleanup lacked ordered finalization, manifest, authority, delivery, or parent tombstone provenance",
                     )
                 )
+        elif event_name == "dependency_graph_recorded":
+            dependency_graph = copy.deepcopy(event["dependencies"])
         elif event_name == "goal_changed" and scenario is not None:
-            required = set(scenario["required_invalidations"])
-            observed = set(event["invalidated"])
-            if missing := required - observed:
+            if dependency_graph is None:
                 failures.append(
                     OracleFailure(
-                        "DEPENDENT_INVALIDATION_MISSING",
+                        "INVALIDATION_WITHOUT_DEPENDENCY_STATE",
                         index,
-                        f"goal change left dependent artifacts valid: {sorted(missing)}",
+                        "goal change declared labels without a prior artifact dependency graph",
                     )
                 )
-            if unrelated := observed - required:
-                failures.append(
-                    OracleFailure(
-                        "UNRELATED_ARTIFACT_INVALIDATED",
-                        index,
-                        f"goal change invalidated unrelated artifacts: {sorted(unrelated)}",
-                    )
+            else:
+                graph_artifacts = set(dependency_graph)
+                scenario_required = set(scenario["required_invalidations"])
+                scenario_preserved = set(scenario["preserved_artifacts"])
+                expected_artifacts = scenario_required | scenario_preserved
+                change = event.get("change")
+                affected: set[str] = set()
+                changed = True
+                while changed:
+                    changed = False
+                    for artifact, dependencies in dependency_graph.items():
+                        if artifact in affected:
+                            continue
+                        if change in dependencies or affected.intersection(
+                            dependencies
+                        ):
+                            affected.add(artifact)
+                            changed = True
+
+                graph_valid = (
+                    isinstance(change, str)
+                    and bool(change)
+                    and change == scenario.get("change")
+                    and graph_artifacts == expected_artifacts
+                    and affected == scenario_required
                 )
+                if not graph_valid:
+                    failures.append(
+                        OracleFailure(
+                            "INVALID_DEPENDENCY_GRAPH",
+                            index,
+                            "dependency graph did not derive the frozen change cone",
+                        )
+                    )
+
+                observed = set(event["invalidated"])
+                if missing := affected - observed:
+                    failures.append(
+                        OracleFailure(
+                            "DEPENDENT_INVALIDATION_MISSING",
+                            index,
+                            f"goal change left dependent artifacts valid: {sorted(missing)}",
+                        )
+                    )
+                if unrelated := observed - affected:
+                    failures.append(
+                        OracleFailure(
+                            "UNRELATED_ARTIFACT_INVALIDATED",
+                            index,
+                            f"goal change invalidated unrelated artifacts: {sorted(unrelated)}",
+                        )
+                    )
+
+                retained = event.get("retained")
+                retained_valid = (
+                    unique_nonempty_strings(retained)
+                    and set(retained) == graph_artifacts - observed
+                )
+                if not retained_valid:
+                    failures.append(
+                        OracleFailure(
+                            "INVALID_ARTIFACT_STATUS",
+                            index,
+                            "retained and invalidated statuses did not partition the prior graph",
+                        )
+                    )
         elif event_name == "write":
             resolved_authority = (resolution_record or {}).get("authority")
             delegation = (
@@ -5634,10 +5847,28 @@ def evaluate_trace(
                     )
                 )
         elif event_name == "context_read":
-            path_parts = Path(event["path"]).parts
-            if (
-                event["actor_role"] in {"candidate", "trial"}
-                and "hidden-release" in path_parts
+            path = normalized_run_relative_path(event.get("path"))
+            path_parts = PurePosixPath(path).parts if path is not None else ()
+            actor_class = canonical_context_actor_class(
+                event.get("actor"), event.get("actor_role")
+            )
+            source_role = event.get("source_role")
+            hidden_source = (
+                isinstance(source_role, str)
+                and (
+                    source_role == "hidden-release"
+                    or source_role.startswith("hidden-release-")
+                )
+            )
+            frozen_source = (
+                isinstance(source_role, str)
+                and (
+                    source_role == "frozen-validation"
+                    or source_role.startswith("frozen-validation-")
+                )
+            )
+            if actor_class in {"candidate", "trial"} and (
+                "hidden-release" in path_parts or hidden_source
             ):
                 failures.append(
                     OracleFailure(
@@ -5646,10 +5877,27 @@ def evaluate_trace(
                         f"{event['actor']} read withheld hidden-release material",
                     )
                 )
-            elif (
-                event["actor_role"] == "research"
-                and event["source_role"].startswith("research-")
-                and event["source_role"] != event["actor"]
+            elif actor_class in {"candidate", "trial"} and (
+                "frozen-validation" in path_parts or frozen_source
+            ):
+                failures.append(
+                    OracleFailure(
+                        "FROZEN_VALIDATION_LEAK",
+                        index,
+                        f"{event['actor']} read frozen validation material outside a case handoff",
+                    )
+                )
+            elif actor_class == "research" and (
+                canonical_research_context_identity(
+                    event.get("actor"), event.get("actor_role")
+                )
+                is not None
+                and canonical_research_context_identity(source_role)
+                is not None
+                and canonical_research_context_identity(
+                    event.get("actor"), event.get("actor_role")
+                )
+                != canonical_research_context_identity(source_role)
             ):
                 failures.append(
                     OracleFailure(
@@ -6074,12 +6322,7 @@ def evaluate_trace(
                     }
                     schema_valid = (
                         schema_valid
-                        and isinstance(manifested_ids, list)
-                        and all(
-                            isinstance(artifact_id, str)
-                            for artifact_id in manifested_ids
-                        )
-                        and len(manifested_ids) == len(set(manifested_ids))
+                        and unique_nonempty_strings(manifested_ids)
                         and set(manifested_ids) == prior_current_ids
                         and retained_manifest_is_valid(
                             event,
@@ -6104,6 +6347,7 @@ def evaluate_trace(
                         if artifact_id != event.get("artifact_id")
                         and record_event_indices.get(id(artifact), index) < index
                     }
+                    manifested_ids = event.get("manifested_artifact_ids")
                     terminal_input_ids = event.get("input_artifact_ids")
                     schema_valid = (
                         schema_valid
@@ -6121,6 +6365,8 @@ def evaluate_trace(
                             )
                             for artifact_id in prior_ids
                         )
+                        and unique_nonempty_strings(manifested_ids)
+                        and set(manifested_ids) == prior_ids
                         and unique_nonempty_strings(terminal_input_ids)
                         and set(terminal_input_ids) == prior_ids
                     )
@@ -6178,6 +6424,17 @@ def evaluate_trace(
                 record_schema_validity[id(event)] = schema_valid
                 if not schema_valid:
                     invalidate_artifact(event)
+                    if (
+                        isinstance(artifact_type, str)
+                        and artifact_type in MANIFEST_ARTIFACT_TYPES
+                    ):
+                        failures.append(
+                            OracleFailure(
+                                "INVALID_MANIFEST_SCHEMA",
+                                index,
+                                f"{artifact_type!r} did not match its retained files and coverage",
+                            )
+                        )
                     failures.append(
                         OracleFailure(
                             "INVALID_ARTIFACT_SCHEMA",
@@ -7383,6 +7640,19 @@ def evaluate_trace(
                         "candidate entry reused or omitted identity, snapshot, baseline, confirmation, evaluation, or authority evidence",
                     )
                 )
+
+    if (
+        queue_declaration_index is not None
+        and declared_queue is not None
+        and (active_target is not None or queue_position != len(declared_queue))
+    ):
+        failures.append(
+            OracleFailure(
+                "INCOMPLETE_QUEUE",
+                len(trace),
+                "declared queue did not terminate every target in activation order",
+            )
+        )
 
     finalization_indices = [
         index
@@ -10908,33 +11178,164 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
                 )
 
-    def test_accepted_fixture_builder_preserves_explicit_terminal_manifest_paths(self) -> None:
-        """Explicit retained and terminal paths must reach manifest validation."""
+    def test_manifest_path_regression_starts_valid_and_fails_at_manifest(self) -> None:
+        """A path mutation is judged from a zero-failure accepted control."""
+
+        accepted = accepted_finalization_trace()
+        self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
 
         for artifact_type in ("artifact-manifest", "terminal-manifest"):
             with self.subTest(artifact_type=artifact_type):
-                raw_events = accepted_finalization_trace()
-                manifest = next(
-                    event
-                    for event in raw_events
+                trace = copy.deepcopy(accepted)
+                manifest_index = next(
+                    index
+                    for index, event in enumerate(trace)
                     if event.get("artifact_type") == artifact_type
                 )
-                manifest["files"][0]["path"] = "../hostile-escape"
+                trace[manifest_index]["files"][0]["path"] = "../hostile-escape"
 
-                built = build_fixture_trace(
-                    "visible", "accepted_manifest_path_probe", raw_events
+                failures = evaluate_trace(
+                    reseal_declared_trace(trace), BUILDER_FIXTURES
                 )
-                built_manifest = next(
-                    event
-                    for event in built
-                    if event.get("artifact_type") == artifact_type
+
+                self.assertIn(
+                    "INVALID_MANIFEST_SCHEMA",
+                    {
+                        failure.code
+                        for failure in failures
+                        if failure.event_index == manifest_index
+                    },
+                )
+
+    def test_builder_preflight_rejects_malformed_manifested_artifact_ids(self) -> None:
+        """The fixture builder rejects terminal coverage that is not string-list data."""
+
+        for malformed_ids in ({"artifact": "id"}, [""]):
+            with self.subTest(manifested_artifact_ids=malformed_ids):
+                built = build_fixture_trace(
+                    "visible",
+                    "malformed-terminal-coverage",
+                    [
+                        {
+                            "event": "artifact_retained",
+                            "artifact_id": "terminal-manifest-probe",
+                            "artifact_type": "terminal-manifest",
+                            "manifested_artifact_ids": malformed_ids,
+                            "input_artifact_ids": [],
+                            "files": [],
+                        }
+                    ],
                 )
 
                 self.assertEqual(
-                    built_manifest["files"][0]["path"],
-                    "../hostile-escape",
+                    built,
+                    [
+                        {
+                            "event": None,
+                            "construction_error": "invalid-fixture-shape",
+                        }
+                    ],
                 )
-                self.assertTrue(evaluate_trace(built, BUILDER_FIXTURES))
+
+    def test_terminal_manifest_coverage_is_validated_before_set_conversion(self) -> None:
+        """Malformed terminal coverage fails as schema data without escaping the oracle."""
+
+        for malformed_ids in (7, [""]):
+            with self.subTest(manifested_artifact_ids=malformed_ids):
+                trace = accepted_finalization_trace()
+                manifest_index = next(
+                    index
+                    for index, event in enumerate(trace)
+                    if event.get("artifact_type") == "terminal-manifest"
+                )
+                trace[manifest_index]["manifested_artifact_ids"] = malformed_ids
+
+                try:
+                    failures = evaluate_trace(
+                        reseal_declared_trace(trace), BUILDER_FIXTURES
+                    )
+                except (TypeError, ValueError) as error:
+                    self.fail(
+                        "terminal coverage leaked "
+                        f"{type(error).__name__}: {error}"
+                    )
+
+                self.assertIn(
+                    "INVALID_MANIFEST_SCHEMA",
+                    {
+                        failure.code
+                        for failure in failures
+                        if failure.event_index == manifest_index
+                    },
+                )
+
+    def test_builder_preserves_explicit_manifest_header_and_input_fields(self) -> None:
+        """Manifest defaults cannot erase explicit malformed source declarations."""
+
+        declared = {
+            "schema_version": "declared-schema-v9",
+            "collection_type": "declared-collection",
+            "declared_item_count": 91,
+            "observed_item_count": 92,
+            "observed_byte_count": 93,
+            "overflow": {"reason": "declared-overflow"},
+            "input_artifact_ids": ["declared-input"],
+        }
+        built = build_fixture_trace(
+            "visible",
+            "manifest-field-preservation",
+            [
+                {
+                    "event": "artifact_retained",
+                    "artifact_id": "terminal-manifest-probe",
+                    "artifact_type": "terminal-manifest",
+                    "manifested_artifact_ids": [],
+                    "files": [],
+                    **declared,
+                }
+            ],
+        )
+        manifest = built[0]
+
+        for field, expected in declared.items():
+            with self.subTest(field=field):
+                self.assertEqual(manifest.get(field), expected)
+
+    def test_builder_preserves_explicit_review_access_declarations(self) -> None:
+        """Review access defaults cannot sanitize explicit supplied or accessed data."""
+
+        declared = {
+            "supplied_artifacts": ["declared-supplied"],
+            "accessed_artifacts": ["declared-accessed"],
+            "review_artifact_bindings": [
+                {
+                    "artifact_id": "declared-binding",
+                    "type": "declared-type",
+                    "digest": "a" * 64,
+                }
+            ],
+        }
+        built = build_fixture_trace(
+            "visible",
+            "review-field-preservation",
+            [
+                {
+                    "event": "review_recorded",
+                    "review_id": "review-probe",
+                    "artifact_id": "review-probe",
+                    "artifact_type": "review-record",
+                    "findings": [],
+                    "evidence": [],
+                    "input_artifact_ids": [],
+                    **declared,
+                }
+            ],
+        )
+        review = built[0]
+
+        for field, expected in declared.items():
+            with self.subTest(field=field):
+                self.assertEqual(review.get(field), expected)
 
     def test_accepted_fixture_builder_preserves_sieve_and_score_evidence(self) -> None:
         """Explicit malformed values must reach the oracle without replacement."""
@@ -11037,6 +11438,252 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             "UNAUTHORIZED_PRODUCTION_WRITE",
             {failure.code for failure in evaluate_trace(built, BUILDER_FIXTURES)},
         )
+
+    def test_pause_resume_requires_preexisting_validated_run_state(self) -> None:
+        """Pause receipts cannot establish the run state they claim to validate."""
+
+        orphan = seal_trace(
+            [
+                {
+                    "event": "paused",
+                    "target_identity": "fixture-terse-summary",
+                    "state_validated": True,
+                },
+                {
+                    "event": "resumed",
+                    "target_identity": "fixture-terse-summary",
+                    "chain_revalidated": True,
+                    "identity_revalidated": True,
+                    "snapshot_revalidated": True,
+                    "evidence_revalidated": True,
+                },
+            ],
+            workflow_id="1" * 32,
+            target_identity="fixture-terse-summary",
+            mode="improve",
+        )
+
+        self.assertIn(
+            "INVALID_PAUSE_STATE",
+            {failure.code for failure in evaluate_trace(orphan, BUILDER_FIXTURES)},
+        )
+
+        accepted = load_traces("frozen-validation")["accepted_pause_resume"]
+        accepted_names = [event.get("event") for event in accepted]
+        self.assertIn("resolve", accepted_names)
+        self.assertLess(accepted_names.index("resolve"), accepted_names.index("paused"))
+        self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
+
+    def test_queue_rejects_invalid_membership_order_and_completion(self) -> None:
+        """A serialized queue must consume unique declared targets in exact order."""
+
+        cases = {
+            "duplicate-membership": (
+                [
+                    {
+                        "event": "queue_created",
+                        "targets": ["fixture-alpha", "fixture-alpha"],
+                    }
+                ],
+                "INVALID_QUEUE_MEMBERSHIP",
+            ),
+            "out-of-order": (
+                [
+                    {
+                        "event": "queue_created",
+                        "targets": ["fixture-alpha", "fixture-beta"],
+                    },
+                    {
+                        "event": "target_activated",
+                        "target_identity": "fixture-beta",
+                        "lock_nonce": "lock-beta",
+                    },
+                    {"event": "target_finalized", "target_identity": "fixture-beta"},
+                    {
+                        "event": "target_activated",
+                        "target_identity": "fixture-alpha",
+                        "lock_nonce": "lock-alpha",
+                    },
+                    {"event": "target_finalized", "target_identity": "fixture-alpha"},
+                ],
+                "QUEUE_ACTIVATION_ORDER",
+            ),
+            "undeclared-target": (
+                [
+                    {"event": "queue_created", "targets": ["fixture-alpha"]},
+                    {
+                        "event": "target_activated",
+                        "target_identity": "fixture-gamma",
+                        "lock_nonce": "lock-gamma",
+                    },
+                    {"event": "target_finalized", "target_identity": "fixture-gamma"},
+                ],
+                "QUEUE_ACTIVATION_ORDER",
+            ),
+            "incomplete-queue": (
+                [
+                    {
+                        "event": "queue_created",
+                        "targets": ["fixture-alpha", "fixture-beta"],
+                    },
+                    {
+                        "event": "target_activated",
+                        "target_identity": "fixture-alpha",
+                        "lock_nonce": "lock-alpha",
+                    },
+                    {"event": "target_finalized", "target_identity": "fixture-alpha"},
+                ],
+                "INCOMPLETE_QUEUE",
+            ),
+            "wrong-terminal-target": (
+                [
+                    {"event": "queue_created", "targets": ["fixture-alpha"]},
+                    {
+                        "event": "target_activated",
+                        "target_identity": "fixture-alpha",
+                        "lock_nonce": "lock-alpha",
+                    },
+                    {"event": "target_finalized", "target_identity": "fixture-beta"},
+                ],
+                "QUEUE_TERMINAL_MISMATCH",
+            ),
+        }
+
+        for name, (events, expected_code) in cases.items():
+            with self.subTest(case=name):
+                trace = seal_trace(events, workflow_id="2" * 32)
+                codes = {
+                    failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                }
+                self.assertIn(expected_code, codes)
+
+    def test_partition_access_rejects_actor_and_source_alias_bypasses(self) -> None:
+        """Canonical identities, not convenient role aliases, govern isolation."""
+
+        cases = {
+            "candidate-alias-hidden": (
+                {
+                    "event": "context_read",
+                    "actor": "candidate-implementer-v1",
+                    "actor_role": "candidate-implementer",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                },
+                "HIDDEN_ORACLE_LEAK",
+            ),
+            "candidate-alias-frozen": (
+                {
+                    "event": "context_read",
+                    "actor": "candidate-implementer-v1",
+                    "actor_role": "candidate-implementer",
+                    "path": "frozen-validation/scenarios.json",
+                    "source_role": "evaluation-coordinator",
+                },
+                "FROZEN_VALIDATION_LEAK",
+            ),
+            "canonical-research-sibling": (
+                {
+                    "event": "context_read",
+                    "actor": "research-domain",
+                    "actor_role": "domain-techniques",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                },
+                "SIBLING_OUTPUT_LEAK",
+            ),
+        }
+
+        for name, (event, expected_code) in cases.items():
+            with self.subTest(case=name):
+                trace = seal_trace([event], workflow_id="3" * 32)
+                codes = {
+                    failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                }
+                self.assertIn(expected_code, codes)
+
+    def test_selective_invalidation_uses_preexisting_dependency_state(self) -> None:
+        """Invalidation is derived from a prior graph and explicit artifact statuses."""
+
+        scenario = load_scenarios("frozen-validation")[
+            "goal_change_selective_invalidation"
+        ]
+        label_only = seal_trace(
+            [
+                {
+                    "event": "goal_changed",
+                    "change": "delivery_intent",
+                    "invalidated": ["authority", "release.delivery"],
+                }
+            ],
+            workflow_id="4" * 32,
+        )
+        self.assertIn(
+            "INVALIDATION_WITHOUT_DEPENDENCY_STATE",
+            {
+                failure.code
+                for failure in evaluate_trace(label_only, BUILDER_FIXTURES, scenario)
+            },
+        )
+
+        dependencies = {
+            "baseline": [],
+            "research": ["baseline"],
+            "contract": ["baseline", "research"],
+            "evaluation": ["contract"],
+            "candidate": ["contract", "evaluation"],
+            "trials": ["candidate", "evaluation"],
+            "review": ["trials"],
+            "scores": ["review"],
+            "verification": ["candidate"],
+            "authority": ["delivery_intent"],
+            "release.delivery": ["authority"],
+        }
+        retained = list(scenario["preserved_artifacts"])
+
+        def dependency_trace(retained_statuses: list[str]) -> list[dict[str, Any]]:
+            return seal_trace(
+                [
+                    {
+                        "event": "dependency_graph_recorded",
+                        "dependencies": dependencies,
+                    },
+                    {
+                        "event": "goal_changed",
+                        "change": "delivery_intent",
+                        "invalidated": ["authority", "release.delivery"],
+                        "retained": retained_statuses,
+                    },
+                ],
+                workflow_id="5" * 32,
+            )
+
+        self.assertEqual(
+            evaluate_trace(dependency_trace(retained), BUILDER_FIXTURES, scenario),
+            (),
+        )
+        invalid_statuses = retained[1:] + ["authority"]
+        self.assertIn(
+            "INVALID_ARTIFACT_STATUS",
+            {
+                failure.code
+                for failure in evaluate_trace(
+                    dependency_trace(invalid_statuses), BUILDER_FIXTURES, scenario
+                )
+            },
+        )
+
+        accepted = load_traces("frozen-validation")["accepted_selective_invalidation"]
+        accepted_names = [event.get("event") for event in accepted]
+        self.assertIn("dependency_graph_recorded", accepted_names)
+        self.assertLess(
+            accepted_names.index("dependency_graph_recorded"),
+            accepted_names.index("goal_changed"),
+        )
+        accepted_goal = next(
+            event for event in accepted if event.get("event") == "goal_changed"
+        )
+        self.assertEqual(set(accepted_goal.get("retained", [])), set(retained))
+        self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES, scenario), ())
 
     def test_accepted_create_improve_repair_resume_queue_and_blindness_traces(self) -> None:
         """Control: valid process paths must not be rejected by the independent oracle."""
