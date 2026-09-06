@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = (
@@ -38,6 +40,12 @@ SCORE_CATEGORIES = (
 )
 
 CANDIDATE_SKILL_BYTES = b"---\nname: sample-skill\n---\n# Sample skill\n"
+REVIEW_ACCESS_BYTES = b"reviewer access check\n"
+REVIEW_FINDING_BYTES = b"review finding evidence\n"
+CONFORMANCE_EVIDENCE_BYTES = b"conformance gate evidence\n"
+VERIFICATION_OUTPUT_BYTES = b"pytest passed\n"
+VERIFICATION_MANIFEST_BYTES = b"verified target manifest\n"
+RELEASE_EVIDENCE_BYTES = b"release evidence manifest\n"
 TRIAL_DIGEST_FIELDS = {
     "request_digest": "request",
     "raw_prompt_digest": "prompt",
@@ -235,11 +243,27 @@ def retain_json(
     payload: dict[str, object],
     input_bindings: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
-    files = (
-        trial_files(payload)
-        if artifact_type == "trial-pack"
-        else {"record.json": fixture_canonical_bytes(payload)}
-    )
+    if artifact_type == "trial-pack":
+        files = trial_files(payload)
+    else:
+        files = {"record.json": fixture_canonical_bytes(payload)}
+        supporting_evidence = {
+            "review-record": {
+                "evidence/access-check.bin": REVIEW_ACCESS_BYTES,
+                "evidence/finding.bin": REVIEW_FINDING_BYTES,
+            },
+            "builder-run-conformance-ledger": {
+                "evidence/gates.bin": CONFORMANCE_EVIDENCE_BYTES,
+            },
+            "verification-record": {
+                "evidence/command-output.bin": VERIFICATION_OUTPUT_BYTES,
+                "evidence/target-manifest.bin": VERIFICATION_MANIFEST_BYTES,
+            },
+            "release-record": {
+                "evidence/release-manifest.bin": RELEASE_EVIDENCE_BYTES,
+            },
+        }
+        files.update(supporting_evidence.get(artifact_type, {}))
     return helper.retain_artifact(
         workflow_id=workflow_id,
         expected_sequence=sequence,
@@ -285,6 +309,16 @@ def accepted_artifact(
     ]
     assert len(matches) == 1, (artifact_type, matches)
     return matches[0]
+
+
+def install_target_and_digest(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> str:
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    target = Path(current["target_identity"]["locator"])
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_bytes(CANDIDATE_SKILL_BYTES)
+    return helper.snapshot_target(target)["manifest_digest"]
 
 
 def stage_payload(
@@ -547,7 +581,7 @@ def review_payload(
         "candidate_digest": candidate_digest,
         "candidate_revision": revision,
         "input_artifacts": {"candidate": candidate_digest},
-        "access_check_evidence": ["5" * 64],
+        "access_check_evidence": [fixture_digest(REVIEW_ACCESS_BYTES)],
         "fresh": fresh,
         "contamination_check": "no implementation context disclosed",
         "valid": True,
@@ -564,7 +598,7 @@ def conformance_payload(candidate_digest: str) -> dict[str, object]:
         "gates": {
             gate: {
                 "status": "pass",
-                "evidence_digests": ["a" * 64],
+                "evidence_digests": [fixture_digest(CONFORMANCE_EVIDENCE_BYTES)],
                 "affected_stage": "verified",
                 "repair_state": "not-required",
                 "release_blocking": True,
@@ -630,13 +664,13 @@ def verification_payload(
             {
                 "command": "python3 -m pytest",
                 "exit_status": 0,
-                "output_digest": "b" * 64,
+                "output_digest": fixture_digest(VERIFICATION_OUTPUT_BYTES),
             }
         ],
         "started_at": "2026-09-05T12:03:00Z",
         "ended_at": "2026-09-05T12:04:00Z",
-        "before_manifest_digest": "6" * 64,
-        "after_manifest_digest": "6" * 64,
+        "before_manifest_digest": fixture_digest(VERIFICATION_MANIFEST_BYTES),
+        "after_manifest_digest": fixture_digest(VERIFICATION_MANIFEST_BYTES),
         "fresh": fresh,
         "status": "pass",
         "conclusion": "fresh independent verification passed",
@@ -669,7 +703,7 @@ def release_payload(
         "review_digest": review_digest,
         "verification_digest": verification_digest,
         "retained_limitations": [],
-        "release_evidence_manifest_digest": "7" * 64,
+        "release_evidence_manifest_digest": fixture_digest(RELEASE_EVIDENCE_BYTES),
         "authorized_delivery_scope": authorized_delivery_scope,
     }
 
@@ -1868,7 +1902,9 @@ def test_finalize_delivery_and_authorized_cleanup_leave_durable_tombstone(
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": candidate_revision,
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [
                 fixture_digest(delivery_acceptance_evidence)
             ],
@@ -1983,6 +2019,9 @@ def test_cleanup_rejects_missing_accepted_delivery_or_authority(
 
     accepted_delivery = dict(rejected_delivery)
     accepted_delivery["accepted"] = True
+    accepted_delivery["resulting_destination_digest"] = install_target_and_digest(
+        helper, state_root, workflow_id
+    )
     delivery = helper.record_delivery(
         workflow_id=workflow_id,
         expected_sequence=finalized["sequence"],
@@ -2029,7 +2068,9 @@ def test_cleanup_tombstone_publication_failure_deletes_nothing(
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [
                 fixture_digest(delivery_acceptance_evidence)
             ],
@@ -2995,7 +3036,9 @@ def test_delivery_retains_raw_authority_and_acceptance_evidence(tmp_path: Path) 
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [acceptance_digest],
             "user_authority_event_digest": authority_digest,
             "actor": "main-agent",
@@ -3031,6 +3074,9 @@ def test_delivery_and_cleanup_authority_cli_decode_raw_base64(tmp_path: Path) ->
     acceptance_bytes = b"destination verification\n"
     authority_digest = fixture_digest(authority_bytes)
     acceptance_digest = fixture_digest(acceptance_bytes)
+    destination_digest = install_target_and_digest(
+        helper, state_root, workflow_id
+    )
     delivered = subprocess.run(
         [
             sys.executable,
@@ -3047,7 +3093,7 @@ def test_delivery_and_cleanup_authority_cli_decode_raw_base64(tmp_path: Path) ->
                     "action": "installation",
                     "destination_identity": "codex:personal:sample-skill",
                     "finalized_revision": "candidate-1",
-                    "resulting_destination_digest": "c" * 64,
+                    "resulting_destination_digest": destination_digest,
                     "acceptance_evidence": [acceptance_digest],
                     "user_authority_event_digest": authority_digest,
                     "actor": "main-agent",
@@ -3169,7 +3215,9 @@ def test_cleanup_resumes_after_tombstone_and_partial_tree_deletion(
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [
                 fixture_digest(delivery_acceptance_evidence)
             ],
@@ -3196,7 +3244,7 @@ def test_cleanup_resumes_after_tombstone_and_partial_tree_deletion(
     original_remove = helper._remove_owned_tree
 
     def partially_remove(path: Path) -> None:
-        (path / "current.json").unlink(missing_ok=True)
+        (path / "receipts" / "00000000.json").unlink()
         raise helper.RunStateError("injected partial deletion")
 
     helper._remove_owned_tree = partially_remove
@@ -3224,6 +3272,7 @@ def test_cleanup_resumes_after_tombstone_and_partial_tree_deletion(
     )
     assert cleaned["stage"] == "cleaned"
     assert not (state_root / "live" / workflow_id).exists()
+    assert not (state_root / "deleting" / workflow_id).exists()
 
 
 def test_invalidation_allows_zero_downstream_and_rewinds_to_replacement_stage(
@@ -3487,7 +3536,7 @@ def test_finalization_rejects_every_blocking_review_severity(tmp_path: Path) -> 
                 {
                     "severity": severity,
                     "release_blocking": True,
-                    "evidence": ["a" * 64],
+                    "evidence": [fixture_digest(REVIEW_FINDING_BYTES)],
                     "impact": "unsafe release",
                     "correction": "repair before release",
                     "affected_target_criteria": ["safety"],
@@ -3551,7 +3600,9 @@ def test_final_run_manifest_explicitly_binds_terminal_release_evidence(
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [
                 fixture_digest(delivery_acceptance_evidence)
             ],
@@ -3596,7 +3647,9 @@ def test_final_run_manifest_explicitly_binds_terminal_release_evidence(
     finally:
         helper._remove_owned_tree = original_remove
 
-    manifest_path = state_root / "live" / workflow_id / "final-run-manifest.json"
+    manifest_path = (
+        state_root / "deleting" / workflow_id / "final-run-manifest.json"
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["target_identity"] == "codex:personal:sample-skill"
     assert manifest["finalization_receipt_digest"] == finalized["receipt_digest"]
@@ -3882,7 +3935,9 @@ def test_cleanup_retry_reauthenticates_rehashed_tombstone_bindings(
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [fixture_digest(delivery_evidence)],
             "user_authority_event_digest": fixture_digest(delivery_authority),
             "actor": "main-agent",
@@ -3902,12 +3957,12 @@ def test_cleanup_retry_reauthenticates_rehashed_tombstone_bindings(
         actor="user",
         state_root=state_root,
     )
-    original_remove = helper._remove_owned_tree
+    original_move = helper._move_to_deleting
 
-    def stop_after_tombstone(_path: Path) -> None:
+    def stop_after_tombstone(_run: Path, _deleting: Path) -> None:
         raise helper.RunStateError("retain live run for tombstone retry")
 
-    helper._remove_owned_tree = stop_after_tombstone
+    helper._move_to_deleting = stop_after_tombstone
     try:
         try:
             helper.cleanup_run(
@@ -3921,7 +3976,7 @@ def test_cleanup_retry_reauthenticates_rehashed_tombstone_bindings(
         else:
             raise AssertionError("cleanup retry fixture did not stop after tombstone")
     finally:
-        helper._remove_owned_tree = original_remove
+        helper._move_to_deleting = original_move
 
     tombstone_path = state_root / "tombstones" / f"{workflow_id}.json"
     tombstone = json.loads(tombstone_path.read_text(encoding="utf-8"))
@@ -3966,7 +4021,9 @@ def test_cleanup_authority_index_failure_preserves_append_only_commit(
             "action": "installation",
             "destination_identity": "codex:personal:sample-skill",
             "finalized_revision": "candidate-1",
-            "resulting_destination_digest": "c" * 64,
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
             "acceptance_evidence": [fixture_digest(delivery_evidence)],
             "user_authority_event_digest": fixture_digest(delivery_authority),
             "actor": "main-agent",
@@ -4010,3 +4067,291 @@ def test_cleanup_authority_index_failure_preserves_append_only_commit(
     recovered = helper.recover_run(workflow_id=workflow_id, state_root=state_root)
     assert recovered["sequence"] == committed_sequence
     assert recovered["stage"] == "delivered"
+
+
+def test_replay_rejects_semantically_forged_invalidation_receipt(
+    tmp_path: Path,
+) -> None:
+    """A rehashed receipt cannot contradict the material-change rule it claims."""
+    helper = load_helper()
+    state_root, workflow_id, _, _ = build_candidate_stage(helper, tmp_path)
+    run = state_root / "live" / workflow_id
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    candidate = current["artifact_index"]["candidate"]
+    payload = {
+        "schema_version": "skill-builder-invalidation.v1",
+        "change_kind": "research",
+        "changed_artifact_id": "candidate",
+        "changed_artifact_digest": candidate["digest"],
+        "reason": "forged research invalidation",
+        "invalidated_artifact_ids": [],
+    }
+
+    with pytest.raises(helper.RunStateError, match="invalidation|change|type"):
+        with helper._locked_root(state_root, create=False):
+            helper._append_transaction(
+                run=run,
+                current=current,
+                event="invalidate",
+                destination_stage="baseline",
+                authority_event_digest=None,
+                existing_bindings=[
+                    {
+                        "artifact_id": "candidate",
+                        "envelope_digest": candidate["digest"],
+                        "status": "superseded",
+                    }
+                ],
+                artifact_requests=[
+                    {
+                        "artifact_id": (
+                            f"invalidation-{current['head_sequence'] + 1:08d}"
+                        ),
+                        "artifact_type": "invalidation-record",
+                        "files": {
+                            "record.json": helper.canonical_json_bytes(payload)
+                        },
+                        "primary_path": "record.json",
+                        "producer": "main-agent",
+                        "input_bindings": [
+                            {
+                                "artifact_id": "candidate",
+                                "digest": candidate["digest"],
+                            }
+                        ],
+                        "limitations": [],
+                    }
+                ],
+            )
+
+
+def test_create_mode_records_the_exact_installed_destination(
+    tmp_path: Path,
+) -> None:
+    """The absent baseline may become the exact authorized installed target."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    target = tmp_path / "skills" / "sample-skill"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_bytes(CANDIDATE_SKILL_BYTES)
+    destination_digest = helper.snapshot_target(target)["manifest_digest"]
+    authority_event = b"user accepted this exact installation\n"
+    acceptance_evidence = b"destination snapshot verified\n"
+
+    delivered = helper.record_delivery(
+        workflow_id=workflow_id,
+        expected_sequence=finalized["sequence"],
+        delivery={
+            "action": "installation",
+            "destination_identity": "codex:personal:sample-skill",
+            "finalized_revision": "candidate-1",
+            "resulting_destination_digest": destination_digest,
+            "acceptance_evidence": [fixture_digest(acceptance_evidence)],
+            "user_authority_event_digest": fixture_digest(authority_event),
+            "actor": "main-agent",
+            "accepted": True,
+        },
+        authority_event_digest=fixture_digest(authority_event),
+        authority_event=authority_event,
+        evidence_files={"destination-verification.bin": acceptance_evidence},
+        state_root=state_root,
+    )
+
+    assert delivered["stage"] == "delivered"
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)[
+        "stage"
+    ] == "delivered"
+
+
+def test_all_stage_transitions_require_their_semantic_input_bindings(
+    tmp_path: Path,
+) -> None:
+    """Structurally valid artifacts cannot advance without their required inputs."""
+    helper = load_helper()
+    state_root, workflow_id, _, _ = build_verified_stage(helper, tmp_path)
+    run = state_root / "live" / workflow_id
+    payload_ids = {
+        "complete-research": ("research-pack", "research"),
+        "sieve-evidence": ("evidence-sieve", "sieve"),
+        "accept-design": ("design-record", "design"),
+        "accept-contract": ("skill-contract", "contract"),
+        "accept-review": ("review-record", "final-review"),
+        "accept-verification": ("verification-record", "verification"),
+    }
+    for event, (artifact_type, source_id) in payload_ids.items():
+        current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+        artifact_id = f"unbound-{event}"
+        retained = retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=current["head_sequence"],
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            payload=helper._artifact_payload_json(run, source_id),
+            input_bindings=[],
+        )
+        current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+        assert retained["sequence"] == current["head_sequence"]
+        with pytest.raises(helper.RunStateError, match="binding|input|stale"):
+            helper._validate_transition_semantics(
+                run,
+                current,
+                event,
+                [artifact_id],
+                None,
+            )
+
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    conformance = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=current["head_sequence"],
+        artifact_id="unbound-conformance",
+        artifact_type="builder-run-conformance-ledger",
+        payload=helper._artifact_payload_json(run, "conformance"),
+        input_bindings=[],
+    )
+    scorecard = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=conformance["sequence"],
+        artifact_id="unbound-scores",
+        artifact_type="target-scorecard",
+        payload=helper._artifact_payload_json(run, "scores"),
+        input_bindings=[],
+    )
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert scorecard["sequence"] == current["head_sequence"]
+    with pytest.raises(helper.RunStateError, match="binding|input|stale"):
+        helper._validate_transition_semantics(
+            run,
+            current,
+            "accept-scores",
+            ["unbound-conformance", "unbound-scores"],
+            None,
+        )
+
+
+def test_terminal_claims_require_retained_raw_evidence(tmp_path: Path) -> None:
+    """Digest strings alone cannot prove review, gates, verification, or release."""
+    helper = load_helper()
+    state_root, workflow_id, _, _ = build_verified_stage(helper, tmp_path)
+    run = state_root / "live" / workflow_id
+
+    def retain_digest_only(
+        artifact_id: str, artifact_type: str, source_id: str
+    ) -> None:
+        current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+        payload = helper._artifact_payload_json(run, source_id)
+        helper.retain_artifact(
+            workflow_id=workflow_id,
+            expected_sequence=current["head_sequence"],
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            files={"record.json": fixture_canonical_bytes(payload)},
+            primary_path="record.json",
+            producer="main-agent",
+            input_bindings=current_bindings(helper, state_root, workflow_id),
+            limitations=[],
+            state_root=state_root,
+        )
+
+    retain_digest_only("digest-only-review", "review-record", "final-review")
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="raw|evidence"):
+        helper._validate_transition_semantics(
+            run,
+            current,
+            "accept-review",
+            ["digest-only-review"],
+            None,
+        )
+
+    retain_digest_only(
+        "digest-only-conformance",
+        "builder-run-conformance-ledger",
+        "conformance",
+    )
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="raw|evidence"):
+        helper._validate_transition_semantics(
+            run,
+            current,
+            "accept-scores",
+            ["digest-only-conformance", "scores"],
+            None,
+        )
+
+    retain_digest_only(
+        "digest-only-verification", "verification-record", "verification"
+    )
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="raw|evidence"):
+        helper._validate_transition_semantics(
+            run,
+            current,
+            "accept-verification",
+            ["digest-only-verification"],
+            None,
+        )
+
+    retain_digest_only("digest-only-release", "release-record", "release")
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="raw|evidence"):
+        helper._validate_final_evidence(
+            run, current, "digest-only-release"
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("target_identity", None),
+        ("created_at", None),
+        ("run_directory_identity.device", "1"),
+        ("run_directory_identity.inode", True),
+    ),
+)
+def test_tombstone_rejects_malformed_identity_and_timestamp_fields(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """A self-rehashed tombstone still needs exact field types and identities."""
+    helper = load_helper()
+    workflow_id = "a" * 32
+    tombstone = {
+        "schema_version": "skill-builder-cleanup-tombstone.v1",
+        "workflow_id": workflow_id,
+        "target_identity": "codex:personal:sample-skill",
+        "run_directory_identity": {
+            "name": workflow_id,
+            "device": 1,
+            "inode": 2,
+        },
+        "final_transition_receipt_digest": "1" * 64,
+        "final_run_manifest_digest": "2" * 64,
+        "accepted_delivery_record_digest": "3" * 64,
+        "cleanup_authority_event_digest": "4" * 64,
+        "created_at": "2026-09-06T12:00:00Z",
+    }
+    if field.startswith("run_directory_identity."):
+        tombstone["run_directory_identity"][field.rsplit(".", 1)[1]] = value
+    else:
+        tombstone[field] = value
+    tombstone["tombstone_digest"] = helper.canonical_digest(
+        tombstone, "tombstone_digest"
+    )
+    tombstone_path = tmp_path / f"{field.replace('.', '-')}.json"
+    tombstone_path.write_bytes(helper.canonical_json_bytes(tombstone))
+    os.chmod(tombstone_path, 0o600)
+
+    with pytest.raises(helper.RunStateError, match="tombstone|target|timestamp|identity"):
+        helper._validate_tombstone(tombstone_path, workflow_id)
