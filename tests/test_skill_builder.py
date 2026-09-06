@@ -14,7 +14,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
-LEGACY_FIXTURES = FIXTURES / "improve-skill"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
 SKILL_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills" / "skill-builder"
 PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills"
@@ -7699,22 +7698,6 @@ def evaluate_trace(
 
 
 class SkillBuilderEvaluationAssetTests(unittest.TestCase):
-    def test_legacy_improve_fixture_cannot_model_create_or_general_target_identity(self) -> None:
-        """Regression: the retired fixture only describes one existing improve target."""
-
-        fixture_files = {
-            path.relative_to(LEGACY_FIXTURES).as_posix()
-            for path in LEGACY_FIXTURES.rglob("*")
-            if path.is_file()
-        }
-
-        self.assertEqual(fixture_files, {"charter.md", "sample-skill/SKILL.md"})
-        self.assertFalse(any(LEGACY_FIXTURES.rglob("*.json")))
-        self.assertIn(
-            "Improve the `summarize-changes` fixture",
-            (LEGACY_FIXTURES / "charter.md").read_text(encoding="utf-8"),
-        )
-
     def test_generalized_pack_declares_create_and_improve_scenarios(self) -> None:
         """Regression: evaluation assets must cover absent and existing exact targets."""
 

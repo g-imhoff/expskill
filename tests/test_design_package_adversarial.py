@@ -54,11 +54,13 @@ class DesignPackageAdversarialTests(unittest.TestCase):
 
         root = self._copy_repository()
         scripts = root / "plugins" / "codex-dev-flow" / "skills" / "skill-builder" / "scripts"
-        scripts.mkdir()
-        (scripts / "run_state.py").write_text(
-            "from __future__ import annotations\n",
-            encoding="utf-8",
-        )
+        scripts.mkdir(exist_ok=True)
+        state_helper = scripts / "run_state.py"
+        if not state_helper.exists():
+            state_helper.write_text(
+                "from __future__ import annotations\n",
+                encoding="utf-8",
+            )
         self.assertEqual(validate_repository(root), ())
 
     def test_validator_rejects_skill_builder_integration_mutations(self) -> None:

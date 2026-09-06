@@ -575,7 +575,7 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
         path = plugin_root / relative
         try:
             contents = path.read_text(encoding="utf-8")
-        except OSError as error:
+        except (OSError, UnicodeError) as error:
             errors.append(f"review handoff contract could not be read at {relative}: {error}")
             continue
         normalized = " ".join(contents.lower().split())
