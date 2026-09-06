@@ -59,6 +59,9 @@ MAX_TARGET_BYTES = 64 * 1024 * 1024
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _WORKFLOW_RE = re.compile(r"[0-9a-f]{32}\Z")
 _ARTIFACT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_PUBLICATION_TEMP_RE = re.compile(
+    r"\.(?:tmp|current)-[0-9]+-[0-9a-f]{16}\Z"
+)
 _ARTIFACT_TYPES = {
     "resolution-record",
     "baseline-report",
@@ -517,6 +520,209 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _same_filesystem_entry(
+    first: os.stat_result, second: os.stat_result
+) -> bool:
+    return (
+        first.st_dev,
+        first.st_ino,
+        stat.S_IFMT(first.st_mode),
+    ) == (
+        second.st_dev,
+        second.st_ino,
+        stat.S_IFMT(second.st_mode),
+    )
+
+
+def _normalize_interrupted_publications(path: Path) -> None:
+    """Remove only provable helper publication residue inside one owned tree."""
+    _validate_private_directory(path, "publication recovery boundary")
+    root_descriptor: int | None = None
+
+    def validate_directory(descriptor: int) -> os.stat_result:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise RunStateError(
+                "publication recovery directory must be owned and mode 0700"
+            )
+        return info
+
+    def validate_private_file(info: os.stat_result) -> None:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise RunStateError("publication residue is not a private regular file")
+
+    def opened_file(
+        directory_descriptor: int,
+        name: str,
+        observed: os.stat_result,
+    ) -> int:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=directory_descriptor,
+            )
+        except OSError as error:
+            raise RunStateError("publication residue changed during recovery") from error
+        opened = os.fstat(descriptor)
+        if not _same_filesystem_entry(observed, opened):
+            os.close(descriptor)
+            raise RunStateError("publication residue changed during recovery")
+        return descriptor
+
+    def remove_temporary(
+        directory_descriptor: int,
+        name: str,
+        observed: os.stat_result,
+    ) -> None:
+        descriptor = opened_file(directory_descriptor, name, observed)
+        try:
+            current = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not _same_filesystem_entry(observed, current)
+                or current.st_uid != os.geteuid()
+                or stat.S_IMODE(current.st_mode) != 0o600
+                or current.st_nlink != observed.st_nlink
+            ):
+                raise RunStateError("publication residue changed during recovery")
+            os.unlink(name, dir_fd=directory_descriptor)
+            os.fsync(directory_descriptor)
+        except OSError as error:
+            raise RunStateError("publication residue changed during recovery") from error
+        finally:
+            os.close(descriptor)
+
+    def normalize_directory(
+        directory_descriptor: int,
+        display: Path,
+        *,
+        payload_subtree: bool,
+    ) -> None:
+        validate_directory(directory_descriptor)
+        try:
+            with os.scandir(directory_descriptor) as iterator:
+                names = sorted(entry.name for entry in iterator)
+            observed = {
+                name: os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+                for name in names
+            }
+        except OSError as error:
+            raise RunStateError(
+                "publication recovery directory changed during inspection"
+            ) from error
+
+        for name in names:
+            info = observed[name]
+            if not _PUBLICATION_TEMP_RE.fullmatch(name):
+                continue
+            validate_private_file(info)
+            siblings = [
+                sibling
+                for sibling in names
+                if sibling != name
+                and _same_filesystem_entry(info, observed[sibling])
+            ]
+            if info.st_nlink == 2:
+                if (
+                    len(siblings) != 1
+                    or _PUBLICATION_TEMP_RE.fullmatch(siblings[0])
+                ):
+                    raise RunStateError(
+                        "publication residue lacks one exact final pathname"
+                    )
+                final_name = siblings[0]
+                final_info = observed[final_name]
+                validate_private_file(final_info)
+                final_descriptor = opened_file(
+                    directory_descriptor, final_name, final_info
+                )
+                try:
+                    remove_temporary(directory_descriptor, name, info)
+                    final_after = os.stat(
+                        final_name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        not _same_filesystem_entry(final_info, final_after)
+                        or final_after.st_nlink != 1
+                    ):
+                        raise RunStateError(
+                            "published file did not normalize to one pathname"
+                        )
+                finally:
+                    os.close(final_descriptor)
+                continue
+            if info.st_nlink != 1:
+                raise RunStateError("publication residue has an unsafe link count")
+            if not payload_subtree:
+                remove_temporary(directory_descriptor, name, info)
+
+        for name in names:
+            info = observed[name]
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            child_descriptor: int | None = None
+            try:
+                child_descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory_descriptor,
+                )
+                opened = validate_directory(child_descriptor)
+                if not _same_filesystem_entry(info, opened):
+                    raise RunStateError(
+                        "publication recovery directory changed during traversal"
+                    )
+                child_payload_subtree = payload_subtree or (
+                    name == "raw" and display.parent.name == "artifacts"
+                )
+                normalize_directory(
+                    child_descriptor,
+                    display / name,
+                    payload_subtree=child_payload_subtree,
+                )
+            except OSError as error:
+                raise RunStateError(
+                    "publication recovery directory changed during traversal"
+                ) from error
+            finally:
+                if child_descriptor is not None:
+                    os.close(child_descriptor)
+
+    try:
+        root_descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        opened_root = validate_directory(root_descriptor)
+        lexical_root = path.lstat()
+        if not _same_filesystem_entry(opened_root, lexical_root):
+            raise RunStateError("publication recovery boundary changed")
+        normalize_directory(root_descriptor, path, payload_subtree=False)
+    except OSError as error:
+        raise RunStateError("publication recovery boundary changed") from error
+    finally:
+        if root_descriptor is not None:
+            os.close(root_descriptor)
 
 
 def _write_all(descriptor: int, payload: bytes) -> None:
@@ -4754,14 +4960,13 @@ def discover_run(
     )
     matches: list[dict[str, Any]] = []
     with _locked_root(state_root, create=False) as root:
+        _normalize_interrupted_publications(root / "target-locks")
         for entry in sorted((root / "live").iterdir()):
             if entry.is_symlink() or not entry.is_dir():
                 raise RunStateError("live-run namespace contains an unsafe entry")
+            _normalize_interrupted_publications(entry)
             run = _run_directory(root, entry.name)
-            derived = _derive_index(run)
-            if _read_json(run / "current.json") != derived:
-                raise RunStateError("derived current index is stale or corrupt")
-            _validate_target_unchanged(derived, root)
+            derived = _recover_validated_run(root, run)
             if (
                 derived["host_identity"] == host
                 and derived["target_identity"] == target
@@ -4922,12 +5127,36 @@ def transition_run(
         }
 
 
+def _recover_validated_run(root: Path, run: Path) -> dict[str, Any]:
+    """Reconcile one normalized live run while the root lock is held."""
+    committed_journals = _reconcile_append_transactions(run)
+    derived = _derive_index(run)
+    if derived["stage"] in {"finalized", "delivered", "abandoned"}:
+        resolution, _ = _resolution_payload(run, run.name)
+        _release_owned_target_lock(
+            root,
+            derived,
+            resolution["active_target_lock"],
+            allow_missing=True,
+            allow_other_owner=True,
+        )
+    _validate_target_unchanged(
+        derived, root, allow_missing_active_lock=True
+    )
+    _restore_missing_active_target_lock(root, derived)
+    _atomic_json(run / "current.json", derived)
+    _remove_committed_append_journals(committed_journals)
+    return derived
+
+
 def recover_run(
     *, workflow_id: str, state_root: Path | None = None
 ) -> dict[str, Any]:
     with _locked_root(state_root, create=False) as root:
         if not isinstance(workflow_id, str) or not _WORKFLOW_RE.fullmatch(workflow_id):
             raise RunStateError("invalid workflow identifier")
+        _normalize_interrupted_publications(root / "target-locks")
+        _normalize_interrupted_publications(root / "tombstones")
         candidate = root / "live" / workflow_id
         if not os.path.lexists(candidate):
             tombstone = _validate_tombstone(
@@ -4945,24 +5174,9 @@ def recover_run(
                 "receipt_digest": tombstone["final_transition_receipt_digest"],
                 "tombstone_digest": tombstone["tombstone_digest"],
             }
+        _normalize_interrupted_publications(candidate)
         run = _run_directory(root, workflow_id)
-        committed_journals = _reconcile_append_transactions(run)
-        derived = _derive_index(run)
-        if derived["stage"] in {"finalized", "delivered", "abandoned"}:
-            resolution, _ = _resolution_payload(run, workflow_id)
-            _release_owned_target_lock(
-                root,
-                derived,
-                resolution["active_target_lock"],
-                allow_missing=True,
-                allow_other_owner=True,
-            )
-        _validate_target_unchanged(
-            derived, root, allow_missing_active_lock=True
-        )
-        _restore_missing_active_target_lock(root, derived)
-        _atomic_json(run / "current.json", derived)
-        _remove_committed_append_journals(committed_journals)
+        derived = _recover_validated_run(root, run)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "recover",

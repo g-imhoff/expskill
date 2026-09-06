@@ -333,6 +333,42 @@ def crash_initialize_before_target_lock(
     )
 
 
+def crash_initialize_during_target_lock_link(
+    state_root: str,
+    host: dict[str, object],
+    target: dict[str, str],
+    granted: dict[str, object],
+) -> None:
+    helper = load_helper()
+    original_link = helper.os.link
+
+    def exit_after_target_lock_link(
+        source: object,
+        destination: object,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        original_link(
+            source,
+            destination,
+            follow_symlinks=follow_symlinks,
+        )
+        if Path(destination).parent.name == "target-locks":
+            os._exit(HARD_EXIT_CODE)
+
+    helper.os.link = exit_after_target_lock_link
+    helper.initialize_run(
+        host_identity=host,
+        target_identity=target,
+        mode="create",
+        authority=granted,
+        absence_evidence={"searched": [target["locator"]], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=Path(state_root),
+    )
+
+
 def crash_pause_after_journal(state_root: str, workflow_id: str) -> None:
     helper = load_helper()
     original_exclusive_json = helper._exclusive_json
@@ -395,6 +431,108 @@ def crash_pause_after_receipt(state_root: str, workflow_id: str) -> None:
         os._exit(HARD_EXIT_CODE)
 
     helper._write_receipt = exit_after_receipt
+    helper.pause_run(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        state_root=Path(state_root),
+    )
+
+
+def crash_pause_during_journal_link(
+    state_root: str, workflow_id: str
+) -> None:
+    helper = load_helper()
+    original_link = helper.os.link
+
+    def exit_after_journal_link(
+        source: object,
+        destination: object,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        original_link(
+            source,
+            destination,
+            follow_symlinks=follow_symlinks,
+        )
+        if Path(destination).parent.name == "transactions":
+            os._exit(HARD_EXIT_CODE)
+
+    helper.os.link = exit_after_journal_link
+    helper.pause_run(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        state_root=Path(state_root),
+    )
+
+
+def crash_retain_during_artifact_link(
+    state_root: str,
+    workflow_id: str,
+    payload_base64: str,
+) -> None:
+    helper = load_helper()
+    original_link = helper.os.link
+
+    def exit_after_artifact_link(
+        source: object,
+        destination: object,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        original_link(
+            source,
+            destination,
+            follow_symlinks=follow_symlinks,
+        )
+        path = Path(destination)
+        if (
+            path.name == "record.json"
+            and path.parent.name == "raw"
+            and path.parent.parent.name == "crash-partial-baseline"
+        ):
+            os._exit(HARD_EXIT_CODE)
+
+    helper.os.link = exit_after_artifact_link
+    current = helper.load_run(
+        workflow_id=workflow_id,
+        state_root=Path(state_root),
+    )
+    bindings = [
+        {"artifact_id": artifact_id, "digest": record["digest"]}
+        for artifact_id, record in current["artifact_index"].items()
+        if record["derived_status"] == "accepted"
+    ]
+    helper.retain_artifact(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        artifact_id="crash-partial-baseline",
+        artifact_type="baseline-report",
+        files={"record.json": base64.b64decode(payload_base64)},
+        primary_path="record.json",
+        producer="main-agent",
+        input_bindings=bindings,
+        limitations=[],
+        state_root=Path(state_root),
+    )
+
+
+def crash_pause_before_current_replace(
+    state_root: str, workflow_id: str
+) -> None:
+    helper = load_helper()
+    original_replace = helper.os.replace
+
+    def exit_before_current_replace(source: object, destination: object) -> None:
+        destination_path = Path(destination)
+        if (
+            destination_path.name == "current.json"
+            and Path(source).name.startswith(".current-")
+        ):
+            os._exit(HARD_EXIT_CODE)
+        original_replace(source, destination)
+
+    helper.os.replace = exit_before_current_replace
     helper.pause_run(
         workflow_id=workflow_id,
         expected_sequence=0,
@@ -4037,16 +4175,19 @@ def test_recovery_recreates_hard_exit_genesis_target_lock(
         identity,
         authority(),
     )
-    live_runs = list((state_root / "live").iterdir())
-    assert len(live_runs) == 1
-    workflow_id = live_runs[0].name
+    discovered = helper.discover_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=identity,
+        state_root=state_root,
+    )
+    workflow_id = discovered["workflow_id"]
+    assert discovered["sequence"] == 0
+    assert discovered["stage"] == "resolved"
     lock_path = (
         state_root
         / "target-locks"
         / helper._target_lock_name(identity["canonical"])
     )
-    assert not lock_path.exists()
-
     recovered = helper.recover_run(
         workflow_id=workflow_id, state_root=state_root
     )
@@ -4061,6 +4202,204 @@ def test_recovery_recreates_hard_exit_genesis_target_lock(
         state_root=state_root,
     )
     assert paused["stage"] == "paused"
+
+
+def test_discovery_normalizes_hard_exit_target_lock_link_pair(
+    tmp_path: Path,
+) -> None:
+    """Public discovery repairs a published target lock's temporary pathname."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    identity = target_identity(target)
+    run_hard_exit_process(
+        crash_initialize_during_target_lock_link,
+        str(state_root),
+        host_identity(tmp_path),
+        identity,
+        authority(),
+    )
+    lock_entries = list((state_root / "target-locks").iterdir())
+    assert len(lock_entries) == 2
+    assert {entry.stat().st_ino for entry in lock_entries} == {
+        lock_entries[0].stat().st_ino
+    }
+
+    discovered = helper.discover_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=identity,
+        state_root=state_root,
+    )
+
+    assert discovered["stage"] == "resolved"
+    remaining = list((state_root / "target-locks").iterdir())
+    assert len(remaining) == 1
+    assert not remaining[0].name.startswith(".tmp-")
+    assert remaining[0].stat().st_nlink == 1
+
+
+def test_recovery_normalizes_hard_exit_journal_link_pair(
+    tmp_path: Path,
+) -> None:
+    """A linked journal and its publication temp name recover as one file."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    run_hard_exit_process(
+        crash_pause_during_journal_link,
+        str(state_root),
+        started["workflow_id"],
+    )
+    run = state_root / "live" / started["workflow_id"]
+    entries = list((run / "transactions").iterdir())
+    assert len(entries) == 2
+    assert {entry.stat().st_ino for entry in entries} == {entries[0].stat().st_ino}
+    assert {entry.stat().st_nlink for entry in entries} == {2}
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["stage"] == "resolved"
+    assert list((run / "transactions").iterdir()) == []
+
+
+def test_recovery_normalizes_hard_exit_artifact_link_pair(
+    tmp_path: Path,
+) -> None:
+    """An uncommitted artifact hard-link pair can be rolled back exactly."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    payload = valid_create_baseline_payload(
+        helper, state_root, started["workflow_id"]
+    )
+    run_hard_exit_process(
+        crash_retain_during_artifact_link,
+        str(state_root),
+        started["workflow_id"],
+        base64.b64encode(fixture_canonical_bytes(payload)).decode("ascii"),
+    )
+    run = state_root / "live" / started["workflow_id"]
+    raw = run / "artifacts" / "crash-partial-baseline" / "raw"
+    entries = list(raw.iterdir())
+    assert len(entries) == 2
+    assert {entry.stat().st_ino for entry in entries} == {entries[0].stat().st_ino}
+    assert {entry.stat().st_nlink for entry in entries} == {2}
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["stage"] == "resolved"
+    assert not (run / "artifacts" / "crash-partial-baseline").exists()
+    assert list((run / "transactions").iterdir()) == []
+
+
+def test_recovery_removes_hard_exit_atomic_index_temp(
+    tmp_path: Path,
+) -> None:
+    """A pre-replace current-index temp cannot make committed state undiscoverable."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    run_hard_exit_process(
+        crash_pause_before_current_replace,
+        str(state_root),
+        started["workflow_id"],
+    )
+    run = state_root / "live" / started["workflow_id"]
+    assert list(run.glob(".current-*"))
+    assert (run / "receipts" / "00000001.json").is_file()
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["sequence"] == 1
+    assert recovered["stage"] == "paused"
+    assert list(run.glob(".current-*")) == []
+    assert list((run / "transactions").iterdir()) == []
+
+
+def test_recovery_preserves_a_valid_temp_shaped_artifact_payload(
+    tmp_path: Path,
+) -> None:
+    """Publication cleanup must not mistake retained payload names for residue."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    payload = valid_create_baseline_payload(
+        helper, state_root, started["workflow_id"]
+    )
+    payload_name = ".tmp-123-0123456789abcdef"
+    retained = helper.retain_artifact(
+        workflow_id=started["workflow_id"],
+        expected_sequence=0,
+        artifact_id="temp-shaped-payload",
+        artifact_type="baseline-report",
+        files={payload_name: fixture_canonical_bytes(payload)},
+        primary_path=payload_name,
+        producer="main-agent",
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
+        limitations=[],
+        state_root=state_root,
+    )
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+
+    payload_path = (
+        state_root
+        / "live"
+        / started["workflow_id"]
+        / "artifacts"
+        / "temp-shaped-payload"
+        / "raw"
+        / payload_name
+    )
+    assert recovered["sequence"] == retained["sequence"]
+    assert payload_path.read_bytes() == fixture_canonical_bytes(payload)
 
 
 def test_initialize_failure_after_lock_publication_does_not_leak_target_lock(
