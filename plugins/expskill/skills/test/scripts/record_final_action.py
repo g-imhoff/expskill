@@ -386,6 +386,7 @@ def _validate_spec(
         )
 
     return {
+        "root": root,
         "observation": observation,
         "metadata": metadata,
         "expected_exit": int(expected_exit),
@@ -412,15 +413,217 @@ def _validate_command(command: list[str]) -> None:
         _error("inline-command-forbidden", "inline Python execution is forbidden")
 
 
-def _write_exclusive(path: Path, raw: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+def _directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _open_output_parent(root: Path, path: Path, *, label: str) -> tuple[int, str]:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        _error("invalid-output-path", f"{label} escaped the authenticated run root")
+    if len(relative.parts) == 0:
+        _error("invalid-output-path", f"{label} has no output filename")
+
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(root, _directory_flags())
+        for part in relative.parts[:-1]:
+            child = os.open(part, _directory_flags(), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+            _error("invalid-output-path", f"{label} parent is not an owned directory")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            _error("invalid-output-path", f"{label} parent is not private")
+        return descriptor, relative.parts[-1]
+    except RecorderError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        _error("invalid-output-path", f"cannot bind {label} parent: {error}")
+
+
+def _read_private_entry(path: Path) -> tuple[object, ...]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        _error("run-root-changed", f"cannot open retained evidence entry: {error}")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            _error("run-root-changed", "retained evidence entry is not a regular file")
+        if before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) & 0o077:
+            _error("run-root-changed", "retained evidence entry is not private and owned")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            _error("run-root-changed", "retained evidence changed while it was read")
+        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+            _error("run-root-changed", "retained evidence path was replaced")
+        return (
+            "file",
+            before.st_dev,
+            before.st_ino,
+            stat.S_IMODE(before.st_mode),
+            before.st_uid,
+            before.st_size,
+            before.st_mtime_ns,
+            digest.hexdigest(),
+        )
+    except OSError as error:
+        _error("run-root-changed", f"cannot read retained evidence entry: {error}")
+    finally:
+        os.close(descriptor)
+
+
+def _snapshot_run_root(root: Path) -> dict[str, tuple[object, ...]]:
+    snapshot: dict[str, tuple[object, ...]] = {}
+    pending = [(".", root)]
+    while pending:
+        relative, path = pending.pop()
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            _error("run-root-changed", f"cannot inspect retained evidence tree: {error}")
+        if stat.S_ISLNK(metadata.st_mode):
+            _error("run-root-changed", "retained evidence tree contains a symbolic link")
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+            _error("run-root-changed", "retained evidence tree is not private and owned")
+        if stat.S_ISDIR(metadata.st_mode):
+            snapshot[relative] = (
+                "directory",
+                metadata.st_dev,
+                metadata.st_ino,
+                stat.S_IMODE(metadata.st_mode),
+                metadata.st_uid,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+            )
+            try:
+                children = sorted(path.iterdir(), key=lambda child: child.name)
+            except OSError as error:
+                _error("run-root-changed", f"cannot traverse retained evidence tree: {error}")
+            for child in reversed(children):
+                child_relative = child.name if relative == "." else f"{relative}/{child.name}"
+                pending.append((child_relative, child))
+        elif stat.S_ISREG(metadata.st_mode):
+            snapshot[relative] = _read_private_entry(path)
+        else:
+            _error("run-root-changed", "retained evidence tree contains a special file")
+    return snapshot
+
+
+def _verify_run_root_unchanged(
+    root: Path,
+    expected: dict[str, tuple[object, ...]],
+) -> None:
+    observed = _snapshot_run_root(root)
+    if observed != expected:
+        _error("run-root-changed", "retained evidence changed during the product action")
+
+
+def _verify_run_root_with_outputs(
+    root: Path,
+    expected: dict[str, tuple[object, ...]],
+    outputs: tuple[Path, Path],
+) -> None:
+    allowed: set[str] = set()
+    for path in outputs:
+        try:
+            allowed.add(path.relative_to(root).as_posix())
+        except ValueError:
+            _error("run-root-changed", "recorder output escaped the run root")
+    observed = _snapshot_run_root(root)
+    if set(observed) != set(expected) | allowed:
+        _error("run-root-changed", "retained evidence tree gained or lost an entry")
+    for relative, original in expected.items():
+        current = observed.get(relative)
+        if original[0] == "directory":
+            if current is None or current[:5] != original[:5]:
+                _error("run-root-changed", "retained evidence directory was replaced")
+        elif current != original:
+            _error("run-root-changed", "retained evidence file changed after recording")
+    for relative in allowed:
+        current = observed.get(relative)
+        if current is None or current[0] != "file":
+            _error("run-root-changed", "recorder output is not a retained regular file")
+
+
+def _write_exclusive_at(descriptor: int, name: str, raw: bytes) -> os.stat_result:
+    output = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=descriptor,
+    )
     try:
         offset = 0
         while offset < len(raw):
-            offset += os.write(descriptor, raw[offset:])
-        os.fsync(descriptor)
+            offset += os.write(output, raw[offset:])
+        os.fsync(output)
+        return os.fstat(output)
     finally:
-        os.close(descriptor)
+        os.close(output)
+
+
+def _verify_output_binding(
+    path: Path,
+    parent: int,
+    name: str,
+    written: os.stat_result,
+) -> None:
+    try:
+        through_parent = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        through_path = path.lstat()
+    except OSError as error:
+        _error("run-root-changed", f"cannot verify recorder output binding: {error}")
+    identity = (written.st_dev, written.st_ino)
+    if (through_parent.st_dev, through_parent.st_ino) != identity:
+        _error("run-root-changed", "recorder output parent binding changed")
+    if (through_path.st_dev, through_path.st_ino) != identity:
+        _error("run-root-changed", "recorder output path escaped its bound parent")
+    if not stat.S_ISREG(through_path.st_mode) or stat.S_ISLNK(through_path.st_mode):
+        _error("run-root-changed", "recorder output is not a regular file")
+    if through_path.st_uid != os.getuid() or stat.S_IMODE(through_path.st_mode) & 0o077:
+        _error("run-root-changed", "recorder output is not private and owned")
+
+
+def _discard_rejected_draft(root: Path) -> None:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(root, _directory_flags())
+        metadata = os.stat("draft.json", dir_fd=descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            _error("preflight-cleanup-failed", "rejected draft is not a regular file")
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+            _error("preflight-cleanup-failed", "rejected draft is not private and owned")
+        os.unlink("draft.json", dir_fd=descriptor)
+        os.fsync(descriptor)
+    except RecorderError:
+        raise
+    except OSError as error:
+        _error("preflight-cleanup-failed", f"cannot remove rejected draft: {error}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _remove_created_path(path: Path) -> tuple[str, str]:
@@ -452,82 +655,130 @@ def _output_matches(raw: bytes, mode: str, expected: str) -> bool:
 
 def _run(repository: Path, values: dict[str, object], command: list[str]) -> bool:
     _validate_command(command)
-    completed = subprocess.run(
-        command,
-        cwd=repository,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
+    root = values.get("root")
+    observation_path = values.get("observation")
+    metadata_path = values.get("metadata")
+    if not isinstance(root, Path) or not isinstance(observation_path, Path) or not isinstance(metadata_path, Path):
+        _error("invalid-output-path", "validated run root and recorder outputs are unavailable")
+    observation_parent, observation_name = _open_output_parent(
+        root,
+        observation_path,
+        label="observation_path",
     )
-    output = completed.stdout
-    _write_exclusive(Path(values["observation"]), output)
-
-    teardown: list[dict[str, str]] = []
-    for raw in values["cleanup_paths"]:
-        status_value, detail = _remove_created_path(repository / raw)
-        teardown.append({"path": raw, "status": status_value, "detail": detail})
-    teardown_status = "pass" if all(item["status"] == "pass" for item in teardown) else "fail"
-
-    head = _git(repository, "rev-parse", "HEAD")
-    branch = _git(repository, "branch", "--show-current")
-    diff = _git(repository, "diff", "--exit-code", "HEAD", "--", *values["integrity_paths"])
-    worktree = _git(
-        repository,
-        "status",
-        "--short",
-        "--untracked-files=all",
-        "--",
-        *values["integrity_paths"],
-    )
-    integrity_status = "pass" if (
-        head.returncode == 0
-        and head.stdout.strip() == values["expected_head"]
-        and branch.returncode == 0
-        and branch.stdout.strip() == values["expected_branch"]
-        and diff.returncode == 0
-        and worktree.returncode == 0
-        and not worktree.stdout.strip()
-    ) else "fail"
-    predicate_match = completed.returncode == values["expected_exit"] and _output_matches(
-        output, str(values["predicate_mode"]), str(values["predicate_value"])
-    )
-    matched = predicate_match and teardown_status == "pass" and integrity_status == "pass"
-    metadata = {
-        "schema_version": "test-final-action-record.v1",
-        "command": command,
-        "exit_code": str(completed.returncode),
-        "output_sha256": hashlib.sha256(output).hexdigest(),
-        "output_predicate": "match" if predicate_match else "mismatch",
-        "teardown": teardown,
-        "teardown_status": teardown_status,
-        "head": head.stdout.strip(),
-        "branch": branch.stdout.strip(),
-        "integrity_paths": values["integrity_paths"],
-        "source_diff": diff.stdout + diff.stderr,
-        "source_status": worktree.stdout + worktree.stderr,
-        "integrity_status": integrity_status,
-        "outcome": "match" if matched else "mismatch",
-    }
-    raw_metadata = json.dumps(
-        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8") + b"\n"
-    _write_exclusive(Path(values["metadata"]), raw_metadata)
-    print(f"final_action_predicate={'MATCH' if matched else 'MISMATCH'}")
-    print(
-        "final_action_components="
-        + json.dumps(
-            {
-                "integrity": integrity_status,
-                "output_predicate": "match" if predicate_match else "mismatch",
-                "teardown": teardown_status,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+    metadata_parent: int | None = None
+    try:
+        metadata_parent, metadata_name = _open_output_parent(
+            root,
+            metadata_path,
+            label="metadata_path",
         )
-    )
-    print(f"observation_path={values['observation']}")
-    print(f"metadata_path={values['metadata']}")
-    return matched
+        protected = _snapshot_run_root(root)
+        completed = subprocess.run(
+            command,
+            cwd=repository,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        output = completed.stdout
+        _verify_run_root_unchanged(root, protected)
+        observation_metadata = _write_exclusive_at(
+            observation_parent,
+            observation_name,
+            output,
+        )
+        _verify_output_binding(
+            observation_path,
+            observation_parent,
+            observation_name,
+            observation_metadata,
+        )
+
+        teardown: list[dict[str, str]] = []
+        for raw in values["cleanup_paths"]:
+            status_value, detail = _remove_created_path(repository / raw)
+            teardown.append({"path": raw, "status": status_value, "detail": detail})
+        teardown_status = "pass" if all(item["status"] == "pass" for item in teardown) else "fail"
+
+        head = _git(repository, "rev-parse", "HEAD")
+        branch = _git(repository, "branch", "--show-current")
+        diff = _git(repository, "diff", "--exit-code", "HEAD", "--", *values["integrity_paths"])
+        worktree = _git(
+            repository,
+            "status",
+            "--short",
+            "--untracked-files=all",
+            "--",
+            *values["integrity_paths"],
+        )
+        integrity_status = "pass" if (
+            head.returncode == 0
+            and head.stdout.strip() == values["expected_head"]
+            and branch.returncode == 0
+            and branch.stdout.strip() == values["expected_branch"]
+            and diff.returncode == 0
+            and worktree.returncode == 0
+            and not worktree.stdout.strip()
+        ) else "fail"
+        predicate_match = completed.returncode == values["expected_exit"] and _output_matches(
+            output, str(values["predicate_mode"]), str(values["predicate_value"])
+        )
+        matched = predicate_match and teardown_status == "pass" and integrity_status == "pass"
+        metadata = {
+            "schema_version": "test-final-action-record.v1",
+            "command": command,
+            "exit_code": str(completed.returncode),
+            "output_sha256": hashlib.sha256(output).hexdigest(),
+            "output_predicate": "match" if predicate_match else "mismatch",
+            "teardown": teardown,
+            "teardown_status": teardown_status,
+            "head": head.stdout.strip(),
+            "branch": branch.stdout.strip(),
+            "integrity_paths": values["integrity_paths"],
+            "source_diff": diff.stdout + diff.stderr,
+            "source_status": worktree.stdout + worktree.stderr,
+            "integrity_status": integrity_status,
+            "outcome": "match" if matched else "mismatch",
+        }
+        raw_metadata = json.dumps(
+            metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8") + b"\n"
+        metadata_written = _write_exclusive_at(
+            metadata_parent,
+            metadata_name,
+            raw_metadata,
+        )
+        _verify_output_binding(
+            metadata_path,
+            metadata_parent,
+            metadata_name,
+            metadata_written,
+        )
+        _verify_run_root_with_outputs(
+            root,
+            protected,
+            (observation_path, metadata_path),
+        )
+        print(f"final_action_predicate={'MATCH' if matched else 'MISMATCH'}")
+        print(
+            "final_action_components="
+            + json.dumps(
+                {
+                    "integrity": integrity_status,
+                    "output_predicate": "match" if predicate_match else "mismatch",
+                    "teardown": teardown_status,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        print(f"observation_path={values['observation']}")
+        print(f"metadata_path={values['metadata']}")
+        return matched
+    finally:
+        os.close(observation_parent)
+        if metadata_parent is not None:
+            os.close(metadata_parent)
 
 
 def _relay_helper(arguments: list[str], repository: Path) -> int:
@@ -604,6 +855,7 @@ def _handoff(
     values: dict[str, object],
     command: list[str],
 ) -> int:
+    _validate_command(list(command))
     finalizer = Path(__file__).resolve().with_name("finalize_evidence.py")
     root_value = str(root)
     composed = _relay_helper(
@@ -622,7 +874,11 @@ def _handoff(
     )
     if composed != 0:
         return composed
-    _bind_handoff_artifacts(root, values)
+    try:
+        _bind_handoff_artifacts(root, values)
+    except RecorderError:
+        _discard_rejected_draft(root)
+        raise
     if not _run(repository, values, command):
         return 1
     finalized = _relay_helper(

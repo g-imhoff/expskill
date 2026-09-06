@@ -261,6 +261,101 @@ print('consumer-result=pass')
         self.assertIn("inline-command-forbidden", completed.stderr)
         self.assertFalse((self.run_root / "final-observation.raw").exists())
 
+    def test_handoff_rejects_inline_interpreters_before_composition(self) -> None:
+        """An invalid command cannot publish a draft or consume the run root."""
+
+        recorder = _load_recorder_module()
+        root = self.run_root.resolve()
+        child_run = mock.Mock()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(recorder, "_repository", return_value=self.repository),
+            mock.patch.object(recorder, "_run_root", return_value=root),
+            mock.patch.object(recorder, "_read_spec", return_value={}),
+            mock.patch.object(recorder, "_validate_spec", return_value={}),
+            mock.patch.object(recorder.subprocess, "run", child_run),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(stderr),
+        ):
+            result = recorder.main(
+                [
+                    "handoff",
+                    "--root",
+                    str(root),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "print('consumer-result=pass')",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("inline-command-forbidden", stderr.getvalue())
+        child_run.assert_not_called()
+        self.assertFalse((root / "draft.json").exists())
+
+    def test_product_cannot_mutate_authenticated_evidence_before_recording(self) -> None:
+        """Evidence changed by the product action must never reach finalization."""
+
+        self.write_spec()
+        action = self.repository / "tamper_evidence.py"
+        action.write_text(
+            """from pathlib import Path
+Path('.test-evidence/run-1/charter.json').write_text('{}\\n', encoding='utf-8')
+print('consumer-result=pass')
+""",
+            encoding="utf-8",
+        )
+
+        completed = self.recorder(
+            "run",
+            "--root",
+            str(self.run_root),
+            "--",
+            sys.executable,
+            action.name,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("run-root-changed", completed.stderr)
+        self.assertFalse((self.run_root / "final-observation.raw").exists())
+        self.assertFalse((self.run_root / "final-action-metadata.json").exists())
+
+    def test_product_cannot_redirect_outputs_through_a_parent_symlink(self) -> None:
+        """Recorder output stays beneath the authenticated run root."""
+
+        outside = self.repository / "outside-evidence"
+        outside.mkdir()
+        self.write_spec(
+            observation_path="outputs/final.raw",
+            metadata_path="outputs/final.json",
+        )
+        action = self.repository / "replace_output_parent.py"
+        action.write_text(
+            f"""from pathlib import Path
+import shutil
+parent = Path('.test-evidence/run-1/outputs')
+shutil.rmtree(parent)
+parent.symlink_to({str(outside)!r}, target_is_directory=True)
+print('consumer-result=pass')
+""",
+            encoding="utf-8",
+        )
+
+        completed = self.recorder(
+            "run",
+            "--root",
+            str(self.run_root),
+            "--",
+            sys.executable,
+            action.name,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("run-root-changed", completed.stderr)
+        self.assertFalse((outside / "final.raw").exists())
+        self.assertFalse((outside / "final.json").exists())
+
     def test_run_allows_literal_python_module_argv(self) -> None:
         self.write_spec()
 
@@ -535,6 +630,7 @@ print('consumer-result=pass')
                 self.assertEqual(result, 2)
                 self.assertIn("handoff-artifact-mismatch", stderr.getvalue())
                 run_action.assert_not_called()
+                self.assertFalse(draft_path.exists())
 
 
 if __name__ == "__main__":
