@@ -37,10 +37,12 @@ ENVELOPE_SCHEMA = "skill-builder-artifact-envelope.v1"
 MANIFEST_SCHEMA = "skill-builder-raw-manifest.v1"
 LEGACY_RESOLUTION_SCHEMA = "skill-builder-resolution.v1"
 PREVIOUS_RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
-RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
+HISTORICAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
+RESOLUTION_SCHEMA = "skill-builder-resolution.v4"
 LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
 PREVIOUS_CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
-CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
+HISTORICAL_CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
+CANDIDATE_SCHEMA = "skill-builder-candidate.v4"
 LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
 TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
 LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
@@ -138,6 +140,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "candidate-record": {
         LEGACY_CANDIDATE_SCHEMA,
         PREVIOUS_CANDIDATE_SCHEMA,
+        HISTORICAL_CANDIDATE_SCHEMA,
         CANDIDATE_SCHEMA,
     },
     "trial-pack": {LEGACY_TRIAL_SCHEMA, TRIAL_SCHEMA},
@@ -775,7 +778,10 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     )
     schema_version = payload.get("schema_version")
     versioned_fields = set(expected_fields)
-    if artifact_type == "candidate-record" and schema_version == CANDIDATE_SCHEMA:
+    if artifact_type == "candidate-record" and schema_version in {
+        HISTORICAL_CANDIDATE_SCHEMA,
+        CANDIDATE_SCHEMA,
+    }:
         versioned_fields.add("loaded_skill_digest")
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
@@ -999,7 +1005,10 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             "target_snapshot_digest",
         ):
             _digest(payload[field], f"candidate {field}")
-        if payload["schema_version"] == CANDIDATE_SCHEMA:
+        if payload["schema_version"] in {
+            HISTORICAL_CANDIDATE_SCHEMA,
+            CANDIDATE_SCHEMA,
+        }:
             _digest(payload["loaded_skill_digest"], "candidate loaded skill")
             if payload["loaded_skill_digest"] == payload["resulting_digest"]:
                 raise RunStateError(
@@ -1031,6 +1040,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             "limitations",
         }
         case_ids: list[str] = []
+        seen_case_ids: set[str] = set()
         context_ids: set[str] = set()
         for case in cases:
             if set(case) != case_fields:
@@ -1039,9 +1049,10 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             context_id = _text(
                 case["fresh_context_identity"], "trial fresh context identity"
             )
-            if case_id in case_ids or context_id in context_ids:
+            if case_id in seen_case_ids or context_id in context_ids:
                 raise RunStateError("trial case or fresh context identity is duplicated")
             case_ids.append(case_id)
+            seen_case_ids.add(case_id)
             context_ids.add(context_id)
             for field in (
                 "case_digest",
@@ -1894,6 +1905,50 @@ def _loadable_skill_digest_from_manifest(
     return digest
 
 
+def _trial_loadable_skill_digests_from_manifest(
+    run: Path, artifact_id: str, manifest: dict[str, Any]
+) -> dict[str, str]:
+    """Index every retained trial package with one manifest traversal."""
+    evidence_prefix = f"artifacts/{artifact_id}/raw/evidence/"
+    package_marker = "/loaded-skill/"
+    packages: dict[str, list[dict[str, Any]]] = {}
+    skill_payloads: dict[str, bytes] = {}
+    for entry in manifest["entries"]:
+        path = entry["path"]
+        if not path.startswith(evidence_prefix):
+            continue
+        relative = path.removeprefix(evidence_prefix)
+        case_id, marker, package_path = relative.partition(package_marker)
+        if not marker:
+            continue
+        if (
+            not _ARTIFACT_RE.fullmatch(case_id)
+            or not package_path
+            or package_path.startswith("/")
+        ):
+            raise RunStateError("trial loaded-skill package path is invalid")
+        packages.setdefault(case_id, []).append(
+            {
+                "path": package_path,
+                "byte_count": entry["byte_count"],
+                "digest": entry["digest"],
+            }
+        )
+        if package_path == "SKILL.md":
+            skill_payloads[case_id] = _read_bytes(
+                run.joinpath(*path.split("/")), MAX_ARTIFACT_BYTES
+            )
+    digests: dict[str, str] = {}
+    for case_id, package in packages.items():
+        label = f"trial case {case_id} loaded skill"
+        skill_payload = skill_payloads.get(case_id)
+        if skill_payload is None:
+            raise RunStateError(f"{label} does not retain loadable SKILL.md content")
+        _reject_owned_result_descriptor(skill_payload, label)
+        digests[case_id] = _loadable_skill_digest(package, label)
+    return digests
+
+
 def _loadable_skill_digest_from_artifact(
     run: Path, artifact_id: str, prefix: str, label: str
 ) -> str:
@@ -1918,6 +1973,48 @@ def _loadable_skill_digest_from_target_manifest(
         if entry.get("kind") == "file"
     ]
     return _loadable_skill_digest(package, label)
+
+
+_VERSIONED_ARTIFACT_SCHEMAS = {
+    "candidate-record": ("candidate_record_schema", LEGACY_CANDIDATE_SCHEMA),
+    "trial-pack": ("trial_pack_schema", LEGACY_TRIAL_SCHEMA),
+    "review-record": ("review_record_schema", LEGACY_REVIEW_SCHEMA),
+    "target-scorecard": ("scorecard_schema", LEGACY_SCORECARD_SCHEMA),
+}
+
+
+def _validate_artifact_schema_pairing(
+    resolution: dict[str, Any], artifact_type: str, payload: dict[str, Any]
+) -> None:
+    marker = _VERSIONED_ARTIFACT_SCHEMAS.get(artifact_type)
+    if marker is None:
+        return
+    marker_name, default_schema = marker
+    if payload["schema_version"] != resolution.get(marker_name, default_schema):
+        label = {
+            "candidate-record": "candidate",
+            "trial-pack": "trial-pack",
+            "review-record": "review",
+            "target-scorecard": "scorecard",
+        }[artifact_type]
+        raise RunStateError(
+            f"{label} schema does not match the run's versioned semantics"
+        )
+
+
+def _validate_current_candidate_content(
+    payload: dict[str, Any], retained_digest: str
+) -> None:
+    actual_manifest = snapshot_target(Path(payload["isolated_locator"]))
+    actual_digest = _loadable_skill_digest_from_target_manifest(
+        actual_manifest, "isolated candidate package"
+    )
+    if not (
+        payload["loaded_skill_digest"] == retained_digest == actual_digest
+    ):
+        raise RunStateError(
+            "candidate loaded-skill digest does not match its actual retained package"
+        )
 
 
 def _create_artifact(
@@ -1965,61 +2062,21 @@ def _create_artifact(
             files[primary], f"{artifact_type} primary payload"
         )
         _validate_artifact_payload(artifact_type, primary_record)
-        if artifact_type == "candidate-record":
+        if artifact_type in _VERSIONED_ARTIFACT_SCHEMAS:
             resolution, _ = _resolution_payload(run, workflow_id)
-            required_schema = resolution.get(
-                "candidate_record_schema", LEGACY_CANDIDATE_SCHEMA
+            _validate_artifact_schema_pairing(
+                resolution, artifact_type, primary_record
             )
-            if primary_record["schema_version"] != required_schema:
-                raise RunStateError(
-                    "candidate schema does not match the run's versioned semantics"
-                )
-            if primary_record["schema_version"] == CANDIDATE_SCHEMA:
-                retained_digest = _loadable_skill_digest_from_files(
+        if (
+            artifact_type == "candidate-record"
+            and primary_record["schema_version"] == CANDIDATE_SCHEMA
+        ):
+            _validate_current_candidate_content(
+                primary_record,
+                _loadable_skill_digest_from_files(
                     files, "candidate-package/", "candidate package"
-                )
-                actual_manifest = snapshot_target(
-                    Path(primary_record["isolated_locator"])
-                )
-                actual_digest = _loadable_skill_digest_from_target_manifest(
-                    actual_manifest, "isolated candidate package"
-                )
-                if not (
-                    primary_record["loaded_skill_digest"]
-                    == retained_digest
-                    == actual_digest
-                ):
-                    raise RunStateError(
-                        "candidate loaded-skill digest does not match its actual "
-                        "retained package"
-                    )
-        if artifact_type == "trial-pack":
-            resolution, _ = _resolution_payload(run, workflow_id)
-            required_schema = resolution.get(
-                "trial_pack_schema", LEGACY_TRIAL_SCHEMA
+                ),
             )
-            if primary_record["schema_version"] != required_schema:
-                raise RunStateError(
-                    "trial-pack schema does not match the run's versioned semantics"
-                )
-        if artifact_type == "review-record":
-            resolution, _ = _resolution_payload(run, workflow_id)
-            required_schema = resolution.get(
-                "review_record_schema", LEGACY_REVIEW_SCHEMA
-            )
-            if primary_record["schema_version"] != required_schema:
-                raise RunStateError(
-                    "review schema does not match the run's versioned semantics"
-                )
-        if artifact_type == "target-scorecard":
-            resolution, _ = _resolution_payload(run, workflow_id)
-            required_schema = resolution.get(
-                "scorecard_schema", LEGACY_SCORECARD_SCHEMA
-            )
-            if primary_record["schema_version"] != required_schema:
-                raise RunStateError(
-                    "scorecard schema does not match the run's versioned semantics"
-                )
     if not isinstance(producer, str) or not producer.strip():
         raise RunStateError("artifact producer identity is required")
     if not isinstance(limitations, list) or any(
@@ -2570,6 +2627,15 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
         version_markers_valid = (
             payload.get("candidate_record_schema") == PREVIOUS_CANDIDATE_SCHEMA
         )
+    elif schema_version == HISTORICAL_RESOLUTION_SCHEMA:
+        expected_fields = common_fields | {
+            "candidate_record_schema",
+            "scorecard_schema",
+        }
+        version_markers_valid = (
+            payload.get("candidate_record_schema") == HISTORICAL_CANDIDATE_SCHEMA
+            and payload.get("scorecard_schema") == SCORECARD_SCHEMA
+        )
     else:
         expected_fields = common_fields | {
             "candidate_record_schema",
@@ -2588,6 +2654,7 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
         not in {
             LEGACY_RESOLUTION_SCHEMA,
             PREVIOUS_RESOLUTION_SCHEMA,
+            HISTORICAL_RESOLUTION_SCHEMA,
             RESOLUTION_SCHEMA,
         }
         or set(payload) != expected_fields
@@ -2753,9 +2820,19 @@ def _validate_trial_binding(
     }
     expected_loaded_skill_digest = (
         candidate["loaded_skill_digest"]
-        if candidate["schema_version"] == CANDIDATE_SCHEMA
+        if candidate["schema_version"]
+        in {HISTORICAL_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA}
         else candidate["resulting_digest"]
     )
+    retained_loaded_digests: dict[str, str] = {}
+    if trials["schema_version"] == TRIAL_SCHEMA:
+        retained_loaded_digests = _trial_loadable_skill_digests_from_manifest(
+            run, trial_id, trial_manifest
+        )
+        if set(retained_loaded_digests) != {
+            case["case_id"] for case in trial_cases
+        }:
+            raise RunStateError("trial loaded-skill package coverage is incomplete")
     for trial_case, frozen_case in zip(trial_cases, frozen_cases, strict=True):
         case_id = trial_case["case_id"]
         if not _ARTIFACT_RE.fullmatch(case_id):
@@ -2775,14 +2852,10 @@ def _validate_trial_binding(
                 "trial loaded-skill content identity is stale or substituted"
             )
         if trials["schema_version"] == TRIAL_SCHEMA:
-            retained_loaded_digest = _loadable_skill_digest_from_manifest(
-                run,
-                trial_id,
-                f"evidence/{case_id}/loaded-skill/",
-                f"trial case {case_id} loaded skill",
-                trial_manifest,
-            )
-            if retained_loaded_digest != trial_case["loaded_skill_digest"]:
+            if (
+                retained_loaded_digests.get(case_id)
+                != trial_case["loaded_skill_digest"]
+            ):
                 raise RunStateError(
                     "trial loaded-skill content is missing or substituted"
                 )
@@ -3070,8 +3143,12 @@ def _validate_review_binding(
             "review record",
         )
     else:
-        _, candidate_manifest = _validate_envelope(run, candidate_id)
-        _, trials_manifest = _validate_envelope(run, trials_id)
+        source_manifests = {
+            artifact_id: _validate_envelope(run, artifact_id)[1]
+            for artifact_id in sources
+        }
+        candidate_manifest = source_manifests[candidate_id]
+        trials_manifest = source_manifests[trials_id]
 
         def binding(
             artifact_id: str,
@@ -3088,12 +3165,12 @@ def _validate_review_binding(
             "confirmed_contract": binding(
                 contract_id,
                 contract_envelope,
-                contract_envelope["envelope_digest"],
+                contract_envelope["payload_digest"],
             ),
             "contract_confirmation": binding(
                 confirmation_id,
                 confirmation_envelope,
-                confirmation_envelope["envelope_digest"],
+                confirmation_envelope["payload_digest"],
             ),
             "host_rules": binding(
                 baseline_id,
@@ -3112,12 +3189,12 @@ def _validate_review_binding(
             "candidate_artifact": binding(
                 candidate_id,
                 candidate_envelope,
-                candidate_envelope["envelope_digest"],
+                candidate_envelope["payload_digest"],
             ),
             "frozen_evaluation": binding(
                 evaluation_id,
                 evaluation_envelope,
-                evaluation_envelope["envelope_digest"],
+                evaluation_envelope["payload_digest"],
             ),
             "candidate_diff": binding(
                 candidate_id,
@@ -3160,6 +3237,24 @@ def _validate_review_binding(
             raise RunStateError(
                 "review input provenance is missing, extra, substituted, or stale"
             )
+        resolvable_components = {
+            artifact_id: {
+                manifest["manifest_digest"],
+                *(entry["digest"] for entry in manifest["entries"]),
+            }
+            for artifact_id, manifest in source_manifests.items()
+        }
+        for role, provenance in expected_provenance.items():
+            source_envelope = sources[provenance["artifact_id"]]
+            if (
+                provenance["component_digest"]
+                not in resolvable_components[provenance["artifact_id"]]
+            ):
+                raise RunStateError(
+                    f"review component provenance for {role} lacks retained source bytes"
+                )
+            if provenance["artifact_digest"] != source_envelope["envelope_digest"]:
+                raise RunStateError("review component artifact provenance is stale")
         _require_exact_input_bindings(
             review_envelope,
             {
@@ -3708,7 +3803,10 @@ def _derive_index(run: Path) -> dict[str, Any]:
             artifact_id = item["artifact_id"]
             envelope, _ = _validate_envelope(run, artifact_id)
             if envelope["artifact_type"] in _PAYLOAD_SCHEMA_VERSIONS:
-                _artifact_payload_json(run, artifact_id)
+                payload = _artifact_payload_json(run, artifact_id)
+                _validate_artifact_schema_pairing(
+                    resolution, envelope["artifact_type"], payload
+                )
             if (
                 envelope["workflow_id"] != workflow_id
                 or envelope["target_identity"]
@@ -3868,6 +3966,26 @@ def _derive_index(run: Path) -> dict[str, Any]:
             event_artifacts[event]["authority_event_digest"] = receipt[
                 "authority_event_digest"
             ]
+    for artifact_id, record in artifact_status.items():
+        if (
+            record["type"] != "candidate-record"
+            or record["derived_status"] != "accepted"
+        ):
+            continue
+        candidate = _artifact_payload_json(run, artifact_id)
+        if candidate["schema_version"] != CANDIDATE_SCHEMA:
+            continue
+        _, candidate_manifest = _validate_envelope(run, artifact_id)
+        _validate_current_candidate_content(
+            candidate,
+            _loadable_skill_digest_from_manifest(
+                run,
+                artifact_id,
+                "candidate-package/",
+                "candidate package",
+                candidate_manifest,
+            ),
+        )
     actual_artifacts: set[str] = set()
     artifacts_directory = run / "artifacts"
     for path in artifacts_directory.iterdir():
@@ -4064,7 +4182,11 @@ def _validate_delivery_destination(
         raise RunStateError("delivery destination digest does not match the exact target")
     if (
         candidate.get("schema_version")
-        in {PREVIOUS_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA}
+        in {
+            PREVIOUS_CANDIDATE_SCHEMA,
+            HISTORICAL_CANDIDATE_SCHEMA,
+            CANDIDATE_SCHEMA,
+        }
         and candidate.get("resulting_digest")
         != _owned_result_digest(index, manifest, candidate.get("owned_paths"))
     ):
