@@ -1,0 +1,16 @@
+{
+  "schema_version": "fixture-target-manifest-v1",
+  "disposable_fixture": true,
+  "host_kind": "non-git",
+  "git_identity": null,
+  "canonical_target": "fixture-alpha",
+  "requested_targets": [
+    "fixture-alpha",
+    "fixture-beta"
+  ],
+  "exact_target_path": "skills/fixture-alpha/SKILL.md",
+  "exact_target_exists": false,
+  "near_neighbours": [],
+  "snapshot_digest": "fixture-queue-snapshot-v1",
+  "files": []
+}

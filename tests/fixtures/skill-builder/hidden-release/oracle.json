@@ -1,0 +1,8 @@
+{
+  "schema_version": "skill-builder-hidden-oracle-v1",
+  "candidate_context_access": "forbidden",
+  "trial_context_access": "forbidden",
+  "coordinator_withhold": true,
+  "sentinel": "fixture-hidden-release-sentinel",
+  "purpose": "Detect whether a candidate or trial context observed withheld release material."
+}
