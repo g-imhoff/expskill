@@ -2,7 +2,7 @@
 
 ## Purpose
 
-ExpSkill is a private Codex plugin with four independently usable
+ExpSkill is a private Codex plugin with five independently usable
 development skills and one optional lifecycle router. Users can invoke a skill
 directly without loading a pipeline, or invoke `use-expskill` when they want the
 plugin to select the next lifecycle step.
@@ -18,7 +18,8 @@ skills/
 ├── brainstorm/
 ├── plan/
 ├── design/
-└── implement/
+├── implement/
+└── test/
 ```
 
 | Skill | Owns | Must not do |
@@ -27,8 +28,11 @@ skills/
 | `plan` | Ground the direction and create the private implementation/proof graph | Redesign the concept or write code/tests |
 | `design` | Produce and approve isolated production-intended UI components | Implement the broader feature |
 | `implement` | Coordinate TDD workers, independent review/spec gates, corrections, local joins, and final branch gates | Route the lifecycle, own a second state engine, push, or merge remotely |
+| `test` | Exercise already-implemented behavior through realistic composed product paths and report revision-bound evidence | Plan or implement work, repair production code, review source, route the lifecycle, or deliver remotely |
 
 Direct invocation runs only the named skill and stops at its boundary.
+Test is explicit-only in this standalone slice. The current router mapping stays
+unchanged until its later lifecycle migration.
 
 ## Lifecycle routing
 

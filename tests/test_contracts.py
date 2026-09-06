@@ -24,6 +24,7 @@ PHASE_ROOTS = {
         "grill-me",
         "plan",
         "implement",
+        "test",
         "unslop",
     )
 }
@@ -46,6 +47,7 @@ EXPECTED_SKILLS = {
     "grill-me",
     "plan",
     "implement",
+    "test",
     "skill-builder",
     "unslop",
 }
@@ -419,7 +421,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("seven", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("eight", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -534,7 +536,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bseven independent skills and one optional lifecycle router\b"
+            r"\beight independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -970,7 +972,7 @@ class ContractTests(unittest.TestCase):
                     continue
                 body = skill_path.read_text(encoding="utf-8")
                 self.assertGreater(len(body.splitlines()), 4, name)
-                if name not in {"brainstorm", "design", "skill-builder"}:
+                if name not in {"brainstorm", "design", "skill-builder", "test"}:
                     self.assertNotIn("references/", body.lower(), name)
                 self.assertNotIn("route-code-change", body, name)
                 self.assertNotIn("quick-code-change", body, name)
