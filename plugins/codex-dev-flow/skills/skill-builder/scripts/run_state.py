@@ -35,6 +35,10 @@ RECEIPT_SCHEMA = "skill-builder-transition.v1"
 INDEX_SCHEMA = "skill-builder-index.v1"
 ENVELOPE_SCHEMA = "skill-builder-artifact-envelope.v1"
 MANIFEST_SCHEMA = "skill-builder-raw-manifest.v1"
+LEGACY_RESOLUTION_SCHEMA = "skill-builder-resolution.v1"
+RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
+LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
+CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -122,7 +126,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "skill-contract": "skill-builder-contract.v1",
     "user-confirmation-record": "skill-builder-user-confirmation.v1",
     "evaluation-pack": "skill-builder-evaluation-pack.v1",
-    "candidate-record": "skill-builder-candidate.v1",
+    "candidate-record": {LEGACY_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA},
     "trial-pack": "skill-builder-trial-pack.v1",
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
     "review-record": "skill-builder-review.v1",
@@ -753,7 +757,13 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     expected_fields = _PAYLOAD_REQUIRED_FIELDS.get(artifact_type)
     if expected_version is None or expected_fields is None:
         return
-    if set(payload) != expected_fields or payload.get("schema_version") != expected_version:
+    expected_versions = (
+        {expected_version} if isinstance(expected_version, str) else expected_version
+    )
+    if (
+        set(payload) != expected_fields
+        or payload.get("schema_version") not in expected_versions
+    ):
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
     if artifact_type == "baseline-report":
@@ -1613,8 +1623,9 @@ def _create_resolution_artifact(
     raw = artifact / "raw"
     _ensure_private_directory(raw)
     payload_record = {
-        "schema_version": "skill-builder-resolution.v1",
+        "schema_version": RESOLUTION_SCHEMA,
         "workflow_id": workflow_id,
+        "candidate_record_schema": CANDIDATE_SCHEMA,
         "host_identity": host,
         "target_identity": target,
         "mode": mode,
@@ -1730,6 +1741,15 @@ def _create_artifact(
             files[primary], f"{artifact_type} primary payload"
         )
         _validate_artifact_payload(artifact_type, primary_record)
+        if artifact_type == "candidate-record":
+            resolution, _ = _resolution_payload(run, workflow_id)
+            required_schema = resolution.get(
+                "candidate_record_schema", LEGACY_CANDIDATE_SCHEMA
+            )
+            if primary_record["schema_version"] != required_schema:
+                raise RunStateError(
+                    "candidate schema does not match the run's versioned semantics"
+                )
     if not isinstance(producer, str) or not producer.strip():
         raise RunStateError("artifact producer identity is required")
     if not isinstance(limitations, list) or any(
@@ -2259,7 +2279,33 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
     if envelope.get("workflow_id") != workflow_id:
         raise RunStateError("resolution artifact workflow mismatch")
     payload = _read_json(run / "artifacts" / "resolution" / "raw" / "payload.json")
-    if payload.get("schema_version") != "skill-builder-resolution.v1" or payload.get("workflow_id") != workflow_id:
+    common_fields = {
+        "schema_version",
+        "workflow_id",
+        "host_identity",
+        "target_identity",
+        "mode",
+        "authority",
+        "git_identity",
+        "target_snapshot",
+        "queue",
+        "active_target_lock",
+    }
+    schema_version = payload.get("schema_version")
+    expected_fields = (
+        common_fields
+        if schema_version == LEGACY_RESOLUTION_SCHEMA
+        else common_fields | {"candidate_record_schema"}
+    )
+    if (
+        schema_version not in {LEGACY_RESOLUTION_SCHEMA, RESOLUTION_SCHEMA}
+        or set(payload) != expected_fields
+        or payload.get("workflow_id") != workflow_id
+        or (
+            schema_version == RESOLUTION_SCHEMA
+            and payload.get("candidate_record_schema") != CANDIDATE_SCHEMA
+        )
+    ):
         raise RunStateError("resolution payload identity mismatch")
     return payload, envelope
 
@@ -3355,8 +3401,28 @@ def _owned_result_digest(
     if not owned_paths or len(owned_paths) != len(set(owned_paths)):
         raise RunStateError("candidate owned paths are empty or duplicated")
     entries = manifest["entries"]
+    baseline_manifest = (
+        index["target_snapshot"]["manifest"]
+        if index["mode"]["name"] == "improve"
+        else None
+    )
+    baseline_entries = (
+        {entry["path"]: entry for entry in baseline_manifest["entries"]}
+        if baseline_manifest is not None
+        else {}
+    )
+    current_entries = {entry["path"]: entry for entry in entries}
     selected: list[dict[str, Any]] = []
     selected_paths: set[str] = set()
+
+    def path_is_owned(path: str) -> bool:
+        return any(
+            owned == "."
+            or path == owned
+            or path.startswith(f"{owned}/")
+            for owned in owned_paths
+        )
+
     for owned in owned_paths:
         if (
             not isinstance(owned, str)
@@ -3366,15 +3432,13 @@ def _owned_result_digest(
             or any(part in {"", ".."} for part in owned.split("/"))
         ):
             raise RunStateError("candidate owned path is unsafe")
-        matching = [
-            entry
-            for entry in entries
-            if owned == "."
-            or entry["path"] == owned
-            or entry["path"].startswith(f"{owned}/")
-        ]
-        if not matching:
-            raise RunStateError("candidate owned path is absent from the destination")
+        known_paths = set(current_entries) | set(baseline_entries)
+        if not any(
+            owned == "." or path == owned or path.startswith(f"{owned}/")
+            for path in known_paths
+        ):
+            raise RunStateError("candidate owned path is absent from the target history")
+        matching = [entry for entry in entries if path_is_owned(entry["path"])]
         for entry in matching:
             if entry["path"] in selected_paths:
                 continue
@@ -3396,19 +3460,28 @@ def _owned_result_digest(
     if index["mode"]["name"] == "create" and selected_paths != all_paths:
         raise RunStateError("create delivery contains content outside candidate ownership")
     if index["mode"]["name"] == "improve":
-        baseline_entries = {
-            entry["path"]: entry
-            for entry in index["target_snapshot"]["manifest"]["entries"]
+        unowned_paths = {
+            path
+            for path in set(baseline_entries) | set(current_entries)
+            if not path_is_owned(path)
         }
-        current_entries = {entry["path"]: entry for entry in entries}
-        unowned_paths = (set(baseline_entries) | set(current_entries)) - selected_paths
         if any(
             baseline_entries.get(path) != current_entries.get(path)
             for path in unowned_paths
         ):
             raise RunStateError("delivery changed content outside candidate ownership")
+        assert baseline_manifest is not None
+        if "." not in owned_paths and any(
+            baseline_manifest[field] != manifest[field]
+            for field in ("target_kind", "target_mode")
+        ):
+            raise RunStateError(
+                "delivery changed target metadata outside candidate ownership"
+            )
     record = {
-        "schema_version": "skill-builder-owned-result.v1",
+        "schema_version": "skill-builder-owned-result.v2",
+        "target_kind": manifest["target_kind"],
+        "target_mode": manifest["target_mode"],
         "entries": selected,
     }
     return raw_digest(canonical_json_bytes(record))
@@ -3428,8 +3501,10 @@ def _validate_delivery_destination(
     manifest = snapshot_target(locator)
     if delivery.get("resulting_destination_digest") != manifest["manifest_digest"]:
         raise RunStateError("delivery destination digest does not match the exact target")
-    if candidate.get("resulting_digest") != _owned_result_digest(
-        index, manifest, candidate.get("owned_paths")
+    if (
+        candidate.get("schema_version") == CANDIDATE_SCHEMA
+        and candidate.get("resulting_digest")
+        != _owned_result_digest(index, manifest, candidate.get("owned_paths"))
     ):
         raise RunStateError("delivery content does not match the finalized candidate result")
 
@@ -4436,6 +4511,22 @@ _SCORE_CATEGORIES = (
     "context efficiency",
     "testability",
 )
+_CONFORMANCE_GATES = frozenset(f"BR{index}" for index in range(1, 11))
+_SCORE_CRITERIA = {
+    "triggering": frozenset(f"TR{index}" for index in range(1, 11)),
+    "scope discipline": frozenset(f"SC{index}" for index in range(1, 11)),
+    "workflow quality": frozenset(f"WF{index}" for index in range(1, 11)),
+    "collaboration": frozenset(f"CO{index}" for index in range(1, 11)),
+    "output contract": frozenset(f"OU{index}" for index in range(1, 11)),
+    "safety": frozenset(f"SA{index}" for index in range(1, 11)),
+    "recovery": frozenset(f"RE{index}" for index in range(1, 11)),
+    "composability": frozenset(f"CP{index}" for index in range(1, 11)),
+    "context efficiency": frozenset(f"CE{index}" for index in range(1, 11)),
+    "testability": frozenset(f"TE{index}" for index in range(1, 11)),
+}
+_MATERIAL_REVIEW_SEVERITIES = frozenset(
+    {"critical", "important", "high", "medium"}
+)
 
 
 def _current_event_artifact(
@@ -4491,7 +4582,11 @@ def _validate_final_evidence(
         or review.get("verdict") != "ready"
         or not isinstance(findings, list)
         or any(
-            isinstance(item, dict) and item.get("release_blocking") is True
+            isinstance(item, dict)
+            and (
+                item.get("release_blocking") is True
+                or item.get("severity") in _MATERIAL_REVIEW_SEVERITIES
+            )
             for item in findings
         )
     ):
@@ -4507,7 +4602,7 @@ def _validate_final_evidence(
     if (
         conformance.get("candidate_digest") != candidate_digest
         or not isinstance(gates, dict)
-        or not gates
+        or set(gates) != _CONFORMANCE_GATES
         or any(
             not isinstance(gate, dict)
             or gate.get("status") != "pass"
@@ -4544,7 +4639,7 @@ def _validate_final_evidence(
             category.get("score") != 10
             or isinstance(category.get("score"), bool)
             or not isinstance(criteria, dict)
-            or not criteria
+            or set(criteria) != _SCORE_CRITERIA[category["name"]]
             or any(value is not True for value in criteria.values())
         ):
             raise RunStateError("every target score and binary criterion must pass at 10")

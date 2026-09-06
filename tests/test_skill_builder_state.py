@@ -38,6 +38,19 @@ SCORE_CATEGORIES = (
     "context efficiency",
     "testability",
 )
+CONFORMANCE_GATES = tuple(f"BR{index}" for index in range(1, 11))
+SCORE_CRITERIA = {
+    "triggering": tuple(f"TR{index}" for index in range(1, 11)),
+    "scope discipline": tuple(f"SC{index}" for index in range(1, 11)),
+    "workflow quality": tuple(f"WF{index}" for index in range(1, 11)),
+    "collaboration": tuple(f"CO{index}" for index in range(1, 11)),
+    "output contract": tuple(f"OU{index}" for index in range(1, 11)),
+    "safety": tuple(f"SA{index}" for index in range(1, 11)),
+    "recovery": tuple(f"RE{index}" for index in range(1, 11)),
+    "composability": tuple(f"CP{index}" for index in range(1, 11)),
+    "context efficiency": tuple(f"CE{index}" for index in range(1, 11)),
+    "testability": tuple(f"TE{index}" for index in range(1, 11)),
+}
 
 CANDIDATE_SKILL_BYTES = b"---\nname: sample-skill\n---\n# Sample skill\n"
 REVIEW_ACCESS_BYTES = b"reviewer access check\n"
@@ -80,21 +93,26 @@ def fixture_canonical_bytes(value: dict[str, object]) -> bytes:
     ).encode("utf-8")
 
 
-def candidate_result_bytes() -> bytes:
-    return fixture_canonical_bytes(
-        {
-            "schema_version": "skill-builder-owned-result.v1",
-            "entries": [
-                {
-                    "path": "SKILL.md",
-                    "kind": "file",
-                    "mode": 0o644,
-                    "byte_count": len(CANDIDATE_SKILL_BYTES),
-                    "digest": fixture_digest(CANDIDATE_SKILL_BYTES),
-                }
-            ],
-        }
-    )
+def candidate_result_bytes(
+    *,
+    schema_version: str = "skill-builder-owned-result.v2",
+    target_mode: int = 0o755,
+) -> bytes:
+    record: dict[str, object] = {
+        "schema_version": schema_version,
+        "entries": [
+            {
+                "path": "SKILL.md",
+                "kind": "file",
+                "mode": 0o644,
+                "byte_count": len(CANDIDATE_SKILL_BYTES),
+                "digest": fixture_digest(CANDIDATE_SKILL_BYTES),
+            }
+        ],
+    }
+    if schema_version == "skill-builder-owned-result.v2":
+        record.update({"target_kind": "directory", "target_mode": target_mode})
+    return fixture_canonical_bytes(record)
 
 
 def evaluation_case(case_id: str, partition: str) -> dict[str, object]:
@@ -120,6 +138,7 @@ def trial_files(
     payload: dict[str, object],
     *,
     evidence_overrides: dict[tuple[str, str], bytes] | None = None,
+    loaded_skill_bytes: bytes | None = None,
 ) -> dict[str, bytes]:
     files = {"record.json": fixture_canonical_bytes(payload)}
     cases = payload.get("cases")
@@ -141,7 +160,10 @@ def trial_files(
         files[f"evidence/{case_id}/case.json"] = case_bytes
         for kind in TRIAL_DIGEST_FIELDS.values():
             evidence = overrides.get(
-                (case_id, kind), trial_evidence_bytes(case_id, kind)
+                (case_id, kind),
+                loaded_skill_bytes
+                if kind == "loaded-skill" and loaded_skill_bytes is not None
+                else trial_evidence_bytes(case_id, kind),
             )
             files[f"evidence/{case_id}/{kind}.bin"] = evidence
     aggregate = overrides.get(
@@ -259,9 +281,10 @@ def retain_json(
     artifact_type: str,
     payload: dict[str, object],
     input_bindings: list[dict[str, str]] | None = None,
+    trial_loaded_skill_bytes: bytes | None = None,
 ) -> dict[str, object]:
     if artifact_type == "trial-pack":
-        files = trial_files(payload)
+        files = trial_files(payload, loaded_skill_bytes=trial_loaded_skill_bytes)
     else:
         files = {"record.json": fixture_canonical_bytes(payload)}
         supporting_evidence = {
@@ -334,9 +357,56 @@ def install_target_and_digest(
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
     target = Path(current["target_identity"]["locator"])
     target.mkdir(parents=True, exist_ok=True)
+    os.chmod(target, 0o755)
     (target / "SKILL.md").write_bytes(CANDIDATE_SKILL_BYTES)
     os.chmod(target / "SKILL.md", 0o644)
     return helper.snapshot_target(target)["manifest_digest"]
+
+
+def mark_run_as_legacy_candidate_v1(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> None:
+    """Rewrite only genesis bytes to the format emitted by the parent helper."""
+    run = state_root / "live" / workflow_id
+    artifact = run / "artifacts" / "resolution"
+    payload_path = artifact / "raw" / "payload.json"
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    if payload["schema_version"] == "skill-builder-resolution.v1":
+        return
+    assert payload["schema_version"] == "skill-builder-resolution.v2"
+    assert payload.pop("candidate_record_schema") == "skill-builder-candidate.v2"
+    payload["schema_version"] = "skill-builder-resolution.v1"
+    payload_bytes = helper.canonical_json_bytes(payload)
+    payload_path.write_bytes(payload_bytes)
+
+    manifest_path = artifact / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["entries"][0]["byte_count"] = len(payload_bytes)
+    manifest["entries"][0]["digest"] = fixture_digest(payload_bytes)
+    manifest["observed_byte_count"] = len(payload_bytes)
+    manifest["manifest_digest"] = helper.canonical_digest(
+        manifest, "manifest_digest"
+    )
+    manifest_path.write_bytes(helper.canonical_json_bytes(manifest))
+
+    envelope_path = artifact / "envelope.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    envelope["payload_digest"] = fixture_digest(payload_bytes)
+    envelope["manifest_digest"] = manifest["manifest_digest"]
+    envelope["envelope_digest"] = helper.canonical_digest(
+        envelope, "envelope_digest"
+    )
+    envelope_path.write_bytes(helper.canonical_json_bytes(envelope))
+
+    receipt_path = run / "receipts" / "00000000.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["relevant_artifact_digests"][0]["envelope_digest"] = envelope[
+        "envelope_digest"
+    ]
+    receipt["receipt_digest"] = helper.canonical_digest(receipt, "receipt_digest")
+    receipt_path.write_bytes(helper.canonical_json_bytes(receipt))
+    derived = helper._derive_index(run)
+    (run / "current.json").write_bytes(helper.canonical_json_bytes(derived))
 
 
 def stage_payload(
@@ -509,16 +579,21 @@ def candidate_payload(
     confirmation_digest: str,
     evaluation_digest: str,
     snapshot_digest: str,
+    schema_version: str = "skill-builder-candidate.v2",
+    resulting_bytes: bytes | None = None,
+    owned_paths: list[str] | None = None,
 ) -> dict[str, object]:
     return {
-        "schema_version": "skill-builder-candidate.v1",
+        "schema_version": schema_version,
         "candidate_id": candidate_id,
         "isolated_locator": str((tmp_path / "candidate").resolve()),
         "base_snapshot_digest": snapshot_digest,
         "candidate_revision": revision,
-        "resulting_digest": fixture_digest(candidate_result_bytes()),
+        "resulting_digest": fixture_digest(
+            candidate_result_bytes() if resulting_bytes is None else resulting_bytes
+        ),
         "writable_role": "implementer",
-        "owned_paths": ["SKILL.md"],
+        "owned_paths": ["SKILL.md"] if owned_paths is None else owned_paths,
         "diff_digest": "2" * 64,
         "local_check_evidence": ["3" * 64],
         "contract_digest": contract_digest,
@@ -528,7 +603,17 @@ def candidate_payload(
     }
 
 
-def trial_payload(candidate_digest: str, revision: str = "candidate-1") -> dict[str, object]:
+def trial_payload(
+    candidate_digest: str,
+    revision: str = "candidate-1",
+    *,
+    loaded_skill_bytes: bytes | None = None,
+) -> dict[str, object]:
+    loaded_skill = (
+        candidate_result_bytes()
+        if loaded_skill_bytes is None
+        else loaded_skill_bytes
+    )
     cases: list[dict[str, object]] = []
     partitions = (
         "visible_development",
@@ -546,7 +631,7 @@ def trial_payload(candidate_digest: str, revision: str = "candidate-1") -> dict[
                 "raw_prompt_digest": fixture_digest(
                     trial_evidence_bytes(case_id, "prompt")
                 ),
-                "loaded_skill_digest": fixture_digest(candidate_result_bytes()),
+                "loaded_skill_digest": fixture_digest(loaded_skill),
                 "fresh_context_identity": f"fresh-context-{index}",
                 "tool_event_digest": fixture_digest(
                     trial_evidence_bytes(case_id, "tool-events")
@@ -609,7 +694,11 @@ def review_payload(
     }
 
 
-def conformance_payload(candidate_digest: str) -> dict[str, object]:
+def conformance_payload(
+    candidate_digest: str,
+    *,
+    gate_ids: tuple[str, ...] = CONFORMANCE_GATES,
+) -> dict[str, object]:
     return {
         "schema_version": "skill-builder-conformance.v1",
         "candidate_digest": candidate_digest,
@@ -621,16 +710,7 @@ def conformance_payload(candidate_digest: str) -> dict[str, object]:
                 "repair_state": "not-required",
                 "release_blocking": True,
             }
-            for gate in (
-                "research",
-                "confirmation",
-                "acceptance-first",
-                "isolation",
-                "evidence",
-                "state",
-                "authority",
-                "cleanup",
-            )
+            for gate in gate_ids
         },
     }
 
@@ -642,7 +722,9 @@ def scorecard_payload(
     review_digest: str,
     triggering_score: int = 10,
     revision: str = "candidate-1",
+    criteria_overrides: dict[str, dict[str, bool]] | None = None,
 ) -> dict[str, object]:
+    overrides = criteria_overrides or {}
     return {
         "schema_version": "skill-builder-scorecard.v1",
         "candidate_digest": candidate_digest,
@@ -654,7 +736,9 @@ def scorecard_payload(
             {
                 "name": name,
                 "score": triggering_score if name == "triggering" else 10,
-                "criteria": {"criterion-1": True},
+                "criteria": overrides.get(
+                    name, {criterion: True for criterion in SCORE_CRITERIA[name]}
+                ),
                 "frozen_parameter_identifiers": ["criterion-1"],
                 "evidence_identifiers": ["evidence-1"],
                 "related_findings": [],
@@ -768,6 +852,10 @@ def build_candidate_stage(
     *,
     queued_targets: list[dict[str, str]] | None = None,
     granted_authority: dict[str, object] | None = None,
+    candidate_schema_version: str = "skill-builder-candidate.v2",
+    candidate_resulting_bytes: bytes | None = None,
+    candidate_owned_paths: list[str] | None = None,
+    legacy_candidate_v1: bool = False,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
@@ -783,6 +871,8 @@ def build_candidate_stage(
         state_root=state_root,
     )
     workflow_id = started["workflow_id"]
+    if legacy_candidate_v1:
+        mark_run_as_legacy_candidate_v1(helper, state_root, workflow_id)
     sequence = 0
     for artifact_id, artifact_type, event, stage in (
         ("baseline", "baseline-report", "capture-baseline", "baseline"),
@@ -881,6 +971,9 @@ def build_candidate_stage(
             confirmation_digest=confirmation["artifact_digest"],
             evaluation_digest=evaluation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
+            schema_version=candidate_schema_version,
+            resulting_bytes=candidate_resulting_bytes,
+            owned_paths=candidate_owned_paths,
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -907,12 +1000,23 @@ def build_verified_stage(
     release_scope: list[str] | None = None,
     release_target: str | None = None,
     review_findings: list[dict[str, object]] | None = None,
+    conformance_gate_ids: tuple[str, ...] = CONFORMANCE_GATES,
+    scorecard_criteria_overrides: dict[str, dict[str, bool]] | None = None,
+    candidate_schema_version: str = "skill-builder-candidate.v2",
+    candidate_resulting_bytes: bytes | None = None,
+    candidate_owned_paths: list[str] | None = None,
+    trial_loaded_skill_bytes: bytes | None = None,
+    legacy_candidate_v1: bool = False,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root, workflow_id, sequence, candidate = build_candidate_stage(
         helper,
         tmp_path,
         queued_targets=queued_targets,
         granted_authority=granted_authority,
+        candidate_schema_version=candidate_schema_version,
+        candidate_resulting_bytes=candidate_resulting_bytes,
+        candidate_owned_paths=candidate_owned_paths,
+        legacy_candidate_v1=legacy_candidate_v1,
     )
     trials = retain_json(
         helper,
@@ -921,8 +1025,12 @@ def build_verified_stage(
         sequence=sequence,
         artifact_id="trials",
         artifact_type="trial-pack",
-        payload=trial_payload(candidate["artifact_digest"]),
+        payload=trial_payload(
+            candidate["artifact_digest"],
+            loaded_skill_bytes=trial_loaded_skill_bytes,
+        ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
+        trial_loaded_skill_bytes=trial_loaded_skill_bytes,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -961,7 +1069,9 @@ def build_verified_stage(
         sequence=sequence,
         artifact_id="conformance",
         artifact_type="builder-run-conformance-ledger",
-        payload=conformance_payload(candidate["artifact_digest"]),
+        payload=conformance_payload(
+            candidate["artifact_digest"], gate_ids=conformance_gate_ids
+        ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
     scorecard = retain_json(
@@ -978,6 +1088,7 @@ def build_verified_stage(
             )["artifact_index"]["evaluation"]["digest"],
             review_digest=review["artifact_digest"],
             triggering_score=triggering_score,
+            criteria_overrides=scorecard_criteria_overrides,
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -3576,6 +3687,88 @@ def test_finalization_rejects_every_blocking_review_severity(tmp_path: Path) -> 
             )
 
 
+@pytest.mark.parametrize("severity", ("high", "medium"))
+def test_finalization_rejects_material_findings_despite_caller_flag(
+    tmp_path: Path, severity: str
+) -> None:
+    """High and Medium severity, not a caller boolean, determine release blocking."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path,
+        review_findings=[
+            {
+                "severity": severity,
+                "release_blocking": False,
+                "evidence": [fixture_digest(REVIEW_FINDING_BYTES)],
+                "impact": "material target failure",
+                "correction": "repair before release",
+                "affected_target_criteria": ["SA9"],
+            }
+        ],
+    )
+
+    with pytest.raises(helper.RunStateError, match="review|finding"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+
+
+@pytest.mark.parametrize(
+    "case_name,options",
+    (
+        (
+            "missing-conformance-gate",
+            {"conformance_gate_ids": CONFORMANCE_GATES[:-1]},
+        ),
+        (
+            "extra-conformance-gate",
+            {"conformance_gate_ids": (*CONFORMANCE_GATES, "BR11")},
+        ),
+        (
+            "missing-category-criterion",
+            {
+                "scorecard_criteria_overrides": {
+                    "triggering": {
+                        criterion: True for criterion in SCORE_CRITERIA["triggering"][:-1]
+                    }
+                }
+            },
+        ),
+        (
+            "extra-category-criterion",
+            {
+                "scorecard_criteria_overrides": {
+                    "safety": {
+                        **{criterion: True for criterion in SCORE_CRITERIA["safety"]},
+                        "SA11": True,
+                    }
+                }
+            },
+        ),
+    ),
+)
+def test_finalization_requires_exact_conformance_and_category_criteria(
+    tmp_path: Path, case_name: str, options: dict[str, object]
+) -> None:
+    """A passing subset or caller-invented gate cannot satisfy the release rubric."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper, tmp_path / case_name, **options
+    )
+
+    with pytest.raises(helper.RunStateError, match="conformance|criterion|score"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+
+
 def test_finalization_rejects_release_without_exact_target_binding(tmp_path: Path) -> None:
     """Dropping target binding would allow release evidence to move between targets."""
     helper = load_helper()
@@ -4192,6 +4385,7 @@ def test_create_mode_records_the_exact_installed_destination(
     )
     target = tmp_path / "skills" / "sample-skill"
     target.mkdir(parents=True)
+    os.chmod(target, 0o755)
     (target / "SKILL.md").write_bytes(CANDIDATE_SKILL_BYTES)
     os.chmod(target / "SKILL.md", 0o644)
     destination_digest = helper.snapshot_target(target)["manifest_digest"]
@@ -4223,6 +4417,164 @@ def test_create_mode_records_the_exact_installed_destination(
     ] == "delivered"
 
 
+def test_new_runs_require_versioned_candidate_result_semantics(tmp_path: Path) -> None:
+    """New state must not let a caller downgrade candidate equality to legacy v1."""
+    helper = load_helper()
+    with pytest.raises(helper.RunStateError, match="candidate|schema|legacy"):
+        build_candidate_stage(
+            helper,
+            tmp_path / "legacy",
+            candidate_schema_version="skill-builder-candidate.v1",
+            candidate_resulting_bytes=CANDIDATE_SKILL_BYTES,
+        )
+
+    state_root, workflow_id, _, _ = build_candidate_stage(
+        helper,
+        tmp_path / "current",
+        candidate_schema_version="skill-builder-candidate.v2",
+        candidate_resulting_bytes=candidate_result_bytes(
+            schema_version="skill-builder-owned-result.v2"
+        ),
+    )
+    assert helper.load_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "candidate"
+
+
+def test_delivered_legacy_v1_run_remains_loadable_recoverable_and_cleanable(
+    tmp_path: Path,
+) -> None:
+    """Upgrade must preserve a delivered run emitted with v1 raw-result semantics."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path,
+        candidate_schema_version="skill-builder-candidate.v1",
+        candidate_resulting_bytes=CANDIDATE_SKILL_BYTES,
+        trial_loaded_skill_bytes=CANDIDATE_SKILL_BYTES,
+        legacy_candidate_v1=True,
+    )
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    delivery_authority_event = b"accepted legacy installation authority\n"
+    delivery_evidence = b"legacy destination verified\n"
+    delivery_authority = fixture_digest(delivery_authority_event)
+    delivered = helper.record_delivery(
+        workflow_id=workflow_id,
+        expected_sequence=finalized["sequence"],
+        delivery={
+            "action": "installation",
+            "destination_identity": "codex:personal:sample-skill",
+            "finalized_revision": "candidate-1",
+            "resulting_destination_digest": install_target_and_digest(
+                helper, state_root, workflow_id
+            ),
+            "acceptance_evidence": [fixture_digest(delivery_evidence)],
+            "user_authority_event_digest": delivery_authority,
+            "actor": "main-agent",
+            "accepted": True,
+        },
+        authority_event_digest=delivery_authority,
+        authority_event=delivery_authority_event,
+        evidence_files={"destination-verification.bin": delivery_evidence},
+        state_root=state_root,
+    )
+
+    assert helper.load_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "delivered"
+    assert helper.recover_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "delivered"
+
+    cleanup_event = b"authorized legacy cleanup\n"
+    authorized = helper.record_cleanup_authority(
+        workflow_id=workflow_id,
+        expected_sequence=delivered["sequence"],
+        authority_event_digest=fixture_digest(cleanup_event),
+        authority_event=cleanup_event,
+        actor="user",
+        state_root=state_root,
+    )
+    cleaned = helper.cleanup_run(
+        workflow_id=workflow_id,
+        expected_sequence=authorized["sequence"],
+        acknowledge_cleanup=True,
+        state_root=state_root,
+    )
+    assert cleaned["stage"] == "cleaned"
+    assert helper.recover_run(
+        workflow_id=workflow_id, state_root=state_root
+    )["stage"] == "cleaned"
+
+
+def test_owned_directory_allows_deleting_an_original_descendant(
+    tmp_path: Path,
+) -> None:
+    """Directory ownership includes removed descendants, not only surviving paths."""
+    helper = load_helper()
+    target = tmp_path / "sample-skill"
+    references = target / "references"
+    references.mkdir(parents=True)
+    os.chmod(target, 0o700)
+    os.chmod(references, 0o755)
+    obsolete = references / "obsolete.md"
+    obsolete.write_bytes(b"obsolete\n")
+    os.chmod(obsolete, 0o644)
+    baseline = helper.snapshot_target(target)
+    obsolete.unlink()
+    delivered = helper.snapshot_target(target)
+    index = {
+        "mode": {"name": "improve"},
+        "target_snapshot": {"manifest": baseline},
+    }
+    expected = fixture_digest(
+        fixture_canonical_bytes(
+            {
+                "schema_version": "skill-builder-owned-result.v2",
+                "target_kind": "directory",
+                "target_mode": 0o700,
+                "entries": [
+                    {
+                        "path": "references",
+                        "kind": "directory",
+                        "mode": 0o755,
+                        "byte_count": 0,
+                        "digest": None,
+                    }
+                ],
+            }
+        )
+    )
+
+    assert helper._owned_result_digest(index, delivered, ["references"]) == expected
+
+
+def test_unowned_root_metadata_change_is_rejected(tmp_path: Path) -> None:
+    """Owning SKILL.md does not authorize changing the target directory mode."""
+    helper = load_helper()
+    target = tmp_path / "sample-skill"
+    target.mkdir()
+    os.chmod(target, 0o700)
+    skill = target / "SKILL.md"
+    skill.write_bytes(CANDIDATE_SKILL_BYTES)
+    os.chmod(skill, 0o644)
+    baseline = helper.snapshot_target(target)
+    os.chmod(target, 0o777)
+    delivered = helper.snapshot_target(target)
+    index = {
+        "mode": {"name": "improve"},
+        "target_snapshot": {"manifest": baseline},
+    }
+
+    with pytest.raises(helper.RunStateError, match="ownership|metadata|mode"):
+        helper._owned_result_digest(index, delivered, ["SKILL.md"])
+
+
 def test_delivery_rejects_destination_that_is_not_the_final_candidate(
     tmp_path: Path,
 ) -> None:
@@ -4237,7 +4589,9 @@ def test_delivery_rejects_destination_that_is_not_the_final_candidate(
     )
     target = tmp_path / "skills" / "sample-skill"
     target.mkdir(parents=True)
+    os.chmod(target, 0o755)
     (target / "SKILL.md").write_bytes(b"unrelated installed content\n")
+    os.chmod(target / "SKILL.md", 0o644)
     destination_digest = helper.snapshot_target(target)["manifest_digest"]
     authority_event = b"user accepted this exact installation\n"
     acceptance_evidence = b"destination snapshot verified\n"
