@@ -64,6 +64,18 @@ CATEGORY_CRITERION_IDS = {
 }
 CONFORMANCE_GATE_IDS = frozenset(f"BR{index}" for index in range(1, 11))
 WORKFLOW_ID_RE = re.compile(r"[0-9a-f]{32}")
+REVIEW_REQUIRED_ARTIFACTS = frozenset(
+    {
+        "candidate-diff",
+        "candidate-manifest",
+        "confirmed-contract",
+        "evaluation-pack",
+        "host-rules",
+        "preserved-regressions",
+        "raw-trial-evidence",
+        "rubric",
+    }
+)
 
 
 def load_traces(partition: str) -> dict[str, list[dict[str, Any]]]:
@@ -139,25 +151,47 @@ class OracleFailure:
 def accepted_finalization_trace(
     revision: str = "candidate-v1",
 ) -> list[dict[str, Any]]:
+    workflow_id = "b" * 32
+    target_identity = "fixture-terse-summary"
     binding = {
+        "workflow_id": workflow_id,
+        "target_identity": target_identity,
         "revision": revision,
         "contract_digest": "contract-v1",
         "evaluation_digest": "evaluation-v1",
     }
-    proof = {
+    gate_proof = {
         "event": "artifact_retained",
-        "artifact_id": "accepted-proof",
+        "artifact_id": "accepted-gate-proof",
         "artifact_type": "trial-receipt",
         "valid": True,
         **binding,
     }
+    category_proofs = [
+        {
+            "event": "artifact_retained",
+            "artifact_id": f"accepted-{category.replace(' ', '-')}-proof",
+            "artifact_type": "category-evidence",
+            "category": category,
+            "criterion_ids": sorted(criterion_ids),
+            "valid": True,
+            **binding,
+        }
+        for category, criterion_ids in CATEGORY_CRITERION_IDS.items()
+    ]
     scores = [
         {
             "event": "category_scored",
             "category": category,
             "score": 10,
+            "review_id": "scoring-review-v1",
+            "scorer_identity": "target-scorer-v1",
             "criteria": [
-                {"id": criterion_id, "passed": True, "evidence": ["accepted-proof"]}
+                {
+                    "id": criterion_id,
+                    "passed": True,
+                    "evidence": [f"accepted-{category.replace(' ', '-')}-proof"],
+                }
                 for criterion_id in sorted(criterion_ids)
             ],
             **binding,
@@ -170,6 +204,8 @@ def accepted_finalization_trace(
             "selected_mode": "improve",
             "target_manifest": "targets/exact-improve/manifest.json",
             "target_snapshot": "fixture-improve-snapshot-v1",
+            "workflow_id": workflow_id,
+            "target_identity": target_identity,
         },
         {
             "event": "research_pack",
@@ -192,26 +228,60 @@ def accepted_finalization_trace(
             "evaluation_digest": "evaluation-v1",
             "target_snapshot": "fixture-improve-snapshot-v1",
         },
-        {"event": "candidate_edit", "candidate_revision": revision},
-        proof,
+        {
+            "event": "candidate_edit",
+            "candidate_revision": revision,
+            "actor_identity": "candidate-implementer-v1",
+            "workflow_id": workflow_id,
+            "target_identity": target_identity,
+        },
+        gate_proof,
+        *category_proofs,
         {
             "event": "builder_conformance_recorded",
             "gates": [
-                {"id": gate_id, "passed": True, "evidence": ["accepted-proof"]}
+                {
+                    "id": gate_id,
+                    "passed": True,
+                    "evidence": ["accepted-gate-proof"],
+                }
                 for gate_id in sorted(CONFORMANCE_GATE_IDS)
             ],
+            **binding,
+        },
+        {
+            "event": "review_recorded",
+            "phase": "scoring",
+            "review_id": "scoring-review-v1",
+            "reviewer_identity": "scoring-reviewer-v1",
+            "reviewer_role": "independent-target-reviewer",
+            "valid": True,
+            "verdict": "ready",
+            "independent": True,
+            "read_only": True,
+            "findings": [],
+            "supplied_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
+            "accessed_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
+            "forbidden_artifacts_accessed": [],
+            "evidence": ["accepted-gate-proof"],
             **binding,
         },
         *scores,
         {
             "event": "review_recorded",
             "phase": "final",
+            "review_id": "final-review-v1",
+            "reviewer_identity": "final-reviewer-v1",
+            "reviewer_role": "independent-target-reviewer",
             "valid": True,
             "verdict": "ready",
             "independent": True,
             "read_only": True,
             "findings": [],
-            "evidence": ["accepted-proof"],
+            "supplied_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
+            "accessed_artifacts": sorted(REVIEW_REQUIRED_ARTIFACTS),
+            "forbidden_artifacts_accessed": [],
+            "evidence": ["accepted-gate-proof"],
             **binding,
         },
         {
@@ -220,7 +290,7 @@ def accepted_finalization_trace(
             "outcome": "pass",
             "independent": True,
             "read_only": True,
-            "evidence": ["accepted-proof"],
+            "evidence": ["accepted-gate-proof"],
             **binding,
         },
         {
@@ -230,13 +300,13 @@ def accepted_finalization_trace(
             "conclusion": "pass",
             "independent": True,
             "read_only": True,
-            "evidence": ["accepted-proof"],
+            "evidence": ["accepted-gate-proof"],
             **binding,
         },
         {
             "event": "release_evidence_retained",
             "valid": True,
-            "evidence": ["accepted-proof"],
+            "evidence": ["accepted-gate-proof"],
             **binding,
         },
         {"event": "finalized", **binding},
@@ -257,18 +327,9 @@ def cleanup_trace(
     }
     return [
         {
-            "event": "run_state_manifest_validated",
+            "event": "finalization_receipt_validated",
             "valid": True,
-            "xdg_state_home": state_home,
-            "run_directory": run_directory,
-            "manifest_digest": "manifest-1",
-            **binding,
-        },
-        {
-            "event": "cleanup_authority_recorded",
-            "valid": True,
-            "effect": "cleanup",
-            "authority_event_digest": "authority-1",
+            "final_transition_digest": "transition-1",
             **binding,
         },
         {
@@ -279,10 +340,35 @@ def cleanup_trace(
             **binding,
         },
         {
+            "event": "cleanup_authority_recorded",
+            "valid": True,
+            "effect": "cleanup",
+            "authority_event_digest": "authority-1",
+            **binding,
+        },
+        {
+            "event": "run_state_manifest_validated",
+            "valid": True,
+            "xdg_state_home": state_home,
+            "run_directory": run_directory,
+            "manifest_digest": "manifest-1",
+            "final_transition_digest": "transition-1",
+            **binding,
+        },
+        {
             "event": "cleanup_tombstone_validated",
             "valid": True,
             "scope": "helper-owned-parent",
             "tombstone_digest": "tombstone-1",
+            "tombstone_path": str(
+                Path(state_home)
+                / "codex-dev-flow"
+                / "skill-builder"
+                / "tombstones"
+                / f"{workflow_id}.json"
+            ),
+            "final_transition_digest": "transition-1",
+            "final_run_manifest_digest": "manifest-1",
             "authority_event_digest": "authority-1",
             "delivery_record_digest": "delivery-1",
             **binding,
@@ -312,9 +398,13 @@ def evaluate_trace(
     verification: dict[str, Any] | None = None
     pause_record: dict[str, Any] | None = None
     identity_ambiguous = False
+    current_workflow_id: str | None = None
+    current_target_identity: str | None = None
     current_candidate_revision: str | None = None
+    current_candidate_implementer: str | None = None
     retained_artifacts: dict[str, dict[str, Any]] = {}
     conformance_record: dict[str, Any] | None = None
+    scoring_review: dict[str, Any] | None = None
     final_review: dict[str, Any] | None = None
     spec_outcome: dict[str, Any] | None = None
     category_scores: dict[str, tuple[dict[str, Any], bool]] = {}
@@ -323,16 +413,36 @@ def evaluate_trace(
     accepted_delivery: dict[str, Any] | None = None
     cleanup_tombstone: dict[str, Any] | None = None
     run_state_manifest: dict[str, Any] | None = None
-    snapshot_changed_since_freeze = False
+    finalization_receipt: dict[str, Any] | None = None
     current_candidate_event_index: int | None = None
+    candidate_snapshot_epoch: int | None = None
+    frozen_snapshot_epoch: int | None = None
+    snapshot_epoch = 0
+    finalization_event_index: int | None = None
     pending_repair: dict[str, Any] | None = None
     record_event_indices: dict[int, int] = {}
+    seen_finding_ids: set[str] = set()
 
-    def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any]:
+    def record_binding(record: dict[str, Any]) -> tuple[Any, Any, Any, Any, Any]:
         return (
+            record.get("workflow_id"),
+            record.get("target_identity"),
             record.get("revision"),
             record.get("contract_digest"),
             record.get("evaluation_digest"),
+        )
+
+    def current_binding() -> tuple[Any, Any, Any, Any, Any]:
+        return (
+            current_workflow_id,
+            current_target_identity,
+            current_candidate_revision,
+            current_contract,
+            (
+                frozen_evaluation.get("evaluation_digest")
+                if frozen_evaluation is not None
+                else None
+            ),
         )
 
     def record_postdates_candidate(record: dict[str, Any]) -> bool:
@@ -344,7 +454,7 @@ def evaluate_trace(
 
     def evidence_resolves(
         evidence_ids: object,
-        binding: tuple[Any, Any, Any],
+        binding: tuple[Any, Any, Any, Any, Any],
         *,
         current_epoch: bool = False,
     ) -> bool:
@@ -364,13 +474,130 @@ def evaluate_trace(
             )
         )
 
+    def review_access_is_valid(review: dict[str, Any]) -> bool:
+        supplied = review.get("supplied_artifacts")
+        accessed = review.get("accessed_artifacts")
+        forbidden = review.get("forbidden_artifacts_accessed")
+        return (
+            isinstance(supplied, list)
+            and all(isinstance(item, str) for item in supplied)
+            and len(supplied) == len(set(supplied))
+            and set(supplied) == REVIEW_REQUIRED_ARTIFACTS
+            and isinstance(accessed, list)
+            and all(isinstance(item, str) for item in accessed)
+            and len(accessed) == len(set(accessed))
+            and set(accessed) == REVIEW_REQUIRED_ARTIFACTS
+            and forbidden == []
+        )
+
+    def review_is_valid(
+        review: dict[str, Any] | None,
+        binding: tuple[Any, Any, Any, Any, Any],
+        scorer_identities: set[str],
+    ) -> bool:
+        if review is None:
+            return False
+        reviewer_identity = review.get("reviewer_identity")
+        return (
+            record_postdates_candidate(review)
+            and record_binding(review) == binding
+            and review.get("valid") is True
+            and review.get("verdict") == "ready"
+            and review.get("independent") is True
+            and review.get("read_only") is True
+            and isinstance(reviewer_identity, str)
+            and bool(reviewer_identity)
+            and review.get("reviewer_role") == "independent-target-reviewer"
+            and isinstance(current_candidate_implementer, str)
+            and bool(current_candidate_implementer)
+            and reviewer_identity != current_candidate_implementer
+            and reviewer_identity not in scorer_identities
+            and review_access_is_valid(review)
+            and evidence_resolves(
+                review.get("evidence"),
+                binding,
+                current_epoch=True,
+            )
+        )
+
+    def category_evidence_resolves(
+        evidence_ids: object,
+        binding: tuple[Any, Any, Any, Any, Any],
+        category: str,
+        criterion_id: str,
+    ) -> bool:
+        return (
+            evidence_resolves(evidence_ids, binding)
+            and isinstance(evidence_ids, list)
+            and all(
+                retained_artifacts[artifact_id].get("category") == category
+                and isinstance(
+                    retained_artifacts[artifact_id].get("criterion_ids"), list
+                )
+                and criterion_id
+                in retained_artifacts[artifact_id].get("criterion_ids", [])
+                for artifact_id in evidence_ids
+            )
+        )
+
+    def clear_revision_dependent_records() -> None:
+        nonlocal conformance_record
+        nonlocal scoring_review
+        nonlocal final_review
+        nonlocal spec_outcome
+        nonlocal verification
+        nonlocal release_evidence
+        retained_artifacts.clear()
+        category_scores.clear()
+        conformance_record = None
+        scoring_review = None
+        final_review = None
+        spec_outcome = None
+        verification = None
+        release_evidence = None
+
     for index, event in enumerate(trace):
         event_name = event["event"]
         record_event_indices[id(event)] = index
+        if finalization_event_index is not None and event_name in {
+            "artifact_retained",
+            "builder_conformance_recorded",
+            "candidate_edit",
+            "category_scored",
+            "evaluation_frozen",
+            "finalized",
+            "release_evidence_retained",
+            "repair_completed",
+            "review_recorded",
+            "spec_outcome_recorded",
+            "target_snapshot_changed",
+            "verification_recorded",
+        }:
+            failures.append(
+                OracleFailure(
+                    "EVENT_AFTER_FINALIZATION",
+                    index,
+                    "revision-dependent work occurred after the finalized terminal event",
+                )
+            )
+            continue
         if event_name == "resolve":
             manifest = json.loads(
                 (fixture_root / event["target_manifest"]).read_text(encoding="utf-8")
             )
+            current_workflow_id = event.get("workflow_id")
+            current_target_identity = manifest.get("canonical_target")
+            if (
+                event.get("target_identity") is not None
+                and event.get("target_identity") != current_target_identity
+            ):
+                failures.append(
+                    OracleFailure(
+                        "TARGET_BINDING_MISMATCH",
+                        index,
+                        "resolved target identity disagreed with the exact target manifest",
+                    )
+                )
             identity_ambiguous = manifest.get("identity_ambiguous", False)
             if event["selected_mode"] == "create" and manifest["exact_target_exists"]:
                 failures.append(
@@ -399,8 +626,15 @@ def evaluate_trace(
             current_contract = event["contract_digest"]
         elif event_name == "target_snapshot_changed":
             current_snapshot = event["target_snapshot"]
-            if frozen_evaluation is not None:
-                snapshot_changed_since_freeze = True
+            snapshot_epoch += 1
+            if current_candidate_event_index is not None:
+                clear_revision_dependent_records()
+                current_candidate_revision = None
+                current_candidate_implementer = None
+                current_candidate_event_index = None
+                candidate_snapshot_epoch = None
+                pending_repair = None
+                material_findings.clear()
         elif event_name == "paused":
             pause_record = event
         elif event_name == "resumed":
@@ -423,6 +657,8 @@ def evaluate_trace(
                         "resume did not revalidate the paused chain, identity, snapshot, and evidence",
                     )
                 )
+        elif event_name == "finalization_receipt_validated":
+            finalization_receipt = event
         elif event_name == "run_state_manifest_validated":
             run_state_manifest = event
         elif event_name == "cleanup_authority_recorded":
@@ -527,6 +763,49 @@ def evaluate_trace(
                 and cleanup_tombstone.get("delivery_record_digest")
                 == accepted_delivery.get("delivery_record_digest")
             )
+            expected_tombstone_path = (
+                trusted_state_home
+                / "codex-dev-flow"
+                / "skill-builder"
+                / "tombstones"
+                / f"{workflow_identity}.json"
+                if workflow_identity_valid
+                else None
+            )
+            finalization_valid = (
+                finalization_receipt is not None
+                and finalization_receipt.get("valid") is True
+                and bool(finalization_receipt.get("final_transition_digest"))
+                and (
+                    finalization_receipt.get("workflow_id"),
+                    finalization_receipt.get("target_identity"),
+                    finalization_receipt.get("finalized_revision"),
+                    finalization_receipt.get("run_directory_identity"),
+                )
+                == cleanup_binding
+            )
+            provenance_valid = (
+                finalization_valid
+                and ownership_valid
+                and tombstone_valid
+                and run_state_manifest.get("final_transition_digest")
+                == finalization_receipt.get("final_transition_digest")
+                and cleanup_tombstone.get("final_transition_digest")
+                == finalization_receipt.get("final_transition_digest")
+                and cleanup_tombstone.get("final_run_manifest_digest")
+                == run_state_manifest.get("manifest_digest")
+                and isinstance(cleanup_tombstone.get("tombstone_path"), str)
+                and Path(cleanup_tombstone["tombstone_path"])
+                == expected_tombstone_path
+                and Path(cleanup_tombstone["tombstone_path"]).parent
+                != Path(run_directory)
+                and record_event_indices[id(finalization_receipt)]
+                < record_event_indices[id(accepted_delivery)]
+                < record_event_indices[id(cleanup_authority)]
+                < record_event_indices[id(run_state_manifest)]
+                < record_event_indices[id(cleanup_tombstone)]
+                < index
+            )
             if not authority_valid:
                 failures.append(
                     OracleFailure(
@@ -565,6 +844,14 @@ def evaluate_trace(
                         "INVALID_CLEANUP_OWNERSHIP",
                         index,
                         "cleanup target was not derived from a validated helper-owned XDG run manifest",
+                    )
+                )
+            if authority_valid and delivery_valid and tombstone_valid and not provenance_valid:
+                failures.append(
+                    OracleFailure(
+                        "INVALID_CLEANUP_PROVENANCE",
+                        index,
+                        "cleanup lacked ordered finalization, manifest, authority, delivery, or parent tombstone provenance",
                     )
                 )
         elif event_name == "goal_changed" and scenario is not None:
@@ -640,15 +927,28 @@ def evaluate_trace(
         elif event_name == "release_evidence_retained":
             release_evidence = event
         elif event_name == "review_recorded":
+            if event.get("phase") == "scoring":
+                scoring_review = event
             if event.get("phase") == "final":
                 final_review = event
             if event["valid"]:
                 for finding in event["findings"]:
+                    finding_id = finding["id"]
+                    if finding_id in seen_finding_ids:
+                        failures.append(
+                            OracleFailure(
+                                "DUPLICATE_MATERIAL_FINDING_ID",
+                                index,
+                                "a review reused an immutable finding identity",
+                            )
+                        )
+                        continue
+                    seen_finding_ids.add(finding_id)
                     if finding["severity"] in {"High", "Medium"}:
                         affected_categories = set(finding["affected_categories"])
-                        material_findings[finding["id"]] = (
+                        material_findings[finding_id] = (
                             affected_categories,
-                            event.get("revision"),
+                            record_binding(event),
                             index,
                         )
                         for category in affected_categories:
@@ -670,10 +970,21 @@ def evaluate_trace(
                 or not repaired_ids.issubset(material_findings)
                 or event["prior_revision"] != current_candidate_revision
                 or event["candidate_revision"] == current_candidate_revision
+                or (
+                    current_workflow_id is not None
+                    and (
+                        event.get("workflow_id") != current_workflow_id
+                        or event.get("target_identity") != current_target_identity
+                    )
+                )
                 or any(
-                    finding_revision != current_candidate_revision
+                    finding_binding[2] != current_candidate_revision
                     or finding_index <= current_candidate_event_index
-                    for _, finding_revision, finding_index in finding_records
+                    or (
+                        current_workflow_id is not None
+                        and finding_binding != current_binding()
+                    )
+                    for _, finding_binding, finding_index in finding_records
                 )
             ):
                 failures.append(
@@ -693,12 +1004,39 @@ def evaluate_trace(
             criteria = event["criteria"]
             binding = record_binding(event)
             expected_ids = CATEGORY_CRITERION_IDS.get(event["category"])
+            scorer_identity = event.get("scorer_identity")
+            full_bound_run = current_workflow_id is not None
+            scoring_review_valid = (
+                not full_bound_run
+                or (
+                    event.get("review_id") == scoring_review.get("review_id")
+                    and isinstance(scorer_identity, str)
+                    and bool(scorer_identity)
+                    and record_event_indices[id(scoring_review)] < index
+                    and review_is_valid(
+                        scoring_review,
+                        current_binding(),
+                        {scorer_identity},
+                    )
+                )
+            ) if scoring_review is not None else not full_bound_run
             ten_is_proven = (
                 len(criteria) == 10
                 and {criterion["id"] for criterion in criteria} == expected_ids
+                and scoring_review_valid
+                and (not full_bound_run or binding == current_binding())
                 and all(
                     criterion["passed"] is True
-                    and evidence_resolves(criterion["evidence"], binding)
+                    and (
+                        category_evidence_resolves(
+                            criterion["evidence"],
+                            binding,
+                            event["category"],
+                            criterion["id"],
+                        )
+                        if full_bound_run
+                        else evidence_resolves(criterion["evidence"], binding)
+                    )
                     for criterion in criteria
                 )
             )
@@ -732,18 +1070,13 @@ def evaluate_trace(
         elif event_name == "verification_recorded":
             verification = event
         elif event_name == "finalized":
-            evaluation_digest = (
-                frozen_evaluation.get("evaluation_digest")
-                if frozen_evaluation is not None
-                else None
-            )
-            expected_binding = (
-                current_candidate_revision,
-                current_contract,
-                evaluation_digest,
-            )
+            expected_binding = current_binding()
             if (
                 None in expected_binding
+                or not isinstance(current_workflow_id, str)
+                or WORKFLOW_ID_RE.fullmatch(current_workflow_id) is None
+                or not isinstance(current_target_identity, str)
+                or not current_target_identity
                 or record_binding(event) != expected_binding
                 or frozen_evaluation is None
                 or frozen_evaluation.get("contract_digest") != current_contract
@@ -758,7 +1091,10 @@ def evaluate_trace(
             if (
                 frozen_evaluation is None
                 or frozen_evaluation.get("target_snapshot") != current_snapshot
-                or snapshot_changed_since_freeze
+                or candidate_snapshot_epoch is None
+                or frozen_snapshot_epoch is None
+                or candidate_snapshot_epoch != frozen_snapshot_epoch
+                or candidate_snapshot_epoch != snapshot_epoch
             ):
                 failures.append(
                     OracleFailure(
@@ -801,20 +1137,15 @@ def evaluate_trace(
                     )
                 )
 
+            scorer_identities = {
+                score_event["scorer_identity"]
+                for score_event, _ in category_scores.values()
+                if isinstance(score_event.get("scorer_identity"), str)
+            }
             review_valid = (
-                final_review is not None
-                and record_postdates_candidate(final_review)
-                and record_binding(final_review) == expected_binding
-                and final_review.get("valid") is True
-                and final_review.get("verdict") == "ready"
-                and final_review.get("independent") is True
-                and final_review.get("read_only") is True
+                review_is_valid(final_review, expected_binding, scorer_identities)
+                and final_review.get("phase") == "final"
                 and not material_findings
-                and evidence_resolves(
-                    final_review.get("evidence"),
-                    expected_binding,
-                    current_epoch=True,
-                )
             )
             if not review_valid:
                 failures.append(
@@ -848,20 +1179,30 @@ def evaluate_trace(
                     )
                 )
 
-            scores_valid = set(category_scores) == set(CATEGORY_CRITERION_IDS) and all(
-                score_event.get("score") == 10
-                and score_proven
-                and record_postdates_candidate(score_event)
-                and record_binding(score_event) == expected_binding
+            scoring_review_valid = (
+                review_is_valid(scoring_review, expected_binding, scorer_identities)
+                and scoring_review.get("phase") == "scoring"
+            )
+            scores_valid = (
+                scoring_review_valid
+                and set(category_scores) == set(CATEGORY_CRITERION_IDS)
                 and all(
-                    evidence_resolves(
-                        criterion.get("evidence"),
-                        expected_binding,
-                        current_epoch=True,
+                    score_event.get("score") == 10
+                    and score_proven
+                    and score_event.get("review_id")
+                    == scoring_review.get("review_id")
+                    and record_postdates_candidate(score_event)
+                    and record_binding(score_event) == expected_binding
+                    and all(
+                        evidence_resolves(
+                            criterion.get("evidence"),
+                            expected_binding,
+                            current_epoch=True,
+                        )
+                        for criterion in score_event.get("criteria", [])
                     )
-                    for criterion in score_event.get("criteria", [])
+                    for score_event, score_proven in category_scores.values()
                 )
-                for score_event, score_proven in category_scores.values()
             )
             if not scores_valid:
                 failures.append(
@@ -923,13 +1264,14 @@ def evaluate_trace(
                         "finalization lacked retained release evidence for the exact binding",
                     )
                 )
+            finalization_event_index = index
         elif event_name == "user_confirmed":
             confirmed_contract = event["contract_digest"]
         elif event_name == "research_pack":
             research_lanes = event["lanes"]
         elif event_name == "evaluation_frozen":
             frozen_evaluation = event
-            snapshot_changed_since_freeze = False
+            frozen_snapshot_epoch = snapshot_epoch
         elif event_name == "candidate_edit":
             if identity_ambiguous:
                 failures.append(
@@ -1024,10 +1366,29 @@ def evaluate_trace(
                             )
                         )
             candidate_revision = event["candidate_revision"]
+            if current_workflow_id is not None and (
+                event.get("workflow_id") != current_workflow_id
+                or event.get("target_identity") != current_target_identity
+            ):
+                failures.append(
+                    OracleFailure(
+                        "CANDIDATE_BINDING_MISMATCH",
+                        index,
+                        "candidate event did not bind the resolved workflow and target",
+                    )
+                )
             if pending_repair is not None:
                 if (
                     current_candidate_revision == pending_repair["prior_revision"]
                     and candidate_revision == pending_repair["candidate_revision"]
+                    and (
+                        current_workflow_id is None
+                        or (
+                            event.get("workflow_id") == current_workflow_id
+                            and event.get("target_identity")
+                            == current_target_identity
+                        )
+                    )
                 ):
                     for finding_id in pending_repair["finding_ids"]:
                         material_findings.pop(finding_id, None)
@@ -1041,15 +1402,11 @@ def evaluate_trace(
                     )
                 pending_repair = None
 
-            retained_artifacts.clear()
-            conformance_record = None
-            final_review = None
-            spec_outcome = None
-            category_scores.clear()
-            verification = None
-            release_evidence = None
+            clear_revision_dependent_records()
             current_candidate_revision = candidate_revision
+            current_candidate_implementer = event.get("actor_identity")
             current_candidate_event_index = index
+            candidate_snapshot_epoch = frozen_snapshot_epoch
 
     return tuple(failures)
 
@@ -1437,6 +1794,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "FINALIZE_WITHOUT_TEN_SCORES",
                 "FINALIZE_WITHOUT_VERIFICATION",
                 "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
+                "FINALIZATION_BINDING_MISMATCH",
             },
         )
 
@@ -1495,6 +1853,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "finding_ids": ["late-safety-finding"],
                 "prior_revision": "candidate-v1",
                 "candidate_revision": "candidate-v2",
+                "workflow_id": "b" * 32,
+                "target_identity": "fixture-terse-summary",
             }
         )
         revision_two = accepted_finalization_trace("candidate-v2")
@@ -1527,6 +1887,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "FINALIZE_WITHOUT_TEN_SCORES",
                 "FINALIZE_WITHOUT_VERIFICATION",
                 "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
+                "FALSE_CATEGORY_TEN",
             },
         )
 
@@ -1601,6 +1962,246 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
         }
         self.assertIn("INVALID_REPAIR_BINDING", failure_codes)
+
+    def test_duplicate_material_finding_ids_cannot_overwrite_unresolved_findings(self) -> None:
+        """Regression: caller-controlled duplicate IDs cannot erase an older finding."""
+
+        trace = accepted_finalization_trace()
+        final_review_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        earlier_review = dict(trace[final_review_index])
+        earlier_review.update(
+            {
+                "phase": "repair",
+                "review_id": "duplicate-review-v1",
+                "reviewer_identity": "duplicate-reviewer-v1",
+                "findings": [
+                    {
+                        "id": "duplicate-finding",
+                        "severity": "Medium",
+                        "affected_categories": ["safety"],
+                    }
+                ],
+            }
+        )
+        trace.insert(final_review_index, earlier_review)
+        final_review_index += 1
+        trace[final_review_index]["findings"] = [
+            {
+                "id": "duplicate-finding",
+                "severity": "High",
+                "affected_categories": ["recovery"],
+            }
+        ]
+        repaired = trace[: final_review_index + 1]
+        repaired.append(
+            {
+                "event": "repair_completed",
+                "finding_ids": ["duplicate-finding"],
+                "prior_revision": "candidate-v1",
+                "candidate_revision": "candidate-v2",
+                "workflow_id": "b" * 32,
+                "target_identity": "fixture-terse-summary",
+            }
+        )
+        revision_two = accepted_finalization_trace("candidate-v2")
+        candidate_index = next(
+            index
+            for index, event in enumerate(revision_two)
+            if event["event"] == "candidate_edit"
+        )
+        repaired.extend(revision_two[candidate_index:])
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(repaired, BUILDER_FIXTURES)
+        }
+        self.assertIn("DUPLICATE_MATERIAL_FINDING_ID", failure_codes)
+
+    def test_revision_dependent_event_after_finalization_is_rejected(self) -> None:
+        """Regression: a late High review cannot mutate an accepted terminal result."""
+
+        trace = accepted_finalization_trace()
+        late_review = dict(
+            next(
+                event
+                for event in trace
+                if event["event"] == "review_recorded" and event.get("phase") == "final"
+            )
+        )
+        late_review.update(
+            {
+                "review_id": "late-review-v1",
+                "verdict": "not ready",
+                "findings": [
+                    {
+                        "id": "late-terminal-finding",
+                        "severity": "High",
+                        "affected_categories": ["safety"],
+                    }
+                ],
+            }
+        )
+        trace.append(late_review)
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+        self.assertIn("EVENT_AFTER_FINALIZATION", failure_codes)
+
+    def test_finalization_rejects_foreign_workflow_and_target_gate_records(self) -> None:
+        """Regression: matching revision strings cannot join another run or target."""
+
+        trace = accepted_finalization_trace()
+        revision_dependent_events = {
+            "artifact_retained",
+            "builder_conformance_recorded",
+            "category_scored",
+            "release_evidence_retained",
+            "review_recorded",
+            "spec_outcome_recorded",
+            "verification_recorded",
+        }
+        for event in trace:
+            if event["event"] in revision_dependent_events:
+                event["workflow_id"] = "c" * 32
+                event["target_identity"] = "foreign-target"
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+        self.assertIn("FINALIZE_WITHOUT_CONFORMANCE", failure_codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", failure_codes)
+
+    def test_identical_refreeze_cannot_hide_snapshot_aba_after_candidate_evidence(self) -> None:
+        """Regression: re-freezing the old value cannot reset a changed snapshot epoch."""
+
+        trace = accepted_finalization_trace()
+        trace[-1:-1] = [
+            {"event": "target_snapshot_changed", "target_snapshot": "snapshot-v2"},
+            {
+                "event": "target_snapshot_changed",
+                "target_snapshot": "fixture-improve-snapshot-v1",
+            },
+            {
+                "event": "evaluation_frozen",
+                "contract_digest": "contract-v1",
+                "evaluation_digest": "evaluation-v1",
+                "target_snapshot": "fixture-improve-snapshot-v1",
+            },
+        ]
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+        self.assertIn("FINALIZATION_SNAPSHOT_MISMATCH", failure_codes)
+
+    def test_cleanup_rejects_tombstone_that_predates_delivery_and_authority(self) -> None:
+        """Regression: cleanup provenance must follow finalization and ordered approvals."""
+
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / ("a" * 32)
+        )
+        trace = cleanup_trace(owned_path)
+        tombstone_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "cleanup_tombstone_validated"
+        )
+        tombstone = trace.pop(tombstone_index)
+        delivery_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "delivery_accepted"
+        )
+        trace.insert(delivery_index, tombstone)
+
+        failure_codes = {
+            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_CLEANUP_PROVENANCE", failure_codes)
+
+    def test_category_scores_require_current_review_and_category_specific_evidence(self) -> None:
+        """Regression: a category cannot borrow evidence or score without current review."""
+
+        borrowed = accepted_finalization_trace()
+        workflow_score = next(
+            event
+            for event in borrowed
+            if event["event"] == "category_scored"
+            and event["category"] == "workflow quality"
+        )
+        for criterion in workflow_score["criteria"]:
+            criterion["evidence"] = ["accepted-safety-proof"]
+
+        missing_review = accepted_finalization_trace()
+        missing_review[:] = [
+            event
+            for event in missing_review
+            if not (
+                event["event"] == "review_recorded"
+                and event.get("phase") == "scoring"
+            )
+        ]
+
+        for label, mutant in (
+            ("borrowed-evidence", borrowed),
+            ("missing-current-review", missing_review),
+        ):
+            with self.subTest(mutant=label):
+                failure_codes = {
+                    failure.code
+                    for failure in evaluate_trace(mutant, BUILDER_FIXTURES)
+                }
+                self.assertIn("FALSE_CATEGORY_TEN", failure_codes)
+
+    def test_review_provenance_and_supplied_artifact_boundaries_are_enforced(self) -> None:
+        """Regression: review independence requires cross-event identity and access proof."""
+
+        implementer_review = accepted_finalization_trace()
+        final_review = next(
+            event
+            for event in implementer_review
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        final_review["reviewer_identity"] = "candidate-implementer-v1"
+        final_review["reviewer_role"] = "candidate-implementer"
+
+        scorer_review = accepted_finalization_trace()
+        scorer_final_review = next(
+            event
+            for event in scorer_review
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        scorer_final_review["reviewer_identity"] = "target-scorer-v1"
+
+        incomplete_access = accepted_finalization_trace()
+        access_review = next(
+            event
+            for event in incomplete_access
+            if event["event"] == "review_recorded" and event.get("phase") == "final"
+        )
+        access_review["accessed_artifacts"] = ["candidate-diff"]
+        access_review["forbidden_artifacts_accessed"] = ["hidden-release"]
+
+        for label, mutant in (
+            ("implementer-as-reviewer", implementer_review),
+            ("scorer-as-reviewer", scorer_review),
+            ("invalid-artifact-access", incomplete_access),
+        ):
+            with self.subTest(mutant=label):
+                failure_codes = {
+                    failure.code
+                    for failure in evaluate_trace(mutant, BUILDER_FIXTURES)
+                }
+                self.assertIn("FINALIZE_WITHOUT_READY_REVIEW", failure_codes)
 
     def test_cleanup_ownership_is_derived_from_validated_xdg_manifest(self) -> None:
         """Regression: matching cleanup labels cannot disguise a production path."""
