@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "plugins" / "codex-dev-flow"
+PLUGIN = ROOT / "plugins" / "expskill"
 SKILL = PLUGIN / "skills" / "implement"
 
 
@@ -42,7 +42,7 @@ class ImplementContractTests(unittest.TestCase):
 
     def test_each_node_uses_one_fresh_tdd_worker(self) -> None:
         for phrase in (
-            "one fresh `devflow-implementer` per node",
+            "one fresh `expskill-implementer` per node",
             "meaningful failing test",
             "smallest implementation",
             "one coherent local commit",
@@ -53,14 +53,14 @@ class ImplementContractTests(unittest.TestCase):
 
     def test_candidate_has_independent_parallel_review_and_spec_gates(self) -> None:
         self.assertIn("launch these fresh agents concurrently", self.normalized)
-        self.assertIn("`devflow-review`", self.normalized)
-        self.assertIn("`devflow-spec`", self.normalized)
+        self.assertIn("`expskill-review`", self.normalized)
+        self.assertIn("`expskill-spec`", self.normalized)
         self.assertIn("neither judge sees or edits the other's conclusion", self.normalized)
         self.assertIn("implementing worker does not review itself", self.normalized)
 
     def test_corrections_use_new_workers_and_are_bounded(self) -> None:
         for phrase in (
-            "launch a new `devflow-implementer`",
+            "launch a new `expskill-implementer`",
             "rerun both judges",
             "do not try to keep one agent alive",
             "three non-improving attempts",
@@ -94,9 +94,9 @@ class ImplementContractTests(unittest.TestCase):
 
     def test_three_runtime_profiles_have_the_accepted_boundaries(self) -> None:
         expected = {
-            "devflow-implementer": ("workspace-write", "red-green-refactor"),
-            "devflow-review": ("read-only", "ready or not ready"),
-            "devflow-spec": ("read-only", "criterion-by-criterion evidence"),
+            "expskill-implementer": ("workspace-write", "red-green-refactor"),
+            "expskill-review": ("read-only", "ready or not ready"),
+            "expskill-spec": ("read-only", "criterion-by-criterion evidence"),
         }
         for name, (sandbox, boundary) in expected.items():
             with self.subTest(profile=name):

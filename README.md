@@ -1,6 +1,6 @@
-# Codex Dev Flow
+# ExpSkill
 
-Codex Dev Flow is a private Codex plugin with seven independent skills and one
+ExpSkill is a private Codex plugin with seven independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -36,13 +36,13 @@ Invoke a skill directly when you know what you want:
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
   fact-grounded interview and mandatory final confirmation.
 
-Invoke `$use-expand` when you want the plugin to select and explain the next
+Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It opens one skill per transition, coordinates against the canonical
 Plan Graph when one exists, validates revision-bound receipts, and preserves
 the implementation gates. It is the only skill that may activate implicitly.
 
 When a routed phase is blocked by several connected, consequential decisions
-that only the user can make, `$use-expand` may offer `$grill-me`. It waits for
+that only the user can make, `$use-expskill` may offer `$grill-me`. It waits for
 explicit consent and never launches that interview automatically.
 
 Direct skill invocation never loads the entire pipeline. For example:
@@ -66,7 +66,7 @@ plan is ready and never emits a next-skill route. Findings, blocked work, stale
 evidence, and unresolved user decisions do not advance.
 
 `$brainstorm` remains independently usable and produces a confirmed Concept
-Brief without requiring the graph. `$use-expand` owns optional transition
+Brief without requiring the graph. `$use-expskill` owns optional transition
 selection; the individual skills do not silently open the whole pipeline.
 
 The live certification chain is unfinished. Its required boundary must use

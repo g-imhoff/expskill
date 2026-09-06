@@ -1,40 +1,40 @@
 {
   "policy_version": "execution-budget-policy.v1",
   "profiles": {
-    "devflow-explorer": {
-      "agent_type": "devflow-explorer",
+    "expskill-explorer": {
+      "agent_type": "expskill-explorer",
       "role": "explorer",
       "model": "gpt-5.6-luna",
       "effort": "max",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "devflow-test-engineer": {
-      "agent_type": "devflow-test-engineer",
+    "expskill-test-engineer": {
+      "agent_type": "expskill-test-engineer",
       "role": "test-engineer",
       "model": "gpt-5.6-luna",
       "effort": "max",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "devflow-implementer": {
-      "agent_type": "devflow-implementer",
+    "expskill-implementer": {
+      "agent_type": "expskill-implementer",
       "role": "implementer",
       "model": "gpt-5.6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
     },
-    "devflow-review": {
-      "agent_type": "devflow-review",
+    "expskill-review": {
+      "agent_type": "expskill-review",
       "role": "review",
       "model": "gpt-5.6-sol",
       "effort": "xhigh",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "devflow-spec": {
-      "agent_type": "devflow-spec",
+    "expskill-spec": {
+      "agent_type": "expskill-spec",
       "role": "spec",
       "model": "gpt-5.6-sol",
       "effort": "xhigh",
@@ -46,25 +46,25 @@
     "implement": {
       "standard": {
         "allowed_profiles": [
-          "devflow-implementer",
-          "devflow-review",
-          "devflow-spec"
+          "expskill-implementer",
+          "expskill-review",
+          "expskill-spec"
         ],
         "selected": [
           {
             "role": "implementer",
-            "profile": "devflow-implementer",
-            "agent_type": "devflow-implementer"
+            "profile": "expskill-implementer",
+            "agent_type": "expskill-implementer"
           },
           {
             "role": "review",
-            "profile": "devflow-review",
-            "agent_type": "devflow-review"
+            "profile": "expskill-review",
+            "agent_type": "expskill-review"
           },
           {
             "role": "spec",
-            "profile": "devflow-spec",
-            "agent_type": "devflow-spec"
+            "profile": "expskill-spec",
+            "agent_type": "expskill-spec"
           }
         ],
         "max_agent_calls": 30,

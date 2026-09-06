@@ -17,7 +17,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = ROOT / "plugins" / "codex-dev-flow" / "scripts" / "plan_graph.py"
+HELPER_PATH = ROOT / "plugins" / "expskill" / "scripts" / "plan_graph.py"
 
 
 def _skip_exception(error: BaseException) -> bool:
@@ -61,7 +61,7 @@ class _NoSkipModule:
 def load_helper() -> object:
     if not HELPER_PATH.is_file():
         raise AssertionError(f"missing route-neutral plan graph helper: {HELPER_PATH}")
-    specification = importlib.util.spec_from_file_location("devflow_plan_graph", HELPER_PATH)
+    specification = importlib.util.spec_from_file_location("expskill_plan_graph", HELPER_PATH)
     if specification is None or specification.loader is None:
         raise ImportError(f"cannot load plan graph helper: {HELPER_PATH}")
     module = importlib.util.module_from_spec(specification)

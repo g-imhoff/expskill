@@ -16,8 +16,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
-SKILL_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills" / "skill-builder"
-PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills"
+SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "skill-builder"
+PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "skills"
 TRIAL_CONTROL_PATH = "controls/recorded-trial-control.json"
 VERIFICATION_CONTROL_PATH = "controls/recorded-verification-control.json"
 USER_AUTHORITY_CONTROL_PATH = "controls/trusted-user-authority.json"
@@ -5549,7 +5549,7 @@ def cleanup_trace(
             "tombstone_digest": "tombstone-1",
             "tombstone_path": str(
                 Path(state_home)
-                / "codex-dev-flow"
+                / "expskill"
                 / "skill-builder"
                 / "tombstones"
                 / f"{workflow_id}.json"
@@ -7594,7 +7594,7 @@ def evaluate_trace(
             )
             expected_directory = (
                 trusted_state_home
-                / "codex-dev-flow"
+                / "expskill"
                 / "skill-builder"
                 / "runs"
                 / workflow_identity
@@ -7676,7 +7676,7 @@ def evaluate_trace(
             )
             expected_tombstone_path = (
                 trusted_state_home
-                / "codex-dev-flow"
+                / "expskill"
                 / "skill-builder"
                 / "tombstones"
                 / f"{workflow_identity}.json"
@@ -11398,7 +11398,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11728,7 +11728,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11768,7 +11768,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -12130,7 +12130,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13389,7 +13389,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13430,7 +13430,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", production_codes)
 
         spoofed_codes = integrated_codes(
-            "/srv/skills/codex-dev-flow/skill-builder/runs/workflow-1",
+            "/srv/skills/expskill/skill-builder/runs/workflow-1",
             xdg_state_home="/srv/skills",
         )
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", spoofed_codes)
@@ -13848,7 +13848,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13919,7 +13919,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id

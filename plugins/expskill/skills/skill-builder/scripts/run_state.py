@@ -442,7 +442,7 @@ def raw_digest(payload: bytes) -> str:
 def default_state_root() -> Path:
     configured = os.environ.get("XDG_STATE_HOME")
     base = Path(configured) if configured else Path.home() / ".local" / "state"
-    return base / "codex-dev-flow" / "skill-builder"
+    return base / "expskill" / "skill-builder"
 
 
 def _absolute_root(state_root: Path | None) -> Path:

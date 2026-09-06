@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Any
 
 
-MARKETPLACE_NAME = "codex-dev-flow"
-PLUGIN_NAME = "codex-dev-flow"
+MARKETPLACE_NAME = "expskill"
+PLUGIN_NAME = "expskill"
 PLUGIN_VERSION = "0.1.0"
 PLUGIN_VERSION_PATTERN = re.compile(
     rf"{re.escape(PLUGIN_VERSION)}(?:\+codex\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
-REPOSITORY_URL = "https://github.com/g-imhoff/codex-dev-flow"
+REPOSITORY_URL = "https://github.com/g-imhoff/expskill"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
@@ -32,6 +32,25 @@ UNSLOP_HOOK_SCRIPT_SHA256 = "6eea44b9a2fcccfe685c5b93c7fd2b3e868bb9618f6764a7e97
 THIRD_PARTY_LOCK_PATH = "third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
+LEGACY_PROJECT_IDENTITIES = (
+    "-".join(("codex", "dev", "flow")),
+    " ".join(("codex", "dev", "flow")),
+    "_".join(("codex", "dev", "flow")),
+    "use-" + "expand",
+    "use_" + "expand",
+    "dev" + "flow-",
+)
+PROJECT_IDENTITY_TEXT_SUFFIXES = {
+    ".csv",
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 PLUGIN_INTERFACE_FIELDS = {
     "displayName",
     "shortDescription",
@@ -45,7 +64,7 @@ PUBLIC_SKILL_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
-    "$use-expand",
+    "$use-expskill",
     "$design",
     "$grill-me",
     "$skill-builder",
@@ -89,7 +108,7 @@ PUBLIC_METADATA_JARGON = re.compile(
     re.IGNORECASE,
 )
 EXPECTED_SKILLS = {
-    "use-expand",
+    "use-expskill",
     "design",
     "brainstorm",
     "plan",
@@ -192,11 +211,11 @@ EXPECTED_UNSLOP_HOOKS = {
 }
 
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-    "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "devflow-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "devflow-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
 }
 
 REVIEW_HANDOFF_PATHS = (
@@ -246,8 +265,8 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "transcripts.",
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
-    "devflow-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "devflow-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
+    "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
+    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -260,21 +279,21 @@ REQUIRED_AGENT_FIELDS = (
 )
 
 AGENT_BOUNDARIES = {
-    "devflow-explorer": ("read-only", "no fixes", "no delegation"),
-    "devflow-test-engineer": (
+    "expskill-explorer": ("read-only", "no fixes", "no delegation"),
+    "expskill-test-engineer": (
         "test strategy",
         "shared acceptance tests",
         "regression",
         "no product implementation",
     ),
-    "devflow-implementer": (
+    "expskill-implementer": (
         "exactly one accepted node",
         "red-green-refactor",
         "one owned branch",
         "no delegation",
         "no scope expansion",
     ),
-    "devflow-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
+    "expskill-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "read-only",
         "severity",
         "evidence",
@@ -283,7 +302,7 @@ AGENT_BOUNDARIES = {
         "ready",
         "not ready",
     ),
-    "devflow-spec": REVIEW_AGENT_HANDOFF_CLAUSES + (
+    "expskill-spec": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "every accepted behavior",
         "criterion-by-criterion evidence",
         "no tracked-source edits",
@@ -295,40 +314,40 @@ AGENT_BOUNDARIES = {
 }
 
 EXPECTED_POLICY_PROFILES = {
-    "devflow-explorer": {
-        "agent_type": "devflow-explorer",
+    "expskill-explorer": {
+        "agent_type": "expskill-explorer",
         "role": "explorer",
         "model": "gpt-5.6-luna",
         "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-test-engineer": {
-        "agent_type": "devflow-test-engineer",
+    "expskill-test-engineer": {
+        "agent_type": "expskill-test-engineer",
         "role": "test-engineer",
         "model": "gpt-5.6-luna",
         "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-implementer": {
-        "agent_type": "devflow-implementer",
+    "expskill-implementer": {
+        "agent_type": "expskill-implementer",
         "role": "implementer",
         "model": "gpt-5.6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
-    "devflow-review": {
-        "agent_type": "devflow-review",
+    "expskill-review": {
+        "agent_type": "expskill-review",
         "role": "review",
         "model": "gpt-5.6-sol",
         "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-spec": {
-        "agent_type": "devflow-spec",
+    "expskill-spec": {
+        "agent_type": "expskill-spec",
         "role": "spec",
         "model": "gpt-5.6-sol",
         "effort": "xhigh",
@@ -341,25 +360,25 @@ EXPECTED_POLICY_ROUTES = {
     "implement": {
         "standard": {
             "allowed_profiles": [
-                "devflow-implementer",
-                "devflow-review",
-                "devflow-spec",
+                "expskill-implementer",
+                "expskill-review",
+                "expskill-spec",
             ],
             "selected": [
                 {
                     "role": "implementer",
-                    "profile": "devflow-implementer",
-                    "agent_type": "devflow-implementer",
+                    "profile": "expskill-implementer",
+                    "agent_type": "expskill-implementer",
                 },
                 {
                     "role": "review",
-                    "profile": "devflow-review",
-                    "agent_type": "devflow-review",
+                    "profile": "expskill-review",
+                    "agent_type": "expskill-review",
                 },
                 {
                     "role": "spec",
-                    "profile": "devflow-spec",
-                    "agent_type": "devflow-spec",
+                    "profile": "expskill-spec",
+                    "agent_type": "expskill-spec",
                 },
             ],
             "max_agent_calls": 30,
@@ -567,6 +586,7 @@ def validate_repository(root: Path) -> tuple[str, ...]:
     _validate_public_readme(repository_root, errors)
     _validate_removed_repository_local_skill(repository_root, errors)
     _validate_skill_punctuation(repository_root, errors)
+    _validate_no_legacy_project_identity(repository_root, errors)
     return tuple(errors)
 
 
@@ -755,9 +775,9 @@ def _validate_marketplace(
             if source.get("source") != "local":
                 errors.append(f"{label}.source.source must be 'local'")
             source_path = source.get("path")
-            if source_path != "./plugins/codex-dev-flow":
+            if source_path != "./plugins/expskill":
                 errors.append(
-                    f"{label}.source.path must be './plugins/codex-dev-flow', got {source_path!r}"
+                    f"{label}.source.path must be './plugins/expskill', got {source_path!r}"
                 )
             elif not (repository_root / "plugins" / PLUGIN_NAME).is_dir():
                 errors.append(f"{label}.source.path does not resolve to the plugin directory")
@@ -776,9 +796,9 @@ def _validate_marketplace(
     for name in duplicates:
         errors.append(f"marketplace plugin name {name!r} is duplicated")
     if not matching_entries:
-        errors.append("marketplace is missing plugin 'codex-dev-flow'")
+        errors.append("marketplace is missing plugin 'expskill'")
     elif len(matching_entries) > 1:
-        errors.append("marketplace plugin 'codex-dev-flow' is duplicated")
+        errors.append("marketplace plugin 'expskill' is duplicated")
 
 
 def _validate_plugin_manifest(
@@ -830,7 +850,7 @@ def _validate_plugin_manifest(
             errors.append(f"plugin interface is missing fields: {missing!r}")
         if unexpected:
             errors.append(f"plugin interface has unexpected fields: {unexpected!r}")
-        if interface.get("displayName") != "Codex Dev Flow":
+        if interface.get("displayName") != "ExpSkill":
             errors.append("plugin interface displayName must preserve the product identity")
         if interface.get("developerName") != PLUGIN_AUTHOR_NAME:
             errors.append("plugin interface developerName must match the plugin author")
@@ -875,11 +895,11 @@ def _validate_plugin_manifest(
             not isinstance(default_prompt, str)
             or not default_prompt.strip()
             or len(default_prompt) > 160
-            or not _contains_exact_skill_token(default_prompt, "$use-expand")
+            or not _contains_exact_skill_token(default_prompt, "$use-expskill")
             or "next lifecycle step" not in default_prompt.lower()
         ):
             errors.append(
-                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next lifecycle step"
+                "plugin interface defaultPrompt must explicitly invoke $use-expskill for the next lifecycle step"
             )
         elif PUBLIC_METADATA_JARGON.search(default_prompt):
             errors.append("plugin interface defaultPrompt exposes private implementation or scaffold jargon")
@@ -1052,15 +1072,15 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
                     "skill-builder contains lifecycle wording outside the canonical boundary"
                 )
 
-    router_path = skills_root / "use-expand" / "SKILL.md"
+    router_path = skills_root / "use-expskill" / "SKILL.md"
     if router_path.is_file() and not router_path.is_symlink():
         try:
             router = router_path.read_text(encoding="utf-8")
         except OSError as error:
-            errors.append(f"use-expand contract could not be read: {error}")
+            errors.append(f"use-expskill contract could not be read: {error}")
         else:
             if SKILL_BUILDER_NAME_PATTERN.search(router):
-                errors.append("use-expand must not name skill-builder")
+                errors.append("use-expskill must not name skill-builder")
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -1349,6 +1369,36 @@ def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> Non
                 errors.append(f"skill text {relative} contains a semicolon")
 
 
+def _validate_no_legacy_project_identity(
+    repository_root: Path, errors: list[str]
+) -> None:
+    candidates: list[Path] = [repository_root / "README.md"]
+    for relative_root in (".agents", "docs", "plugins", "scripts", "tests"):
+        root = repository_root / relative_root
+        if root.is_dir():
+            candidates.extend(path for path in root.rglob("*") if path.is_file())
+
+    for path in sorted(set(candidates)):
+        try:
+            relative = path.relative_to(repository_root)
+        except ValueError:
+            continue
+        if path.is_symlink() or path.suffix.lower() not in PROJECT_IDENTITY_TEXT_SUFFIXES:
+            continue
+        if "third-party" in relative.parts or "__pycache__" in relative.parts:
+            continue
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        searchable = f"{relative.as_posix()}\n{contents}".casefold()
+        for marker in LEGACY_PROJECT_IDENTITIES:
+            if marker.casefold() in searchable:
+                errors.append(
+                    f"legacy project identity {marker!r} remains in {relative.as_posix()}"
+                )
+
+
 def _parse_frontmatter(
     contents: str, skill_directory: str, errors: list[str]
 ) -> dict[str, str] | None:
@@ -1456,7 +1506,7 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
     implicit = policy.get("allow_implicit_invocation")
     if not isinstance(implicit, bool):
         errors.append(f"skill {skill_root.name!r} allow_implicit_invocation must be a boolean")
-    elif implicit is not (skill_root.name == "use-expand"):
+    elif implicit is not (skill_root.name == "use-expskill"):
         errors.append(f"skill {skill_root.name!r} implicit invocation policy drift")
 
 
@@ -1625,12 +1675,12 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
             errors.append(f"agent profile {path.name!r} must not be a symlink")
             continue
         if not path.is_file():
-            if path.name.startswith("devflow-"):
+            if path.name.startswith("expskill-"):
                 errors.append(f"unexpected agent profile {path.name!r}")
             continue
         if path.suffix == ".toml" and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.stem!r}")
-        elif path.name.startswith("devflow-") and path.name not in expected_filenames:
+        elif path.name.startswith("expskill-") and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.name!r}")
     for expected_name in EXPECTED_AGENTS:
         path = _required_package_path(
@@ -1705,7 +1755,7 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate the codex-dev-flow repository contract.")
+    parser = argparse.ArgumentParser(description="Validate the expskill repository contract.")
     parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args(argv)
     errors = validate_repository(args.root)

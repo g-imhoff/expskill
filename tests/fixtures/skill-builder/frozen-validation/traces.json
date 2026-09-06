@@ -277,7 +277,7 @@
         "event": "write",
         "actor": "candidate-implementer",
         "destination_scope": "production-target",
-        "path": "plugins/codex-dev-flow/skills/fixture-terse-summary/SKILL.md",
+        "path": "plugins/expskill/skills/fixture-terse-summary/SKILL.md",
         "authority": false
       }
     ],

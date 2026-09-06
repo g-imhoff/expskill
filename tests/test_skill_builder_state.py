@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = (
     ROOT
     / "plugins"
-    / "codex-dev-flow"
+    / "expskill"
     / "skills"
     / "skill-builder"
     / "scripts"
@@ -3345,7 +3345,7 @@ def test_cli_help_strict_json_xdg_default_and_success_receipts(tmp_path: Path) -
     receipt = json.loads(initialized.stdout)
     assert receipt["operation"] == "initialize"
     assert receipt["sequence"] == 0
-    default_root = tmp_path / "xdg" / "codex-dev-flow" / "skill-builder"
+    default_root = tmp_path / "xdg" / "expskill" / "skill-builder"
     assert (default_root / "live" / receipt["workflow_id"]).is_dir()
     before = {
         path.relative_to(default_root).as_posix(): path.read_bytes()

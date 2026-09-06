@@ -66,7 +66,7 @@ def _state_home(state_home: Path | None = None) -> Path:
 def _owned_path(repo: Path, run_id: str, task: str, state_home: Path) -> Path:
     return (
         _state_home(state_home)
-        / "codex-dev-flow"
+        / "expskill"
         / "worktrees"
         / _repository_hash(repo)
         / run_id
@@ -296,7 +296,7 @@ def create_worktree(repo: Path, base: str, run_id: str, task: str, state_home: P
     canonical_repo = _canonical_repository(repo)
     _validate_slug(run_id, "run_id")
     _validate_slug(task, "task")
-    branch = f"devflow/{run_id}/{task}"
+    branch = f"expskill/{run_id}/{task}"
     canonical_state = _state_home(state_home)
     target = _owned_path(canonical_repo, run_id, task, canonical_state)
     if _path_exists(target):
@@ -347,8 +347,8 @@ def _registered_worktrees(repo: Path) -> dict[Path, str | None]:
 
 def _branch_parts(branch: str) -> tuple[str, str]:
     parts = branch.split("/")
-    if len(parts) != 3 or parts[0] != "devflow":
-        raise ValueError(f"branch must have the form devflow/<run-id>/<task>: {branch!r}")
+    if len(parts) != 3 or parts[0] != "expskill":
+        raise ValueError(f"branch must have the form expskill/<run-id>/<task>: {branch!r}")
     _validate_slug(parts[1], "run_id")
     _validate_slug(parts[2], "task")
     return parts[1], parts[2]

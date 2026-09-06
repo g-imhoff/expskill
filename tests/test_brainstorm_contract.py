@@ -14,7 +14,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills" / "brainstorm"
+SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "brainstorm"
 ENTRYPOINT = SKILL_ROOT / "SKILL.md"
 METADATA = SKILL_ROOT / "agents" / "openai.yaml"
 CATALOG = SKILL_ROOT / "references" / "brainstorm-techniques.csv"
@@ -115,7 +115,7 @@ FORBIDDEN_ROUTING_TOKENS = (
     "$review",
     "$verify",
     "$integrate",
-    "$use-expand",
+    "$use-expskill",
 )
 
 
@@ -231,7 +231,7 @@ class BrainstormContractTests(unittest.TestCase):
         missing_catalog = (
             missing_root
             / "plugins"
-            / "codex-dev-flow"
+            / "expskill"
             / "skills"
             / "brainstorm"
             / "references"
@@ -253,7 +253,7 @@ class BrainstormContractTests(unittest.TestCase):
                 changed_catalog = (
                     changed_root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "skills"
                     / "brainstorm"
                     / "references"

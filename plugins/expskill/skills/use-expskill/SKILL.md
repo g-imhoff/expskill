@@ -1,9 +1,9 @@
 ---
-name: use-expand
+name: use-expskill
 description: Use only for code or executable-configuration requests needing lifecycle routing. Stay inactive for explicit skills, read-only work, and non-code requests.
 ---
 
-# Use Expand
+# Use ExpSkill
 
 Choose and coordinate the smallest appropriate product skill for a development
 request. Do not reproduce another skill's work inside the router.
@@ -36,7 +36,7 @@ transition, and apply only receipts returned by the selected skill. Do not let
 workers write graph state.
 
 Resolve the graph helper from the loaded skill at `../../scripts/plan_graph.py`.
-`plugins/codex-dev-flow/scripts/plan_graph.py` is only the source-package locator.
+`plugins/expskill/scripts/plan_graph.py` is only the source-package locator.
 
 `$implement` owns its TDD workers, per-node review/spec correction loops, safe
 local lane integration, affected checks, cleanup, and final whole-branch

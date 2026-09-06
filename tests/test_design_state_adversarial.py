@@ -15,7 +15,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "plugins" / "codex-dev-flow" / "scripts" / "design_state.py"
+HELPER = ROOT / "plugins" / "expskill" / "scripts" / "design_state.py"
 DIGEST = "a" * 64
 
 
