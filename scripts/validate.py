@@ -41,15 +41,49 @@ PLUGIN_INTERFACE_FIELDS = {
     "capabilities",
     "defaultPrompt",
 }
-PUBLIC_PHASE_TOKENS = {
+PUBLIC_SKILL_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
     "$use-expand",
     "$design",
     "$grill-me",
+    "$skill-builder",
     "$unslop",
 }
+PUBLIC_SKILL_COUNT_TEXT = "seven independent skills and one optional lifecycle router"
+SKILL_BUILDER_TOKEN = "$skill-builder"
+SKILL_BUILDER_REQUIRED_REFERENCES = (
+    "references/artifact-contracts.md",
+    "references/evaluation-rubric.md",
+)
+SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
+    sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
+)
+SKILL_BUILDER_BOUNDARY_SECTION = (
+    "## Boundary\n\n"
+    "`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary "
+    "development, product planning, application design, documentation that is not an "
+    "agent skill, installation-only work, and lifecycle routing. Do not invoke or depend "
+    "on a product lifecycle phase or an ambient authoring skill.\n\n"
+    "Success exists only when one exact revision has a confirmed contract, frozen "
+    "evaluation evidence, isolated trial evidence, builder-run conformance, independent "
+    "review, ten independently satisfied target category scores, verification, and "
+    "retained release evidence. Static validation alone is never completion.\n\n"
+    "Read [artifact contracts](references/artifact-contracts.md) completely at run start "
+    "and again before resuming persisted work. Read [evaluation rubric]"
+    "(references/evaluation-rubric.md) completely before freezing the evaluation pack "
+    "and before every review or scoring pass."
+)
+SKILL_BUILDER_README_LINES = (
+    "- `$skill-builder` creates or improves one exact agent skill through evidence-gated "
+    "research, trials, review, and verification.",
+    "Use $skill-builder to create or improve one exact agent skill with retained evidence.",
+)
+SKILL_BUILDER_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])skill(?:-|[ \t]+)builder(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
     re.IGNORECASE,
@@ -61,6 +95,7 @@ EXPECTED_SKILLS = {
     "plan",
     "implement",
     "grill-me",
+    "skill-builder",
     "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
@@ -418,6 +453,58 @@ def _required_package_path(
     return path
 
 
+def _required_nonempty_package_file(
+    package_root: Path,
+    relative: str,
+    label: str,
+    errors: list[str],
+) -> Path | None:
+    path = _required_package_path(
+        package_root,
+        relative,
+        label,
+        "file",
+        errors,
+    )
+    if path is None:
+        return None
+    metadata = _lstat(path)
+    if metadata is None or metadata.st_size == 0:
+        errors.append(f"{label} must be a non-empty regular file: {path}")
+        return None
+    try:
+        path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"{label} must be readable UTF-8 text: {path}: {error}")
+        return None
+    return path
+
+
+def _contains_exact_skill_token(contents: str, token: str) -> bool:
+    return re.search(
+        rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])",
+        contents,
+    ) is not None
+
+
+def _markdown_level_two_section(contents: str, heading: str) -> str | None:
+    lines = contents.splitlines()
+    marker = f"## {heading}"
+    starts = [index for index, line in enumerate(lines) if line == marker]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]).rstrip()
+
+
 def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
     """Enumerate package entries without traversing symlink directories."""
 
@@ -477,6 +564,8 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         _validate_unslop_hook(plugin_root, errors)
         _validate_third_party_sources(plugin_root, errors)
         _validate_helper_and_package_layout(plugin_root, errors)
+    _validate_public_readme(repository_root, errors)
+    _validate_removed_repository_local_skill(repository_root, errors)
     _validate_skill_punctuation(repository_root, errors)
     return tuple(errors)
 
@@ -715,9 +804,11 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
-            if phrase not in normalized_description:
-                errors.append(f"plugin description must advertise {phrase!r}")
+        if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
+            errors.append(
+                "plugin description must advertise seven independent skills and one optional "
+                "lifecycle router"
+            )
         if PUBLIC_METADATA_JARGON.search(description):
             errors.append("plugin description exposes private implementation or scaffold jargon")
     if manifest.get("author") != {"name": PLUGIN_AUTHOR_NAME}:
@@ -770,8 +861,8 @@ def _validate_plugin_manifest(
         else:
             if ("$" + "acceptance") in long_description:
                 errors.append("plugin interface longDescription contains removed public token " + "$" + "acceptance")
-            for token in sorted(PUBLIC_PHASE_TOKENS):
-                if token not in long_description:
+            for token in sorted(PUBLIC_SKILL_TOKENS):
+                if not _contains_exact_skill_token(long_description, token):
                     errors.append(f"plugin interface longDescription must advertise {token}")
             for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
                 if phrase not in long_description.lower():
@@ -784,7 +875,7 @@ def _validate_plugin_manifest(
             not isinstance(default_prompt, str)
             or not default_prompt.strip()
             or len(default_prompt) > 160
-            or "$use-expand" not in default_prompt
+            or not _contains_exact_skill_token(default_prompt, "$use-expand")
             or "next lifecycle step" not in default_prompt.lower()
         ):
             errors.append(
@@ -832,11 +923,18 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "references/interaction.md", "references/forms.md", "references/responsive.md",
                 "references/accessibility.md", "references/motion.md", "references/data-display.md",
             })
+        if skill_root.name == "skill-builder":
+            expected_files.update({
+                *SKILL_BUILDER_REQUIRED_REFERENCES,
+                "scripts/run_state.py",
+            })
         expected_directories = {"agents"}
         if skill_root.name == "brainstorm":
             expected_directories.add("references")
         if skill_root.name == "design":
             expected_directories.add("references")
+        if skill_root.name == "skill-builder":
+            expected_directories.update({"references", "scripts"})
         actual_files = {
             path.relative_to(skill_root).as_posix()
             for path in skill_root.rglob("*")
@@ -854,6 +952,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         for path in skill_root.rglob("*"):
             if path.is_symlink():
                 errors.append(f"skill {skill_root.name!r} contains a symlink: {path}")
+        if skill_root.name == "skill-builder":
+            for relative in SKILL_BUILDER_REQUIRED_REFERENCES:
+                _required_nonempty_package_file(
+                    plugin_root,
+                    f"{relative_skill}/{relative}",
+                    f"skill 'skill-builder' required reference {relative!r}",
+                    errors,
+                )
         skill_path = _required_package_path(
             plugin_root,
             f"{relative_skill}/SKILL.md",
@@ -908,6 +1014,53 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
+    _validate_skill_builder_separation(skills_root, errors)
+
+
+def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> None:
+    builder_path = skills_root / "skill-builder" / "SKILL.md"
+    if builder_path.is_file() and not builder_path.is_symlink():
+        try:
+            builder = builder_path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"skill-builder contract could not be read: {error}")
+        else:
+            boundary = _markdown_level_two_section(builder, "Boundary")
+            if boundary != SKILL_BUILDER_BOUNDARY_SECTION:
+                errors.append(
+                    "skill-builder canonical boundary section must match the pinned contract"
+                )
+            if not _contains_exact_skill_token(builder, SKILL_BUILDER_TOKEN):
+                errors.append("skill-builder contract must identify $skill-builder directly")
+            if any(
+                _contains_exact_skill_token(builder, token)
+                for token in SKILL_BUILDER_FORBIDDEN_TOKENS
+            ):
+                errors.append(
+                    "skill-builder contains another product skill invocation token"
+                )
+            if boundary is None:
+                outside_boundary = builder
+            else:
+                boundary_start = builder.find(boundary)
+                outside_boundary = (
+                    builder[:boundary_start]
+                    + builder[boundary_start + len(boundary) :]
+                )
+            if re.search(r"\blifecycle\b", outside_boundary, re.IGNORECASE):
+                errors.append(
+                    "skill-builder contains lifecycle wording outside the canonical boundary"
+                )
+
+    router_path = skills_root / "use-expand" / "SKILL.md"
+    if router_path.is_file() and not router_path.is_symlink():
+        try:
+            router = router_path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"use-expand contract could not be read: {error}")
+        else:
+            if SKILL_BUILDER_NAME_PATTERN.search(router):
+                errors.append("use-expand must not name skill-builder")
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -1125,6 +1278,55 @@ def _validate_public_third_party_derivations(
             errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
 
 
+def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
+    readme_path = _required_nonempty_package_file(
+        repository_root,
+        "README.md",
+        "README",
+        errors,
+    )
+    if readme_path is None:
+        return
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"README could not be read: {error}")
+        return
+    normalized = " ".join(readme.lower().split())
+    if PUBLIC_SKILL_COUNT_TEXT not in normalized:
+        errors.append(
+            "README must describe seven independent skills and one optional lifecycle router"
+        )
+    if re.search(r"\bsix independent skills\b", normalized):
+        errors.append("README contains stale six-skill wording")
+    if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
+        errors.append("README must advertise $skill-builder")
+    readme_lines = readme.splitlines()
+    builder_mentions = tuple(
+        line for line in readme_lines if SKILL_BUILDER_NAME_PATTERN.search(line)
+    )
+    if builder_mentions != SKILL_BUILDER_README_LINES:
+        errors.append(
+            "README Skill Builder mentions must be exactly the public-list and "
+            "direct-invocation lines"
+        )
+    if SKILL_BUILDER_README_LINES[0] not in readme_lines:
+        errors.append(
+            "README must describe $skill-builder as the evidence-gated creator or improver "
+            "of one exact agent skill"
+        )
+    if SKILL_BUILDER_README_LINES[1] not in readme_lines:
+        errors.append("README must include a direct $skill-builder invocation example")
+
+
+def _validate_removed_repository_local_skill(
+    repository_root: Path, errors: list[str]
+) -> None:
+    duplicate = repository_root / ".agents" / "skills" / "improve-skill"
+    if _lstat(duplicate) is not None:
+        errors.append("repository-local skill '.agents/skills/improve-skill' must be absent")
+
+
 def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
     roots = (
         repository_root / "plugins" / PLUGIN_NAME / "skills",
@@ -1247,7 +1449,9 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
     if isinstance(short_description, str) and not 25 <= len(short_description) <= 64:
         errors.append(f"skill {skill_root.name!r} short_description must be 25-64 characters")
     default_prompt = interface.get("default_prompt")
-    if isinstance(default_prompt, str) and f"${skill_root.name}" not in default_prompt:
+    if isinstance(default_prompt, str) and not _contains_exact_skill_token(
+        default_prompt, f"${skill_root.name}"
+    ):
         errors.append(f"skill {skill_root.name!r} default_prompt must invoke the matching skill")
     implicit = policy.get("allow_implicit_invocation")
     if not isinstance(implicit, bool):
