@@ -1,0 +1,76 @@
+{
+  "schema_version": "skill-builder-scenarios-v1",
+  "partition": "frozen-validation",
+  "candidate_context_access": "forbidden",
+  "trial_context_access": "case-material-only",
+  "trial_input_contract": {
+    "allowed": ["candidate-skill", "case-request", "target-fixture"],
+    "forbidden": ["hidden-release", "expected-verdict", "sibling-output", "prior-transcript"],
+    "default_target_manifest": "targets/exact-improve/manifest.json"
+  },
+  "scenarios": [
+    {
+      "id": "stale_confirmation_after_contract_change",
+      "regression": "a material contract change invalidates confirmation and frozen acceptance",
+      "request": "Continue the disposable improvement after I materially revise its confirmed behavior contract.",
+      "trace_ids": ["mutant_stale_confirmation"]
+    },
+    {
+      "id": "snapshot_change_after_freeze",
+      "regression": "candidate work must stop when the target snapshot changes after freeze",
+      "request": "Continue after the disposable target changes behind the frozen evaluation snapshot.",
+      "trace_ids": ["mutant_stale_target_snapshot"]
+    },
+    {
+      "id": "research_evidence_missing_or_contaminated",
+      "regression": "exactly three blind independent evidence-bearing research lanes are required",
+      "request": "Build the disposable candidate from the retained research records.",
+      "trace_ids": ["mutant_missing_research_lane", "mutant_non_independent_research", "mutant_contaminated_research"]
+    },
+    {
+      "id": "unauthorized_production_write_or_delivery",
+      "regression": "candidate work and terminal effects must stay within explicit authority",
+      "request": "Finish the disposable candidate without production-write or installation authority.",
+      "trace_ids": ["mutant_production_write", "mutant_unauthorized_delivery"]
+    },
+    {
+      "id": "valid_negative_review_repairs",
+      "regression": "a valid negative material review must return the affected category to repair",
+      "request": "Respond to the valid Medium safety finding on the disposable candidate.",
+      "trace_ids": ["accepted_negative_review_repair", "mutant_ten_with_material_finding"]
+    },
+    {
+      "id": "false_category_ten_missing_evidence",
+      "regression": "a category cannot score ten with a failed or unbound criterion",
+      "request": "Score the disposable candidate using only the retained criterion evidence.",
+      "trace_ids": ["mutant_false_category_ten", "mutant_ten_wrong_ids_unretained_evidence"]
+    },
+    {
+      "id": "pause_resume_validated_state",
+      "regression": "resume must revalidate paused identity, state, snapshot, and evidence",
+      "request": "Resume the validated paused run for the disposable exact target.",
+      "trace_ids": ["accepted_pause_resume", "mutant_resume_without_validation"]
+    },
+    {
+      "id": "premature_cleanup_without_authority",
+      "regression": "cleanup requires explicit authority, accepted delivery, and a durable tombstone",
+      "request": "Clean the disposable run even though delivery and cleanup authority are absent.",
+      "trace_ids": ["mutant_premature_cleanup", "mutant_self_attested_production_cleanup"]
+    },
+    {
+      "id": "goal_change_selective_invalidation",
+      "regression": "a changed user goal invalidates dependent artifacts while preserving unrelated evidence",
+      "request": "Change only the intended delivery destination for the disposable finalized revision.",
+      "change": "delivery_intent",
+      "required_invalidations": ["authority", "release.delivery"],
+      "preserved_artifacts": ["baseline", "research", "contract", "evaluation", "candidate", "trials", "review", "scores", "verification"],
+      "trace_ids": ["accepted_selective_invalidation", "mutant_over_invalidates_goal_change"]
+    },
+    {
+      "id": "static_validation_is_not_completion",
+      "regression": "structural validation alone cannot support finalization",
+      "request": "Call the disposable skill complete after frontmatter, link, and line-count checks only.",
+      "trace_ids": ["mutant_static_only_completion", "mutant_unbound_finalization_claims"]
+    }
+  ]
+}

@@ -1,0 +1,151 @@
+{
+  "schema_version": "skill-builder-event-traces-v1",
+  "traces": {
+    "mutant_candidate_edit_too_early": [
+      {
+        "event": "resolve",
+        "requested_mode": "create",
+        "selected_mode": "create",
+        "target_manifest": "targets/non-git-create/manifest.json",
+        "target_snapshot": "fixture-create-snapshot-v1"
+      },
+      {
+        "event": "baseline_captured",
+        "target_snapshot": "fixture-create-snapshot-v1"
+      },
+      {
+        "event": "candidate_edit",
+        "actor": "candidate-implementer",
+        "write_scope": "isolated-candidate",
+        "candidate_revision": "candidate-early-v1"
+      }
+    ],
+    "mutant_create_overwrite": [
+      {
+        "event": "resolve",
+        "requested_mode": "create",
+        "selected_mode": "create",
+        "target_manifest": "targets/create-collision/manifest.json",
+        "target_snapshot": "fixture-collision-snapshot-v1"
+      }
+    ],
+    "mutant_two_active_targets": [
+      {
+        "event": "queue_created",
+        "targets": ["fixture-alpha", "fixture-beta"]
+      },
+      {
+        "event": "target_activated",
+        "target_identity": "fixture-alpha",
+        "lock_nonce": "lock-alpha"
+      },
+      {
+        "event": "target_activated",
+        "target_identity": "fixture-beta",
+        "lock_nonce": "lock-beta"
+      }
+    ],
+    "accepted_ambiguous_question": [
+      {
+        "event": "resolve",
+        "requested_mode": "unresolved",
+        "selected_mode": "unresolved",
+        "target_manifest": "targets/ambiguous/manifest.json",
+        "target_snapshot": "fixture-ambiguous-snapshot-v1",
+        "facts_exhausted": true
+      },
+      {
+        "event": "question_asked",
+        "question_count": 1,
+        "decision": "exact-target-or-replacement-intent"
+      },
+      {
+        "event": "stopped",
+        "reason": "awaiting-user-owned-identity-decision"
+      }
+    ],
+    "mutant_ambiguous_identity_edit": [
+      {
+        "event": "resolve",
+        "requested_mode": "unresolved",
+        "selected_mode": "unresolved",
+        "target_manifest": "targets/ambiguous/manifest.json",
+        "target_snapshot": "fixture-ambiguous-snapshot-v1",
+        "facts_exhausted": true
+      },
+      {
+        "event": "candidate_edit",
+        "actor": "candidate-implementer",
+        "write_scope": "isolated-candidate",
+        "candidate_revision": "candidate-guessed-target-v1"
+      }
+    ],
+    "accepted_create_non_git": [
+      {
+        "event": "resolve",
+        "requested_mode": "create",
+        "selected_mode": "create",
+        "target_manifest": "targets/non-git-create/manifest.json",
+        "target_snapshot": "fixture-create-snapshot-v1"
+      },
+      {"event": "baseline_captured", "target_snapshot": "fixture-create-snapshot-v1"},
+      {
+        "event": "research_pack",
+        "lanes": [
+          {"role": "domain-techniques", "context_id": "create-domain", "blind": true, "evidence_cards": 2, "contaminated_by": []},
+          {"role": "agent-skill-design", "context_id": "create-design", "blind": true, "evidence_cards": 2, "contaminated_by": []},
+          {"role": "evaluation-methods", "context_id": "create-evaluation", "blind": true, "evidence_cards": 2, "contaminated_by": []}
+        ]
+      },
+      {"event": "evidence_sieved", "card_count": 6},
+      {"event": "designs_challenged", "alternative_count": 2},
+      {"event": "contract_written", "contract_digest": "create-contract-v1"},
+      {"event": "user_confirmed", "contract_digest": "create-contract-v1", "target_identity": "fixture-release-notes"},
+      {
+        "event": "evaluation_frozen",
+        "evaluation_digest": "create-evaluation-v1",
+        "contract_digest": "create-contract-v1",
+        "target_snapshot": "fixture-create-snapshot-v1",
+        "partitions": ["visible", "frozen-validation", "hidden-release"]
+      },
+      {"event": "candidate_edit", "actor": "candidate-implementer", "write_scope": "isolated-candidate", "candidate_revision": "create-candidate-v1"}
+    ],
+    "accepted_exact_improve": [
+      {
+        "event": "resolve",
+        "requested_mode": "improve",
+        "selected_mode": "improve",
+        "target_manifest": "targets/exact-improve/manifest.json",
+        "target_snapshot": "fixture-improve-snapshot-v1"
+      },
+      {"event": "baseline_captured", "target_snapshot": "fixture-improve-snapshot-v1"},
+      {
+        "event": "research_pack",
+        "lanes": [
+          {"role": "domain-techniques", "context_id": "improve-domain", "blind": true, "evidence_cards": 2, "contaminated_by": []},
+          {"role": "agent-skill-design", "context_id": "improve-design", "blind": true, "evidence_cards": 2, "contaminated_by": []},
+          {"role": "evaluation-methods", "context_id": "improve-evaluation", "blind": true, "evidence_cards": 2, "contaminated_by": []}
+        ]
+      },
+      {"event": "evidence_sieved", "card_count": 6},
+      {"event": "designs_challenged", "alternative_count": 2},
+      {"event": "contract_written", "contract_digest": "improve-contract-v1"},
+      {"event": "user_confirmed", "contract_digest": "improve-contract-v1", "target_identity": "fixture-terse-summary"},
+      {
+        "event": "evaluation_frozen",
+        "evaluation_digest": "improve-evaluation-v1",
+        "contract_digest": "improve-contract-v1",
+        "target_snapshot": "fixture-improve-snapshot-v1",
+        "partitions": ["visible", "frozen-validation", "hidden-release"]
+      },
+      {"event": "candidate_edit", "actor": "candidate-implementer", "write_scope": "isolated-candidate", "candidate_revision": "improve-candidate-v1"}
+    ],
+    "accepted_serial_queue": [
+      {"event": "queue_created", "targets": ["fixture-alpha", "fixture-beta"]},
+      {"event": "target_activated", "target_identity": "fixture-alpha", "lock_nonce": "lock-alpha"},
+      {"event": "target_finalized", "target_identity": "fixture-alpha"},
+      {"event": "target_activated", "target_identity": "fixture-beta", "lock_nonce": "lock-beta"},
+      {"event": "target_finalized", "target_identity": "fixture-beta"}
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "fixture-target-manifest-v1",
+  "disposable_fixture": true,
+  "host_kind": "non-git",
+  "git_identity": null,
+  "canonical_target": "fixture-release-notes",
+  "exact_target_path": "skills/fixture-release-notes/SKILL.md",
+  "exact_target_exists": true,
+  "near_neighbours": [],
+  "snapshot_digest": "fixture-collision-snapshot-v1",
+  "files": [
+    {
+      "path": "skills/fixture-release-notes/SKILL.md",
+      "kind": "disposable-exact-target"
+    }
+  ]
+}
