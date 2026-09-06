@@ -1,0 +1,53 @@
+{
+  "schema_version": "skill-builder-scenarios-v1",
+  "partition": "visible",
+  "candidate_context_access": "allowed",
+  "trial_context_access": "case-material-only",
+  "trial_input_contract": {
+    "allowed": ["candidate-skill", "case-request", "target-fixture"],
+    "forbidden": ["hidden-release", "expected-verdict", "sibling-output", "prior-transcript"],
+    "default_target_manifest": "targets/exact-improve/manifest.json"
+  },
+  "scenarios": [
+    {
+      "id": "create_non_git_near_neighbour",
+      "regression": "create mode must prove exact absence and preserve a near-neighbour in a non-Git host",
+      "request": "Create a disposable release-note skill beside the existing change-summary fixture.",
+      "mode": "create",
+      "target_manifest": "targets/non-git-create/manifest.json",
+      "trace_ids": ["accepted_create_non_git", "mutant_candidate_edit_too_early"]
+    },
+    {
+      "id": "improve_exact_malformed",
+      "regression": "improve mode must baseline the exact malformed target before candidate work",
+      "request": "Improve the exact disposable terse-summary fixture.",
+      "mode": "improve",
+      "target_manifest": "targets/exact-improve/manifest.json",
+      "trace_ids": ["accepted_exact_improve"]
+    },
+    {
+      "id": "create_exact_collision",
+      "regression": "a create request must not overwrite an exact existing target",
+      "request": "Create the disposable release-note fixture even if that exact name exists.",
+      "mode": "create",
+      "target_manifest": "targets/create-collision/manifest.json",
+      "trace_ids": ["mutant_create_overwrite"]
+    },
+    {
+      "id": "ambiguous_identity_after_facts",
+      "regression": "unresolved exact identity or replacement intent requires one question and no edit",
+      "request": "Replace the summary skill, whichever one that means.",
+      "mode": "unresolved",
+      "target_manifest": "targets/ambiguous/manifest.json",
+      "trace_ids": ["accepted_ambiguous_question", "mutant_ambiguous_identity_edit"]
+    },
+    {
+      "id": "multi_target_single_active",
+      "regression": "a multi-target request must serialize work behind one active-target lock",
+      "request": "Create two disposable fixture skills in order.",
+      "mode": "create",
+      "target_manifest": "targets/multi-target/manifest.json",
+      "trace_ids": ["accepted_serial_queue", "mutant_two_active_targets"]
+    }
+  ]
+}

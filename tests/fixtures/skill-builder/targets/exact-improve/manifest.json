@@ -1,0 +1,60 @@
+{
+  "schema_version": "fixture-target-manifest-v1",
+  "disposable_fixture": true,
+  "host_kind": "git",
+  "git_identity": {
+    "repository": "fixture://skill-builder/exact-improve",
+    "branch": "fixture-main",
+    "revision": "fixture-base-v1"
+  },
+  "canonical_target": "fixture-terse-summary",
+  "exact_target_path": "skills/fixture-terse-summary/SKILL.md",
+  "exact_target_exists": true,
+  "near_neighbours": [],
+  "observed_quality": "underspecified",
+  "snapshot_digest": "fixture-improve-snapshot-v1",
+  "baseline_evidence": {
+    "schema_version": "skill-builder-baseline-evidence-v1",
+    "mode": "improve",
+    "exact_target": {
+      "identity": "fixture-terse-summary",
+      "path": "skills/fixture-terse-summary/SKILL.md",
+      "exists": true,
+      "content_digest": "5441bd5bb38b8d11bbf8898b4e654d7ddd994b0c2b89aef048d1bba6a3c298c0"
+    },
+    "absence_evidence_digest": null,
+    "overlap_map": [],
+    "host_conventions": [
+      "frontmatter-name-description",
+      "single-level-skill-directory"
+    ],
+    "current_behavior": {
+      "classification": "underspecified",
+      "source_path": "skills/fixture-terse-summary/SKILL.md",
+      "source_content_digest": "5441bd5bb38b8d11bbf8898b4e654d7ddd994b0c2b89aef048d1bba6a3c298c0"
+    },
+    "observed_failures": [
+      "missing-explicit-input-output-contract"
+    ],
+    "strengths": [
+      "explicit-summary-purpose"
+    ],
+    "context_cost": "minimal",
+    "tool_behavior": "unspecified",
+    "permission_behavior": "unspecified",
+    "preserved_regressions": [
+      {
+        "case_id": "preserve-summary-capability",
+        "subject_identity": "fixture-terse-summary",
+        "subject_path": "skills/fixture-terse-summary/SKILL.md",
+        "baseline_content_digest": "5441bd5bb38b8d11bbf8898b4e654d7ddd994b0c2b89aef048d1bba6a3c298c0"
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "skills/fixture-terse-summary/SKILL.md",
+      "kind": "disposable-exact-target"
+    }
+  ]
+}
