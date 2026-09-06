@@ -646,6 +646,8 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _decode_canonical_object(payload: bytes, label: str) -> dict[str, Any]:
+    if len(payload) > MAX_JSON_BYTES:
+        raise RunStateError(f"{label} is oversized")
     try:
         value = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_object)
     except (UnicodeError, ValueError) as error:
@@ -3056,6 +3058,17 @@ def _validate_contract_binding(
     _require_input_bindings(contract_envelope, required, "skill contract")
 
 
+def _require_valid_review(review: dict[str, Any]) -> None:
+    if (
+        review.get("valid") is not True
+        or review.get("verdict") not in {"ready", "not ready"}
+        or review.get("independent") is not True
+        or review.get("read_only") is not True
+        or review.get("fresh") is not True
+    ):
+        raise RunStateError("invalid review cannot advance or be scored")
+
+
 def _validate_review_binding(
     run: Path,
     current: dict[str, Any],
@@ -3093,6 +3106,7 @@ def _validate_review_binding(
         raise RunStateError(
             "review schema does not match the run's versioned semantics"
         )
+    _require_valid_review(review)
     baseline = _artifact_payload_json(run, baseline_id)
     evaluation = _artifact_payload_json(run, evaluation_id)
     candidate = _artifact_payload_json(run, candidate_id)
@@ -3307,6 +3321,7 @@ def _validate_score_bindings(
     trials = _artifact_payload_json(run, trials_id)
     review = _artifact_payload_json(run, review_id)
     evaluation = _artifact_payload_json(run, evaluation_id)
+    _require_valid_review(review)
     resolution, _ = _resolution_payload(run, current["workflow_id"])
     required_scorecard_schema = resolution.get(
         "scorecard_schema", LEGACY_SCORECARD_SCHEMA
@@ -4204,6 +4219,8 @@ def _validate_delivery_destination(
 
 
 def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
+    if index["stage"] == "abandoned":
+        return
     snapshot = index["target_snapshot"]
     locator = Path(index["target_identity"]["locator"])
     _reject_symlink_components(locator)
@@ -4244,6 +4261,42 @@ def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
         }
         if lock != expected:
             raise RunStateError("active-target lock binding mismatch")
+
+
+def _release_owned_target_lock(
+    root: Path,
+    current: dict[str, Any],
+    active_lock: dict[str, Any],
+    *,
+    allow_missing: bool = False,
+    allow_other_owner: bool = False,
+) -> None:
+    lock_path = root / "target-locks" / _target_lock_name(
+        current["target_identity"]["canonical"]
+    )
+    if not os.path.lexists(lock_path):
+        if allow_missing:
+            return
+        raise RunStateError("active-target lock is missing before release")
+    _validate_regular(lock_path, "active-target lock")
+    observed = _read_json(lock_path)
+    expected = {
+        "schema_version": "skill-builder-target-lock.v1",
+        **active_lock,
+        "workflow_id": current["workflow_id"],
+    }
+    if observed != expected:
+        other_workflow = observed.get("workflow_id")
+        if (
+            allow_other_owner
+            and isinstance(other_workflow, str)
+            and _WORKFLOW_RE.fullmatch(other_workflow)
+            and other_workflow != current["workflow_id"]
+        ):
+            return
+        raise RunStateError("active-target lock changed before release")
+    lock_path.unlink()
+    _fsync_directory(lock_path.parent)
 
 
 def initialize_run(
@@ -4715,6 +4768,15 @@ def recover_run(
             }
         run = _run_directory(root, workflow_id)
         derived = _derive_index(run)
+        if derived["stage"] in {"finalized", "delivered", "abandoned"}:
+            resolution, _ = _resolution_payload(run, workflow_id)
+            _release_owned_target_lock(
+                root,
+                derived,
+                resolution["active_target_lock"],
+                allow_missing=True,
+                allow_other_owner=True,
+            )
         _validate_target_unchanged(derived, root)
         _atomic_json(run / "current.json", derived)
         return {
@@ -5180,6 +5242,10 @@ def invalidate_run(
                 }
             ],
         )
+        if destination == "abandoned":
+            _release_owned_target_lock(
+                root, current, current["active_target_lock"]
+            )
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "invalidate",
@@ -5574,19 +5640,9 @@ def finalize_run(
             existing_bindings=bindings,
             artifact_requests=[],
         )
-        lock_path = root / "target-locks" / _target_lock_name(
-            current["target_identity"]["canonical"]
+        _release_owned_target_lock(
+            root, current, current["active_target_lock"]
         )
-        _validate_regular(lock_path, "active-target lock")
-        expected_lock = {
-            "schema_version": "skill-builder-target-lock.v1",
-            **current["active_target_lock"],
-            "workflow_id": workflow_id,
-        }
-        if _read_json(lock_path) != expected_lock:
-            raise RunStateError("active-target lock changed before finalization")
-        lock_path.unlink()
-        _fsync_directory(lock_path.parent)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "finalize",

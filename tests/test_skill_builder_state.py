@@ -2729,31 +2729,22 @@ def test_finalization_rejects_false_all_ten_scorecard_without_transition(
     assert (state_root / "live" / workflow_id).is_dir()
 
 
-def test_finalization_rejects_stale_review_and_verification(tmp_path: Path) -> None:
-    """A release cannot reuse an unfresh review or verification for its revision."""
+def test_finalization_rejects_stale_verification(tmp_path: Path) -> None:
+    """A release cannot reuse unfresh verification for its revision."""
     helper = load_helper()
-    cases = (
-        ("review", {"review_fresh": False}),
-        ("verification", {"verification_fresh": False}),
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper, tmp_path, verification_fresh=False
     )
-    for label, options in cases:
-        state_root, workflow_id, sequence, _ = build_verified_stage(
-            helper, tmp_path / label, **options
+    with pytest.raises(helper.RunStateError, match="verification"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
         )
-        try:
-            helper.finalize_run(
-                workflow_id=workflow_id,
-                expected_sequence=sequence,
-                release_artifact_id="release",
-                state_root=state_root,
-            )
-        except helper.RunStateError as error:
-            assert label in str(error)
-        else:
-            raise AssertionError(f"finalization accepted stale {label} evidence")
-        loaded = helper.load_run(workflow_id=workflow_id, state_root=state_root)
-        assert loaded["head_sequence"] == sequence
-        assert loaded["stage"] == "verified"
+    loaded = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert loaded["head_sequence"] == sequence
+    assert loaded["stage"] == "verified"
 
 
 def test_finalize_delivery_and_authorized_cleanup_leave_durable_tombstone(
@@ -3785,6 +3776,118 @@ def test_initialize_failure_after_lock_publication_does_not_leak_target_lock(
 
     assert list((state_root / "live").iterdir()) == []
     assert list((state_root / "target-locks").iterdir()) == []
+
+
+def test_abandonment_releases_lock_and_recovery_reconciles_crash_window(
+    tmp_path: Path,
+) -> None:
+    """An abandoned run cannot strand its target lock, even across a crash."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    identity = target_identity(target)
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=identity,
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    lock_path = (
+        state_root
+        / "target-locks"
+        / helper._target_lock_name(identity["canonical"])
+    )
+    stale_lock = lock_path.read_bytes()
+    target.mkdir(parents=True)
+
+    abandoned = helper.invalidate_run(
+        workflow_id=started["workflow_id"],
+        expected_sequence=0,
+        change_kind="target-snapshot",
+        changed_artifact_id="resolution",
+        reason="target identity changed",
+        state_root=state_root,
+    )
+    assert abandoned["stage"] == "abandoned"
+    assert not lock_path.exists()
+
+    lock_path.write_bytes(stale_lock)
+    os.chmod(lock_path, 0o600)
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["stage"] == "abandoned"
+    assert not lock_path.exists()
+    target.rmdir()
+
+    replacement = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=identity,
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    assert replacement["workflow_id"] != started["workflow_id"]
+
+
+def test_oversized_structured_artifact_is_rejected_before_receipt_commit(
+    tmp_path: Path,
+) -> None:
+    """Retained structured evidence must remain readable by replay and recovery."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    payload = valid_create_baseline_payload(
+        helper, state_root, started["workflow_id"]
+    )
+    payload["host_conventions"] = ["x" * helper.MAX_JSON_BYTES]
+    encoded = fixture_canonical_bytes(payload)
+    assert helper.MAX_JSON_BYTES < len(encoded) <= helper.MAX_ARTIFACT_BYTES
+    run = state_root / "live" / started["workflow_id"]
+    receipt_names = sorted(path.name for path in (run / "receipts").iterdir())
+
+    with pytest.raises(helper.RunStateError, match="oversized|byte bound"):
+        helper.retain_artifact(
+            workflow_id=started["workflow_id"],
+            expected_sequence=0,
+            artifact_id="oversized-structured",
+            artifact_type="baseline-report",
+            files={"record.json": encoded},
+            primary_path="record.json",
+            producer="main-agent",
+            input_bindings=current_bindings(
+                helper, state_root, started["workflow_id"]
+            ),
+            limitations=[],
+            state_root=state_root,
+        )
+
+    assert sorted(path.name for path in (run / "receipts").iterdir()) == receipt_names
+    assert not (run / "artifacts" / "oversized-structured").exists()
+    assert list((run / "transactions").iterdir()) == []
+    assert helper.load_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )["stage"] == "resolved"
+    assert helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )["stage"] == "resolved"
 
 
 def test_cli_help_documents_request_schemas_and_accepts_maximum_base64_input() -> None:
@@ -5457,6 +5560,73 @@ def test_review_accepts_exact_current_provenance_live_and_replay(
     assert helper.recover_run(
         workflow_id=workflow_id, state_root=state_root
     )["stage"] == "reviewed"
+
+
+@pytest.mark.parametrize(
+    ("valid", "verdict", "fresh", "advances"),
+    (
+        (False, None, True, False),
+        (True, "ready", False, False),
+        (True, "not ready", True, True),
+    ),
+)
+def test_only_valid_review_can_advance_to_scoring(
+    tmp_path: Path,
+    valid: bool,
+    verdict: str | None,
+    fresh: bool,
+    advances: bool,
+) -> None:
+    """Invalid review blocks advancement while valid negative evidence remains usable."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_current_trials_stage(
+        helper, tmp_path
+    )
+    payload = review_payload(
+        candidate["artifact_digest"],
+        fresh=fresh,
+        input_artifacts=review_input_provenance(
+            helper, state_root, workflow_id
+        ),
+    )
+    payload["valid"] = valid
+    payload["verdict"] = verdict
+    review = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="review-validity",
+        artifact_type="review-record",
+        payload=payload,
+        input_bindings=review_envelope_bindings(
+            helper, state_root, workflow_id
+        ),
+    )
+
+    if advances:
+        advanced = helper.transition_run(
+            workflow_id=workflow_id,
+            expected_sequence=review["sequence"],
+            event="accept-review",
+            destination_stage="reviewed",
+            artifact_ids=["review-validity"],
+            state_root=state_root,
+        )
+        assert advanced["stage"] == "reviewed"
+    else:
+        with pytest.raises(helper.RunStateError, match="review|valid"):
+            helper.transition_run(
+                workflow_id=workflow_id,
+                expected_sequence=review["sequence"],
+                event="accept-review",
+                destination_stage="reviewed",
+                artifact_ids=["review-validity"],
+                state_root=state_root,
+            )
+        assert helper.load_run(
+            workflow_id=workflow_id, state_root=state_root
+        )["stage"] == "trials"
 
 
 @pytest.mark.parametrize(
