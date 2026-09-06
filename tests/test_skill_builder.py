@@ -5848,9 +5848,31 @@ def evaluate_trace(
         elif event_name == "context_read":
             path = normalized_run_relative_path(event.get("path"))
             path_parts = PurePosixPath(path).parts if path is not None else ()
-            actor_class = canonical_context_actor_class(
-                event.get("actor"), event.get("actor_role")
-            )
+            actor_identity = event.get("actor")
+            effective_roles = {
+                event.get("actor_role"),
+                *actor_roles.get(actor_identity, set()),
+            }
+            actor_classes = {
+                actor_class
+                for role in effective_roles
+                if (
+                    actor_class := canonical_context_actor_class(
+                        actor_identity, role
+                    )
+                )
+                is not None
+            }
+            actor_research_identities = {
+                research_identity
+                for role in effective_roles
+                if (
+                    research_identity := canonical_research_context_identity(
+                        actor_identity, role
+                    )
+                )
+                is not None
+            }
             source_role = event.get("source_role")
             hidden_source = (
                 isinstance(source_role, str)
@@ -5866,7 +5888,7 @@ def evaluate_trace(
                     or source_role.startswith("frozen-validation-")
                 )
             )
-            if actor_class in {"candidate", "trial"} and (
+            if actor_classes.intersection({"candidate", "trial"}) and (
                 "hidden-release" in path_parts or hidden_source
             ):
                 failures.append(
@@ -5876,7 +5898,7 @@ def evaluate_trace(
                         f"{event['actor']} read withheld hidden-release material",
                     )
                 )
-            elif actor_class in {"candidate", "trial"} and (
+            elif actor_classes.intersection({"candidate", "trial"}) and (
                 "frozen-validation" in path_parts or frozen_source
             ):
                 failures.append(
@@ -5886,17 +5908,11 @@ def evaluate_trace(
                         f"{event['actor']} read frozen validation material outside a case handoff",
                     )
                 )
-            elif actor_class == "research" and (
-                canonical_research_context_identity(
-                    event.get("actor"), event.get("actor_role")
-                )
-                is not None
+            elif (
+                "research" in actor_classes
+                and canonical_research_context_identity(source_role) is not None
                 and canonical_research_context_identity(source_role)
-                is not None
-                and canonical_research_context_identity(
-                    event.get("actor"), event.get("actor_role")
-                )
-                != canonical_research_context_identity(source_role)
+                not in actor_research_identities
             ):
                 failures.append(
                     OracleFailure(
@@ -11583,6 +11599,50 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
                 }
                 self.assertIn(expected_code, codes)
+
+    def test_context_access_uses_prior_roles_after_identity_relabel(self) -> None:
+        """An opaque candidate identity cannot relabel itself as a coordinator."""
+
+        relabeled = seal_trace(
+            [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-worker-7",
+                    "actor_role": "candidate-implementer",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-worker-7",
+                    "actor_role": "coordinator",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                },
+            ],
+            workflow_id="6" * 32,
+        )
+        self.assertIn(
+            "HIDDEN_ORACLE_LEAK",
+            {
+                failure.code
+                for failure in evaluate_trace(relabeled, BUILDER_FIXTURES)
+            },
+        )
+
+        legitimate_coordinator = seal_trace(
+            [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-coordinator-9",
+                    "actor_role": "coordinator",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                }
+            ],
+            workflow_id="7" * 32,
+        )
+        self.assertEqual(
+            evaluate_trace(legitimate_coordinator, BUILDER_FIXTURES), ()
+        )
 
     def test_selective_invalidation_uses_preexisting_dependency_state(self) -> None:
         """Invalidation is derived from a prior graph and explicit artifact statuses."""
