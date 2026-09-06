@@ -22,7 +22,6 @@ EXPECTED_PUBLIC_SKILLS = {
     "grill-me",
     "implement",
     "plan",
-    "skill-builder",
     "unslop",
     "use-expand",
 }

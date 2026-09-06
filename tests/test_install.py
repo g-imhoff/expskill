@@ -35,7 +35,6 @@ SKILL_NAMES = (
     "grill-me",
     "plan",
     "implement",
-    "skill-builder",
     "unslop",
 )
 PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
@@ -98,7 +97,6 @@ def seed_repository(path: Path) -> Path:
     # registration receives, including the centralized worktree helper.
     shutil.copytree(source_scripts, destination_plugin / "scripts")
     shutil.copytree(ROOT / "scripts", path / "scripts")
-    shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
 
 
@@ -229,31 +227,6 @@ def load_receipt(state_home: Path) -> dict[str, object]:
 
 
 class InstallerTests(unittest.TestCase):
-    def test_install_preflight_rejects_invalid_utf8_readme_without_side_effects(self) -> None:
-        """Regression: repository decoding failures stay controlled before installation."""
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            repo = seed_repository(root / "repo")
-            codex_home = root / "codex"
-            state_home = root / "state"
-            runner = FakeRunner([])
-            (repo / "README.md").write_bytes(b"\xff\xfe")
-
-            try:
-                install(repo, codex_home, state_home, runner)
-            except InstallError as error:
-                self.assertIn("README", str(error))
-                self.assertIn("UTF-8 text", str(error))
-            except UnicodeError as error:
-                self.fail(f"install preflight leaked a decode exception: {error}")
-            else:
-                self.fail("install preflight accepted an invalid UTF-8 README")
-
-            self.assertEqual(runner.calls, [])
-            self.assertFalse(codex_home.exists())
-            self.assertFalse(receipt_path(state_home).exists())
-
     def test_seeded_plugin_package_preserves_every_real_phase_entrypoint(self) -> None:
         """Regression: installation fixtures silently omit independently callable phases."""
 

@@ -19,7 +19,6 @@ EXPECTED_SKILLS = {
     "design",
     "grill-me",
     "implement",
-    "skill-builder",
     "unslop",
     "use-expand",
 }
