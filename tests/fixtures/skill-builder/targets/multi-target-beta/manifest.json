@@ -1,0 +1,52 @@
+{
+  "schema_version": "fixture-target-manifest-v1",
+  "disposable_fixture": true,
+  "host_kind": "non-git",
+  "git_identity": null,
+  "canonical_target": "fixture-beta",
+  "exact_target_path": "skills/fixture-beta/SKILL.md",
+  "exact_target_exists": false,
+  "near_neighbours": [
+    "fixture-alpha"
+  ],
+  "snapshot_digest": "fixture-beta-snapshot-v1",
+  "baseline_evidence": {
+    "schema_version": "skill-builder-baseline-evidence-v1",
+    "mode": "create",
+    "exact_target": {
+      "identity": "fixture-beta",
+      "path": "skills/fixture-beta/SKILL.md",
+      "exists": false,
+      "content_digest": null
+    },
+    "absence_evidence_digest": "ad4906acc6671becec64ca7eb561f43bf44506e0fed80f086e81aa6962724920",
+    "overlap_map": [
+      {
+        "target_identity": "fixture-alpha",
+        "path": "skills/fixture-alpha/SKILL.md",
+        "content_digest": "b86e8230b55dfc2f9bbcb3f547ecc2dcea8cf19be671d79da0803e9bc35413e8"
+      }
+    ],
+    "host_conventions": ["single-level-skill-directory"],
+    "current_behavior": null,
+    "observed_failures": [],
+    "strengths": [],
+    "context_cost": null,
+    "tool_behavior": null,
+    "permission_behavior": null,
+    "preserved_regressions": [
+      {
+        "case_id": "preserve-neighbour:fixture-alpha",
+        "subject_identity": "fixture-alpha",
+        "subject_path": "skills/fixture-alpha/SKILL.md",
+        "baseline_content_digest": "b86e8230b55dfc2f9bbcb3f547ecc2dcea8cf19be671d79da0803e9bc35413e8"
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "skills/fixture-alpha/SKILL.md",
+      "kind": "disposable-near-neighbour"
+    }
+  ]
+}
