@@ -23,6 +23,7 @@ EXPECTED_PUBLIC_SKILLS = {
     "implement",
     "plan",
     "skill-builder",
+    "test",
     "unslop",
     "use-expskill",
 }
