@@ -816,7 +816,9 @@ def bind_fixture_candidate_paths(
             and len(event["files"]) == 1
             and isinstance(event["files"][0], dict)
         ):
-            event["files"][0]["path"] = owned_by_revision[revision]
+            source_event = event.get("fixture_source_event")
+            if not isinstance(source_event, dict) or "files" not in source_event:
+                event["files"][0]["path"] = owned_by_revision[revision]
         elif event.get("event") == "write" and owned_by_revision:
             source_event = event.get("fixture_source_event")
             if not isinstance(source_event, dict) or "path" not in source_event:
@@ -1829,6 +1831,16 @@ def build_fixture_trace(
 ) -> list[dict[str, Any]]:
     """Migrate every fixture through the same strict trace construction path."""
 
+    try:
+        canonical_bytes(raw_events)
+    except (TypeError, UnicodeError, ValueError):
+        return [
+            {
+                "event": None,
+                "construction_error": "invalid-durable-input",
+            }
+        ]
+
     fixture_workflow = hashlib.sha256(
         f"{partition}:{trace_id}".encode("utf-8")
     ).hexdigest()[:32]
@@ -1843,6 +1855,8 @@ def build_fixture_trace(
             for event in accepted_candidate_events
             if isinstance(event.get("candidate_revision"), str)
         ]
+        if len(revisions) != len(accepted_candidate_events):
+            return seal_trace(raw_events, workflow_id=fixture_workflow)
         if any(
             isinstance(event, dict) and event.get("event") == "repair_completed"
             for event in raw_events
@@ -1918,13 +1932,18 @@ def build_fixture_trace(
             for event in candidate_path
             if event.get("event") == "evaluation_frozen"
         )
-        evaluation["cases"] = expected_evaluation_cases(
-            BUILDER_FIXTURES,
-            sorted(CRITERION_CATEGORY),
-            digest_value(raw_contract),
-            rubric["artifact_id"],
-            digest_value(rubric["rubric_digest"]),
-        )
+        evaluation_source = evaluation.get("fixture_source_event")
+        if (
+            not isinstance(evaluation_source, dict)
+            or "cases" not in evaluation_source
+        ):
+            evaluation["cases"] = expected_evaluation_cases(
+                BUILDER_FIXTURES,
+                sorted(CRITERION_CATEGORY),
+                digest_value(raw_contract),
+                rubric["artifact_id"],
+                digest_value(rubric["rubric_digest"]),
+            )
         candidate_path[0]["target_manifest"] = fixture_manifest
         candidate_path[0]["selected_mode"] = fixture_mode
         if "requested_mode" in raw_resolution:
@@ -4910,6 +4929,7 @@ def evaluate_trace(
             "target_snapshot_changed",
             "user_confirmed",
             "verification_recorded",
+            "write",
         }:
             failures.append(
                 OracleFailure(
@@ -5103,9 +5123,20 @@ def evaluate_trace(
             snapshot_generation += 1
             invalidate_identity_or_snapshot_chain()
         elif event_name == "paused":
+            pause_binding_matches_active = (
+                current_workflow_id is None
+                and not identity_resolution_seen
+                or event.get("workflow_id") == current_workflow_id
+                and event.get("target_identity") == current_target_identity
+                and event.get("target_snapshot") == current_snapshot
+                and event.get("mode") == current_mode
+                and event.get("identity_generation") == identity_generation
+                and event.get("snapshot_generation") == snapshot_generation
+            )
             pause_valid = (
                 run_lifecycle_state == "active"
                 and event.get("state_validated") is True
+                and pause_binding_matches_active
             )
             if pause_valid:
                 pause_record = event
@@ -5134,6 +5165,24 @@ def evaluate_trace(
                 == event.get("target_identity")
                 and pause_record.get("target_snapshot")
                 == event.get("target_snapshot")
+                and pause_record.get("mode") == event.get("mode")
+                and pause_record.get("identity_generation")
+                == event.get("identity_generation")
+                and pause_record.get("snapshot_generation")
+                == event.get("snapshot_generation")
+                and (
+                    current_workflow_id is None
+                    and not identity_resolution_seen
+                    or event.get("workflow_id") == current_workflow_id
+                    and event.get("target_identity")
+                    == current_target_identity
+                    and event.get("target_snapshot") == current_snapshot
+                    and event.get("mode") == current_mode
+                    and event.get("identity_generation")
+                    == identity_generation
+                    and event.get("snapshot_generation")
+                    == snapshot_generation
+                )
                 and all(event.get(field) is True for field in revalidation_fields)
             )
             if not resume_valid:
@@ -10205,6 +10254,177 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                         for failure in evaluate_trace(built, BUILDER_FIXTURES)
                     }
                 except (TypeError, UnicodeError, ValueError) as error:
+                    self.fail(
+                        f"fixture construction leaked {type(error).__name__}: {error}"
+                    )
+                self.assertTrue(
+                    {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
+                )
+
+    def test_accepted_fixture_builder_does_not_sanitize_explicit_cases_or_paths(self) -> None:
+        """Explicit hostile fixture values must reach validation unchanged."""
+
+        payload = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        raw_events = copy.deepcopy(payload["traces"]["accepted_exact_improve"])
+        evaluation = next(
+            event
+            for event in raw_events
+            if event.get("event") == "evaluation_frozen"
+        )
+        evaluation["cases"] = [{"placeholder": True}]
+        raw_events.append(
+            {
+                "event": "artifact_retained",
+                "artifact_type": "candidate-manifest",
+                "candidate_revision": "improve-candidate-v1",
+                "files": [
+                    {
+                        "path": "/production/fixture-terse-summary/SKILL.md",
+                        "media_kind": "text/markdown",
+                        "byte_count": 128,
+                        "digest": "hostile-production-path",
+                    }
+                ],
+            }
+        )
+
+        built = build_fixture_trace(
+            "visible", "accepted_exact_improve", raw_events
+        )
+        built_evaluation = next(
+            event for event in built if event.get("event") == "evaluation_frozen"
+        )
+        built_manifest = next(
+            event
+            for event in built
+            if event.get("artifact_type") == "candidate-manifest"
+        )
+        codes = {
+            failure.code
+            for failure in evaluate_trace(built, BUILDER_FIXTURES)
+        }
+
+        self.assertEqual(built_evaluation["cases"], [{"placeholder": True}])
+        self.assertEqual(
+            built_manifest["files"][0]["path"],
+            "/production/fixture-terse-summary/SKILL.md",
+        )
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+
+    def test_pause_resume_pair_must_bind_the_active_run(self) -> None:
+        """A self-consistent foreign pause pair cannot suspend the active run."""
+
+        trace = seal_trace(accepted_finalization_trace())
+        final_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event.get("event") == "finalized"
+        )
+        foreign_binding = {
+            "workflow_id": "f" * 32,
+            "target_identity": "foreign-target",
+            "target_snapshot": digest_value("foreign-snapshot"),
+            "mode": "create",
+            "identity_generation": 9,
+            "snapshot_generation": 9,
+        }
+        trace[final_index:final_index] = [
+            {
+                "event": "paused",
+                "state_validated": True,
+                **foreign_binding,
+            },
+            {
+                "event": "resumed",
+                "chain_revalidated": True,
+                "identity_revalidated": True,
+                "snapshot_revalidated": True,
+                "evidence_revalidated": True,
+                **foreign_binding,
+            },
+        ]
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(
+                reseal_declared_trace(trace), BUILDER_FIXTURES
+            )
+        }
+
+        self.assertIn("INVALID_PAUSE_STATE", codes)
+        self.assertIn("RESUME_WITHOUT_REVALIDATION", codes)
+
+    def test_authorized_write_after_finalization_is_rejected(self) -> None:
+        """Finalization forbids later candidate mutation even with prior authority."""
+
+        trace = accepted_finalization_trace()
+        final_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event.get("event") == "finalized"
+        )
+        owned_path = next(
+            event["path"]
+            for event in trace
+            if event.get("event") == "candidate_edit"
+        )
+        trace.insert(
+            final_index + 1,
+            {
+                "event": "write",
+                "destination_scope": "isolated-candidate",
+                "effect": "isolated-candidate-write",
+                "actor": "candidate-implementer-v1",
+                "path": owned_path,
+            },
+        )
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(seal_trace(trace), BUILDER_FIXTURES)
+        }
+
+        self.assertIn("EVENT_AFTER_FINALIZATION", codes)
+
+    def test_fixture_builder_rejects_float_control_values_without_throwing(self) -> None:
+        """Accepted and ordinary fixture migration must fail closed on floats."""
+
+        payload = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        accepted = copy.deepcopy(payload["traces"]["accepted_exact_improve"])
+        next(
+            event
+            for event in accepted
+            if event.get("event") == "candidate_edit"
+        )["candidate_revision"] = 1.25
+        ordinary = copy.deepcopy(payload["traces"]["accepted_exact_improve"])
+        next(
+            event
+            for event in ordinary
+            if event.get("event") == "evidence_sieved"
+        )["card_count"] = 1.25
+
+        for trace_id, raw_events in (
+            ("accepted_exact_improve", accepted),
+            ("mutant_float_card_count", ordinary),
+        ):
+            with self.subTest(trace=trace_id):
+                try:
+                    built = build_fixture_trace(
+                        "visible", trace_id, raw_events
+                    )
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(built, BUILDER_FIXTURES)
+                    }
+                except (IndexError, TypeError, UnicodeError, ValueError) as error:
                     self.fail(
                         f"fixture construction leaked {type(error).__name__}: {error}"
                     )
