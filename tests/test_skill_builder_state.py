@@ -291,6 +291,117 @@ def initialize_process(
         results.put(("error", type(error).__name__, str(error)))
 
 
+HARD_EXIT_CODE = 86
+
+
+def run_hard_exit_process(target: object, *args: object) -> None:
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(target=target, args=args)
+    process.start()
+    process.join(30)
+    if process.is_alive():
+        process.terminate()
+        process.join(10)
+        raise AssertionError("hard-exit subprocess did not terminate")
+    assert process.exitcode == HARD_EXIT_CODE
+
+
+def crash_initialize_before_target_lock(
+    state_root: str,
+    host: dict[str, object],
+    target: dict[str, str],
+    granted: dict[str, object],
+) -> None:
+    helper = load_helper()
+    original_exclusive_json = helper._exclusive_json
+
+    def exit_before_target_lock(path: Path, value: dict[str, object]) -> None:
+        if path.parent.name == "target-locks":
+            os._exit(HARD_EXIT_CODE)
+        original_exclusive_json(path, value)
+
+    helper._exclusive_json = exit_before_target_lock
+    helper.initialize_run(
+        host_identity=host,
+        target_identity=target,
+        mode="create",
+        authority=granted,
+        absence_evidence={"searched": [target["locator"]], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=Path(state_root),
+    )
+
+
+def crash_pause_after_journal(state_root: str, workflow_id: str) -> None:
+    helper = load_helper()
+    original_exclusive_json = helper._exclusive_json
+
+    def exit_after_journal(path: Path, value: dict[str, object]) -> None:
+        original_exclusive_json(path, value)
+        if path.parent.name == "transactions":
+            os._exit(HARD_EXIT_CODE)
+
+    helper._exclusive_json = exit_after_journal
+    helper.pause_run(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        state_root=Path(state_root),
+    )
+
+
+def crash_retain_after_artifact(
+    state_root: str,
+    workflow_id: str,
+    payload_base64: str,
+) -> None:
+    helper = load_helper()
+    original_create_artifact = helper._create_artifact
+
+    def exit_after_artifact(**parameters: object) -> dict[str, object]:
+        result = original_create_artifact(**parameters)
+        os._exit(HARD_EXIT_CODE)
+
+    helper._create_artifact = exit_after_artifact
+    current = helper.load_run(
+        workflow_id=workflow_id,
+        state_root=Path(state_root),
+    )
+    bindings = [
+        {"artifact_id": artifact_id, "digest": record["digest"]}
+        for artifact_id, record in current["artifact_index"].items()
+        if record["derived_status"] == "accepted"
+    ]
+    helper.retain_artifact(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        artifact_id="crash-baseline",
+        artifact_type="baseline-report",
+        files={"record.json": base64.b64decode(payload_base64)},
+        primary_path="record.json",
+        producer="main-agent",
+        input_bindings=bindings,
+        limitations=[],
+        state_root=Path(state_root),
+    )
+
+
+def crash_pause_after_receipt(state_root: str, workflow_id: str) -> None:
+    helper = load_helper()
+    original_write_receipt = helper._write_receipt
+
+    def exit_after_receipt(run: Path, receipt: dict[str, object]) -> Path:
+        result = original_write_receipt(run, receipt)
+        os._exit(HARD_EXIT_CODE)
+
+    helper._write_receipt = exit_after_receipt
+    helper.pause_run(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        state_root=Path(state_root),
+    )
+
+
 def host_identity(root: Path) -> dict[str, object]:
     return {
         "kind": "codex",
@@ -3735,6 +3846,221 @@ def test_index_write_failure_preserves_committed_append_receipt(
     )
     assert recovered["sequence"] == 1
     assert recovered["stage"] == "paused"
+
+
+def test_recovery_removes_hard_exit_journal_before_next_mutation(
+    tmp_path: Path,
+) -> None:
+    """A process death after journal publication must not poison its sequence."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    run_hard_exit_process(
+        crash_pause_after_journal,
+        str(state_root),
+        started["workflow_id"],
+    )
+    run = state_root / "live" / started["workflow_id"]
+    assert (run / "transactions" / "00000001.json").is_file()
+    assert not (run / "receipts" / "00000001.json").exists()
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["sequence"] == 0
+    assert recovered["stage"] == "resolved"
+    assert list((run / "transactions").iterdir()) == []
+    paused = helper.pause_run(
+        workflow_id=started["workflow_id"],
+        expected_sequence=0,
+        state_root=state_root,
+    )
+    assert paused["sequence"] == 1
+    assert paused["stage"] == "paused"
+
+
+def test_uncommitted_journal_cannot_claim_or_delete_committed_artifact(
+    tmp_path: Path,
+) -> None:
+    """Recovery must fail closed before deleting an artifact outside journal ownership."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    run_hard_exit_process(
+        crash_pause_after_journal,
+        str(state_root),
+        started["workflow_id"],
+    )
+    run = state_root / "live" / started["workflow_id"]
+    transaction_path = run / "transactions" / "00000001.json"
+    transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
+    transaction["artifact_ids"] = ["resolution"]
+    transaction_path.write_bytes(helper.canonical_json_bytes(transaction))
+
+    with pytest.raises(helper.RunStateError, match="committed artifact"):
+        helper.recover_run(
+            workflow_id=started["workflow_id"], state_root=state_root
+        )
+    assert (run / "artifacts" / "resolution").is_dir()
+    assert transaction_path.is_file()
+
+
+def test_recovery_removes_hard_exit_artifact_without_receipt(
+    tmp_path: Path,
+) -> None:
+    """A journal may remove only its uncommitted artifact after process death."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    payload = valid_create_baseline_payload(
+        helper, state_root, started["workflow_id"]
+    )
+    run_hard_exit_process(
+        crash_retain_after_artifact,
+        str(state_root),
+        started["workflow_id"],
+        base64.b64encode(fixture_canonical_bytes(payload)).decode("ascii"),
+    )
+    run = state_root / "live" / started["workflow_id"]
+    assert (run / "artifacts" / "crash-baseline").is_dir()
+    assert (run / "transactions" / "00000001.json").is_file()
+    assert not (run / "receipts" / "00000001.json").exists()
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["sequence"] == 0
+    assert recovered["stage"] == "resolved"
+    assert not (run / "artifacts" / "crash-baseline").exists()
+    assert list((run / "transactions").iterdir()) == []
+    retained = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=started["workflow_id"],
+        sequence=0,
+        artifact_id="crash-baseline",
+        artifact_type="baseline-report",
+        payload=payload,
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
+    )
+    assert retained["sequence"] == 1
+
+
+def test_recovery_finishes_hard_exit_receipt_and_removes_journal(
+    tmp_path: Path,
+) -> None:
+    """A published receipt remains truth and its completed journal is removed."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    started = helper.initialize_run(
+        host_identity=host_identity(tmp_path),
+        target_identity=target_identity(target),
+        mode="create",
+        authority=authority(),
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+    run_hard_exit_process(
+        crash_pause_after_receipt,
+        str(state_root),
+        started["workflow_id"],
+    )
+    run = state_root / "live" / started["workflow_id"]
+    assert (run / "transactions" / "00000001.json").is_file()
+    assert (run / "receipts" / "00000001.json").is_file()
+    assert json.loads((run / "current.json").read_text(encoding="utf-8"))[
+        "head_sequence"
+    ] == 0
+
+    recovered = helper.recover_run(
+        workflow_id=started["workflow_id"], state_root=state_root
+    )
+    assert recovered["sequence"] == 1
+    assert recovered["stage"] == "paused"
+    assert list((run / "transactions").iterdir()) == []
+    resumed = helper.resume_run(
+        workflow_id=started["workflow_id"],
+        expected_sequence=1,
+        state_root=state_root,
+    )
+    assert resumed["sequence"] == 2
+    assert resumed["stage"] == "resolved"
+
+
+def test_recovery_recreates_hard_exit_genesis_target_lock(
+    tmp_path: Path,
+) -> None:
+    """A durable nonterminal genesis must recover its exact missing target lock."""
+    helper = load_helper()
+    state_root = tmp_path / "state"
+    target = tmp_path / "skills" / "sample-skill"
+    identity = target_identity(target)
+    run_hard_exit_process(
+        crash_initialize_before_target_lock,
+        str(state_root),
+        host_identity(tmp_path),
+        identity,
+        authority(),
+    )
+    live_runs = list((state_root / "live").iterdir())
+    assert len(live_runs) == 1
+    workflow_id = live_runs[0].name
+    lock_path = (
+        state_root
+        / "target-locks"
+        / helper._target_lock_name(identity["canonical"])
+    )
+    assert not lock_path.exists()
+
+    recovered = helper.recover_run(
+        workflow_id=workflow_id, state_root=state_root
+    )
+    assert recovered["sequence"] == 0
+    assert recovered["stage"] == "resolved"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert lock["workflow_id"] == workflow_id
+    assert lock["target_identity"] == identity["canonical"]
+    paused = helper.pause_run(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        state_root=state_root,
+    )
+    assert paused["stage"] == "paused"
 
 
 def test_initialize_failure_after_lock_publication_does_not_leak_target_lock(

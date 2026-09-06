@@ -2219,6 +2219,154 @@ def _write_receipt(run: Path, receipt: dict[str, Any]) -> Path:
     return path
 
 
+_APPEND_TRANSACTION_SCHEMA = "skill-builder-append-transaction.v1"
+_APPEND_TRANSACTION_FIELDS = {
+    "schema_version",
+    "workflow_id",
+    "sequence",
+    "prior_receipt_digest",
+    "event",
+    "source_stage",
+    "destination_stage",
+    "artifact_ids",
+    "receipt",
+}
+
+
+def _validate_append_transaction(
+    run: Path, path: Path
+) -> dict[str, Any]:
+    _validate_regular(path, "append transaction")
+    transaction = _read_json(path)
+    if (
+        set(transaction) != _APPEND_TRANSACTION_FIELDS
+        or transaction.get("schema_version") != _APPEND_TRANSACTION_SCHEMA
+        or transaction.get("workflow_id") != run.name
+        or isinstance(transaction.get("sequence"), bool)
+        or not isinstance(transaction.get("sequence"), int)
+        or transaction["sequence"] <= 0
+        or path.name != f"{transaction['sequence']:08d}.json"
+        or not isinstance(transaction.get("event"), str)
+        or not transaction["event"].strip()
+        or transaction.get("source_stage") not in {*_STAGES, "paused"}
+        or transaction.get("destination_stage") not in {*_STAGES, "paused"}
+        or not isinstance(transaction.get("prior_receipt_digest"), str)
+        or not _DIGEST_RE.fullmatch(transaction["prior_receipt_digest"])
+    ):
+        raise RunStateError("append transaction schema or identity is invalid")
+    artifact_ids = transaction.get("artifact_ids")
+    if (
+        not isinstance(artifact_ids, list)
+        or len(artifact_ids) > MAX_ARTIFACT_ITEMS
+        or any(
+            not isinstance(artifact_id, str)
+            or not _ARTIFACT_RE.fullmatch(artifact_id)
+            for artifact_id in artifact_ids
+        )
+        or artifact_ids != sorted(artifact_ids)
+        or len(artifact_ids) != len(set(artifact_ids))
+    ):
+        raise RunStateError("append transaction artifact identities are invalid")
+    proposed_receipt = transaction.get("receipt")
+    if proposed_receipt is not None:
+        if (
+            not isinstance(proposed_receipt, dict)
+            or set(proposed_receipt) != _RECEIPT_FIELDS
+            or proposed_receipt.get("schema_version") != RECEIPT_SCHEMA
+            or proposed_receipt.get("workflow_id") != run.name
+            or proposed_receipt.get("sequence") != transaction["sequence"]
+            or proposed_receipt.get("prior_receipt_digest")
+            != transaction["prior_receipt_digest"]
+            or proposed_receipt.get("event") != transaction["event"]
+            or proposed_receipt.get("source_stage") != transaction["source_stage"]
+            or proposed_receipt.get("destination_stage")
+            != transaction["destination_stage"]
+            or proposed_receipt.get("receipt_digest")
+            != canonical_digest(proposed_receipt, "receipt_digest")
+        ):
+            raise RunStateError("append transaction proposed receipt is invalid")
+    return transaction
+
+
+def _reconcile_append_transactions(
+    run: Path,
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Roll back uncommitted appends and identify committed journals to remove."""
+    chain = _load_receipt_chain(run)
+    head = chain[-1]
+    transactions_directory = run / "transactions"
+    committed_artifact_ids = {
+        binding["artifact_id"]
+        for receipt in chain
+        for binding in receipt["relevant_artifact_digests"]
+    }
+    committed_journals: list[tuple[Path, dict[str, Any]]] = []
+    uncommitted_seen = False
+    for path in sorted(transactions_directory.iterdir()):
+        transaction = _validate_append_transaction(run, path)
+        sequence = transaction["sequence"]
+        if sequence <= head["sequence"]:
+            receipt = chain[sequence]
+            if transaction["receipt"] != receipt:
+                raise RunStateError(
+                    "committed append transaction does not match its receipt"
+                )
+            produced_artifact_ids: set[str] = set()
+            for binding in receipt["relevant_artifact_digests"]:
+                envelope, _ = _validate_envelope(run, binding["artifact_id"])
+                if envelope["created_sequence"] == sequence:
+                    produced_artifact_ids.add(binding["artifact_id"])
+            if produced_artifact_ids != set(transaction["artifact_ids"]):
+                raise RunStateError(
+                    "committed append transaction artifact ownership is invalid"
+                )
+            committed_journals.append((path, transaction))
+            continue
+        if uncommitted_seen or sequence != head["sequence"] + 1:
+            raise RunStateError("append transaction sequence is forked or stale")
+        uncommitted_seen = True
+        if (
+            transaction["prior_receipt_digest"] != head["receipt_digest"]
+            or transaction["source_stage"] != head["destination_stage"]
+        ):
+            raise RunStateError("uncommitted append transaction is stale")
+        if transaction["receipt"] is not None:
+            proposed = transaction["receipt"]
+            if proposed["target_identity"] != head["target_identity"]:
+                raise RunStateError(
+                    "uncommitted append transaction target is substituted"
+                )
+        for artifact_id in transaction["artifact_ids"]:
+            if artifact_id in committed_artifact_ids:
+                raise RunStateError(
+                    "uncommitted append transaction claims a committed artifact"
+                )
+            artifact = _artifact_directory(run, artifact_id)
+            if not os.path.lexists(artifact):
+                continue
+            if artifact.is_symlink():
+                raise RunStateError(
+                    "uncommitted append transaction artifact is unsafe"
+                )
+            _remove_owned_tree(artifact)
+            _fsync_directory(artifact.parent)
+        if _read_json(path) != transaction:
+            raise RunStateError("append transaction changed during recovery")
+        path.unlink()
+        _fsync_directory(transactions_directory)
+    return committed_journals
+
+
+def _remove_committed_append_journals(
+    journals: list[tuple[Path, dict[str, Any]]],
+) -> None:
+    for path, transaction in journals:
+        if _read_json(path) != transaction:
+            raise RunStateError("committed append transaction changed during recovery")
+        path.unlink()
+        _fsync_directory(path.parent)
+
+
 def _append_transaction(
     *,
     run: Path,
@@ -2236,7 +2384,7 @@ def _append_transaction(
     if len(artifact_ids) != len(set(artifact_ids)):
         raise RunStateError("append transaction artifact identifiers are duplicated")
     transaction: dict[str, Any] = {
-        "schema_version": "skill-builder-append-transaction.v1",
+        "schema_version": _APPEND_TRANSACTION_SCHEMA,
         "workflow_id": current["workflow_id"],
         "sequence": sequence,
         "prior_receipt_digest": current["head_transition_digest"],
@@ -4218,7 +4366,12 @@ def _validate_delivery_destination(
         )
 
 
-def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
+def _validate_target_unchanged(
+    index: dict[str, Any],
+    root: Path,
+    *,
+    allow_missing_active_lock: bool = False,
+) -> None:
     if index["stage"] == "abandoned":
         return
     snapshot = index["target_snapshot"]
@@ -4249,11 +4402,14 @@ def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
         raise RunStateError("Git identity changed after initialization")
     active_lock = index["active_target_lock"]
     if active_lock is not None:
-        lock = _read_json(
+        lock_path = (
             root
             / "target-locks"
             / _target_lock_name(index["target_identity"]["canonical"])
         )
+        if allow_missing_active_lock and not os.path.lexists(lock_path):
+            return
+        lock = _read_json(lock_path)
         expected = {
             "schema_version": "skill-builder-target-lock.v1",
             **active_lock,
@@ -4261,6 +4417,29 @@ def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
         }
         if lock != expected:
             raise RunStateError("active-target lock binding mismatch")
+
+
+def _restore_missing_active_target_lock(
+    root: Path, index: dict[str, Any]
+) -> None:
+    if index["stage"] in {"finalized", "delivered", "abandoned"}:
+        return
+    active_lock = index["active_target_lock"]
+    if not isinstance(active_lock, dict):
+        raise RunStateError("nonterminal run lacks active-target lock metadata")
+    lock_path = root / "target-locks" / _target_lock_name(
+        index["target_identity"]["canonical"]
+    )
+    if os.path.lexists(lock_path):
+        return
+    lock_record = {
+        "schema_version": "skill-builder-target-lock.v1",
+        **active_lock,
+        "workflow_id": index["workflow_id"],
+    }
+    _exclusive_json(lock_path, lock_record)
+    if _read_json(lock_path) != lock_record:
+        raise RunStateError("recovered active-target lock read-back mismatch")
 
 
 def _release_owned_target_lock(
@@ -4767,6 +4946,7 @@ def recover_run(
                 "tombstone_digest": tombstone["tombstone_digest"],
             }
         run = _run_directory(root, workflow_id)
+        committed_journals = _reconcile_append_transactions(run)
         derived = _derive_index(run)
         if derived["stage"] in {"finalized", "delivered", "abandoned"}:
             resolution, _ = _resolution_payload(run, workflow_id)
@@ -4777,8 +4957,12 @@ def recover_run(
                 allow_missing=True,
                 allow_other_owner=True,
             )
-        _validate_target_unchanged(derived, root)
+        _validate_target_unchanged(
+            derived, root, allow_missing_active_lock=True
+        )
+        _restore_missing_active_target_lock(root, derived)
         _atomic_json(run / "current.json", derived)
+        _remove_committed_append_journals(committed_journals)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "recover",
