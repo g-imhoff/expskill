@@ -20,6 +20,7 @@ EXPECTED_SKILLS = {
     "grill-me",
     "implement",
     "skill-builder",
+    "test",
     "unslop",
     "use-expskill",
 }

@@ -34,20 +34,22 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
 
-    def test_readme_and_manifest_expose_seven_skills_design_and_skill_builder(self) -> None:
+    def test_readme_and_manifest_expose_eight_skills_design_test_and_skill_builder(self) -> None:
         """Regression: stale phase language hides a direct skill or contradicts the public roster."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
-        skill_wording = re.compile(r"\bseven independent skills and one optional lifecycle router\b", re.I)
+        skill_wording = re.compile(r"\beight independent skills and one optional lifecycle router\b", re.I)
         self.assertRegex(" ".join(readme.split()), skill_wording)
         self.assertIn("$design", readme)
+        self.assertIn("$test", readme)
         self.assertIn("$skill-builder", readme)
+        self.assertIn("$test", long_description)
         self.assertIn("$skill-builder", long_description)
         self.assertRegex(description, skill_wording)
-        self.assertNotRegex(readme, re.compile(r"\b(?:six|seven) independent development phases\b", re.I))
-        self.assertNotRegex(description, re.compile(r"\b(?:six|seven) standalone development phases\b", re.I))
+        self.assertNotRegex(readme, re.compile(r"\b(?:six|seven|eight) independent development phases\b", re.I))
+        self.assertNotRegex(description, re.compile(r"\b(?:six|seven|eight) standalone development phases\b", re.I))
 
     def test_validator_accepts_skill_builder_maximum_package_shape(self) -> None:
         """Regression: the joined state helper is allowed without becoming required in this lane."""
@@ -72,7 +74,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-six-skill-wording": ("readme", "seven independent skills"),
+            "stale-seven-skill-wording": ("readme", "eight independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
@@ -114,12 +116,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         json.dumps(manifest, indent=2) + "\n",
                         encoding="utf-8",
                     )
-                elif mutation == "stale-six-skill-wording":
+                elif mutation == "stale-seven-skill-wording":
                     readme = root / "README.md"
                     readme.write_text(
                         readme.read_text(encoding="utf-8").replace(
+                            "eight independent skills",
                             "seven independent skills",
-                            "six independent skills",
                             1,
                         ),
                         encoding="utf-8",
@@ -173,6 +175,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "Never route to `$design`.",
             "Do not stop at finalization: invoke $plan after finalization.",
             "There is no delay: route through **$implement** after finalization.",
+            "Run $test after finalization.",
             "Without delay, invoke $use-expskill after finalization.",
             "Refuse to invoke $grill-me.",
             "Cannot finish without invoking $unslop.",
