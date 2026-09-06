@@ -3230,6 +3230,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 replay_current,
                 receipt,
                 validated_bindings,
+                event_artifacts,
             )
         for item, envelope in validated_bindings:
             artifact_id = item["artifact_id"]
@@ -3348,8 +3349,75 @@ def _target_lock_name(canonical_target: str) -> str:
     return f"{raw_digest(canonical_target.encode('utf-8'))}.json"
 
 
+def _owned_result_digest(
+    index: dict[str, Any], manifest: dict[str, Any], owned_paths: list[str]
+) -> str:
+    if not owned_paths or len(owned_paths) != len(set(owned_paths)):
+        raise RunStateError("candidate owned paths are empty or duplicated")
+    entries = manifest["entries"]
+    selected: list[dict[str, Any]] = []
+    selected_paths: set[str] = set()
+    for owned in owned_paths:
+        if (
+            not isinstance(owned, str)
+            or not owned
+            or owned.startswith("/")
+            or "\\" in owned
+            or any(part in {"", ".."} for part in owned.split("/"))
+        ):
+            raise RunStateError("candidate owned path is unsafe")
+        matching = [
+            entry
+            for entry in entries
+            if owned == "."
+            or entry["path"] == owned
+            or entry["path"].startswith(f"{owned}/")
+        ]
+        if not matching:
+            raise RunStateError("candidate owned path is absent from the destination")
+        for entry in matching:
+            if entry["path"] in selected_paths:
+                continue
+            selected_paths.add(entry["path"])
+            selected.append(
+                {
+                    key: entry[key]
+                    for key in (
+                        "path",
+                        "kind",
+                        "mode",
+                        "byte_count",
+                        "digest",
+                    )
+                }
+            )
+    selected.sort(key=lambda entry: entry["path"])
+    all_paths = {entry["path"] for entry in entries}
+    if index["mode"]["name"] == "create" and selected_paths != all_paths:
+        raise RunStateError("create delivery contains content outside candidate ownership")
+    if index["mode"]["name"] == "improve":
+        baseline_entries = {
+            entry["path"]: entry
+            for entry in index["target_snapshot"]["manifest"]["entries"]
+        }
+        current_entries = {entry["path"]: entry for entry in entries}
+        unowned_paths = (set(baseline_entries) | set(current_entries)) - selected_paths
+        if any(
+            baseline_entries.get(path) != current_entries.get(path)
+            for path in unowned_paths
+        ):
+            raise RunStateError("delivery changed content outside candidate ownership")
+    record = {
+        "schema_version": "skill-builder-owned-result.v1",
+        "entries": selected,
+    }
+    return raw_digest(canonical_json_bytes(record))
+
+
 def _validate_delivery_destination(
-    index: dict[str, Any], delivery: dict[str, Any]
+    index: dict[str, Any],
+    delivery: dict[str, Any],
+    candidate: dict[str, Any],
 ) -> None:
     """Verify the exact post-delivery target named by the accepted record."""
     if delivery.get("destination_identity") != index["target_identity"]["canonical"]:
@@ -3360,6 +3428,10 @@ def _validate_delivery_destination(
     manifest = snapshot_target(locator)
     if delivery.get("resulting_destination_digest") != manifest["manifest_digest"]:
         raise RunStateError("delivery destination digest does not match the exact target")
+    if candidate.get("resulting_digest") != _owned_result_digest(
+        index, manifest, candidate.get("owned_paths")
+    ):
+        raise RunStateError("delivery content does not match the finalized candidate result")
 
 
 def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
@@ -3374,7 +3446,13 @@ def _validate_target_unchanged(index: dict[str, Any], root: Path) -> None:
             "record-delivery",
             "delivery-acceptance-record",
         )
-        _validate_delivery_destination(index, delivery)
+        _, _, candidate = _current_event_artifact(
+            run,
+            index,
+            "accept-candidate",
+            "candidate-record",
+        )
+        _validate_delivery_destination(index, delivery, candidate)
         return
     if snapshot["exists"] is False and os.path.lexists(locator):
         raise RunStateError("target changed after its absent snapshot")
@@ -4091,12 +4169,65 @@ _INVALIDATION_RULES = {
     },
 }
 
+_CURRENT_EVENT_BY_ARTIFACT_TYPE = {
+    "resolution-record": "initialize",
+    "research-pack": "complete-research",
+    "evidence-sieve": "sieve-evidence",
+    "design-record": "accept-design",
+    "skill-contract": "accept-contract",
+    "user-confirmation-record": "confirm-contract",
+    "evaluation-pack": "freeze-evaluation",
+    "candidate-record": "accept-candidate",
+    "trial-pack": "complete-trials",
+    "review-record": "accept-review",
+    "verification-record": "accept-verification",
+}
+
+
+def _require_selected_change_artifact(
+    run: Path,
+    current: dict[str, Any],
+    artifact_id: str,
+    artifact_type: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    event = _CURRENT_EVENT_BY_ARTIFACT_TYPE.get(artifact_type)
+    if event is not None:
+        selected_id, selected_envelope = _event_artifact(
+            run, event, artifact_type, event_artifacts
+        )
+        selected = current["artifact_index"].get(selected_id)
+        if (
+            artifact_id != selected_id
+            or selected is None
+            or selected["derived_status"] != "accepted"
+            or selected["digest"] != selected_envelope["envelope_digest"]
+        ):
+            raise RunStateError(
+                "material change does not name the current selected artifact"
+            )
+        return
+    if artifact_type == "release-record":
+        releases = sorted(
+            record["artifact_id"]
+            for record in current["artifact_index"].values()
+            if record["type"] == "release-record"
+            and record["derived_status"] == "accepted"
+        )
+        if releases != [artifact_id]:
+            raise RunStateError(
+                "material change does not identify one unambiguous release"
+            )
+        return
+    raise RunStateError("material change artifact has no selecting workflow event")
+
 
 def _validate_invalidation_binding(
     run: Path,
     current: dict[str, Any],
     receipt: dict[str, Any],
     validated_bindings: list[tuple[dict[str, Any], dict[str, Any]]],
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Bind one invalidation receipt to its exact material-change rule."""
     accepted = [
@@ -4142,6 +4273,13 @@ def _validate_invalidation_binding(
         or invalidation_envelope["created_sequence"] != receipt["sequence"]
     ):
         raise RunStateError("invalidation change, artifact, or destination is mismatched")
+    _require_selected_change_artifact(
+        run,
+        current,
+        changed_item["artifact_id"],
+        changed_envelope["artifact_type"],
+        event_artifacts,
+    )
 
     expected_invalidated = sorted(
         record["artifact_id"]
@@ -4208,6 +4346,12 @@ def invalidate_run(
             raise RunStateError("changed artifact is missing or already invalidated")
         if changed["type"] not in rule["changed_types"]:
             raise RunStateError("material change kind does not match changed artifact type")
+        _require_selected_change_artifact(
+            run,
+            current,
+            changed_artifact_id,
+            changed["type"],
+        )
         if change_kind != "target-snapshot":
             _validate_target_unchanged(current, root)
         invalidated_records = [
@@ -4528,7 +4672,7 @@ def _validate_delivery_record_binding(
     )
     if retained_evidence != sorted(delivery["acceptance_evidence"]):
         raise RunStateError("delivery acceptance evidence lacks retained raw bytes")
-    _validate_delivery_destination(current, delivery)
+    _validate_delivery_destination(current, delivery, candidate)
     _require_input_bindings(
         delivery_envelope,
         {
@@ -4693,10 +4837,10 @@ def record_delivery(
             raise RevisionConflict("receipt sequence conflict")
         if current["stage"] != "finalized":
             raise RunStateError("delivery may be recorded only for a finalized run")
-        _validate_delivery_destination(current, delivery)
         candidate_id, candidate_envelope, candidate = _current_event_artifact(
             run, current, "accept-candidate", "candidate-record"
         )
+        _validate_delivery_destination(current, delivery, candidate)
         if delivery["finalized_revision"] != candidate.get("candidate_revision"):
             raise RunStateError("delivery revision does not match the finalized candidate")
         release_id, release_envelope, release = _current_event_artifact(

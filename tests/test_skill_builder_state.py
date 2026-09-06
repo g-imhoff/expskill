@@ -60,7 +60,7 @@ TRIAL_DIGEST_FIELDS = {
 
 def trial_evidence_bytes(case_id: str, kind: str) -> bytes:
     if kind == "loaded-skill":
-        return CANDIDATE_SKILL_BYTES
+        return candidate_result_bytes()
     return f"{case_id}:{kind}\n".encode("utf-8")
 
 
@@ -78,6 +78,23 @@ def fixture_canonical_bytes(value: dict[str, object]) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def candidate_result_bytes() -> bytes:
+    return fixture_canonical_bytes(
+        {
+            "schema_version": "skill-builder-owned-result.v1",
+            "entries": [
+                {
+                    "path": "SKILL.md",
+                    "kind": "file",
+                    "mode": 0o644,
+                    "byte_count": len(CANDIDATE_SKILL_BYTES),
+                    "digest": fixture_digest(CANDIDATE_SKILL_BYTES),
+                }
+            ],
+        }
+    )
 
 
 def evaluation_case(case_id: str, partition: str) -> dict[str, object]:
@@ -318,6 +335,7 @@ def install_target_and_digest(
     target = Path(current["target_identity"]["locator"])
     target.mkdir(parents=True, exist_ok=True)
     (target / "SKILL.md").write_bytes(CANDIDATE_SKILL_BYTES)
+    os.chmod(target / "SKILL.md", 0o644)
     return helper.snapshot_target(target)["manifest_digest"]
 
 
@@ -498,7 +516,7 @@ def candidate_payload(
         "isolated_locator": str((tmp_path / "candidate").resolve()),
         "base_snapshot_digest": snapshot_digest,
         "candidate_revision": revision,
-        "resulting_digest": fixture_digest(CANDIDATE_SKILL_BYTES),
+        "resulting_digest": fixture_digest(candidate_result_bytes()),
         "writable_role": "implementer",
         "owned_paths": ["SKILL.md"],
         "diff_digest": "2" * 64,
@@ -528,7 +546,7 @@ def trial_payload(candidate_digest: str, revision: str = "candidate-1") -> dict[
                 "raw_prompt_digest": fixture_digest(
                     trial_evidence_bytes(case_id, "prompt")
                 ),
-                "loaded_skill_digest": fixture_digest(CANDIDATE_SKILL_BYTES),
+                "loaded_skill_digest": fixture_digest(candidate_result_bytes()),
                 "fresh_context_identity": f"fresh-context-{index}",
                 "tool_event_digest": fixture_digest(
                     trial_evidence_bytes(case_id, "tool-events")
@@ -4125,6 +4143,41 @@ def test_replay_rejects_semantically_forged_invalidation_receipt(
             )
 
 
+def test_invalidation_rejects_unselected_same_type_decoy(tmp_path: Path) -> None:
+    """Only the artifact selected by its workflow event can cause a rewind."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path
+    )
+    decoy = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="candidate-decoy",
+        artifact_type="candidate-record",
+        payload=helper._artifact_payload_json(
+            state_root / "live" / workflow_id, "candidate"
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+
+    with pytest.raises(helper.RunStateError, match="current|selected|change"):
+        helper.invalidate_run(
+            workflow_id=workflow_id,
+            expected_sequence=decoy["sequence"],
+            change_kind="candidate",
+            changed_artifact_id="candidate-decoy",
+            reason="attempt to invalidate an unselected decoy",
+            state_root=state_root,
+        )
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert current["stage"] == "candidate"
+    assert current["artifact_index"]["candidate"]["digest"] == candidate[
+        "artifact_digest"
+    ]
+
+
 def test_create_mode_records_the_exact_installed_destination(
     tmp_path: Path,
 ) -> None:
@@ -4140,6 +4193,7 @@ def test_create_mode_records_the_exact_installed_destination(
     target = tmp_path / "skills" / "sample-skill"
     target.mkdir(parents=True)
     (target / "SKILL.md").write_bytes(CANDIDATE_SKILL_BYTES)
+    os.chmod(target / "SKILL.md", 0o644)
     destination_digest = helper.snapshot_target(target)["manifest_digest"]
     authority_event = b"user accepted this exact installation\n"
     acceptance_evidence = b"destination snapshot verified\n"
@@ -4167,6 +4221,46 @@ def test_create_mode_records_the_exact_installed_destination(
     assert helper.load_run(workflow_id=workflow_id, state_root=state_root)[
         "stage"
     ] == "delivered"
+
+
+def test_delivery_rejects_destination_that_is_not_the_final_candidate(
+    tmp_path: Path,
+) -> None:
+    """A caller-supplied destination digest cannot replace candidate equality."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    target = tmp_path / "skills" / "sample-skill"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_bytes(b"unrelated installed content\n")
+    destination_digest = helper.snapshot_target(target)["manifest_digest"]
+    authority_event = b"user accepted this exact installation\n"
+    acceptance_evidence = b"destination snapshot verified\n"
+
+    with pytest.raises(helper.RunStateError, match="candidate|content|result"):
+        helper.record_delivery(
+            workflow_id=workflow_id,
+            expected_sequence=finalized["sequence"],
+            delivery={
+                "action": "installation",
+                "destination_identity": "codex:personal:sample-skill",
+                "finalized_revision": "candidate-1",
+                "resulting_destination_digest": destination_digest,
+                "acceptance_evidence": [fixture_digest(acceptance_evidence)],
+                "user_authority_event_digest": fixture_digest(authority_event),
+                "actor": "main-agent",
+                "accepted": True,
+            },
+            authority_event_digest=fixture_digest(authority_event),
+            authority_event=authority_event,
+            evidence_files={"destination-verification.bin": acceptance_evidence},
+            state_root=state_root,
+        )
 
 
 def test_all_stage_transitions_require_their_semantic_input_bindings(
