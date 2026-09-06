@@ -1831,15 +1831,54 @@ def build_fixture_trace(
 ) -> list[dict[str, Any]]:
     """Migrate every fixture through the same strict trace construction path."""
 
+    invalid_fixture = [
+        {
+            "event": None,
+            "construction_error": "invalid-fixture-shape",
+        }
+    ]
+    if (
+        not isinstance(partition, str)
+        or not isinstance(trace_id, str)
+        or not isinstance(raw_events, list)
+        or any(not isinstance(event, dict) for event in raw_events)
+    ):
+        return invalid_fixture
     try:
         canonical_bytes(raw_events)
     except (TypeError, UnicodeError, ValueError):
-        return [
-            {
-                "event": None,
-                "construction_error": "invalid-durable-input",
-            }
-        ]
+        return invalid_fixture
+    for event in raw_events:
+        event_name = event.get("event")
+        artifact_type = event.get("artifact_type")
+        artifact_id = event.get("artifact_id")
+        input_artifact_ids = event.get("input_artifact_ids")
+        if (
+            not isinstance(event_name, str)
+            or artifact_type is not None
+            and not isinstance(artifact_type, str)
+            or artifact_id is not None
+            and not isinstance(artifact_id, str)
+            or input_artifact_ids is not None
+            and (
+                not isinstance(input_artifact_ids, list)
+                or any(
+                    not isinstance(item, str) for item in input_artifact_ids
+                )
+            )
+            or "files" in event and not isinstance(event["files"], list)
+        ):
+            return invalid_fixture
+        if event_name == "research_pack":
+            lanes = event.get("lanes", [])
+            if not isinstance(lanes, list) or any(
+                not isinstance(lane, dict) for lane in lanes
+            ):
+                return invalid_fixture
+        if event_name == "evidence_sieved":
+            card_count = event.get("card_count", 0)
+            if type(card_count) is not int or card_count < 0:
+                return invalid_fixture
 
     fixture_workflow = hashlib.sha256(
         f"{partition}:{trace_id}".encode("utf-8")
@@ -1857,6 +1896,11 @@ def build_fixture_trace(
         ]
         if len(revisions) != len(accepted_candidate_events):
             return seal_trace(raw_events, workflow_id=fixture_workflow)
+        raw_resolutions = [
+            event for event in raw_events if event.get("event") == "resolve"
+        ]
+        if len(raw_resolutions) != 1:
+            return invalid_fixture
         if any(
             isinstance(event, dict) and event.get("event") == "repair_completed"
             for event in raw_events
@@ -1882,11 +1926,7 @@ def build_fixture_trace(
             if len(revisions) > 1
             else copy.deepcopy(complete[: last_index + 1])
         )
-        raw_resolution = next(
-            event
-            for event in raw_events
-            if isinstance(event, dict) and event.get("event") == "resolve"
-        )
+        raw_resolution = raw_resolutions[0]
         fixture_manifest = raw_resolution.get("target_manifest")
         fixture_target, inferred_mode = _target_from_manifest(fixture_manifest)
         fixture_mode = raw_resolution.get("selected_mode", inferred_mode)
@@ -10431,6 +10471,68 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 self.assertTrue(
                     {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
                 )
+
+    def test_fixture_builder_rejects_json_valid_malformed_shapes_without_throwing(self) -> None:
+        """Malformed event containers and required structure fail as oracle data."""
+
+        payload = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        accepted_scalar = copy.deepcopy(
+            payload["traces"]["accepted_exact_improve"]
+        )
+        accepted_scalar.append("hostile-scalar")
+        accepted_missing_resolution = [
+            event
+            for event in copy.deepcopy(
+                payload["traces"]["accepted_exact_improve"]
+            )
+            if event.get("event") != "resolve"
+        ]
+        ordinary_scalar: list[Any] = ["hostile-scalar"]
+        ordinary_lane = copy.deepcopy(
+            payload["traces"]["accepted_exact_improve"]
+        )
+        next(
+            event
+            for event in ordinary_lane
+            if event.get("event") == "research_pack"
+        )["lanes"] = ["hostile-scalar"]
+
+        mutants = (
+            ("accepted_scalar", "accepted_exact_improve", accepted_scalar),
+            (
+                "accepted_missing_resolution",
+                "accepted_exact_improve",
+                accepted_missing_resolution,
+            ),
+            ("ordinary_scalar", "mutant_scalar", ordinary_scalar),
+            ("ordinary_lane", "mutant_lane", ordinary_lane),
+        )
+        for name, trace_id, raw_events in mutants:
+            with self.subTest(mutant=name):
+                try:
+                    built = build_fixture_trace(
+                        "visible", trace_id, raw_events
+                    )
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(built, BUILDER_FIXTURES)
+                    }
+                except (
+                    AttributeError,
+                    IndexError,
+                    KeyError,
+                    StopIteration,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    self.fail(
+                        f"fixture construction leaked {type(error).__name__}: {error}"
+                    )
+                self.assertIn("INVALID_EVENT_SCHEMA", codes)
 
     def test_accepted_fixture_builder_preserves_supplied_events(self) -> None:
         """A hostile event injected into an accepted fixture reaches the oracle."""
