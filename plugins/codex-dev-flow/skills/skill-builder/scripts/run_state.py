@@ -920,9 +920,18 @@ def _locked_root(state_root: Path | None, *, create: bool) -> Any:
     else:
         _reject_symlink_components(root)
         _validate_private_directory(root, "state root")
-    for name in ("live", "tombstones", "target-locks", "deleting"):
+    for name in (
+        "live",
+        "initializing",
+        "tombstones",
+        "target-locks",
+        "deleting",
+    ):
         child = root / name
-        if create or (name == "deleting" and not os.path.lexists(child)):
+        if create or (
+            name in {"deleting", "initializing"}
+            and not os.path.lexists(child)
+        ):
             _ensure_private_directory(child)
         else:
             _validate_private_directory(child, name)
@@ -4730,6 +4739,137 @@ def _release_owned_target_lock(
     _fsync_directory(lock_path.parent)
 
 
+def _target_lock_claims_workflow(root: Path, workflow_id: str) -> bool:
+    for lock_path in sorted((root / "target-locks").iterdir()):
+        if lock_path.is_symlink() or not lock_path.is_file():
+            raise RunStateError("target-lock namespace contains an unsafe entry")
+        if _read_json(lock_path).get("workflow_id") == workflow_id:
+            return True
+    return False
+
+
+def _reap_uncommitted_initializations(root: Path) -> None:
+    """Remove private staging trees that were never published as live runs."""
+    initializing = root / "initializing"
+    removed = False
+    for entry in sorted(initializing.iterdir()):
+        if (
+            entry.is_symlink()
+            or not entry.is_dir()
+            or not _WORKFLOW_RE.fullmatch(entry.name)
+        ):
+            raise RunStateError(
+                "initialization namespace contains an unsafe entry"
+            )
+        _normalize_interrupted_publications(entry)
+        if _target_lock_claims_workflow(root, entry.name):
+            raise RunStateError(
+                "uncommitted initialization unexpectedly owns a target lock"
+            )
+        _remove_owned_tree(entry)
+        removed = True
+    if removed:
+        _fsync_directory(initializing)
+
+
+def _discard_uncommitted_initialization(root: Path, run: Path) -> bool:
+    """Delete only an exact legacy pre-genesis live-run prefix."""
+    workflow_id = run.name
+    if not _WORKFLOW_RE.fullmatch(workflow_id):
+        return False
+    _validate_private_directory(run, "uncommitted initialization")
+    names = {entry.name for entry in run.iterdir()}
+    valid_prefixes = (
+        set(),
+        {"receipts"},
+        {"receipts", "artifacts"},
+        {"receipts", "artifacts", "transactions"},
+    )
+    if names not in valid_prefixes:
+        return False
+    if os.path.lexists(root / "tombstones" / f"{workflow_id}.json"):
+        return False
+    if os.path.lexists(root / "deleting" / workflow_id):
+        return False
+    if _target_lock_claims_workflow(root, workflow_id):
+        return False
+
+    for directory_name in ("receipts", "transactions"):
+        directory = run / directory_name
+        if not os.path.lexists(directory):
+            continue
+        _validate_private_directory(directory, directory_name)
+        if any(directory.iterdir()):
+            return False
+
+    artifacts = run / "artifacts"
+    if os.path.lexists(artifacts):
+        _validate_private_directory(artifacts, "artifact directory")
+        artifact_names = {entry.name for entry in artifacts.iterdir()}
+        if artifact_names not in (set(), {"resolution"}):
+            return False
+        resolution = artifacts / "resolution"
+        if os.path.lexists(resolution):
+            _validate_private_directory(resolution, "resolution artifact")
+            resolution_names = {entry.name for entry in resolution.iterdir()}
+            if resolution_names not in (
+                set(),
+                {"raw"},
+                {"raw", "manifest.json"},
+                {"raw", "manifest.json", "envelope.json"},
+            ):
+                return False
+            raw = resolution / "raw"
+            payload: dict[str, Any] | None = None
+            if os.path.lexists(raw):
+                _validate_private_directory(raw, "resolution raw directory")
+                raw_names = [entry.name for entry in raw.iterdir()]
+                if len(raw_names) > 1:
+                    return False
+                if raw_names:
+                    raw_name = raw_names[0]
+                    if raw_name == "payload.json":
+                        payload = _read_json(raw / raw_name)
+                    elif not (
+                        _immutable_temp_names_destination(
+                            raw_name, "payload.json"
+                        )
+                        or _LEGACY_PUBLICATION_TEMP_RE.fullmatch(raw_name)
+                    ):
+                        return False
+            if "manifest.json" in resolution_names:
+                if payload is None:
+                    return False
+                manifest = _read_json(resolution / "manifest.json")
+                if (
+                    manifest.get("schema_version") != MANIFEST_SCHEMA
+                    or manifest.get("workflow_id") != workflow_id
+                ):
+                    return False
+            if "envelope.json" in resolution_names:
+                _resolution_payload(run, workflow_id)
+            if payload is not None:
+                target = payload.get("target_identity")
+                if (
+                    payload.get("workflow_id") != workflow_id
+                    or not isinstance(target, dict)
+                    or not isinstance(target.get("canonical"), str)
+                    or not target["canonical"]
+                ):
+                    return False
+                expected_lock = (
+                    root
+                    / "target-locks"
+                    / _target_lock_name(target["canonical"])
+                )
+                if os.path.lexists(expected_lock):
+                    return False
+
+    _remove_owned_tree(run)
+    _fsync_directory(run.parent)
+    return True
+
+
 def initialize_run(
     *,
     host_identity: dict[str, Any],
@@ -4818,9 +4958,15 @@ def initialize_run(
     }
     with _locked_root(state_root, create=True) as root:
         live = root / "live"
-        for entry in live.iterdir():
+        initializing = root / "initializing"
+        _normalize_interrupted_publications(root / "target-locks")
+        _reap_uncommitted_initializations(root)
+        for entry in sorted(live.iterdir()):
             if entry.is_symlink() or not entry.is_dir():
                 raise RunStateError("live-run namespace contains an unsafe entry")
+            _normalize_interrupted_publications(entry)
+            if _discard_uncommitted_initialization(root, entry):
+                continue
             existing_run = _run_directory(root, entry.name)
             current = _derive_index(existing_run)
             if _read_json(existing_run / "current.json") != current:
@@ -4836,20 +4982,20 @@ def initialize_run(
                     "unfinished queued work already owns the active target lock"
                 )
         run = live / workflow_id
-        _ensure_private_directory(run)
-        _ensure_private_directory(run / "receipts")
-        _ensure_private_directory(run / "artifacts")
-        _ensure_private_directory(run / "transactions")
+        staging = initializing / workflow_id
+        _ensure_private_directory(staging)
+        _ensure_private_directory(staging / "receipts")
+        _ensure_private_directory(staging / "artifacts")
+        _ensure_private_directory(staging / "transactions")
         lock_path = root / "target-locks" / _target_lock_name(target["canonical"])
         lock_record = {
             "schema_version": "skill-builder-target-lock.v1",
             **active_lock,
             "workflow_id": workflow_id,
         }
-        lock_published = False
         try:
             envelope = _create_resolution_artifact(
-                run,
+                staging,
                 workflow_id,
                 host,
                 target,
@@ -4879,25 +5025,59 @@ def initialize_run(
                 target_snapshot_digest=snapshot["snapshot_digest"],
                 authority_event_digest=None,
             )
-            _write_receipt(run, genesis)
-            index = _derive_index(run)
-            _atomic_json(run / "current.json", index)
+            _write_receipt(staging, genesis)
+            index = _derive_index(staging)
+            _atomic_json(staging / "current.json", index)
+            _fsync_directory(staging)
+            try:
+                os.rename(staging, run)
+            except OSError as error:
+                raise RunStateError(
+                    "cannot publish initialized live run"
+                ) from error
+            _fsync_directory(initializing)
+            _fsync_directory(live)
             _exclusive_json(lock_path, lock_record)
-            lock_published = True
             _fsync_directory(live)
         except BaseException:
             # No caller-visible workflow exists until the genesis chain and index
             # are complete.  Best-effort rollback is confined to the fresh ID.
-            if lock_published and os.path.lexists(lock_path):
-                if lock_path.is_symlink() or _read_json(lock_path) != lock_record:
-                    raise RunStateError(
+            rollback_error: RunStateError | None = None
+            if os.path.lexists(lock_path):
+                try:
+                    if (
+                        lock_path.is_symlink()
+                        or _read_json(lock_path) != lock_record
+                    ):
+                        rollback_error = RunStateError(
+                            "fresh target lock changed during initialization rollback"
+                        )
+                    else:
+                        lock_path.unlink()
+                        _fsync_directory(lock_path.parent)
+                except (OSError, RunStateError):
+                    rollback_error = RunStateError(
                         "fresh target lock changed during initialization rollback"
                     )
-                lock_path.unlink()
-                _fsync_directory(lock_path.parent)
-            if run.exists() and not run.is_symlink():
-                _remove_owned_tree(run)
-                _fsync_directory(live)
+            cleanup_candidates = [
+                path for path in (run, staging) if os.path.lexists(path)
+            ]
+            if len(cleanup_candidates) == 1:
+                cleanup = cleanup_candidates[0]
+                if cleanup.is_symlink() or not cleanup.is_dir():
+                    rollback_error = RunStateError(
+                        "fresh run changed during initialization rollback"
+                    )
+                else:
+                    _normalize_interrupted_publications(cleanup)
+                    _remove_owned_tree(cleanup)
+                    _fsync_directory(cleanup.parent)
+            elif cleanup_candidates:
+                rollback_error = RunStateError(
+                    "fresh run was duplicated during initialization rollback"
+                )
+            if rollback_error is not None:
+                raise rollback_error
             raise
         return {
             "schema_version": "skill-builder-operation.v1",
@@ -5007,10 +5187,13 @@ def discover_run(
     matches: list[dict[str, Any]] = []
     with _locked_root(state_root, create=False) as root:
         _normalize_interrupted_publications(root / "target-locks")
+        _reap_uncommitted_initializations(root)
         for entry in sorted((root / "live").iterdir()):
             if entry.is_symlink() or not entry.is_dir():
                 raise RunStateError("live-run namespace contains an unsafe entry")
             _normalize_interrupted_publications(entry)
+            if _discard_uncommitted_initialization(root, entry):
+                continue
             run = _run_directory(root, entry.name)
             derived = _recover_validated_run(root, run)
             if (

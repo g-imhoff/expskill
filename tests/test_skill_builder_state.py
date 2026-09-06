@@ -369,6 +369,47 @@ def crash_initialize_during_target_lock_link(
     )
 
 
+def crash_initialize_during_resolution_payload_link(
+    state_root: str,
+    host: dict[str, object],
+    target: dict[str, str],
+    granted: dict[str, object],
+) -> None:
+    helper = load_helper()
+    original_link = helper.os.link
+
+    def exit_after_resolution_payload_link(
+        source: object,
+        destination: object,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        original_link(
+            source,
+            destination,
+            follow_symlinks=follow_symlinks,
+        )
+        destination_path = Path(destination)
+        if (
+            destination_path.name == "payload.json"
+            and destination_path.parent.name == "raw"
+            and destination_path.parent.parent.name == "resolution"
+        ):
+            os._exit(HARD_EXIT_CODE)
+
+    helper.os.link = exit_after_resolution_payload_link
+    helper.initialize_run(
+        host_identity=host,
+        target_identity=target,
+        mode="create",
+        authority=granted,
+        absence_evidence={"searched": [target["locator"]], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=Path(state_root),
+    )
+
+
 def crash_pause_after_journal(state_root: str, workflow_id: str) -> None:
     helper = load_helper()
     original_exclusive_json = helper._exclusive_json
@@ -2208,6 +2249,8 @@ def test_initialize_non_git_create_run_is_private_and_bound_to_absence(tmp_path:
     assert len(loaded["head_transition_digest"]) == 64
     assert stat.S_IMODE(state_root.stat().st_mode) == 0o700
     assert stat.S_IMODE((state_root / "live").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state_root / "initializing").stat().st_mode) == 0o700
+    assert list((state_root / "initializing").iterdir()) == []
     assert stat.S_IMODE((state_root / "tombstones").stat().st_mode) == 0o700
     assert stat.S_IMODE(
         (state_root / "live" / receipt["workflow_id"]).stat().st_mode
@@ -4206,6 +4249,75 @@ def test_recovery_recreates_hard_exit_genesis_target_lock(
     assert paused["stage"] == "paused"
 
 
+@pytest.mark.parametrize(
+    ("public_entrypoint", "legacy_live"),
+    [
+        ("discover", True),
+        ("initialize", True),
+        ("initialize", False),
+    ],
+)
+def test_public_entrypoints_remove_uncommitted_genesis_residue(
+    tmp_path: Path,
+    public_entrypoint: str,
+    legacy_live: bool,
+) -> None:
+    """Staged and legacy callers can retry after pre-genesis process death."""
+    helper = load_helper()
+    state_root = tmp_path / public_entrypoint / "state"
+    target = tmp_path / public_entrypoint / "skills" / "sample-skill"
+    host = host_identity(tmp_path / public_entrypoint)
+    identity = target_identity(target)
+    granted = authority()
+    run_hard_exit_process(
+        crash_initialize_during_resolution_payload_link,
+        str(state_root),
+        host,
+        identity,
+        granted,
+    )
+    staging = next((state_root / "initializing").iterdir())
+    if legacy_live:
+        staging.rename(state_root / "live" / staging.name)
+        orphan = next((state_root / "live").iterdir())
+    else:
+        orphan = staging
+    raw_entries = list(
+        (orphan / "artifacts" / "resolution" / "raw").iterdir()
+    )
+    assert len(raw_entries) == 2
+    assert {entry.stat().st_ino for entry in raw_entries} == {
+        raw_entries[0].stat().st_ino
+    }
+    assert list((state_root / "target-locks").iterdir()) == []
+
+    if public_entrypoint == "discover":
+        with pytest.raises(helper.RunStateError, match="run not found"):
+            helper.discover_run(
+                host_identity=host,
+                target_identity=identity,
+                state_root=state_root,
+            )
+        assert list((state_root / "live").iterdir()) == []
+
+    started = helper.initialize_run(
+        host_identity=host,
+        target_identity=identity,
+        mode="create",
+        authority=granted,
+        absence_evidence={"searched": [str(target)], "exists": False},
+        overlap_map={"exact": [], "near_neighbours": []},
+        git_identity={"present": False},
+        state_root=state_root,
+    )
+
+    assert started["stage"] == "resolved"
+    assert list((state_root / "initializing").iterdir()) == []
+    assert [entry.name for entry in (state_root / "live").iterdir()] == [
+        started["workflow_id"]
+    ]
+
+
 def test_discovery_normalizes_hard_exit_target_lock_link_pair(
     tmp_path: Path,
 ) -> None:
@@ -4454,21 +4566,23 @@ def test_recovery_preserves_a_valid_temp_shaped_artifact_payload(
 def test_initialize_failure_after_lock_publication_does_not_leak_target_lock(
     tmp_path: Path,
 ) -> None:
-    """Losing rollback ownership would leave a lock after the fresh run is removed."""
+    """A published lock is rolled back even if its writer raises on return."""
     helper = load_helper()
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
-    original_fsync_directory = helper._fsync_directory
+    original_exclusive_json = helper._exclusive_json
     failed = False
 
-    def fail_once_after_lock(path: Path) -> None:
+    def publish_lock_then_fail(
+        path: Path, value: dict[str, object]
+    ) -> None:
         nonlocal failed
-        if path == state_root / "live" and not failed:
+        original_exclusive_json(path, value)
+        if path.parent == state_root / "target-locks" and not failed:
             failed = True
-            raise helper.RunStateError("injected post-lock failure")
-        original_fsync_directory(path)
+            raise helper.RunStateError("injected lock-return failure")
 
-    helper._fsync_directory = fail_once_after_lock
+    helper._exclusive_json = publish_lock_then_fail
     try:
         try:
             helper.initialize_run(
@@ -4482,11 +4596,11 @@ def test_initialize_failure_after_lock_publication_does_not_leak_target_lock(
                 state_root=state_root,
             )
         except helper.RunStateError as error:
-            assert "post-lock" in str(error)
+            assert "lock-return" in str(error)
         else:
             raise AssertionError("injected post-lock failure did not interrupt initialize")
     finally:
-        helper._fsync_directory = original_fsync_directory
+        helper._exclusive_json = original_exclusive_json
 
     assert list((state_root / "live").iterdir()) == []
     assert list((state_root / "target-locks").iterdir()) == []
