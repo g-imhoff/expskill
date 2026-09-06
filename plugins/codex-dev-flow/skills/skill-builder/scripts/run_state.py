@@ -5245,6 +5245,10 @@ def _validate_final_evidence(
     release_artifact_id: str,
     event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    legacy_final_semantics = (
+        resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
+    )
     candidate_id, candidate_envelope, candidate = _current_event_artifact(
         run, current, "accept-candidate", "candidate-record", event_artifacts
     )
@@ -5266,6 +5270,7 @@ def _validate_final_evidence(
     )
     _validate_review_binding(run, current, review_id, event_artifacts)
     findings = review.get("findings")
+    reject_material_severity = not legacy_final_semantics
     if (
         review.get("candidate_digest") != candidate_digest
         or review.get("candidate_revision") != candidate_revision
@@ -5279,7 +5284,10 @@ def _validate_final_evidence(
             isinstance(item, dict)
             and (
                 item.get("release_blocking") is True
-                or item.get("severity") in _MATERIAL_REVIEW_SEVERITIES
+                or (
+                    reject_material_severity
+                    and item.get("severity") in _MATERIAL_REVIEW_SEVERITIES
+                )
             )
             for item in findings
         )
@@ -5296,7 +5304,8 @@ def _validate_final_evidence(
     if (
         conformance.get("candidate_digest") != candidate_digest
         or not isinstance(gates, dict)
-        or set(gates) != _CONFORMANCE_GATES
+        or not gates
+        or (not legacy_final_semantics and set(gates) != _CONFORMANCE_GATES)
         or any(
             not isinstance(gate, dict)
             or gate.get("status") != "pass"
@@ -5329,21 +5338,33 @@ def _validate_final_evidence(
         raise RunStateError("target scorecard binding or categories are invalid")
     for category in categories:
         criteria = category.get("criteria")
+        legacy_scorecard = scorecard.get("schema_version") == LEGACY_SCORECARD_SCHEMA
+        criteria_are_exact = (
+            bool(criteria)
+            if legacy_final_semantics and isinstance(criteria, dict)
+            else (
+                set(criteria) == _SCORE_CRITERIA[category["name"]]
+                if isinstance(criteria, dict)
+                else False
+            )
+        )
         criterion_results_pass = (
             all(value is True for value in criteria.values())
-            if scorecard.get("schema_version") == LEGACY_SCORECARD_SCHEMA
-            else all(
-                isinstance(value, dict) and value.get("passed") is True
-                for value in criteria.values()
+            if legacy_scorecard and isinstance(criteria, dict)
+            else (
+                all(
+                    isinstance(value, dict) and value.get("passed") is True
+                    for value in criteria.values()
+                )
+                if isinstance(criteria, dict)
+                else False
             )
-            if isinstance(criteria, dict)
-            else False
         )
         if (
             category.get("score") != 10
             or isinstance(category.get("score"), bool)
             or not isinstance(criteria, dict)
-            or set(criteria) != _SCORE_CRITERIA[category["name"]]
+            or not criteria_are_exact
             or not criterion_results_pass
         ):
             raise RunStateError("every target score and binary criterion must pass at 10")
