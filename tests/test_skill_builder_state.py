@@ -39,6 +39,16 @@ SCORE_CATEGORIES = (
     "testability",
 )
 CONFORMANCE_GATES = tuple(f"BR{index}" for index in range(1, 11))
+LEGACY_CONFORMANCE_GATES = (
+    "research",
+    "confirmation",
+    "acceptance-first",
+    "isolation",
+    "evidence",
+    "state",
+    "authority",
+    "cleanup",
+)
 SCORE_CRITERIA = {
     "triggering": tuple(f"TR{index}" for index in range(1, 11)),
     "scope discipline": tuple(f"SC{index}" for index in range(1, 11)),
@@ -1672,7 +1682,7 @@ def build_verified_stage(
     release_scope: list[str] | None = None,
     release_target: str | None = None,
     review_findings: list[dict[str, object]] | None = None,
-    conformance_gate_ids: tuple[str, ...] = CONFORMANCE_GATES,
+    conformance_gate_ids: tuple[str, ...] | None = None,
     scorecard_criteria_overrides: dict[str, dict[str, bool]] | None = None,
     scorecard_evidence_overrides: dict[str, dict[str, object]] | None = None,
     scorecard_schema_version: str | None = None,
@@ -1741,6 +1751,21 @@ def build_verified_stage(
         or historical_candidate_v2
         or historical_candidate_v3
     )
+    resolved_conformance_gate_ids = conformance_gate_ids
+    if resolved_conformance_gate_ids is None:
+        resolved_conformance_gate_ids = (
+            LEGACY_CONFORMANCE_GATES
+            if legacy_candidate_v1
+            else CONFORMANCE_GATES
+        )
+    resolved_scorecard_criteria = scorecard_criteria_overrides
+    if (
+        resolved_scorecard_criteria is None
+        and legacy_candidate_v1
+    ):
+        resolved_scorecard_criteria = {
+            category: {"criterion-1": True} for category in SCORE_CATEGORIES
+        }
     review = retain_json(
         helper,
         state_root=state_root,
@@ -1785,7 +1810,8 @@ def build_verified_stage(
         artifact_id="conformance",
         artifact_type="builder-run-conformance-ledger",
         payload=conformance_payload(
-            candidate["artifact_digest"], gate_ids=conformance_gate_ids
+            candidate["artifact_digest"],
+            gate_ids=resolved_conformance_gate_ids,
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -1803,7 +1829,7 @@ def build_verified_stage(
             )["artifact_index"]["evaluation"]["digest"],
             review_digest=review["artifact_digest"],
             triggering_score=triggering_score,
-            criteria_overrides=scorecard_criteria_overrides,
+            criteria_overrides=resolved_scorecard_criteria,
             schema_version=(
                 scorecard_schema_version
                 if scorecard_schema_version is not None
@@ -6055,7 +6081,7 @@ def test_finalized_historical_v2_run_remains_loadable_and_recoverable(
 def test_delivered_legacy_v1_run_remains_loadable_recoverable_and_cleanable(
     tmp_path: Path,
 ) -> None:
-    """Upgrade must preserve a delivered run emitted with v1 raw-result semantics."""
+    """Upgrade preserves genuine v1 final evidence through its full lifecycle."""
     helper = load_helper()
     state_root, workflow_id, sequence, _ = build_verified_stage(
         helper,
@@ -6064,7 +6090,28 @@ def test_delivered_legacy_v1_run_remains_loadable_recoverable_and_cleanable(
         candidate_resulting_bytes=CANDIDATE_SKILL_BYTES,
         trial_loaded_skill_bytes=CANDIDATE_SKILL_BYTES,
         legacy_candidate_v1=True,
+        review_findings=[
+            {
+                "severity": "important",
+                "release_blocking": False,
+                "evidence": [fixture_digest(REVIEW_FINDING_BYTES)],
+                "impact": "known legacy limitation",
+                "correction": "retain for a later revision",
+                "affected_target_criteria": ["criterion-1"],
+            }
+        ],
     )
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    run = state_root / "live" / workflow_id
+    conformance = helper._artifact_payload_json(run, "conformance")
+    scorecard = helper._artifact_payload_json(run, "scores")
+    assert current["stage"] == "verified"
+    assert set(conformance["gates"]) == set(LEGACY_CONFORMANCE_GATES)
+    assert all(
+        category["criteria"] == {"criterion-1": True}
+        for category in scorecard["categories"]
+    )
+
     finalized = helper.finalize_run(
         workflow_id=workflow_id,
         expected_sequence=sequence,
