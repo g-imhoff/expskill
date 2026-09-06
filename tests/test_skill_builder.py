@@ -2525,9 +2525,9 @@ def validate_schema_boundary(
             )
         elif event_name == "context_read":
             shape_valid = all(
-                isinstance(event.get(field), str)
+                isinstance(event.get(field), str) and bool(event[field])
                 for field in ("path", "actor_role", "source_role", "actor")
-            )
+            ) and normalized_run_relative_path(event.get("path")) is not None
         elif event_name == "research_pack":
             shape_valid = isinstance(event.get("lanes"), list) and all(
                 isinstance(lane, dict)
@@ -5850,9 +5850,10 @@ def evaluate_trace(
             path = normalized_run_relative_path(event.get("path"))
             path_parts = PurePosixPath(path).parts if path is not None else ()
             actor_identity = event.get("actor")
+            prior_roles = actor_roles.get(actor_identity)
             effective_roles = {
                 event.get("actor_role"),
-                *actor_roles.get(actor_identity, set()),
+                *(prior_roles or set()),
             }
             actor_classes = {
                 actor_class
@@ -5866,7 +5867,11 @@ def evaluate_trace(
             }
             actor_research_identities = {
                 research_identity
-                for role in effective_roles
+                for role in (
+                    prior_roles
+                    if prior_roles is not None
+                    else {event.get("actor_role")}
+                )
                 if (
                     research_identity := canonical_research_context_identity(
                         actor_identity, role
@@ -11660,6 +11665,105 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertEqual(
             evaluate_trace(legitimate_coordinator, BUILDER_FIXTURES), ()
         )
+
+    def test_known_research_actor_cannot_claim_a_sibling_role(self) -> None:
+        """Prior research ownership overrides a known actor's read-time relabel."""
+
+        relabeled = seal_trace(
+            [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-researcher-4",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-researcher-4",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                },
+            ],
+            workflow_id="8" * 32,
+        )
+        self.assertIn(
+            "SIBLING_OUTPUT_LEAK",
+            {
+                failure.code
+                for failure in evaluate_trace(relabeled, BUILDER_FIXTURES)
+            },
+        )
+
+        unbound_design_researcher = seal_trace(
+            [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-unbound-researcher-5",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                }
+            ],
+            workflow_id="9" * 32,
+        )
+        self.assertEqual(
+            evaluate_trace(unbound_design_researcher, BUILDER_FIXTURES), ()
+        )
+
+    def test_context_read_rejects_noncanonical_paths_and_empty_fields(self) -> None:
+        """Invalid paths and empty identities cannot bypass classification."""
+
+        for path in (
+            "/tmp/work/hidden-release/oracle.json",
+            "x/../hidden-release/oracle.json",
+        ):
+            with self.subTest(path=path):
+                trace = seal_trace(
+                    [
+                        {
+                            "event": "actor_role_recorded",
+                            "actor_identity": "opaque-path-reader-6",
+                            "actor_role": "candidate-implementer",
+                        },
+                        {
+                            "event": "context_read",
+                            "actor": "opaque-path-reader-6",
+                            "actor_role": "coordinator",
+                            "path": path,
+                            "source_role": "coordinator-context",
+                        },
+                    ],
+                    workflow_id="a" * 32,
+                )
+
+                self.assertIn(
+                    "INVALID_EVENT_SCHEMA",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
+
+        valid_context = {
+            "event": "context_read",
+            "actor": "opaque-path-reader-6",
+            "actor_role": "coordinator",
+            "path": "visible/request.md",
+            "source_role": "coordinator-context",
+        }
+        for field in ("path", "actor_role", "source_role", "actor"):
+            with self.subTest(empty_field=field):
+                empty_field = copy.deepcopy(valid_context)
+                empty_field[field] = ""
+                trace = seal_trace([empty_field], workflow_id="b" * 32)
+
+                self.assertIn(
+                    "INVALID_EVENT_SCHEMA",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
 
     def test_selective_invalidation_uses_preexisting_dependency_state(self) -> None:
         """Invalidation is derived from a prior graph and explicit artifact statuses."""
