@@ -37,12 +37,16 @@
       {
         "event": "target_activated",
         "target_identity": "fixture-alpha",
-        "lock_nonce": "lock-alpha"
+        "lock_nonce": "lock-alpha",
+        "lock_owner": "owner-alpha",
+        "lock_acquired_at": "2026-01-01T00:00:01Z"
       },
       {
         "event": "target_activated",
         "target_identity": "fixture-beta",
-        "lock_nonce": "lock-beta"
+        "lock_nonce": "lock-beta",
+        "lock_owner": "owner-beta",
+        "lock_acquired_at": "2026-01-01T00:00:02Z"
       }
     ],
     "accepted_ambiguous_question": [
@@ -142,10 +146,10 @@
     ],
     "accepted_serial_queue": [
       {"event": "queue_created", "targets": ["fixture-alpha", "fixture-beta"]},
-      {"event": "target_activated", "target_identity": "fixture-alpha", "lock_nonce": "lock-alpha"},
-      {"event": "target_finalized", "target_identity": "fixture-alpha"},
-      {"event": "target_activated", "target_identity": "fixture-beta", "lock_nonce": "lock-beta"},
-      {"event": "target_finalized", "target_identity": "fixture-beta"}
+      {"event": "target_activated", "target_identity": "fixture-alpha", "lock_nonce": "lock-alpha", "lock_owner": "owner-alpha", "lock_acquired_at": "2026-01-01T00:00:01Z"},
+      {"event": "target_finalized", "target_identity": "fixture-alpha", "lock_nonce": "lock-alpha", "lock_owner": "owner-alpha"},
+      {"event": "target_activated", "target_identity": "fixture-beta", "lock_nonce": "lock-beta", "lock_owner": "owner-beta", "lock_acquired_at": "2026-01-01T00:00:02Z"},
+      {"event": "target_finalized", "target_identity": "fixture-beta", "lock_nonce": "lock-beta", "lock_owner": "owner-beta"}
     ]
   }
 }
