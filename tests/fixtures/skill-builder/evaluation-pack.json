@@ -1,0 +1,57 @@
+{
+  "schema_version": "skill-builder-evaluation-pack-v1",
+  "disposable_fixture_data": true,
+  "production_installable": false,
+  "modes": [
+    "create",
+    "improve"
+  ],
+  "evaluation_axes": {
+    "builder_run_conformance": {
+      "scoring": "pass-fail",
+      "evidence": "observable event traces and retained filesystem manifests"
+    },
+    "target_quality": {
+      "scoring": "ten independently evidenced binary criteria per category",
+      "categories": [
+        "triggering",
+        "scope discipline",
+        "workflow quality",
+        "collaboration",
+        "output contract",
+        "safety",
+        "recovery",
+        "composability",
+        "context efficiency",
+        "testability"
+      ],
+      "interchangeable_with_builder_gates": false
+    }
+  },
+  "partitions": [
+    {
+      "name": "visible",
+      "root": "visible",
+      "manifest": "visible/scenarios.json",
+      "candidate_context_access": "allowed",
+      "trial_context_access": "case-material-only",
+      "coordinator_withhold": false
+    },
+    {
+      "name": "frozen-validation",
+      "root": "frozen-validation",
+      "manifest": "frozen-validation/scenarios.json",
+      "candidate_context_access": "forbidden",
+      "trial_context_access": "case-material-only",
+      "coordinator_withhold": true
+    },
+    {
+      "name": "hidden-release",
+      "root": "hidden-release",
+      "manifest": "hidden-release/scenarios.json",
+      "candidate_context_access": "forbidden",
+      "trial_context_access": "forbidden",
+      "coordinator_withhold": true
+    }
+  ]
+}

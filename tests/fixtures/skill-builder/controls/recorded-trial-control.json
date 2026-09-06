@@ -1,0 +1,16 @@
+{
+  "schema_version": "skill-builder-recorded-trial-control-v1",
+  "evidence_kind": "recorded-fixture-control",
+  "tool_events": [],
+  "output": "recorded-control",
+  "after_target_manifest": {
+    "state": "recorded-control"
+  },
+  "filesystem_result": {
+    "state": "recorded-control"
+  },
+  "assertion_status": "pass",
+  "forbidden_effect_status": "not-observed",
+  "verdict": "pass",
+  "limitation": "Recorded fixture control, not live-agent certification."
+}
