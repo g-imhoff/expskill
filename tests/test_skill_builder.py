@@ -4179,6 +4179,7 @@ def cleanup_trace(
 def authorized_integrated_cleanup_trace(
     run_directory: str,
     workflow_id: str = "b" * 32,
+    xdg_state_home: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build a finalized control with an authorized delivery and cleanup tail."""
 
@@ -4215,7 +4216,11 @@ def authorized_integrated_cleanup_trace(
         for event in authorized_prefix
         if event.get("event") == "delivery_attempt"
     )
-    cleanup = cleanup_trace(run_directory, workflow_id=workflow_id)
+    cleanup = cleanup_trace(
+        run_directory,
+        xdg_state_home=xdg_state_home,
+        workflow_id=workflow_id,
+    )
     for event in cleanup:
         if "final_transition_digest" in event:
             event["final_transition_digest"] = final_transition_digest
@@ -5873,69 +5878,61 @@ def evaluate_trace(
         elif event_name == "cleanup_authority_recorded":
             cleanup_authority = event
         elif event_name == "delivery_accepted":
-            if not finalization_indices:
+            resolved_authority = (resolution_record or {}).get("authority")
+            delivery_effects = (
+                resolved_authority.get("delivery_effects", [])
+                if isinstance(resolved_authority, dict)
+                else []
+            )
+            attempt_receipt = (
+                authorized_delivery_attempt.get("transition_receipt")
+                if authorized_delivery_attempt is not None
+                else None
+            )
+            delivery_acceptance_valid = (
+                finalization_event_index is not None
+                and finalization_event_index < index
+                and active_target is None
+                and current_target_identity is not None
+                and queue_states.get(current_target_identity) == "finalized"
+                and authorized_delivery_attempt is not None
+                and record_event_indices.get(
+                    id(authorized_delivery_attempt), index
+                )
+                < index
+                and event.get("workflow_id") == current_workflow_id
+                and event.get("target_identity") == current_target_identity
+                and event.get("finalized_revision")
+                == current_candidate_revision
+                and event.get("actor")
+                == (resolution_record or {}).get("actor_identity")
+                and (resolution_record or {}).get("actor_role") == "main-agent"
+                and event.get("actor")
+                == authorized_delivery_attempt.get("actor")
+                and event.get("destination_identity")
+                == current_target_identity
+                and event.get("destination_identity")
+                == authorized_delivery_attempt.get("destination_scope")
+                and event.get("action")
+                == authorized_delivery_attempt.get("effect")
+                and event.get("action") in delivery_effects
+                and isinstance(attempt_receipt, dict)
+                and event.get("user_authority_event_digest")
+                == attempt_receipt.get("authority_event_digest")
+                and event.get("delivery_record_digest")
+                == attempt_receipt.get("receipt_digest")
+            )
+            if delivery_acceptance_valid:
                 accepted_delivery = event
             else:
-                resolved_authority = (resolution_record or {}).get(
-                    "authority"
-                )
-                delivery_effects = (
-                    resolved_authority.get("delivery_effects", [])
-                    if isinstance(resolved_authority, dict)
-                    else []
-                )
-                attempt_receipt = (
-                    authorized_delivery_attempt.get("transition_receipt")
-                    if authorized_delivery_attempt is not None
-                    else None
-                )
-                delivery_acceptance_valid = (
-                    finalization_event_index is not None
-                    and finalization_event_index < index
-                    and active_target is None
-                    and current_target_identity is not None
-                    and queue_states.get(current_target_identity)
-                    == "finalized"
-                    and authorized_delivery_attempt is not None
-                    and record_event_indices.get(
-                        id(authorized_delivery_attempt), index
+                accepted_delivery = None
+                failures.append(
+                    OracleFailure(
+                        "UNAUTHORIZED_DELIVERY",
+                        index,
+                        "delivery acceptance lacked a prior authorized main-agent delivery receipt",
                     )
-                    < index
-                    and event.get("workflow_id") == current_workflow_id
-                    and event.get("target_identity")
-                    == current_target_identity
-                    and event.get("finalized_revision")
-                    == current_candidate_revision
-                    and event.get("actor")
-                    == (resolution_record or {}).get("actor_identity")
-                    and (resolution_record or {}).get("actor_role")
-                    == "main-agent"
-                    and event.get("actor")
-                    == authorized_delivery_attempt.get("actor")
-                    and event.get("destination_identity")
-                    == current_target_identity
-                    and event.get("destination_identity")
-                    == authorized_delivery_attempt.get("destination_scope")
-                    and event.get("action")
-                    == authorized_delivery_attempt.get("effect")
-                    and event.get("action") in delivery_effects
-                    and isinstance(attempt_receipt, dict)
-                    and event.get("user_authority_event_digest")
-                    == attempt_receipt.get("authority_event_digest")
-                    and event.get("delivery_record_digest")
-                    == attempt_receipt.get("receipt_digest")
                 )
-                if delivery_acceptance_valid:
-                    accepted_delivery = event
-                else:
-                    accepted_delivery = None
-                    failures.append(
-                        OracleFailure(
-                            "UNAUTHORIZED_DELIVERY",
-                            index,
-                            "delivery acceptance lacked a prior authorized main-agent delivery receipt",
-                        )
-                    )
         elif event_name == "cleanup_tombstone_validated":
             cleanup_tombstone = event
         elif event_name == "cleanup_attempt":
@@ -6480,6 +6477,16 @@ def evaluate_trace(
                         "FROZEN_VALIDATION_LEAK",
                         index,
                         f"{event['actor']} read frozen validation material outside a case handoff",
+                    )
+                )
+            elif actor_classes.intersection({"candidate", "trial"}) and (
+                research_partition_read or bool(source_research_identities)
+            ):
+                failures.append(
+                    OracleFailure(
+                        "SIBLING_OUTPUT_LEAK",
+                        index,
+                        f"{event['actor']} read withheld research-lane output",
                     )
                 )
             elif (
@@ -9384,10 +9391,6 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             self.assertEqual(
                 evaluate_trace(finalized_and_cleaned, BUILDER_FIXTURES), ()
             )
-        cleanup_tail = cleanup_trace(owned_path, workflow_id=workflow_id)
-        self.assertEqual(
-            evaluate_trace(cleanup_tail, BUILDER_FIXTURES), ()
-        )
 
         trusted_authority = _resolution_authority()
         trusted_authority["delivery_effects"] = ["publish-production-target"]
@@ -9832,13 +9835,6 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     self.assertIn("INVALID_CLEANUP_PROVENANCE", codes)
 
             self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
-        self.assertEqual(
-            evaluate_trace(
-                cleanup_trace(owned_path, workflow_id=workflow_id),
-                BUILDER_FIXTURES,
-            ),
-            (),
-        )
 
     def test_delivery_acceptance_requires_complete_terminal_evidence(self) -> None:
         """Accepted delivery identifies its action, authority, actor, and result."""
@@ -9858,12 +9854,16 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             "finalized_revision": "candidate-v1",
             "run_directory_identity": "run-directory-1",
         }
-        self.assertEqual(
-            evaluate_trace(
+        valid_shape_codes = {
+            failure.code
+            for failure in evaluate_trace(
                 seal_trace([delivery], workflow_id="a" * 32),
                 BUILDER_FIXTURES,
-            ),
-            (),
+            )
+        }
+        self.assertEqual(
+            valid_shape_codes,
+            {"UNAUTHORIZED_DELIVERY"},
         )
         for field in (
             "action",
@@ -9888,8 +9888,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     },
                 )
 
-    def test_integrated_delivery_acceptance_requires_real_authority(self) -> None:
-        """Integrated delivery acceptance binds an authorized main-agent delivery receipt."""
+    def test_delivery_acceptance_requires_real_authority(self) -> None:
+        """Delivery acceptance binds finalization and an authorized main-agent receipt."""
 
         def delivery_acceptance() -> dict[str, Any]:
             return {
@@ -9909,6 +9909,42 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             }
 
         unauthorized_cases: dict[str, list[dict[str, Any]]] = {}
+        standalone = delivery_acceptance()
+        standalone.update(
+            {
+                "actor": "candidate-implementer-v1",
+                "destination_identity": "foreign-target",
+                "action": "delete-production",
+            }
+        )
+        unauthorized_cases["standalone-no-authority"] = [standalone]
+
+        stopped = accepted_finalization_trace()
+        resolve_index = next(
+            index
+            for index, event in enumerate(stopped)
+            if event.get("event") == "resolve"
+        )
+        stopped = copy.deepcopy(stopped[: resolve_index + 1])
+        active = next(
+            event
+            for event in stopped
+            if event.get("event") == "target_activated"
+        )
+        stopped.extend(
+            [
+                {"event": "stopped"},
+                {
+                    "event": "target_abandoned",
+                    "target_identity": active["target_identity"],
+                    "lock_nonce": active["lock_nonce"],
+                    "lock_owner": active["lock_owner"],
+                },
+                delivery_acceptance(),
+            ]
+        )
+        unauthorized_cases["stopped-resolved-run"] = stopped
+
         default_trace = accepted_finalization_trace()
         default_trace.append(delivery_acceptance())
         unauthorized_cases["default-no-authority"] = default_trace
@@ -10068,15 +10104,19 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
     def test_cleanup_rejects_tombstone_that_predates_delivery_and_authority(self) -> None:
         """Regression: cleanup provenance must follow finalization and ordered approvals."""
 
+        workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
             / "codex-dev-flow"
             / "skill-builder"
             / "runs"
-            / ("a" * 32)
+            / workflow_id
         )
-        trace = cleanup_trace(owned_path)
+        trace, trusted_authority = authorized_integrated_cleanup_trace(
+            owned_path,
+            workflow_id,
+        )
         tombstone_index = next(
             index
             for index, event in enumerate(trace)
@@ -10090,9 +10130,17 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         trace.insert(delivery_index, tombstone)
 
-        failure_codes = {
-            failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
-        }
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            failure_codes = {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(trace, workflow_id=workflow_id),
+                    BUILDER_FIXTURES,
+                )
+            }
         self.assertIn("INVALID_CLEANUP_PROVENANCE", failure_codes)
 
     def test_category_scores_require_current_review_and_category_specific_evidence(self) -> None:
@@ -11283,38 +11331,60 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
     def test_cleanup_ownership_is_derived_from_validated_xdg_manifest(self) -> None:
         """Regression: matching cleanup labels cannot disguise a production path."""
 
+        workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
             / "codex-dev-flow"
             / "skill-builder"
             / "runs"
-            / ("a" * 32)
+            / workflow_id
         )
-        self.assertEqual(evaluate_trace(cleanup_trace(owned_path), BUILDER_FIXTURES), ())
 
-        production = cleanup_trace("/srv/skills/fixture")
-        production_codes = {
-            failure.code for failure in evaluate_trace(production, BUILDER_FIXTURES)
-        }
+        def integrated_codes(
+            run_directory: str,
+            *,
+            xdg_state_home: str | None = None,
+            drop_manifest: bool = False,
+        ) -> set[str]:
+            trace, trusted_authority = authorized_integrated_cleanup_trace(
+                run_directory,
+                workflow_id,
+                xdg_state_home,
+            )
+            if drop_manifest:
+                trace = [
+                    event
+                    for event in trace
+                    if event.get("event") != "run_state_manifest_validated"
+                ]
+            with mock.patch(
+                f"{__name__}._resolution_authority",
+                return_value=trusted_authority,
+            ):
+                return {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(trace, workflow_id=workflow_id),
+                        BUILDER_FIXTURES,
+                    )
+                }
+
+        self.assertEqual(integrated_codes(owned_path), set())
+
+        production_codes = integrated_codes("/srv/skills/fixture")
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", production_codes)
 
-        spoofed_state_home = cleanup_trace(
+        spoofed_codes = integrated_codes(
             "/srv/skills/codex-dev-flow/skill-builder/runs/workflow-1",
             xdg_state_home="/srv/skills",
         )
-        spoofed_codes = {
-            failure.code
-            for failure in evaluate_trace(spoofed_state_home, BUILDER_FIXTURES)
-        }
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", spoofed_codes)
 
-        missing_manifest = cleanup_trace(owned_path)[1:]
-        missing_manifest[-1].pop("path")
-        missing_manifest_codes = {
-            failure.code
-            for failure in evaluate_trace(missing_manifest, BUILDER_FIXTURES)
-        }
+        missing_manifest_codes = integrated_codes(
+            owned_path,
+            drop_manifest=True,
+        )
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", missing_manifest_codes)
 
         absolute_workflow = cleanup_trace(
@@ -12990,6 +13060,26 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     "event": "context_read",
                     "actor": "research-domain",
                     "actor_role": "domain-techniques",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                },
+                "SIBLING_OUTPUT_LEAK",
+            ),
+            "candidate-research-output": (
+                {
+                    "event": "context_read",
+                    "actor": "candidate-implementer-v1",
+                    "actor_role": "candidate-implementer",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                },
+                "SIBLING_OUTPUT_LEAK",
+            ),
+            "trial-research-output": (
+                {
+                    "event": "context_read",
+                    "actor": "trial-agent-v1",
+                    "actor_role": "trial-agent",
                     "path": "research/agent-skill-design/output.json",
                     "source_role": "agent-skill-design",
                 },
