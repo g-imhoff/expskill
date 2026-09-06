@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "plugins" / "codex-dev-flow"
+PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 HOOKS_PATH = PLUGIN_ROOT / "hooks" / "hooks.json"
 HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "inject_unslop.py"
@@ -22,8 +22,9 @@ EXPECTED_PUBLIC_SKILLS = {
     "grill-me",
     "implement",
     "plan",
+    "skill-builder",
     "unslop",
-    "use-expand",
+    "use-expskill",
 }
 
 EXPECTED_UPSTREAM = {
@@ -273,9 +274,9 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                         violations.append(f"{path.relative_to(ROOT)}: {label}")
         self.assertEqual(violations, [])
 
-    def test_use_expand_only_offers_grill_me_at_a_user_decision_frontier(self) -> None:
+    def test_use_expskill_only_offers_grill_me_at_a_user_decision_frontier(self) -> None:
         body = " ".join(
-            (SKILLS_ROOT / "use-expand" / "SKILL.md")
+            (SKILLS_ROOT / "use-expskill" / "SKILL.md")
             .read_text(encoding="utf-8")
             .lower()
             .split()

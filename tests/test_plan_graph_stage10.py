@@ -17,7 +17,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "plugins/codex-dev-flow/scripts/plan_graph.py"
+HELPER = ROOT / "plugins/expskill/scripts/plan_graph.py"
 BRANCH = "feature/transaction-tests"
 
 
@@ -1093,6 +1093,7 @@ class TransactionLayerTests(unittest.TestCase):
 
         wrong_mode = self.root / "wrong-mode-home"
         wrong_mode.mkdir(mode=0o755)
+        wrong_mode.chmod(0o755)
         attacks.append(("state-root-mode", wrong_mode))
 
         for name, home in attacks:

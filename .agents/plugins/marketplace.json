@@ -1,14 +1,14 @@
 {
-  "name": "codex-dev-flow",
+  "name": "expskill",
   "interface": {
-    "displayName": "Codex Dev Flow"
+    "displayName": "ExpSkill"
   },
   "plugins": [
     {
-      "name": "codex-dev-flow",
+      "name": "expskill",
       "source": {
         "source": "local",
-        "path": "./plugins/codex-dev-flow"
+        "path": "./plugins/expskill"
       },
       "policy": {
         "installation": "AVAILABLE",

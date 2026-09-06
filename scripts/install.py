@@ -17,24 +17,24 @@ except ModuleNotFoundError:
     from validate import validate_repository
 
 
-MARKETPLACE_NAME = "codex-dev-flow"
-PLUGIN_NAME = "codex-dev-flow"
-PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
+MARKETPLACE_NAME = "expskill"
+PLUGIN_NAME = "expskill"
+PLUGIN_SELECTOR = "expskill@expskill"
 PROFILE_NAMES = (
-    "devflow-explorer",
-    "devflow-implementer",
-    "devflow-test-engineer",
-    "devflow-review",
-    "devflow-spec",
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
 )
 RETIRED_PROFILE_NAMES = (
-    "devflow-critical-reviewer",
-    "devflow-implementer-high",
-    "devflow-reviewer",
-    "devflow-verifier",
-    "devflow-verifier-low",
+    "expskill-critical-reviewer",
+    "expskill-implementer-high",
+    "expskill-reviewer",
+    "expskill-verifier",
+    "expskill-verifier-low",
 )
-RECEIPT_DIRECTORY = "codex-dev-flow"
+RECEIPT_DIRECTORY = "expskill"
 RECEIPT_FILENAME = "install.json"
 
 
@@ -120,7 +120,7 @@ def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
         raise InstallError(f"agent source directory cannot be resolved: {agents_root}: {error}") from error
     if resolved_agents_root != agents_root:
         raise InstallError(f"agent source directory resolves outside the repository: {agents_root}")
-    discovered = tuple(sorted(agents_root.glob("devflow-*.toml"), key=lambda path: path.name))
+    discovered = tuple(sorted(agents_root.glob("expskill-*.toml"), key=lambda path: path.name))
     expected_names = {f"{name}.toml" for name in PROFILE_NAMES}
     discovered_names = {path.name for path in discovered}
     if discovered_names != expected_names or len(discovered) != len(expected_names):
@@ -868,7 +868,7 @@ def _print_dry_run(repo_root: Path, codex_home: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Install the codex-dev-flow marketplace and profiles.")
+    parser = argparse.ArgumentParser(description="Install the expskill marketplace and profiles.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true")
     group.add_argument("--uninstall", action="store_true")

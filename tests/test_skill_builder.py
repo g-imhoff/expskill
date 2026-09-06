@@ -15,10 +15,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
-LEGACY_FIXTURES = FIXTURES / "improve-skill"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
-SKILL_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills" / "skill-builder"
-PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "codex-dev-flow" / "skills"
+SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "skill-builder"
+PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "skills"
+TRIAL_CONTROL_PATH = "controls/recorded-trial-control.json"
+VERIFICATION_CONTROL_PATH = "controls/recorded-verification-control.json"
+USER_AUTHORITY_CONTROL_PATH = "controls/trusted-user-authority.json"
 EXPECTED_SCENARIOS = {
     "create_non_git_near_neighbour",
     "improve_exact_malformed",
@@ -192,6 +194,8 @@ EVENT_REQUIRED_FIELDS = {
             "user_identity",
             "user_role",
             "authority_source",
+            "authority_control_path",
+            "authority_control_digest",
             "authority_timestamp",
             "finalized_revision",
             "run_directory_identity",
@@ -254,6 +258,8 @@ EVENT_REQUIRED_FIELDS = {
             "user_identity",
             "user_role",
             "authority_source",
+            "authority_control_path",
+            "authority_control_digest",
             "confirmation_timestamp",
             "confirmation_event_digest",
             "contract_artifact_id",
@@ -268,6 +274,10 @@ EVENT_REQUIRED_FIELDS = {
             "ended_at",
             "exit_status",
             "raw_output_digests",
+            "execution_kind",
+            "control_artifact_path",
+            "control_artifact_digest",
+            "limitation",
             "before_target_manifest_digest",
             "after_target_manifest_digest",
             "verification_evidence_digest",
@@ -527,6 +537,8 @@ CASE_EVIDENCE_FIELDS = frozenset(
         "forbidden_effect_results",
         "verdict",
         "limitation",
+        "control_artifact_path",
+        "control_artifact_digest",
         "raw_evidence_digest",
     }
 )
@@ -548,6 +560,8 @@ CASE_RECEIPT_FIELDS = frozenset(
         "forbidden_effects_digest",
         "verdict",
         "limitation",
+        "control_artifact_path",
+        "control_artifact_digest",
         "receipt_digest",
         "fresh_context_id",
     }
@@ -603,6 +617,128 @@ def load_scenarios(partition: str) -> dict[str, dict[str, Any]]:
         (BUILDER_FIXTURES / partition / "scenarios.json").read_text(encoding="utf-8")
     )
     return {scenario["id"]: scenario for scenario in payload["scenarios"]}
+
+
+def retained_json_control(
+    fixture_root: Path,
+    relative_path: str,
+) -> tuple[dict[str, Any], str] | None:
+    """Load one read-only control and bind its exact retained bytes."""
+
+    normalized = normalized_run_relative_path(relative_path)
+    if normalized != relative_path:
+        return None
+    try:
+        root = fixture_root.resolve()
+        path = (root / normalized).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return None
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, TypeError, UnicodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload, hashlib.sha256(raw).hexdigest()
+
+
+def validated_trial_control(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    retained = retained_json_control(fixture_root, TRIAL_CONTROL_PATH)
+    if retained is None:
+        return None
+    control, digest = retained
+    if (
+        set(control)
+        != {
+            "schema_version",
+            "evidence_kind",
+            "tool_events",
+            "output",
+            "after_target_manifest",
+            "filesystem_result",
+            "assertion_status",
+            "forbidden_effect_status",
+            "verdict",
+            "limitation",
+        }
+        or control.get("schema_version")
+        != "skill-builder-recorded-trial-control-v1"
+        or control.get("evidence_kind") != "recorded-fixture-control"
+        or not isinstance(control.get("tool_events"), list)
+        or not isinstance(control.get("output"), str)
+        or not control["output"]
+        or not isinstance(control.get("after_target_manifest"), dict)
+        or not isinstance(control.get("filesystem_result"), dict)
+        or control.get("assertion_status") != "pass"
+        or control.get("forbidden_effect_status") != "not-observed"
+        or control.get("verdict") != "pass"
+        or not isinstance(control.get("limitation"), str)
+        or not control["limitation"]
+    ):
+        return None
+    return control, digest
+
+
+def validated_verification_control(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    retained = retained_json_control(fixture_root, VERIFICATION_CONTROL_PATH)
+    if retained is None:
+        return None
+    control, digest = retained
+    if (
+        set(control)
+        != {
+            "schema_version",
+            "evidence_kind",
+            "execution_kind",
+            "case_execution",
+            "command",
+            "raw_output",
+            "limitation",
+        }
+        or control.get("schema_version")
+        != "skill-builder-recorded-verification-control-v1"
+        or control.get("evidence_kind") != "recorded-fixture-control"
+        or control.get("execution_kind") != "behavioral-case-runner"
+        or control.get("case_execution") != "all-frozen-cases"
+        or not isinstance(control.get("command"), str)
+        or not control["command"]
+        or not isinstance(control.get("raw_output"), dict)
+        or not isinstance(control.get("limitation"), str)
+        or not control["limitation"]
+    ):
+        return None
+    return control, digest
+
+
+def validated_user_authority_control(
+    fixture_root: Path,
+) -> tuple[dict[str, Any], str] | None:
+    retained = retained_json_control(fixture_root, USER_AUTHORITY_CONTROL_PATH)
+    if retained is None:
+        return None
+    control, digest = retained
+    if (
+        set(control)
+        != {
+            "schema_version",
+            "evidence_kind",
+            "user_identity",
+            "user_role",
+            "authority_source",
+        }
+        or control.get("schema_version")
+        != "skill-builder-trusted-user-authority-v1"
+        or control.get("evidence_kind") != "trusted-fixture-ingress"
+        or control.get("user_identity") != "fixture-user-v1"
+        or control.get("user_role") != "user"
+        or control.get("authority_source") != "explicit-user-event"
+    ):
+        return None
+    return control, digest
 
 
 def fixture_case_sources(
@@ -1101,9 +1237,12 @@ def case_evidence_is_valid(entry: object) -> bool:
                 "before_target_manifest_digest",
                 "after_target_manifest_digest",
                 "filesystem_result_digest",
+                "control_artifact_digest",
                 "raw_evidence_digest",
             )
         )
+        and normalized_run_relative_path(entry.get("control_artifact_path"))
+        is not None
         and isinstance(assertion_results, list)
         and bool(assertion_results)
         and all(
@@ -1160,9 +1299,12 @@ def case_receipt_is_valid(entry: object) -> bool:
                 "filesystem_result_digest",
                 "observable_assertions_digest",
                 "forbidden_effects_digest",
+                "control_artifact_digest",
                 "receipt_digest",
             )
         )
+        and normalized_run_relative_path(entry.get("control_artifact_path"))
+        is not None
         and isinstance(entry.get("fresh_context_id"), str)
         and bool(entry["fresh_context_id"])
         and entry.get("verdict") in {"pass", "fail"}
@@ -1177,9 +1319,14 @@ def recorded_fixture_case_results(
     evaluation_cases: list[dict[str, Any]],
     loaded_skill_digest: str,
     context_prefix: str,
+    fixture_root: Path = BUILDER_FIXTURES,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Create internally consistent recorded evidence without claiming a live trial."""
 
+    retained_control = validated_trial_control(fixture_root)
+    if retained_control is None:
+        raise ValueError("recorded trial control is missing or malformed")
+    control, control_digest = retained_control
     raw_evidence: list[dict[str, Any]] = []
     receipts: list[dict[str, Any]] = []
     for index, case in enumerate(evaluation_cases, start=1):
@@ -1189,7 +1336,12 @@ def recorded_fixture_case_results(
                 "assertion": assertion,
                 "passed": True,
                 "evidence_digest": canonical_digest(
-                    {"case_id": case_id, "assertion": assertion, "passed": True}
+                    {
+                        "case_id": case_id,
+                        "assertion": assertion,
+                        "status": control["assertion_status"],
+                        "control_artifact_digest": control_digest,
+                    }
                 ),
             }
             for assertion in case["observable_assertions"]
@@ -1199,7 +1351,12 @@ def recorded_fixture_case_results(
                 "effect": effect,
                 "observed": False,
                 "evidence_digest": canonical_digest(
-                    {"case_id": case_id, "effect": effect, "observed": False}
+                    {
+                        "case_id": case_id,
+                        "effect": effect,
+                        "status": control["forbidden_effect_status"],
+                        "control_artifact_digest": control_digest,
+                    }
                 ),
             }
             for effect in case["forbidden_effects"]
@@ -1212,22 +1369,40 @@ def recorded_fixture_case_results(
             "raw_prompt_digest": case["raw_request_digest"],
             "loaded_skill_digest": loaded_skill_digest,
             "tool_event_digest": canonical_digest(
-                {"case_id": case_id, "fixture_tool_events": []}
+                {
+                    "case_id": case_id,
+                    "tool_events": control["tool_events"],
+                    "control_artifact_digest": control_digest,
+                }
             ),
             "output_digest": canonical_digest(
-                {"case_id": case_id, "fixture_output": "recorded-control"}
+                {
+                    "case_id": case_id,
+                    "output": control["output"],
+                    "control_artifact_digest": control_digest,
+                }
             ),
             "before_target_manifest_digest": case["setup_manifest"]["digest"],
             "after_target_manifest_digest": canonical_digest(
-                {"case_id": case_id, "fixture_after_manifest": "recorded-control"}
+                {
+                    "case_id": case_id,
+                    "after_target_manifest": control["after_target_manifest"],
+                    "control_artifact_digest": control_digest,
+                }
             ),
             "filesystem_result_digest": canonical_digest(
-                {"case_id": case_id, "fixture_filesystem_result": "recorded-control"}
+                {
+                    "case_id": case_id,
+                    "filesystem_result": control["filesystem_result"],
+                    "control_artifact_digest": control_digest,
+                }
             ),
             "observable_assertion_results": assertion_results,
             "forbidden_effect_results": effect_results,
-            "verdict": "pass",
-            "limitation": "Recorded fixture control, not live-agent certification.",
+            "verdict": control["verdict"],
+            "limitation": control["limitation"],
+            "control_artifact_path": TRIAL_CONTROL_PATH,
+            "control_artifact_digest": control_digest,
         }
         evidence["raw_evidence_digest"] = canonical_digest(evidence)
         receipt = {
@@ -1251,6 +1426,8 @@ def recorded_fixture_case_results(
             "forbidden_effects_digest": canonical_digest(effect_results),
             "verdict": evidence["verdict"],
             "limitation": evidence["limitation"],
+            "control_artifact_path": evidence["control_artifact_path"],
+            "control_artifact_digest": evidence["control_artifact_digest"],
             "fresh_context_id": f"{context_prefix}-{index}",
         }
         receipt["receipt_digest"] = canonical_digest(receipt)
@@ -1677,6 +1854,8 @@ def canonical_user_confirmation_digest(record: dict[str, Any]) -> str:
             "event": "user_confirmed",
             "user_identity": record.get("user_identity"),
             "confirmation_timestamp": record.get("confirmation_timestamp"),
+            "authority_control_path": record.get("authority_control_path"),
+            "authority_control_digest": record.get("authority_control_digest"),
             "workflow_id": record.get("workflow_id"),
             "target_identity": record.get("target_identity"),
             "target_snapshot": record.get("target_snapshot"),
@@ -1694,6 +1873,8 @@ def canonical_cleanup_authority_digest(record: dict[str, Any]) -> str:
             "actor": record.get("actor"),
             "user_identity": record.get("user_identity"),
             "authority_timestamp": record.get("authority_timestamp"),
+            "authority_control_path": record.get("authority_control_path"),
+            "authority_control_digest": record.get("authority_control_digest"),
             "workflow_id": record.get("workflow_id"),
             "target_identity": record.get("target_identity"),
             "finalized_revision": record.get("finalized_revision"),
@@ -1713,6 +1894,10 @@ def canonical_verification_evidence_digest(record: dict[str, Any]) -> str:
             "ended_at": record.get("ended_at"),
             "exit_status": record.get("exit_status"),
             "raw_output_digests": record.get("raw_output_digests"),
+            "execution_kind": record.get("execution_kind"),
+            "control_artifact_path": record.get("control_artifact_path"),
+            "control_artifact_digest": record.get("control_artifact_digest"),
+            "limitation": record.get("limitation"),
             "before_target_manifest_digest": record.get(
                 "before_target_manifest_digest"
             ),
@@ -2775,6 +2960,8 @@ def build_fixture_trace(
                     "user_identity",
                     "user_role",
                     "authority_source",
+                    "authority_control_path",
+                    "authority_control_digest",
                     "confirmation_timestamp",
                     "confirmation_event_digest",
                     "contract_artifact_id",
@@ -3178,6 +3365,20 @@ def validate_schema_boundary(
     candidate_seen = False
     receipt_chain_valid = True
     validated_main_actor: str | None = None
+    retained_user_authority = validated_user_authority_control(BUILDER_FIXTURES)
+    retained_verification = validated_verification_control(BUILDER_FIXTURES)
+    user_authority_control = (
+        retained_user_authority[0] if retained_user_authority is not None else None
+    )
+    user_authority_digest = (
+        retained_user_authority[1] if retained_user_authority is not None else None
+    )
+    verification_control = (
+        retained_verification[0] if retained_verification is not None else None
+    )
+    verification_control_digest = (
+        retained_verification[1] if retained_verification is not None else None
+    )
 
     def digest_claims_are_valid(value: Any, field: str | None = None) -> bool:
         if isinstance(value, dict):
@@ -3425,11 +3626,21 @@ def validate_schema_boundary(
                 and bool(event["actor"])
                 and isinstance(event.get("user_identity"), str)
                 and bool(event["user_identity"])
-                and event.get("user_role") == "user"
-                and event.get("authority_source") == "explicit-user-event"
+                and isinstance(user_authority_control, dict)
+                and event.get("user_identity")
+                == user_authority_control.get("user_identity")
+                and event.get("user_role") == user_authority_control.get("user_role")
+                and event.get("authority_source")
+                == user_authority_control.get("authority_source")
+                and event.get("authority_control_path")
+                == USER_AUTHORITY_CONTROL_PATH
+                and event.get("authority_control_digest")
+                == user_authority_digest
                 and isinstance(event.get("authority_timestamp"), str)
                 and RFC3339_UTC_RE.fullmatch(event["authority_timestamp"])
                 is not None
+                and event.get("authority_timestamp")
+                == event.get("transition_receipt", {}).get("created_at")
                 and isinstance(event.get("finalized_revision"), str)
                 and bool(event["finalized_revision"])
                 and isinstance(event.get("run_directory_identity"), str)
@@ -3500,11 +3711,21 @@ def validate_schema_boundary(
                 and event.get("accepted") is True
                 and isinstance(event.get("user_identity"), str)
                 and bool(event["user_identity"])
-                and event.get("user_role") == "user"
-                and event.get("authority_source") == "explicit-user-event"
+                and isinstance(user_authority_control, dict)
+                and event.get("user_identity")
+                == user_authority_control.get("user_identity")
+                and event.get("user_role") == user_authority_control.get("user_role")
+                and event.get("authority_source")
+                == user_authority_control.get("authority_source")
+                and event.get("authority_control_path")
+                == USER_AUTHORITY_CONTROL_PATH
+                and event.get("authority_control_digest")
+                == user_authority_digest
                 and isinstance(event.get("confirmation_timestamp"), str)
                 and RFC3339_UTC_RE.fullmatch(event["confirmation_timestamp"])
                 is not None
+                and event.get("confirmation_timestamp")
+                == event.get("artifact_envelope", {}).get("created_at")
                 and digest_is_valid(event.get("confirmation_event_digest"))
                 and event.get("confirmation_event_digest")
                 == canonical_user_confirmation_digest(event)
@@ -3557,6 +3778,17 @@ def validate_schema_boundary(
                 and type(event.get("exit_status")) is int
                 and unique_nonempty_strings(event.get("behavioral_case_ids"))
                 and unique_nonempty_strings(event.get("commands"))
+                and isinstance(verification_control, dict)
+                and event.get("commands")
+                == [verification_control.get("command")]
+                and event.get("execution_kind")
+                == verification_control.get("execution_kind")
+                and event.get("control_artifact_path")
+                == VERIFICATION_CONTROL_PATH
+                and event.get("control_artifact_digest")
+                == verification_control_digest
+                and event.get("limitation")
+                == verification_control.get("limitation")
                 and isinstance(event.get("started_at"), str)
                 and RFC3339_UTC_RE.fullmatch(event["started_at"]) is not None
                 and isinstance(event.get("ended_at"), str)
@@ -3567,6 +3799,8 @@ def validate_schema_boundary(
                     digest_is_valid(item)
                     for item in event.get("raw_output_digests", [])
                 )
+                and event.get("raw_output_digests")
+                == [canonical_digest(verification_control.get("raw_output"))]
                 and digest_is_valid(
                     event.get("before_target_manifest_digest")
                 )
@@ -3890,6 +4124,12 @@ def accepted_finalization_trace(
     )
     if baseline_evidence is None:
         raise ValueError("accepted trace lacked valid mode-specific baseline evidence")
+    retained_user_authority = validated_user_authority_control(BUILDER_FIXTURES)
+    retained_verification = validated_verification_control(BUILDER_FIXTURES)
+    if retained_user_authority is None or retained_verification is None:
+        raise ValueError("accepted trace lacked retained authority or verification control")
+    user_authority_control, user_authority_digest = retained_user_authority
+    verification_control, verification_control_digest = retained_verification
     preserved_regression_ids = [
         item["case_id"]
         for item in baseline_evidence["preserved_regressions"]
@@ -4091,8 +4331,10 @@ def accepted_finalization_trace(
     confirmation_timestamp = "2026-01-01T00:00:10Z"
     confirmation_event_digest = canonical_user_confirmation_digest(
         {
-            "user_identity": "fixture-user-v1",
+            "user_identity": user_authority_control["user_identity"],
             "confirmation_timestamp": confirmation_timestamp,
+            "authority_control_path": USER_AUTHORITY_CONTROL_PATH,
+            "authority_control_digest": user_authority_digest,
             "workflow_id": workflow_id,
             "target_identity": target_identity,
             "target_snapshot": digest_value(target_snapshot),
@@ -4103,15 +4345,17 @@ def accepted_finalization_trace(
     )
     verification_fields = {
         "behavioral_case_ids": list(all_case_ids),
-        "commands": ["fixture-behavioral-verification"],
+        "commands": [verification_control["command"]],
         "started_at": "2026-01-01T00:00:20Z",
         "ended_at": "2026-01-01T00:00:21Z",
         "exit_status": 0,
         "raw_output_digests": [
-            canonical_digest(
-                {"revision": revision, "verification_output": "recorded-control"}
-            )
+            canonical_digest(verification_control["raw_output"])
         ],
+        "execution_kind": verification_control["execution_kind"],
+        "control_artifact_path": VERIFICATION_CONTROL_PATH,
+        "control_artifact_digest": verification_control_digest,
+        "limitation": verification_control["limitation"],
         "before_target_manifest_digest": candidate_manifest_digest,
         "after_target_manifest_digest": candidate_manifest_digest,
         "conclusion": "pass",
@@ -4228,9 +4472,11 @@ def accepted_finalization_trace(
             "event": "user_confirmed",
             "contract_digest": "contract-v1",
             "accepted": True,
-            "user_identity": "fixture-user-v1",
-            "user_role": "user",
-            "authority_source": "explicit-user-event",
+            "user_identity": user_authority_control["user_identity"],
+            "user_role": user_authority_control["user_role"],
+            "authority_source": user_authority_control["authority_source"],
+            "authority_control_path": USER_AUTHORITY_CONTROL_PATH,
+            "authority_control_digest": user_authority_digest,
             "confirmation_timestamp": confirmation_timestamp,
             "confirmation_event_digest": confirmation_event_digest,
             "contract_artifact_id": contract_id,
@@ -5181,6 +5427,9 @@ def finalization_trace_after_aba(
     }
     for event in rebuilt:
         if event.get("event") == "user_confirmed":
+            event["confirmation_timestamp"] = event["artifact_envelope"][
+                "created_at"
+            ]
             event["confirmation_event_digest"] = (
                 canonical_user_confirmation_digest(event)
             )
@@ -5232,6 +5481,10 @@ def cleanup_trace(
     workflow_id: str = "a" * 32,
 ) -> list[dict[str, Any]]:
     state_home = xdg_state_home or str(BUILDER_FIXTURES / "private-state")
+    retained_authority = validated_user_authority_control(BUILDER_FIXTURES)
+    if retained_authority is None:
+        raise ValueError("cleanup lacked retained user authority control")
+    user_authority, user_authority_digest = retained_authority
     binding = {
         "workflow_id": workflow_id,
         "target_identity": "fixture-terse-summary",
@@ -5243,10 +5496,12 @@ def cleanup_trace(
         "valid": True,
         "effect": "cleanup",
         "actor": "main-agent-v1",
-        "user_identity": "fixture-user-v1",
-        "user_role": "user",
-        "authority_source": "explicit-user-event",
-        "authority_timestamp": "2026-01-01T00:00:11Z",
+        "user_identity": user_authority["user_identity"],
+        "user_role": user_authority["user_role"],
+        "authority_source": user_authority["authority_source"],
+        "authority_control_path": USER_AUTHORITY_CONTROL_PATH,
+        "authority_control_digest": user_authority_digest,
+        "authority_timestamp": "2026-01-01T00:00:02Z",
         "delivery_record_digest": "delivery-1",
         **binding,
     }
@@ -5273,7 +5528,7 @@ def cleanup_trace(
             "acceptance_evidence": ["fixture-install-check"],
             "user_authority_event_digest": "delivery-authority-v1",
             "actor": "main-agent-v1",
-            "timestamp": "2026-01-01T00:00:10Z",
+            "timestamp": "2026-01-01T00:00:01Z",
             "delivery_record_digest": "delivery-1",
             **binding,
         },
@@ -5294,7 +5549,7 @@ def cleanup_trace(
             "tombstone_digest": "tombstone-1",
             "tombstone_path": str(
                 Path(state_home)
-                / "codex-dev-flow"
+                / "expskill"
                 / "skill-builder"
                 / "tombstones"
                 / f"{workflow_id}.json"
@@ -5363,10 +5618,12 @@ def authorized_integrated_cleanup_trace(
         workflow_id=workflow_id,
     )
     cleanup_authority_digest: str | None = None
-    for event in cleanup:
+    for cleanup_index, event in enumerate(cleanup):
+        absolute_timestamp = _timestamp(len(authorized_prefix) + cleanup_index)
         if "final_transition_digest" in event:
             event["final_transition_digest"] = final_transition_digest
         if event.get("event") == "delivery_accepted":
+            event["timestamp"] = absolute_timestamp
             event["user_authority_event_digest"] = attempt_receipt[
                 "authority_event_digest"
             ]
@@ -5374,6 +5631,7 @@ def authorized_integrated_cleanup_trace(
                 "receipt_digest"
             ]
         elif event.get("event") == "cleanup_authority_recorded":
+            event["authority_timestamp"] = absolute_timestamp
             event["delivery_record_digest"] = attempt_receipt[
                 "receipt_digest"
             ]
@@ -5504,10 +5762,50 @@ def evaluate_trace(
     record_lifecycle_validity: dict[int, bool] = {}
     record_schema_validity: dict[int, bool] = {}
     expected_baseline_evidence: dict[str, Any] | None = None
+    retained_trial_control = validated_trial_control(fixture_root)
+    retained_verification_control = validated_verification_control(fixture_root)
+    retained_user_authority = validated_user_authority_control(fixture_root)
+    trial_control = (
+        retained_trial_control[0] if retained_trial_control is not None else None
+    )
+    trial_control_digest = (
+        retained_trial_control[1] if retained_trial_control is not None else None
+    )
+    verification_control = (
+        retained_verification_control[0]
+        if retained_verification_control is not None
+        else None
+    )
+    verification_control_digest = (
+        retained_verification_control[1]
+        if retained_verification_control is not None
+        else None
+    )
+    user_authority_control = (
+        retained_user_authority[0] if retained_user_authority is not None else None
+    )
+    user_authority_digest = (
+        retained_user_authority[1] if retained_user_authority is not None else None
+    )
     static_only_verification_attempt = any(
         isinstance(event, dict)
         and event.get("event") == "verification_recorded"
-        and event.get("behavioral_trials") == 0
+        and (
+            not isinstance(verification_control, dict)
+            or event.get("behavioral_trials") == 0
+            or event.get("commands")
+            != [verification_control.get("command")]
+            or event.get("execution_kind")
+            != verification_control.get("execution_kind")
+            or event.get("control_artifact_path")
+            != VERIFICATION_CONTROL_PATH
+            or event.get("control_artifact_digest")
+            != verification_control_digest
+            or event.get("limitation")
+            != verification_control.get("limitation")
+            or event.get("raw_output_digests")
+            != [canonical_digest(verification_control.get("raw_output"))]
+        )
         for event in trace
     )
 
@@ -7125,10 +7423,21 @@ def evaluate_trace(
                 and (resolution_record or {}).get("actor_role") == "main-agent"
                 and isinstance(user_identity, str)
                 and actor_roles.get(user_identity) == {"user"}
-                and event.get("authority_source") == "explicit-user-event"
+                and isinstance(user_authority_control, dict)
+                and user_identity == user_authority_control.get("user_identity")
+                and event.get("user_role")
+                == user_authority_control.get("user_role")
+                and event.get("authority_source")
+                == user_authority_control.get("authority_source")
+                and event.get("authority_control_path")
+                == USER_AUTHORITY_CONTROL_PATH
+                and event.get("authority_control_digest")
+                == user_authority_digest
                 and isinstance(event.get("authority_timestamp"), str)
                 and RFC3339_UTC_RE.fullmatch(event["authority_timestamp"])
                 is not None
+                and event.get("authority_timestamp")
+                == event.get("transition_receipt", {}).get("created_at")
                 and event.get("authority_event_digest")
                 == canonical_cleanup_authority_digest(event)
                 and event.get("delivery_record_digest")
@@ -7285,7 +7594,7 @@ def evaluate_trace(
             )
             expected_directory = (
                 trusted_state_home
-                / "codex-dev-flow"
+                / "expskill"
                 / "skill-builder"
                 / "runs"
                 / workflow_identity
@@ -7367,7 +7676,7 @@ def evaluate_trace(
             )
             expected_tombstone_path = (
                 trusted_state_home
-                / "codex-dev-flow"
+                / "expskill"
                 / "skill-builder"
                 / "tombstones"
                 / f"{workflow_identity}.json"
@@ -8082,6 +8391,11 @@ def evaluate_trace(
                         effect_results = entry.get("forbidden_effect_results")
                         return (
                             isinstance(case, dict)
+                            and isinstance(trial_control, dict)
+                            and entry.get("control_artifact_path")
+                            == TRIAL_CONTROL_PATH
+                            and entry.get("control_artifact_digest")
+                            == trial_control_digest
                             and entry.get("case_digest") == canonical_digest(case)
                             and entry.get("raw_request_digest")
                             == case.get("raw_request_digest")
@@ -8094,24 +8408,85 @@ def evaluate_trace(
                             in candidate_skill_digests
                             and entry.get("before_target_manifest_digest")
                             == case.get("setup_manifest", {}).get("digest")
-                            and isinstance(assertion_results, list)
-                            and [
-                                result.get("assertion")
-                                for result in assertion_results
+                            and entry.get("tool_event_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "tool_events": trial_control["tool_events"],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and entry.get("output_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "output": trial_control["output"],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and entry.get("after_target_manifest_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "after_target_manifest": trial_control[
+                                        "after_target_manifest"
+                                    ],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and entry.get("filesystem_result_digest")
+                            == canonical_digest(
+                                {
+                                    "case_id": case["id"],
+                                    "filesystem_result": trial_control[
+                                        "filesystem_result"
+                                    ],
+                                    "control_artifact_digest": trial_control_digest,
+                                }
+                            )
+                            and assertion_results
+                            == [
+                                {
+                                    "assertion": assertion,
+                                    "passed": True,
+                                    "evidence_digest": canonical_digest(
+                                        {
+                                            "case_id": case["id"],
+                                            "assertion": assertion,
+                                            "status": trial_control[
+                                                "assertion_status"
+                                            ],
+                                            "control_artifact_digest": (
+                                                trial_control_digest
+                                            ),
+                                        }
+                                    ),
+                                }
+                                for assertion in case["observable_assertions"]
                             ]
-                            == case.get("observable_assertions")
-                            and all(
-                                result.get("passed") is True
-                                for result in assertion_results
-                            )
-                            and isinstance(effect_results, list)
-                            and [result.get("effect") for result in effect_results]
-                            == case.get("forbidden_effects")
-                            and all(
-                                result.get("observed") is False
-                                for result in effect_results
-                            )
-                            and entry.get("verdict") == "pass"
+                            and effect_results
+                            == [
+                                {
+                                    "effect": effect,
+                                    "observed": False,
+                                    "evidence_digest": canonical_digest(
+                                        {
+                                            "case_id": case["id"],
+                                            "effect": effect,
+                                            "status": trial_control[
+                                                "forbidden_effect_status"
+                                            ],
+                                            "control_artifact_digest": (
+                                                trial_control_digest
+                                            ),
+                                        }
+                                    ),
+                                }
+                                for effect in case["forbidden_effects"]
+                            ]
+                            and entry.get("verdict") == trial_control["verdict"]
+                            and entry.get("limitation")
+                            == trial_control["limitation"]
                         )
                     schema_valid = (
                         schema_valid
@@ -8184,6 +8559,8 @@ def evaluate_trace(
                             "candidate_digest",
                             "raw_request_digest",
                             "raw_evidence_digest",
+                            "control_artifact_path",
+                            "control_artifact_digest",
                             "raw_prompt_digest",
                             "loaded_skill_digest",
                             "tool_event_digest",
@@ -9088,7 +9465,17 @@ def evaluate_trace(
                     == expected_behavioral_case_ids
                     and event.get("behavioral_trials")
                     == len(expected_behavioral_case_ids)
-                    and unique_nonempty_strings(event.get("commands"))
+                    and isinstance(verification_control, dict)
+                    and event.get("commands")
+                    == [verification_control.get("command")]
+                    and event.get("execution_kind")
+                    == verification_control.get("execution_kind")
+                    and event.get("control_artifact_path")
+                    == VERIFICATION_CONTROL_PATH
+                    and event.get("control_artifact_digest")
+                    == verification_control_digest
+                    and event.get("limitation")
+                    == verification_control.get("limitation")
                     and unique_nonempty_strings(
                         event.get("raw_output_digests")
                     )
@@ -9098,6 +9485,8 @@ def evaluate_trace(
                         digest_is_valid(digest)
                         for digest in event["raw_output_digests"]
                     )
+                    and event.get("raw_output_digests")
+                    == [canonical_digest(verification_control.get("raw_output"))]
                     and event.get("before_target_manifest_digest")
                     == candidate_manifest_digest
                     and event.get("after_target_manifest_digest")
@@ -9395,13 +9784,24 @@ def evaluate_trace(
                     and event.get("accepted") is True
                     and isinstance(user_identity, str)
                     and actor_roles.get(user_identity) == {"user"}
+                    and isinstance(user_authority_control, dict)
+                    and user_identity
+                    == user_authority_control.get("user_identity")
+                    and event.get("user_role")
+                    == user_authority_control.get("user_role")
                     and event.get("authority_source")
-                    == "explicit-user-event"
+                    == user_authority_control.get("authority_source")
+                    and event.get("authority_control_path")
+                    == USER_AUTHORITY_CONTROL_PATH
+                    and event.get("authority_control_digest")
+                    == user_authority_digest
                     and isinstance(event.get("confirmation_timestamp"), str)
                     and RFC3339_UTC_RE.fullmatch(
                         event["confirmation_timestamp"]
                     )
                     is not None
+                    and event.get("confirmation_timestamp")
+                    == event.get("artifact_envelope", {}).get("created_at")
                     and event.get("confirmation_event_digest")
                     == canonical_user_confirmation_digest(event)
                     and event.get("contract_artifact_id")
@@ -9870,22 +10270,6 @@ def evaluate_trace(
 
 
 class SkillBuilderEvaluationAssetTests(unittest.TestCase):
-    def test_legacy_improve_fixture_cannot_model_create_or_general_target_identity(self) -> None:
-        """Regression: the retired fixture only describes one existing improve target."""
-
-        fixture_files = {
-            path.relative_to(LEGACY_FIXTURES).as_posix()
-            for path in LEGACY_FIXTURES.rglob("*")
-            if path.is_file()
-        }
-
-        self.assertEqual(fixture_files, {"charter.md", "sample-skill/SKILL.md"})
-        self.assertFalse(any(LEGACY_FIXTURES.rglob("*.json")))
-        self.assertIn(
-            "Improve the `summarize-changes` fixture",
-            (LEGACY_FIXTURES / "charter.md").read_text(encoding="utf-8"),
-        )
-
     def test_generalized_pack_declares_create_and_improve_scenarios(self) -> None:
         """Regression: evaluation assets must cover absent and existing exact targets."""
 
@@ -11014,7 +11398,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11344,7 +11728,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11384,7 +11768,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11746,7 +12130,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13005,7 +13389,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13046,7 +13430,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", production_codes)
 
         spoofed_codes = integrated_codes(
-            "/srv/skills/codex-dev-flow/skill-builder/runs/workflow-1",
+            "/srv/skills/expskill/skill-builder/runs/workflow-1",
             xdg_state_home="/srv/skills",
         )
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", spoofed_codes)
@@ -13464,7 +13848,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         owned_path = str(
             BUILDER_FIXTURES
             / "private-state"
-            / "codex-dev-flow"
+            / "expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13479,6 +13863,77 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             if event.get("event") == "cleanup_authority_recorded"
         )
         cleanup_authority["user_identity"] = "candidate-implementer-v1"
+        cleanup_authority["authority_event_digest"] = (
+            canonical_cleanup_authority_digest(cleanup_authority)
+        )
+        tombstone = next(
+            event
+            for event in cleanup_mutant
+            if event.get("event") == "cleanup_tombstone_validated"
+        )
+        tombstone["authority_event_digest"] = cleanup_authority[
+            "authority_event_digest"
+        ]
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            cleanup_codes = {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(cleanup_mutant, workflow_id=workflow_id),
+                    BUILDER_FIXTURES,
+                )
+            }
+        self.assertIn("CLEANUP_WITHOUT_AUTHORITY", cleanup_codes)
+
+    def test_user_authority_requires_retained_ingress_and_current_event_time(
+        self,
+    ) -> None:
+        """A recomputed claim cannot replace retained, contemporaneous user ingress."""
+
+        confirmation_mutants: list[tuple[str, list[dict[str, Any]]]] = []
+        for label, field, value in (
+            ("invented-identity", "user_identity", "invented-user-v1"),
+            ("stale-time", "confirmation_timestamp", "2025-01-01T00:00:00Z"),
+        ):
+            trace = accepted_finalization_trace()
+            confirmation = next(
+                event for event in trace if event.get("event") == "user_confirmed"
+            )
+            confirmation[field] = value
+            confirmation["confirmation_event_digest"] = (
+                canonical_user_confirmation_digest(confirmation)
+            )
+            confirmation_mutants.append((label, seal_trace(trace)))
+
+        for label, mutant in confirmation_mutants:
+            with self.subTest(mutant=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(mutant, BUILDER_FIXTURES)
+                }
+                self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+
+        workflow_id = "b" * 32
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "expskill"
+            / "skill-builder"
+            / "runs"
+            / workflow_id
+        )
+        cleanup_mutant, trusted_authority = authorized_integrated_cleanup_trace(
+            owned_path,
+            workflow_id,
+        )
+        cleanup_authority = next(
+            event
+            for event in cleanup_mutant
+            if event.get("event") == "cleanup_authority_recorded"
+        )
+        cleanup_authority["authority_timestamp"] = "2025-01-01T00:00:00Z"
         cleanup_authority["authority_event_digest"] = (
             canonical_cleanup_authority_digest(cleanup_authority)
         )
@@ -13596,6 +14051,105 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
                 self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", codes)
 
+    def test_trial_provenance_rejects_synchronized_invented_evidence(self) -> None:
+        """Downstream resealing cannot legitimize invented raw trial observations."""
+
+        trace = accepted_finalization_trace()
+        raw = next(
+            event
+            for event in trace
+            if event.get("artifact_type") == "raw-trial-evidence"
+        )
+        receipt = next(
+            event
+            for event in trace
+            if event.get("artifact_type") == "trial-receipt"
+        )
+        raw_entry = raw["case_evidence"][0]
+        case_id = raw_entry["case_id"]
+        receipt_entry = next(
+            entry
+            for entry in receipt["case_receipts"]
+            if entry["case_id"] == case_id
+        )
+        for field in (
+            "tool_event_digest",
+            "output_digest",
+            "after_target_manifest_digest",
+            "filesystem_result_digest",
+        ):
+            raw_entry[field] = canonical_digest(
+                {"invented": field, "case_id": case_id}
+            )
+        raw_entry["observable_assertion_results"] = [
+            {
+                **result,
+                "evidence_digest": canonical_digest(
+                    {"invented": "assertion", "value": result["assertion"]}
+                ),
+            }
+            for result in raw_entry["observable_assertion_results"]
+        ]
+        raw_entry["forbidden_effect_results"] = [
+            {
+                **result,
+                "evidence_digest": canonical_digest(
+                    {"invented": "effect", "value": result["effect"]}
+                ),
+            }
+            for result in raw_entry["forbidden_effect_results"]
+        ]
+        raw_entry["limitation"] = "Invented evidence with synchronized claims."
+        raw_entry["raw_evidence_digest"] = canonical_digest(
+            raw_entry,
+            digest_field="raw_evidence_digest",
+        )
+        raw["raw_artifact_digests"] = [
+            entry["raw_evidence_digest"] for entry in raw["case_evidence"]
+        ]
+        for field in (
+            "raw_evidence_digest",
+            "tool_event_digest",
+            "output_digest",
+            "after_target_manifest_digest",
+            "filesystem_result_digest",
+            "limitation",
+        ):
+            receipt_entry[field] = raw_entry[field]
+        receipt_entry["observable_assertions_digest"] = canonical_digest(
+            raw_entry["observable_assertion_results"]
+        )
+        receipt_entry["forbidden_effects_digest"] = canonical_digest(
+            raw_entry["forbidden_effect_results"]
+        )
+        receipt_entry["receipt_digest"] = canonical_digest(
+            receipt_entry,
+            digest_field="receipt_digest",
+        )
+        for event in trace:
+            if (
+                event.get("artifact_type") == "category-evidence"
+                and event.get("case_id") == case_id
+            ):
+                event["raw_evidence_digest"] = raw_entry["raw_evidence_digest"]
+                event["trial_receipt_digest"] = receipt_entry["receipt_digest"]
+            elif event.get("artifact_type") == "target-scorecard":
+                for result in event["criterion_results"]:
+                    if result.get("case_id") == case_id:
+                        result["raw_evidence_digest"] = raw_entry[
+                            "raw_evidence_digest"
+                        ]
+                        result["trial_receipt_digest"] = receipt_entry[
+                            "receipt_digest"
+                        ]
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(seal_trace(trace), BUILDER_FIXTURES)
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+        self.assertIn("FINALIZE_WITHOUT_TEN_SCORES", codes)
+
     def test_repair_trials_require_new_execution_contexts(self) -> None:
         """A repaired candidate cannot reuse contexts from its prior trial wave."""
 
@@ -13667,9 +14221,27 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             canonical_verification_evidence_digest(verification)
         )
 
+        lint_only = accepted_finalization_trace()
+        lint_verification = next(
+            event
+            for event in lint_only
+            if event.get("artifact_type") == "verification-record"
+        )
+        lint_verification["commands"] = [
+            "python3 -m py_compile candidate/SKILL.md"
+        ]
+        lint_verification["execution_kind"] = "structural-lint"
+        lint_verification["raw_output_digests"] = [
+            canonical_digest({"status": "pass", "kind": "lint-only"})
+        ]
+        lint_verification["verification_evidence_digest"] = (
+            canonical_verification_evidence_digest(lint_verification)
+        )
+
         for label, mutant in (
             ("missing-command", missing_commands),
             ("stale-manifest", stale_manifest),
+            ("lint-only", lint_only),
         ):
             with self.subTest(mutant=label):
                 codes = {
@@ -13683,6 +14255,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 self.assertTrue(
                     {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
                 )
+                if label == "lint-only":
+                    self.assertIn("STATIC_VALIDATION_ONLY", codes)
 
     def test_category_evidence_joins_exact_case_raw_and_receipt(self) -> None:
         """A criterion cannot cite aggregate labels for another frozen case."""

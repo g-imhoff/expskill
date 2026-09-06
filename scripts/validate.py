@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Any
 
 
-MARKETPLACE_NAME = "codex-dev-flow"
-PLUGIN_NAME = "codex-dev-flow"
+MARKETPLACE_NAME = "expskill"
+PLUGIN_NAME = "expskill"
 PLUGIN_VERSION = "0.1.0"
 PLUGIN_VERSION_PATTERN = re.compile(
     rf"{re.escape(PLUGIN_VERSION)}(?:\+codex\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
-REPOSITORY_URL = "https://github.com/g-imhoff/codex-dev-flow"
+REPOSITORY_URL = "https://github.com/g-imhoff/expskill"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
@@ -32,6 +32,25 @@ UNSLOP_HOOK_SCRIPT_SHA256 = "6eea44b9a2fcccfe685c5b93c7fd2b3e868bb9618f6764a7e97
 THIRD_PARTY_LOCK_PATH = "third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
+LEGACY_PROJECT_IDENTITIES = (
+    "-".join(("codex", "dev", "flow")),
+    " ".join(("codex", "dev", "flow")),
+    "_".join(("codex", "dev", "flow")),
+    "use-" + "expand",
+    "use_" + "expand",
+    "dev" + "flow-",
+)
+PROJECT_IDENTITY_TEXT_SUFFIXES = {
+    ".csv",
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 PLUGIN_INTERFACE_FIELDS = {
     "displayName",
     "shortDescription",
@@ -41,26 +60,61 @@ PLUGIN_INTERFACE_FIELDS = {
     "capabilities",
     "defaultPrompt",
 }
-PUBLIC_PHASE_TOKENS = {
+PUBLIC_SKILL_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
-    "$use-expand",
+    "$use-expskill",
     "$design",
     "$grill-me",
+    "$skill-builder",
     "$unslop",
 }
+PUBLIC_SKILL_COUNT_TEXT = "seven independent skills and one optional lifecycle router"
+SKILL_BUILDER_TOKEN = "$skill-builder"
+SKILL_BUILDER_REQUIRED_REFERENCES = (
+    "references/artifact-contracts.md",
+    "references/evaluation-rubric.md",
+)
+SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
+    sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
+)
+SKILL_BUILDER_BOUNDARY_SECTION = (
+    "## Boundary\n\n"
+    "`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary "
+    "development, product planning, application design, documentation that is not an "
+    "agent skill, installation-only work, and lifecycle routing. Do not invoke or depend "
+    "on a product lifecycle phase or an ambient authoring skill.\n\n"
+    "Success exists only when one exact revision has a confirmed contract, frozen "
+    "evaluation evidence, isolated trial evidence, builder-run conformance, independent "
+    "review, ten independently satisfied target category scores, verification, and "
+    "retained release evidence. Static validation alone is never completion.\n\n"
+    "Read [artifact contracts](references/artifact-contracts.md) completely at run start "
+    "and again before resuming persisted work. Read [evaluation rubric]"
+    "(references/evaluation-rubric.md) completely before freezing the evaluation pack "
+    "and before every review or scoring pass."
+)
+SKILL_BUILDER_README_LINES = (
+    "- `$skill-builder` creates or improves one exact agent skill through evidence-gated "
+    "research, trials, review, and verification.",
+    "Use $skill-builder to create or improve one exact agent skill with retained evidence.",
+)
+SKILL_BUILDER_NAME_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])skill(?:-|[ \t]+)builder(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 PUBLIC_METADATA_JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
     re.IGNORECASE,
 )
 EXPECTED_SKILLS = {
-    "use-expand",
+    "use-expskill",
     "design",
     "brainstorm",
     "plan",
     "implement",
     "grill-me",
+    "skill-builder",
     "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
@@ -157,11 +211,62 @@ EXPECTED_UNSLOP_HOOKS = {
 }
 
 EXPECTED_AGENTS = {
-    "devflow-explorer": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-test-engineer": ("gpt-5.6-luna", "high", "workspace-write"),
-    "devflow-implementer": ("gpt-5.6-luna", "medium", "workspace-write"),
-    "devflow-review": ("gpt-5.6-terra", "medium", "read-only"),
-    "devflow-spec": ("gpt-5.6-luna", "high", "workspace-write"),
+    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+}
+
+REVIEW_HANDOFF_PATHS = (
+    "skills/implement/SKILL.md",
+    "skills/skill-builder/SKILL.md",
+    "skills/skill-builder/references/evaluation-rubric.md",
+)
+REVIEW_HANDOFF_HEADING = "## Review context contract\n"
+REVIEW_HANDOFF_CLAUSES = (
+    "this final section is the only authoritative review-context policy in this file.",
+    "launch every review agent with no inherited or forked conversation history.",
+    "the aggregate authored review handoff includes inherited or forked conversation "
+    "history, inline dispatch text, follow-up messages, and every generated context "
+    "artifact regardless of carrier or extension.",
+    "it is a locator, not a payload, and totals at most 300 physical lines.",
+    "count the complete handoff before launch and before every follow-up.",
+    "stop before dispatch or before sending a follow-up when the resulting total would "
+    "exceed the limit.",
+    "a real accepted specification file is referenced separately when it exists.",
+    "the exception applies only to a specification file that existed before review "
+    "dispatch.",
+    "it does not permit a review-time summary, copy, or relabelled context package.",
+    "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
+    "or other repository content.",
+    "do not attach binary or opaque review context.",
+)
+REVIEW_HANDOFF_CANONICAL_SHA256 = {
+    "skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+}
+REVIEW_AGENT_HANDOFF_CLAUSES = (
+    "accept only a locator handoff whose aggregate authored review context includes "
+    "inherited or forked conversation history, inline dispatch text, follow-up messages, "
+    "and generated context artifacts regardless of carrier or extension, and totals at "
+    "most 300 physical lines.",
+    "prefer a context-free launch.",
+    "recount the total after every follow-up.",
+    "a real accepted specification file may be referenced separately only when it "
+    "existed before review dispatch.",
+    "if the total is unknown or exceeds the limit, or the handoff includes a review-time "
+    "summary, copied repository content, a binary payload, or an opaque attachment, stop "
+    "and return `invalid handoff` without a review verdict.",
+    "self-inspect the pinned repository or candidate and its base and candidate "
+    "revisions using repository tools.",
+    "do not request a copied diff, source files, test logs, terminal output, or "
+    "transcripts.",
+)
+REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
+    "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
+    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -174,21 +279,21 @@ REQUIRED_AGENT_FIELDS = (
 )
 
 AGENT_BOUNDARIES = {
-    "devflow-explorer": ("read-only", "no fixes", "no delegation"),
-    "devflow-test-engineer": (
+    "expskill-explorer": ("read-only", "no fixes", "no delegation"),
+    "expskill-test-engineer": (
         "test strategy",
         "shared acceptance tests",
         "regression",
         "no product implementation",
     ),
-    "devflow-implementer": (
+    "expskill-implementer": (
         "exactly one accepted node",
         "red-green-refactor",
         "one owned branch",
         "no delegation",
         "no scope expansion",
     ),
-    "devflow-review": (
+    "expskill-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "read-only",
         "severity",
         "evidence",
@@ -197,7 +302,7 @@ AGENT_BOUNDARIES = {
         "ready",
         "not ready",
     ),
-    "devflow-spec": (
+    "expskill-spec": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "every accepted behavior",
         "criterion-by-criterion evidence",
         "no tracked-source edits",
@@ -209,44 +314,44 @@ AGENT_BOUNDARIES = {
 }
 
 EXPECTED_POLICY_PROFILES = {
-    "devflow-explorer": {
-        "agent_type": "devflow-explorer",
+    "expskill-explorer": {
+        "agent_type": "expskill-explorer",
         "role": "explorer",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-test-engineer": {
-        "agent_type": "devflow-test-engineer",
+    "expskill-test-engineer": {
+        "agent_type": "expskill-test-engineer",
         "role": "test-engineer",
         "model": "gpt-5.6-luna",
-        "effort": "high",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-implementer": {
-        "agent_type": "devflow-implementer",
-        "role": "implementer",
-        "model": "gpt-5.6-luna",
-        "effort": "medium",
-        "sandbox_mode": "workspace-write",
-        "escalation": None,
-    },
-    "devflow-review": {
-        "agent_type": "devflow-review",
-        "role": "review",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
+        "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "devflow-spec": {
-        "agent_type": "devflow-spec",
-        "role": "spec",
+    "expskill-implementer": {
+        "agent_type": "expskill-implementer",
+        "role": "implementer",
         "model": "gpt-5.6-luna",
-        "effort": "high",
+        "effort": "max",
         "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "expskill-review": {
+        "agent_type": "expskill-review",
+        "role": "review",
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh",
+        "sandbox_mode": "read-only",
+        "escalation": None,
+    },
+    "expskill-spec": {
+        "agent_type": "expskill-spec",
+        "role": "spec",
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh",
+        "sandbox_mode": "read-only",
         "escalation": None,
     },
 }
@@ -255,25 +360,25 @@ EXPECTED_POLICY_ROUTES = {
     "implement": {
         "standard": {
             "allowed_profiles": [
-                "devflow-implementer",
-                "devflow-review",
-                "devflow-spec",
+                "expskill-implementer",
+                "expskill-review",
+                "expskill-spec",
             ],
             "selected": [
                 {
                     "role": "implementer",
-                    "profile": "devflow-implementer",
-                    "agent_type": "devflow-implementer",
+                    "profile": "expskill-implementer",
+                    "agent_type": "expskill-implementer",
                 },
                 {
                     "role": "review",
-                    "profile": "devflow-review",
-                    "agent_type": "devflow-review",
+                    "profile": "expskill-review",
+                    "agent_type": "expskill-review",
                 },
                 {
                     "role": "spec",
-                    "profile": "devflow-spec",
-                    "agent_type": "devflow-spec",
+                    "profile": "expskill-spec",
+                    "agent_type": "expskill-spec",
                 },
             ],
             "max_agent_calls": 30,
@@ -367,6 +472,58 @@ def _required_package_path(
     return path
 
 
+def _required_nonempty_package_file(
+    package_root: Path,
+    relative: str,
+    label: str,
+    errors: list[str],
+) -> Path | None:
+    path = _required_package_path(
+        package_root,
+        relative,
+        label,
+        "file",
+        errors,
+    )
+    if path is None:
+        return None
+    metadata = _lstat(path)
+    if metadata is None or metadata.st_size == 0:
+        errors.append(f"{label} must be a non-empty regular file: {path}")
+        return None
+    try:
+        path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"{label} must be readable UTF-8 text: {path}: {error}")
+        return None
+    return path
+
+
+def _contains_exact_skill_token(contents: str, token: str) -> bool:
+    return re.search(
+        rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])",
+        contents,
+    ) is not None
+
+
+def _markdown_level_two_section(contents: str, heading: str) -> str | None:
+    lines = contents.splitlines()
+    marker = f"## {heading}"
+    starts = [index for index, line in enumerate(lines) if line == marker]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]).rstrip()
+
+
 def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
     """Enumerate package entries without traversing symlink directories."""
 
@@ -421,12 +578,134 @@ def validate_repository(root: Path) -> tuple[str, ...]:
             _validate_plugin_manifest(manifest, plugin_root, errors)
 
         _validate_agents(plugin_root, errors)
+        _validate_review_handoff_contract(plugin_root, errors)
         _validate_policy(plugin_root, errors)
         _validate_unslop_hook(plugin_root, errors)
         _validate_third_party_sources(plugin_root, errors)
         _validate_helper_and_package_layout(plugin_root, errors)
+    _validate_public_readme(repository_root, errors)
+    _validate_removed_repository_local_skill(repository_root, errors)
     _validate_skill_punctuation(repository_root, errors)
+    _validate_no_legacy_project_identity(repository_root, errors)
     return tuple(errors)
+
+
+def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> None:
+    for relative in REVIEW_HANDOFF_PATHS:
+        path = plugin_root / relative
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append(f"review handoff contract could not be read at {relative}: {error}")
+            continue
+        normalized = " ".join(contents.lower().split())
+        normalized_markdown = contents.replace("\r\n", "\n").replace("\r", "\n")
+        heading_index = _review_contract_heading_index(normalized_markdown)
+        if heading_index is None:
+            errors.append(
+                f"review handoff contract at {relative} must contain one final "
+                "Review context contract section"
+            )
+        elif not _review_contract_heading_is_live(normalized_markdown, heading_index):
+            errors.append(
+                f"review handoff contract at {relative} must begin at a live top-level "
+                "Markdown heading"
+            )
+        for clause in REVIEW_HANDOFF_CLAUSES:
+            if clause not in normalized:
+                errors.append(
+                    f"review handoff contract at {relative} must include {clause!r}"
+                )
+        canonical = _canonical_review_markdown(contents)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if digest != REVIEW_HANDOFF_CANONICAL_SHA256[relative]:
+            errors.append(
+                f"review handoff contract at {relative} differs from its validated "
+                "normalized content"
+            )
+
+
+def _canonical_review_markdown(contents: str) -> str:
+    normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
+    heading_index = _review_contract_heading_index(normalized)
+    if heading_index is None:
+        return normalized
+    return normalized[heading_index:]
+
+
+def _review_contract_heading_index(contents: str) -> int | None:
+    matches: list[int] = []
+    offset = 0
+    for line in contents.splitlines(keepends=True):
+        if line == REVIEW_HANDOFF_HEADING:
+            matches.append(offset)
+        offset += len(line)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _review_contract_heading_is_live(contents: str, heading_index: int) -> bool:
+    prefix = contents[:heading_index]
+    fence_character: str | None = None
+    fence_length = 0
+    html_closer: str | None = None
+
+    for line in prefix.splitlines():
+        if fence_character is not None:
+            closing = re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_character)}{{{fence_length},}}[ \t]*",
+                line,
+            )
+            if closing is not None:
+                fence_character = None
+                fence_length = 0
+            continue
+
+        if html_closer is not None:
+            closer_index = line.lower().find(html_closer.lower())
+            if closer_index < 0:
+                continue
+            line = line[closer_index + len(html_closer) :]
+            html_closer = None
+
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            marker = fence.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            continue
+
+        remaining = line
+        while "<!--" in remaining:
+            opener = remaining.index("<!--")
+            closer = remaining.find("-->", opener + 4)
+            if closer < 0:
+                html_closer = "-->"
+                break
+            remaining = remaining[closer + 3 :]
+        if html_closer is not None:
+            continue
+
+        raw_html = re.match(
+            r"^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)",
+            line,
+            re.IGNORECASE,
+        )
+        if raw_html is not None:
+            closer = f"</{raw_html.group(1)}>"
+            if closer.lower() not in line[raw_html.end() :].lower():
+                html_closer = closer
+
+    return fence_character is None and html_closer is None
+
+
+def _canonical_review_agent_instructions(contents: str) -> str:
+    normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.splitlines()
+    has_structure = any(
+        not line or line.startswith((" ", "\t")) or line.endswith("  ")
+        for line in lines
+    )
+    return normalized if has_structure else " ".join(lines)
 
 
 def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
@@ -496,9 +775,9 @@ def _validate_marketplace(
             if source.get("source") != "local":
                 errors.append(f"{label}.source.source must be 'local'")
             source_path = source.get("path")
-            if source_path != "./plugins/codex-dev-flow":
+            if source_path != "./plugins/expskill":
                 errors.append(
-                    f"{label}.source.path must be './plugins/codex-dev-flow', got {source_path!r}"
+                    f"{label}.source.path must be './plugins/expskill', got {source_path!r}"
                 )
             elif not (repository_root / "plugins" / PLUGIN_NAME).is_dir():
                 errors.append(f"{label}.source.path does not resolve to the plugin directory")
@@ -517,9 +796,9 @@ def _validate_marketplace(
     for name in duplicates:
         errors.append(f"marketplace plugin name {name!r} is duplicated")
     if not matching_entries:
-        errors.append("marketplace is missing plugin 'codex-dev-flow'")
+        errors.append("marketplace is missing plugin 'expskill'")
     elif len(matching_entries) > 1:
-        errors.append("marketplace plugin 'codex-dev-flow' is duplicated")
+        errors.append("marketplace plugin 'expskill' is duplicated")
 
 
 def _validate_plugin_manifest(
@@ -545,9 +824,11 @@ def _validate_plugin_manifest(
         errors.append("plugin description must be a non-empty string of at most 120 characters")
     else:
         normalized_description = description.lower()
-        for phrase in ("six", "independent", "skills", "optional", "lifecycle router"):
-            if phrase not in normalized_description:
-                errors.append(f"plugin description must advertise {phrase!r}")
+        if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
+            errors.append(
+                "plugin description must advertise seven independent skills and one optional "
+                "lifecycle router"
+            )
         if PUBLIC_METADATA_JARGON.search(description):
             errors.append("plugin description exposes private implementation or scaffold jargon")
     if manifest.get("author") != {"name": PLUGIN_AUTHOR_NAME}:
@@ -569,7 +850,7 @@ def _validate_plugin_manifest(
             errors.append(f"plugin interface is missing fields: {missing!r}")
         if unexpected:
             errors.append(f"plugin interface has unexpected fields: {unexpected!r}")
-        if interface.get("displayName") != "Codex Dev Flow":
+        if interface.get("displayName") != "ExpSkill":
             errors.append("plugin interface displayName must preserve the product identity")
         if interface.get("developerName") != PLUGIN_AUTHOR_NAME:
             errors.append("plugin interface developerName must match the plugin author")
@@ -600,8 +881,8 @@ def _validate_plugin_manifest(
         else:
             if ("$" + "acceptance") in long_description:
                 errors.append("plugin interface longDescription contains removed public token " + "$" + "acceptance")
-            for token in sorted(PUBLIC_PHASE_TOKENS):
-                if token not in long_description:
+            for token in sorted(PUBLIC_SKILL_TOKENS):
+                if not _contains_exact_skill_token(long_description, token):
                     errors.append(f"plugin interface longDescription must advertise {token}")
             for phrase in ("directly", "next lifecycle step", "implementation review", "specification gates"):
                 if phrase not in long_description.lower():
@@ -614,11 +895,11 @@ def _validate_plugin_manifest(
             not isinstance(default_prompt, str)
             or not default_prompt.strip()
             or len(default_prompt) > 160
-            or "$use-expand" not in default_prompt
+            or not _contains_exact_skill_token(default_prompt, "$use-expskill")
             or "next lifecycle step" not in default_prompt.lower()
         ):
             errors.append(
-                "plugin interface defaultPrompt must explicitly invoke $use-expand for the next lifecycle step"
+                "plugin interface defaultPrompt must explicitly invoke $use-expskill for the next lifecycle step"
             )
         elif PUBLIC_METADATA_JARGON.search(default_prompt):
             errors.append("plugin interface defaultPrompt exposes private implementation or scaffold jargon")
@@ -662,11 +943,18 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "references/interaction.md", "references/forms.md", "references/responsive.md",
                 "references/accessibility.md", "references/motion.md", "references/data-display.md",
             })
+        if skill_root.name == "skill-builder":
+            expected_files.update({
+                *SKILL_BUILDER_REQUIRED_REFERENCES,
+                "scripts/run_state.py",
+            })
         expected_directories = {"agents"}
         if skill_root.name == "brainstorm":
             expected_directories.add("references")
         if skill_root.name == "design":
             expected_directories.add("references")
+        if skill_root.name == "skill-builder":
+            expected_directories.update({"references", "scripts"})
         actual_files = {
             path.relative_to(skill_root).as_posix()
             for path in skill_root.rglob("*")
@@ -684,6 +972,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         for path in skill_root.rglob("*"):
             if path.is_symlink():
                 errors.append(f"skill {skill_root.name!r} contains a symlink: {path}")
+        if skill_root.name == "skill-builder":
+            for relative in SKILL_BUILDER_REQUIRED_REFERENCES:
+                _required_nonempty_package_file(
+                    plugin_root,
+                    f"{relative_skill}/{relative}",
+                    f"skill 'skill-builder' required reference {relative!r}",
+                    errors,
+                )
         skill_path = _required_package_path(
             plugin_root,
             f"{relative_skill}/SKILL.md",
@@ -738,6 +1034,53 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
+    _validate_skill_builder_separation(skills_root, errors)
+
+
+def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> None:
+    builder_path = skills_root / "skill-builder" / "SKILL.md"
+    if builder_path.is_file() and not builder_path.is_symlink():
+        try:
+            builder = builder_path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"skill-builder contract could not be read: {error}")
+        else:
+            boundary = _markdown_level_two_section(builder, "Boundary")
+            if boundary != SKILL_BUILDER_BOUNDARY_SECTION:
+                errors.append(
+                    "skill-builder canonical boundary section must match the pinned contract"
+                )
+            if not _contains_exact_skill_token(builder, SKILL_BUILDER_TOKEN):
+                errors.append("skill-builder contract must identify $skill-builder directly")
+            if any(
+                _contains_exact_skill_token(builder, token)
+                for token in SKILL_BUILDER_FORBIDDEN_TOKENS
+            ):
+                errors.append(
+                    "skill-builder contains another product skill invocation token"
+                )
+            if boundary is None:
+                outside_boundary = builder
+            else:
+                boundary_start = builder.find(boundary)
+                outside_boundary = (
+                    builder[:boundary_start]
+                    + builder[boundary_start + len(boundary) :]
+                )
+            if re.search(r"\blifecycle\b", outside_boundary, re.IGNORECASE):
+                errors.append(
+                    "skill-builder contains lifecycle wording outside the canonical boundary"
+                )
+
+    router_path = skills_root / "use-expskill" / "SKILL.md"
+    if router_path.is_file() and not router_path.is_symlink():
+        try:
+            router = router_path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"use-expskill contract could not be read: {error}")
+        else:
+            if SKILL_BUILDER_NAME_PATTERN.search(router):
+                errors.append("use-expskill must not name skill-builder")
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -955,6 +1298,55 @@ def _validate_public_third_party_derivations(
             errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
 
 
+def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
+    readme_path = _required_nonempty_package_file(
+        repository_root,
+        "README.md",
+        "README",
+        errors,
+    )
+    if readme_path is None:
+        return
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"README could not be read: {error}")
+        return
+    normalized = " ".join(readme.lower().split())
+    if PUBLIC_SKILL_COUNT_TEXT not in normalized:
+        errors.append(
+            "README must describe seven independent skills and one optional lifecycle router"
+        )
+    if re.search(r"\bsix independent skills\b", normalized):
+        errors.append("README contains stale six-skill wording")
+    if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
+        errors.append("README must advertise $skill-builder")
+    readme_lines = readme.splitlines()
+    builder_mentions = tuple(
+        line for line in readme_lines if SKILL_BUILDER_NAME_PATTERN.search(line)
+    )
+    if builder_mentions != SKILL_BUILDER_README_LINES:
+        errors.append(
+            "README Skill Builder mentions must be exactly the public-list and "
+            "direct-invocation lines"
+        )
+    if SKILL_BUILDER_README_LINES[0] not in readme_lines:
+        errors.append(
+            "README must describe $skill-builder as the evidence-gated creator or improver "
+            "of one exact agent skill"
+        )
+    if SKILL_BUILDER_README_LINES[1] not in readme_lines:
+        errors.append("README must include a direct $skill-builder invocation example")
+
+
+def _validate_removed_repository_local_skill(
+    repository_root: Path, errors: list[str]
+) -> None:
+    duplicate = repository_root / ".agents" / "skills" / "improve-skill"
+    if _lstat(duplicate) is not None:
+        errors.append("repository-local skill '.agents/skills/improve-skill' must be absent")
+
+
 def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
     roots = (
         repository_root / "plugins" / PLUGIN_NAME / "skills",
@@ -975,6 +1367,36 @@ def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> Non
                 errors.append(f"skill text {relative} contains an em dash")
             if ";" in contents:
                 errors.append(f"skill text {relative} contains a semicolon")
+
+
+def _validate_no_legacy_project_identity(
+    repository_root: Path, errors: list[str]
+) -> None:
+    candidates: list[Path] = [repository_root / "README.md"]
+    for relative_root in (".agents", "docs", "plugins", "scripts", "tests"):
+        root = repository_root / relative_root
+        if root.is_dir():
+            candidates.extend(path for path in root.rglob("*") if path.is_file())
+
+    for path in sorted(set(candidates)):
+        try:
+            relative = path.relative_to(repository_root)
+        except ValueError:
+            continue
+        if path.is_symlink() or path.suffix.lower() not in PROJECT_IDENTITY_TEXT_SUFFIXES:
+            continue
+        if "third-party" in relative.parts or "__pycache__" in relative.parts:
+            continue
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        searchable = f"{relative.as_posix()}\n{contents}".casefold()
+        for marker in LEGACY_PROJECT_IDENTITIES:
+            if marker.casefold() in searchable:
+                errors.append(
+                    f"legacy project identity {marker!r} remains in {relative.as_posix()}"
+                )
 
 
 def _parse_frontmatter(
@@ -1077,12 +1499,14 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
     if isinstance(short_description, str) and not 25 <= len(short_description) <= 64:
         errors.append(f"skill {skill_root.name!r} short_description must be 25-64 characters")
     default_prompt = interface.get("default_prompt")
-    if isinstance(default_prompt, str) and f"${skill_root.name}" not in default_prompt:
+    if isinstance(default_prompt, str) and not _contains_exact_skill_token(
+        default_prompt, f"${skill_root.name}"
+    ):
         errors.append(f"skill {skill_root.name!r} default_prompt must invoke the matching skill")
     implicit = policy.get("allow_implicit_invocation")
     if not isinstance(implicit, bool):
         errors.append(f"skill {skill_root.name!r} allow_implicit_invocation must be a boolean")
-    elif implicit is not (skill_root.name == "use-expand"):
+    elif implicit is not (skill_root.name == "use-expskill"):
         errors.append(f"skill {skill_root.name!r} implicit invocation policy drift")
 
 
@@ -1251,12 +1675,12 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
             errors.append(f"agent profile {path.name!r} must not be a symlink")
             continue
         if not path.is_file():
-            if path.name.startswith("devflow-"):
+            if path.name.startswith("expskill-"):
                 errors.append(f"unexpected agent profile {path.name!r}")
             continue
         if path.suffix == ".toml" and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.stem!r}")
-        elif path.name.startswith("devflow-") and path.name not in expected_filenames:
+        elif path.name.startswith("expskill-") and path.name not in expected_filenames:
             errors.append(f"unexpected agent profile {path.name!r}")
     for expected_name in EXPECTED_AGENTS:
         path = _required_package_path(
@@ -1313,16 +1737,25 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
 
     instructions = profile.get("developer_instructions")
     if isinstance(instructions, str):
-        normalized = instructions.lower()
+        normalized = " ".join(instructions.lower().split())
         for phrase in AGENT_BOUNDARIES[expected_name]:
             if phrase not in normalized:
                 errors.append(
                     f"agent profile {expected_name!r} instructions must include {phrase!r}"
                 )
+        expected_digest = REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256.get(expected_name)
+        if expected_digest is not None:
+            canonical = _canonical_review_agent_instructions(instructions)
+            digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            if digest != expected_digest:
+                errors.append(
+                    f"agent profile {expected_name!r} instructions differ from their "
+                    "validated normalized content"
+                )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate the codex-dev-flow repository contract.")
+    parser = argparse.ArgumentParser(description="Validate the expskill repository contract.")
     parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args(argv)
     errors = validate_repository(args.root)

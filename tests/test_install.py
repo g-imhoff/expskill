@@ -15,31 +15,32 @@ from scripts.install import InstallError, install, main, uninstall
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_NAMES = (
-    "devflow-explorer",
-    "devflow-implementer",
-    "devflow-test-engineer",
-    "devflow-review",
-    "devflow-spec",
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
 )
 RETIRED_PROFILE_NAMES = (
-    "devflow-critical-reviewer",
-    "devflow-implementer-high",
-    "devflow-reviewer",
-    "devflow-verifier",
-    "devflow-verifier-low",
+    "expskill-critical-reviewer",
+    "expskill-implementer-high",
+    "expskill-reviewer",
+    "expskill-verifier",
+    "expskill-verifier-low",
 )
 SKILL_NAMES = (
-    "use-expand",
+    "use-expskill",
     "brainstorm",
     "design",
     "grill-me",
     "plan",
     "implement",
+    "skill-builder",
     "unslop",
 )
-PLUGIN_SELECTOR = "codex-dev-flow@codex-dev-flow"
+PLUGIN_SELECTOR = "expskill@expskill"
 MANIFEST_VERSION = json.loads(
-    (ROOT / "plugins" / "codex-dev-flow" / ".codex-plugin" / "plugin.json").read_text(
+    (ROOT / "plugins" / "expskill" / ".codex-plugin" / "plugin.json").read_text(
         encoding="utf-8"
     )
 )["version"]
@@ -71,8 +72,8 @@ class FakeRunner:
 
 
 def seed_repository(path: Path) -> Path:
-    source_plugin = ROOT / "plugins" / "codex-dev-flow"
-    destination_plugin = path / "plugins" / "codex-dev-flow"
+    source_plugin = ROOT / "plugins" / "expskill"
+    destination_plugin = path / "plugins" / "expskill"
     source_scripts = source_plugin / "scripts"
     source_helper = source_scripts / "worktrees.py"
     source_plan_helper = source_scripts / "plan_graph.py"
@@ -97,6 +98,7 @@ def seed_repository(path: Path) -> Path:
     # registration receives, including the centralized worktree helper.
     shutil.copytree(source_scripts, destination_plugin / "scripts")
     shutil.copytree(ROOT / "scripts", path / "scripts")
+    shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
 
 
@@ -117,7 +119,7 @@ def marketplace_list_response(
         selected_source = repository if source is None else source
         marketplaces.append(
             {
-                "name": "codex-dev-flow",
+                "name": "expskill",
                 "root": str(selected_source),
                 "marketplaceSource": {
                     "sourceType": "local",
@@ -132,7 +134,7 @@ def marketplace_add_response(repository: Path, already_added: bool = False) -> F
     return FakeResult(
         0,
         {
-            "marketplaceName": "codex-dev-flow",
+            "marketplaceName": "expskill",
             "installedRoot": str(repository),
             "alreadyAdded": already_added,
         },
@@ -143,14 +145,14 @@ def plugin_entry(repository: Path, source: Path | None = None) -> dict[str, obje
     plugin_source = repository if source is None else source
     return {
         "pluginId": PLUGIN_SELECTOR,
-        "name": "codex-dev-flow",
-        "marketplaceName": "codex-dev-flow",
+        "name": "expskill",
+        "marketplaceName": "expskill",
         "version": "0.1.0",
         "installed": True,
         "enabled": True,
         "source": {
             "source": "local",
-            "path": str(plugin_source / "plugins" / "codex-dev-flow"),
+            "path": str(plugin_source / "plugins" / "expskill"),
         },
         "marketplaceSource": {
             "sourceType": "local",
@@ -176,16 +178,16 @@ def plugin_add_response(repository: Path, version: str = MANIFEST_VERSION) -> Fa
         0,
         {
             "pluginId": PLUGIN_SELECTOR,
-            "name": "codex-dev-flow",
-            "marketplaceName": "codex-dev-flow",
+            "name": "expskill",
+            "marketplaceName": "expskill",
             "version": version,
             "installedPath": str(
                 repository
                 / "codex"
                 / "plugins"
                 / "cache"
-                / "codex-dev-flow"
-                / "codex-dev-flow"
+                / "expskill"
+                / "expskill"
                 / version
             ),
             "authPolicy": "ON_INSTALL",
@@ -219,7 +221,7 @@ def install_results(
 
 
 def receipt_path(state_home: Path) -> Path:
-    return state_home.resolve() / "codex-dev-flow" / "install.json"
+    return state_home.resolve() / "expskill" / "install.json"
 
 
 def load_receipt(state_home: Path) -> dict[str, object]:
@@ -227,12 +229,37 @@ def load_receipt(state_home: Path) -> dict[str, object]:
 
 
 class InstallerTests(unittest.TestCase):
+    def test_install_preflight_rejects_invalid_utf8_readme_without_side_effects(self) -> None:
+        """Regression: repository decoding failures stay controlled before installation."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner([])
+            (repo / "README.md").write_bytes(b"\xff\xfe")
+
+            try:
+                install(repo, codex_home, state_home, runner)
+            except InstallError as error:
+                self.assertIn("README", str(error))
+                self.assertIn("UTF-8 text", str(error))
+            except UnicodeError as error:
+                self.fail(f"install preflight leaked a decode exception: {error}")
+            else:
+                self.fail("install preflight accepted an invalid UTF-8 README")
+
+            self.assertEqual(runner.calls, [])
+            self.assertFalse(codex_home.exists())
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_seeded_plugin_package_preserves_every_real_phase_entrypoint(self) -> None:
         """Regression: installation fixtures silently omit independently callable phases."""
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            skills_root = repository / "plugins" / "codex-dev-flow" / "skills"
+            skills_root = repository / "plugins" / "expskill" / "skills"
             self.assertEqual({entry.name for entry in skills_root.iterdir()}, set(SKILL_NAMES))
             for name in SKILL_NAMES:
                 self.assertTrue((skills_root / name / "SKILL.md").is_file(), name)
@@ -243,8 +270,8 @@ class InstallerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            source = ROOT / "plugins" / "codex-dev-flow" / "scripts"
-            destination = repository / "plugins" / "codex-dev-flow" / "scripts"
+            source = ROOT / "plugins" / "expskill" / "scripts"
+            destination = repository / "plugins" / "expskill" / "scripts"
             self.assertTrue(destination.is_dir(), destination)
             source_files = {
                 path.relative_to(source).as_posix(): path.read_bytes()
@@ -269,8 +296,8 @@ class InstallerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            source = ROOT / "plugins" / "codex-dev-flow"
-            destination = repository / "plugins" / "codex-dev-flow"
+            source = ROOT / "plugins" / "expskill"
+            destination = repository / "plugins" / "expskill"
             for relative in ("hooks", "third-party"):
                 source_files = {
                     path.relative_to(source / relative).as_posix(): path.read_bytes()
@@ -293,9 +320,9 @@ class InstallerTests(unittest.TestCase):
             def source_fixture(name: str, helper_name: str) -> tuple[Path, Path]:
                 source_root = root / name / "source"
                 shutil.copytree(ROOT / ".agents", source_root / ".agents")
-                shutil.copytree(ROOT / "plugins" / "codex-dev-flow", source_root / "plugins" / "codex-dev-flow")
+                shutil.copytree(ROOT / "plugins" / "expskill", source_root / "plugins" / "expskill")
                 shutil.copytree(ROOT / "scripts", source_root / "scripts")
-                return source_root, source_root / "plugins" / "codex-dev-flow" / "scripts" / helper_name
+                return source_root, source_root / "plugins" / "expskill" / "scripts" / helper_name
 
             for helper_name in ("worktrees.py", "plan_graph.py"):
                 for mutation in ("missing", "symlink", "empty"):
@@ -350,7 +377,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "remove",
-                        "codex-dev-flow",
+                        "expskill",
                         "--json",
                     ),
                 ],
@@ -374,7 +401,7 @@ class InstallerTests(unittest.TestCase):
                 lines[-2],
                 f"codex plugin marketplace add {ROOT.resolve()} --json",
             )
-            self.assertEqual(lines[-1], "codex plugin add codex-dev-flow@codex-dev-flow --json")
+            self.assertEqual(lines[-1], "codex plugin add expskill@expskill --json")
             self.assertEqual(before, tuple(codex_home.parent.iterdir()))
 
     def test_regular_file_conflict_refuses_without_partial_links(self) -> None:
@@ -383,17 +410,17 @@ class InstallerTests(unittest.TestCase):
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            conflict = codex_home / "agents" / "devflow-review.toml"
+            conflict = codex_home / "agents" / "expskill-review.toml"
             conflict.parent.mkdir(parents=True)
             conflict.write_text("user-owned\n", encoding="utf-8")
             runner = FakeRunner([])
 
-            with self.assertRaisesRegex(InstallError, "devflow-review.toml"):
+            with self.assertRaisesRegex(InstallError, "expskill-review.toml"):
                 install(repo, codex_home, state_home, runner)
 
             self.assertEqual(
                 sorted(path.name for path in conflict.parent.iterdir()),
-                ["devflow-review.toml"],
+                ["expskill-review.toml"],
             )
             self.assertEqual(runner.calls, [])
             self.assertFalse(receipt_path(state_home).exists())
@@ -437,7 +464,7 @@ class InstallerTests(unittest.TestCase):
             )
             for name, destination in destinations.items():
                 self.assertTrue(destination.is_symlink(), name)
-                expected = repo.resolve() / "plugins" / "codex-dev-flow" / "assets" / "agents" / f"{name}.toml"
+                expected = repo.resolve() / "plugins" / "expskill" / "assets" / "agents" / f"{name}.toml"
                 self.assertEqual(destination.resolve(), expected)
 
             receipt = load_receipt(state_home)
@@ -510,7 +537,7 @@ class InstallerTests(unittest.TestCase):
                 source = (
                     repo.resolve()
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "assets"
                     / "agents"
                     / f"{name}.toml"
@@ -554,13 +581,13 @@ class InstallerTests(unittest.TestCase):
             agents.mkdir(parents=True)
             unrelated_target = root / "unrelated.toml"
             unrelated_target.write_text("unrelated\n", encoding="utf-8")
-            unrelated = agents / "devflow-explorer.toml"
+            unrelated = agents / "expskill-explorer.toml"
             unrelated.symlink_to(unrelated_target)
-            broken = agents / "devflow-spec.toml"
+            broken = agents / "expskill-spec.toml"
             broken.symlink_to(root / "does-not-exist.toml")
             runner = FakeRunner([])
 
-            with self.assertRaisesRegex(InstallError, "devflow-explorer.toml|devflow-spec.toml"):
+            with self.assertRaisesRegex(InstallError, "expskill-explorer.toml|expskill-spec.toml"):
                 install(repo, codex_home, state_home, runner)
 
             self.assertEqual(runner.calls, [])
@@ -610,7 +637,7 @@ class InstallerTests(unittest.TestCase):
                     "plugin",
                     "marketplace",
                     "remove",
-                    "codex-dev-flow",
+                    "expskill",
                     "--json",
                 ),
             )
@@ -651,7 +678,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "remove",
-                        "codex-dev-flow",
+                        "expskill",
                         "--json",
                     ),
                 ],
@@ -694,7 +721,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "remove",
-                        "codex-dev-flow",
+                        "expskill",
                         "--json",
                     ),
                 ],
@@ -725,7 +752,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "remove",
-                        "codex-dev-flow",
+                        "expskill",
                         "--json",
                     ),
                 ],
@@ -772,7 +799,7 @@ class InstallerTests(unittest.TestCase):
                     removal_response(),
                 ]
             )
-            target = codex_home / "agents" / "devflow-review.toml"
+            target = codex_home / "agents" / "expskill-review.toml"
             original_unlink = Path.unlink
 
             def fail_target(path: Path, *args: object, **kwargs: object) -> None:
@@ -800,12 +827,12 @@ class InstallerTests(unittest.TestCase):
             damaged_source = (
                 repo
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
-                / "devflow-review.toml"
+                / "expskill-review.toml"
             )
-            retargeted = codex_home / "agents" / "devflow-review.toml"
+            retargeted = codex_home / "agents" / "expskill-review.toml"
             fake_runner = FakeRunner(
                 [
                     marketplace_list_response(),
@@ -838,12 +865,12 @@ class InstallerTests(unittest.TestCase):
                 fake_runner.calls[-2:],
                 [
                     ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
-                    ("codex", "plugin", "marketplace", "remove", "codex-dev-flow", "--json"),
+                    ("codex", "plugin", "marketplace", "remove", "expskill", "--json"),
                 ],
             )
             self.assertEqual(
                 tuple(path.name for path in (codex_home / "agents").iterdir()),
-                ("devflow-review.toml",),
+                ("expskill-review.toml",),
             )
             self.assertFalse(receipt_path(state_home).exists())
 
@@ -852,8 +879,8 @@ class InstallerTests(unittest.TestCase):
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             escaped = root / "escaped-assets"
-            shutil.copytree(repo / "plugins" / "codex-dev-flow" / "assets", escaped)
-            assets = repo / "plugins" / "codex-dev-flow" / "assets"
+            shutil.copytree(repo / "plugins" / "expskill" / "assets", escaped)
+            assets = repo / "plugins" / "expskill" / "assets"
             shutil.rmtree(assets)
             assets.symlink_to(escaped, target_is_directory=True)
             codex_home = root / "codex"
@@ -870,7 +897,7 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            reviewer = repo / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-review.toml"
+            reviewer = repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
             reviewer.write_text(
                 reviewer.read_text(encoding="utf-8").replace(
                     'model = "gpt-5.6-terra"', 'model = "gpt-5.6-luna"'
@@ -900,10 +927,10 @@ class InstallerTests(unittest.TestCase):
             outside_home.mkdir()
             outside_target = outside_home / "owned.toml"
             outside_target.symlink_to(
-                repo / "plugins" / "codex-dev-flow" / "assets" / "agents" / "devflow-explorer.toml"
+                repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-explorer.toml"
             )
             state_home = root / "state"
-            receipt_directory = state_home / "codex-dev-flow"
+            receipt_directory = state_home / "expskill"
             receipt_directory.mkdir(parents=True)
             (receipt_directory / "install.json").write_text(
                 json.dumps(
@@ -914,10 +941,10 @@ class InstallerTests(unittest.TestCase):
                                 "source": str(
                                     repo.resolve()
                                     / "plugins"
-                                    / "codex-dev-flow"
+                                    / "expskill"
                                     / "assets"
                                     / "agents"
-                                    / "devflow-explorer.toml"
+                                    / "expskill-explorer.toml"
                                 ),
                                 "destination": str(outside_target),
                             }
@@ -945,13 +972,13 @@ class InstallerTests(unittest.TestCase):
             install_runner = FakeRunner(install_results(repo))
             install(repo, codex_home, state_home, install_runner)
             destinations = destination_paths(codex_home)
-            destinations["devflow-explorer"].unlink()
-            retargeted = destinations["devflow-implementer"]
+            destinations["expskill-explorer"].unlink()
+            retargeted = destinations["expskill-implementer"]
             retargeted.unlink()
             target = root / "unrelated.toml"
             target.write_text("preserved\n", encoding="utf-8")
             retargeted.symlink_to(target)
-            replaced = destinations["devflow-review"]
+            replaced = destinations["expskill-review"]
             replaced.unlink()
             replaced.write_text("user replacement\n", encoding="utf-8")
             uninstall_runner = FakeRunner(
@@ -976,7 +1003,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "remove",
-                        "codex-dev-flow",
+                        "expskill",
                         "--json",
                     ),
                 ],
@@ -986,7 +1013,7 @@ class InstallerTests(unittest.TestCase):
                 {
                     f"{name}.toml"
                     for name in PROFILE_NAMES
-                    if name not in {"devflow-explorer", "devflow-implementer", "devflow-review"}
+                    if name not in {"expskill-explorer", "expskill-implementer", "expskill-review"}
                 },
             )
             self.assertTrue(retargeted.is_symlink())
@@ -1000,7 +1027,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo, marketplace_present=True)))
-            retargeted = destination_paths(codex_home)["devflow-review"]
+            retargeted = destination_paths(codex_home)["expskill-review"]
             retargeted.unlink()
             unrelated = root / "unrelated.toml"
             unrelated.write_text("preserved\n", encoding="utf-8")
@@ -1033,7 +1060,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
-            target = destination_paths(codex_home)["devflow-review"]
+            target = destination_paths(codex_home)["expskill-review"]
             original_unlink = Path.unlink
             failed = {"value": True}
 
@@ -1117,7 +1144,7 @@ class InstallerTests(unittest.TestCase):
                     ("codex", "plugin", "list", "--json"),
                     ("codex", "plugin", "marketplace", "list", "--json"),
                     ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
-                    ("codex", "plugin", "marketplace", "remove", "codex-dev-flow", "--json"),
+                    ("codex", "plugin", "marketplace", "remove", "expskill", "--json"),
                 ],
             )
             self.assertFalse(receipt_path(state_home).exists())
@@ -1132,10 +1159,10 @@ class InstallerTests(unittest.TestCase):
             deleted_source = (
                 repo
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
-                / "devflow-review.toml"
+                / "expskill-review.toml"
             )
             deleted_source.unlink()
             runner = FakeRunner(
@@ -1168,25 +1195,25 @@ class InstallerTests(unittest.TestCase):
             damaged_source = (
                 repo
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
-                / "devflow-review.toml"
+                / "expskill-review.toml"
             )
             damaged_source.unlink()
             damaged_source.symlink_to(outside_file)
-            untouched_destination = destination_paths(codex_home)["devflow-implementer"]
+            untouched_destination = destination_paths(codex_home)["expskill-implementer"]
             untouched_source = (
                 repo
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
-                / "devflow-implementer.toml"
+                / "expskill-implementer.toml"
             )
             untouched_source.unlink()
             untouched_source.symlink_to(outside_file)
-            retargeted = destination_paths(codex_home)["devflow-review"]
+            retargeted = destination_paths(codex_home)["expskill-review"]
             retargeted.unlink()
             retargeted.symlink_to(outside_alias)
             runner = FakeRunner(
@@ -1217,7 +1244,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             runner = FakeRunner(install_results(repo) + [removal_response(), removal_response()])
-            receipt_directory = state_home / "codex-dev-flow"
+            receipt_directory = state_home / "expskill"
             temporary_paths: list[Path] = []
             original_unlink = Path.unlink
 
@@ -1239,7 +1266,7 @@ class InstallerTests(unittest.TestCase):
                 runner.calls[-2:],
                 [
                     ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
-                    ("codex", "plugin", "marketplace", "remove", "codex-dev-flow", "--json"),
+                    ("codex", "plugin", "marketplace", "remove", "expskill", "--json"),
                 ],
             )
             self.assertTrue(os.path.lexists(temporary_paths[0]))
@@ -1282,7 +1309,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "remove",
-                        "codex-dev-flow",
+                        "expskill",
                         "--json",
                     ),
                 ],
@@ -1295,7 +1322,7 @@ class InstallerTests(unittest.TestCase):
             codex_home = root / "codex"
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
-            target = destination_paths(codex_home)["devflow-review"]
+            target = destination_paths(codex_home)["expskill-review"]
             original_unlink = Path.unlink
             failed = {"value": True}
 

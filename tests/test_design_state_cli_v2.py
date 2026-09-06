@@ -13,7 +13,7 @@ from tests.design_state_test_support import passing_technical
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "plugins" / "codex-dev-flow" / "scripts" / "design_state.py"
+CLI = ROOT / "plugins" / "expskill" / "scripts" / "design_state.py"
 DIGEST = "a" * 64
 BASE_RECEIPT_KEYS = {"schema_version", "operation", "workflow_id", "revision", "lifecycle", "identity", "state_digest"}
 DELIVERY_RECEIPT_KEYS = BASE_RECEIPT_KEYS | {"candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest"}
@@ -149,7 +149,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             receipt = self._receipt(result, "initialize")
             self.assertRegex(receipt["workflow_id"], r"^[0-9a-f]{32}$")
-            self.assertTrue((xdg / "codex-dev-flow" / "design").is_dir())
+            self.assertTrue((xdg / "expskill" / "design").is_dir())
             unknown = dict(payload)
             unknown["unexpected"] = True
             before_state = self._state_snapshot(xdg)
@@ -208,7 +208,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": receipt["revision"], "updates": {"scope": {"components": ["CheckoutForm"]}}}, env)
             self.assertEqual(applied.returncode, 0, applied.stderr)
             applied_receipt = self._receipt(applied, "apply")
-            current = Path(env["XDG_STATE_HOME"]) / "codex-dev-flow" / "design" / workflow
+            current = Path(env["XDG_STATE_HOME"]) / "expskill" / "design" / workflow
             current.write_text("{torn", encoding="utf-8")
             recovered = self._run("recover", {"workflow_id": workflow}, env)
             self.assertEqual(recovered.returncode, 0, recovered.stderr)

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Use ExpSkill"
+  short_description: "Classify a request for its next phase"
+  default_prompt: "Use $use-expskill to classify this request."
+
+policy:
+  allow_implicit_invocation: true

@@ -124,7 +124,7 @@
       {"event": "evidence_sieved", "card_count": 6},
       {"event": "designs_challenged", "alternative_count": 2},
       {"event": "contract_written", "contract_digest": "create-contract-v1"},
-      {"event": "user_confirmed", "contract_digest": "create-contract-v1", "target_identity": "fixture-release-notes", "accepted": true, "user_identity": "fixture-user-v1", "user_role": "user", "authority_source": "explicit-user-event", "confirmation_timestamp": "2026-01-01T00:00:10Z", "confirmation_event_digest": "170dc22c66b4ebac484b3b725c51fe9af6140fe49179db4cc7fc27477201b678", "contract_artifact_id": "skill-contract-v1"},
+      {"event": "user_confirmed", "contract_digest": "create-contract-v1", "target_identity": "fixture-release-notes", "accepted": true, "user_identity": "fixture-user-v1", "user_role": "user", "authority_source": "explicit-user-event", "authority_control_path": "controls/trusted-user-authority.json", "authority_control_digest": "29d72e2c24110fdcbb676671a21746e16f427c8bc2da6d4edbb9054efe194f43", "confirmation_timestamp": "2026-01-01T00:00:10Z", "confirmation_event_digest": "887e079ebe827c93f7d1c1cc6db7ca8cc402552dd0e0d31126a2bf1e1649fc56", "contract_artifact_id": "skill-contract-v1"},
       {
         "event": "evaluation_frozen",
         "evaluation_digest": "create-evaluation-v1",
@@ -174,7 +174,7 @@
       {"event": "evidence_sieved", "card_count": 6},
       {"event": "designs_challenged", "alternative_count": 2},
       {"event": "contract_written", "contract_digest": "improve-contract-v1"},
-      {"event": "user_confirmed", "contract_digest": "improve-contract-v1", "target_identity": "fixture-terse-summary", "accepted": true, "user_identity": "fixture-user-v1", "user_role": "user", "authority_source": "explicit-user-event", "confirmation_timestamp": "2026-01-01T00:00:10Z", "confirmation_event_digest": "c002a5d184a2ba5293afb3c3c1f6c205b919ba7623066920f1c5362a3a8bfc2f", "contract_artifact_id": "skill-contract-v1"},
+      {"event": "user_confirmed", "contract_digest": "improve-contract-v1", "target_identity": "fixture-terse-summary", "accepted": true, "user_identity": "fixture-user-v1", "user_role": "user", "authority_source": "explicit-user-event", "authority_control_path": "controls/trusted-user-authority.json", "authority_control_digest": "29d72e2c24110fdcbb676671a21746e16f427c8bc2da6d4edbb9054efe194f43", "confirmation_timestamp": "2026-01-01T00:00:10Z", "confirmation_event_digest": "2b9f2f9532f0cd52a865e4cf3476db39ca93706a5bde17f13b79563d1a305712", "contract_artifact_id": "skill-contract-v1"},
       {
         "event": "evaluation_frozen",
         "evaluation_digest": "improve-evaluation-v1",
