@@ -188,7 +188,7 @@ EVENT_REQUIRED_FIELDS = {
         }
     ),
     "goal_changed": frozenset({"invalidated"}),
-    "write": frozenset({"destination_scope", "effect", "actor"}),
+    "write": frozenset({"destination_scope", "effect", "actor", "path"}),
     "delivery_attempt": frozenset({"destination_scope", "effect", "actor"}),
     "context_read": frozenset(
         {"path", "actor_role", "source_role", "actor"}
@@ -198,7 +198,15 @@ EVENT_REQUIRED_FIELDS = {
         {"finding_ids", "prior_revision", "candidate_revision"}
     ),
     "category_scored": frozenset({"category", "score", "criteria"}),
-    "candidate_edit": frozenset({"candidate_revision"}),
+    "candidate_edit": frozenset(
+        {
+            "candidate_revision",
+            "write_scope",
+            "isolated_locator",
+            "owned_paths",
+            "path",
+        }
+    ),
     "user_confirmed": frozenset({"contract_digest"}),
     "evaluation_frozen": frozenset(
         {
@@ -390,6 +398,19 @@ MANIFEST_FILE_FIELDS = frozenset(
         "retention_class",
     }
 )
+MANIFEST_HEADER_FIELDS = frozenset(
+    {
+        "schema_version",
+        "workflow_id",
+        "target_identity",
+        "collection_type",
+        "declared_item_count",
+        "observed_item_count",
+        "observed_byte_count",
+        "files",
+        "overflow",
+    }
+)
 CANDIDATE_FILE_FIELDS = frozenset(
     {"path", "media_kind", "byte_count", "digest"}
 )
@@ -408,10 +429,27 @@ EVALUATION_CASE_FIELDS = frozenset(
     {
         "id",
         "partition",
+        "scenario_id",
+        "purpose",
         "raw_request_digest",
+        "allowed_context",
+        "setup_manifest",
         "observable_assertions",
         "forbidden_effects",
+        "evidence_requirements",
         "pass_rule",
+    }
+)
+CASE_SETUP_MANIFEST_FIELDS = frozenset({"path", "digest"})
+CASE_EVIDENCE_REQUIREMENT_FIELDS = frozenset(
+    {
+        "criterion_id",
+        "frozen_parameter_id",
+        "contract_digest",
+        "rubric_artifact_id",
+        "rubric_digest",
+        "scenario_manifest_digest",
+        "required_artifact_types",
     }
 )
 MEDIA_KIND_RE = re.compile(
@@ -434,6 +472,127 @@ def load_scenarios(partition: str) -> dict[str, dict[str, Any]]:
         (BUILDER_FIXTURES / partition / "scenarios.json").read_text(encoding="utf-8")
     )
     return {scenario["id"]: scenario for scenario in payload["scenarios"]}
+
+
+def fixture_case_sources(
+    fixture_root: Path,
+) -> dict[str, list[dict[str, Any]]]:
+    """Load the retained normative scenario and setup bytes for frozen cases."""
+
+    sources: dict[str, list[dict[str, Any]]] = {}
+    try:
+        for partition in ("visible", "frozen-validation", "hidden-release"):
+            scenario_path = fixture_root / partition / "scenarios.json"
+            scenario_bytes = scenario_path.read_bytes()
+            payload = json.loads(scenario_bytes.decode("utf-8"))
+            trial_contract = payload["trial_input_contract"]
+            allowed_context = trial_contract["allowed"]
+            forbidden_effects = trial_contract["forbidden"]
+            default_manifest = trial_contract["default_target_manifest"]
+            if (
+                payload.get("partition") != partition
+                or not unique_nonempty_strings(allowed_context)
+                or not unique_nonempty_strings(forbidden_effects)
+                or not isinstance(default_manifest, str)
+            ):
+                return {}
+            partition_sources: list[dict[str, Any]] = []
+            for scenario in payload["scenarios"]:
+                setup_path = scenario.get("target_manifest", default_manifest)
+                normalized_setup = normalized_run_relative_path(setup_path)
+                if normalized_setup is None:
+                    return {}
+                setup_bytes = (fixture_root / normalized_setup).read_bytes()
+                if not isinstance(scenario.get("request"), str):
+                    return {}
+                partition_sources.append(
+                    {
+                        "scenario_id": scenario["id"],
+                        "purpose": scenario["regression"],
+                        "request": scenario["request"],
+                        "allowed_context": copy.deepcopy(allowed_context),
+                        "forbidden_effects": [
+                            "production-write",
+                            *copy.deepcopy(forbidden_effects),
+                        ],
+                        "setup_manifest": {
+                            "path": normalized_setup,
+                            "digest": hashlib.sha256(setup_bytes).hexdigest(),
+                        },
+                        "scenario_manifest_digest": hashlib.sha256(
+                            scenario_bytes
+                        ).hexdigest(),
+                    }
+                )
+            if not partition_sources:
+                return {}
+            sources[partition] = partition_sources
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+        return {}
+    return sources
+
+
+def expected_evaluation_cases(
+    fixture_root: Path,
+    criterion_ids: list[str],
+    contract_digest: str,
+    rubric_artifact_id: str,
+    rubric_digest: str,
+) -> list[dict[str, Any]]:
+    """Derive exact case contracts from retained scenario and setup bytes."""
+
+    sources = fixture_case_sources(fixture_root)
+    positions = {partition: 0 for partition in sources}
+    cases: list[dict[str, Any]] = []
+    partitions = ("visible", "frozen-validation", "hidden-release")
+    if set(positions) != set(partitions):
+        return []
+    for index, criterion_id in enumerate(criterion_ids):
+        partition = partitions[index % len(partitions)]
+        partition_sources = sources[partition]
+        source = partition_sources[positions[partition] % len(partition_sources)]
+        positions[partition] += 1
+        parameter_id = f"parameter-{criterion_id}"
+        purpose = source["purpose"]
+        cases.append(
+            {
+                "id": f"case-{criterion_id.lower()}",
+                "partition": partition,
+                "scenario_id": source["scenario_id"],
+                "purpose": purpose,
+                "raw_request_digest": hashlib.sha256(
+                    source["request"].encode("utf-8")
+                ).hexdigest(),
+                "allowed_context": copy.deepcopy(source["allowed_context"]),
+                "setup_manifest": copy.deepcopy(source["setup_manifest"]),
+                "observable_assertions": [
+                    purpose,
+                    f"{criterion_id} satisfies {parameter_id}",
+                ],
+                "forbidden_effects": copy.deepcopy(
+                    source["forbidden_effects"]
+                ),
+                "evidence_requirements": {
+                    "criterion_id": criterion_id,
+                    "frozen_parameter_id": parameter_id,
+                    "contract_digest": contract_digest,
+                    "rubric_artifact_id": rubric_artifact_id,
+                    "rubric_digest": rubric_digest,
+                    "scenario_manifest_digest": source[
+                        "scenario_manifest_digest"
+                    ],
+                    "required_artifact_types": [
+                        "raw-trial-evidence",
+                        "trial-receipt",
+                    ],
+                },
+                "pass_rule": (
+                    f"Pass {criterion_id} only if {purpose}; all observable "
+                    "assertions pass and no forbidden effect occurs."
+                ),
+            }
+        )
+    return cases
 
 
 def parse_frontmatter(contents: str) -> dict[str, str]:
@@ -562,11 +721,106 @@ def normalized_run_relative_path(value: object) -> str | None:
     path = PurePosixPath(value)
     if (
         path.is_absolute()
+        or not path.parts
         or any(part in {"", ".", ".."} for part in path.parts)
         or path.as_posix() != value
     ):
         return None
     return value
+
+
+def trusted_candidate_locator(
+    workflow_id: object, candidate_revision: object
+) -> str | None:
+    if (
+        not isinstance(workflow_id, str)
+        or WORKFLOW_ID_RE.fullmatch(workflow_id) is None
+        or not isinstance(candidate_revision, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", candidate_revision)
+        is None
+    ):
+        return None
+    return f"isolated-candidates/{workflow_id}/{candidate_revision}"
+
+
+def path_is_within_candidate_locator(path: object, locator: object) -> bool:
+    normalized_path = normalized_run_relative_path(path)
+    normalized_locator = normalized_run_relative_path(locator)
+    if normalized_path is None or normalized_locator is None:
+        return False
+    candidate_path = PurePosixPath(normalized_path)
+    candidate_locator = PurePosixPath(normalized_locator)
+    return candidate_path != candidate_locator and candidate_locator in candidate_path.parents
+
+
+def candidate_owned_path(workflow_id: str, candidate_revision: str) -> str:
+    locator = trusted_candidate_locator(workflow_id, candidate_revision)
+    if locator is None:
+        raise ValueError("candidate identity cannot form an isolated locator")
+    return f"{locator}/SKILL.md"
+
+
+def candidate_path_contract_is_valid(record: dict[str, Any]) -> bool:
+    revision = record.get("candidate_revision")
+    locator = record.get("isolated_locator")
+    owned_paths = record.get("owned_paths")
+    expected_locator = trusted_candidate_locator(
+        record.get("workflow_id"), revision
+    )
+    return (
+        isinstance(revision, str)
+        and bool(revision)
+        and record.get("write_scope") == "isolated-candidate"
+        and locator == expected_locator
+        and unique_nonempty_strings(owned_paths)
+        and all(
+            path_is_within_candidate_locator(path, locator)
+            for path in owned_paths
+        )
+        and record.get("path") in owned_paths
+    )
+
+
+def bind_fixture_candidate_paths(
+    events: list[dict[str, Any]], workflow_id: str
+) -> None:
+    """Populate trusted isolated path contracts in generated fixture events."""
+
+    owned_by_revision: dict[str, str] = {}
+    for event in events:
+        revision = event.get("candidate_revision")
+        if event.get("event") == "candidate_edit" and isinstance(revision, str):
+            locator = trusted_candidate_locator(workflow_id, revision)
+            if locator is None:
+                continue
+            owned_path = candidate_owned_path(workflow_id, revision)
+            owned_by_revision[revision] = owned_path
+            source_event = event.get("fixture_source_event")
+            declared_source_fields = (
+                set(source_event) if isinstance(source_event, dict) else set()
+            )
+            expected_fields = {
+                "write_scope": "isolated-candidate",
+                "isolated_locator": locator,
+                "owned_paths": [owned_path],
+                "path": owned_path,
+            }
+            for field, value in expected_fields.items():
+                if field not in declared_source_fields:
+                    event[field] = value
+        elif (
+            event.get("artifact_type") == "candidate-manifest"
+            and isinstance(revision, str)
+            and revision in owned_by_revision
+            and isinstance(event.get("files"), list)
+            and len(event["files"]) == 1
+            and isinstance(event["files"][0], dict)
+        ):
+            event["files"][0]["path"] = owned_by_revision[revision]
+        elif event.get("event") == "write" and owned_by_revision:
+            source_event = event.get("fixture_source_event")
+            if not isinstance(source_event, dict) or "path" not in source_event:
+                event["path"] = next(reversed(owned_by_revision.values()))
 
 
 def media_kind_is_valid(value: object) -> bool:
@@ -586,18 +840,43 @@ def candidate_file_is_valid(entry: object) -> bool:
 
 
 def evaluation_case_is_valid(case: object) -> bool:
+    if not isinstance(case, dict) or set(case) != EVALUATION_CASE_FIELDS:
+        return False
+    setup_manifest = case.get("setup_manifest")
+    requirements = case.get("evidence_requirements")
     return (
-        isinstance(case, dict)
-        and set(case) == EVALUATION_CASE_FIELDS
-        and isinstance(case.get("id"), str)
+        isinstance(case.get("id"), str)
         and bool(case["id"])
         and case.get("partition")
         in {"visible", "frozen-validation", "hidden-release"}
+        and isinstance(case.get("scenario_id"), str)
+        and bool(case["scenario_id"])
+        and isinstance(case.get("purpose"), str)
+        and bool(case["purpose"])
         and digest_is_valid(case.get("raw_request_digest"))
+        and unique_nonempty_strings(case.get("allowed_context"))
+        and isinstance(setup_manifest, dict)
+        and set(setup_manifest) == CASE_SETUP_MANIFEST_FIELDS
+        and normalized_run_relative_path(setup_manifest.get("path")) is not None
+        and digest_is_valid(setup_manifest.get("digest"))
         and unique_nonempty_strings(case.get("observable_assertions"))
         and bool(case["observable_assertions"])
         and unique_nonempty_strings(case.get("forbidden_effects"))
         and bool(case["forbidden_effects"])
+        and isinstance(requirements, dict)
+        and set(requirements) == CASE_EVIDENCE_REQUIREMENT_FIELDS
+        and isinstance(requirements.get("criterion_id"), str)
+        and bool(requirements["criterion_id"])
+        and isinstance(requirements.get("frozen_parameter_id"), str)
+        and bool(requirements["frozen_parameter_id"])
+        and digest_is_valid(requirements.get("contract_digest"))
+        and isinstance(requirements.get("rubric_artifact_id"), str)
+        and bool(requirements["rubric_artifact_id"])
+        and digest_is_valid(requirements.get("rubric_digest"))
+        and digest_is_valid(requirements.get("scenario_manifest_digest"))
+        and unique_nonempty_strings(
+            requirements.get("required_artifact_types")
+        )
         and isinstance(case.get("pass_rule"), str)
         and bool(case["pass_rule"])
     )
@@ -743,7 +1022,8 @@ def manifest_header_is_valid(
     record: dict[str, Any], files: object
 ) -> bool:
     return (
-        isinstance(files, list)
+        MANIFEST_HEADER_FIELDS.issubset(record)
+        and isinstance(files, list)
         and all(
             isinstance(entry, dict)
             and type(entry.get("byte_count")) is int
@@ -895,6 +1175,16 @@ def seal_trace(
     mode: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build immutable envelopes and a canonical transition chain for a trace."""
+
+    try:
+        canonical_bytes(trace)
+    except (TypeError, UnicodeError, ValueError):
+        return [
+            {
+                "event": None,
+                "construction_error": "invalid-durable-input",
+            }
+        ]
 
     events = [
         _normalize_digest_claims(copy.deepcopy(event))
@@ -1162,6 +1452,16 @@ def reseal_declared_trace(
     trace: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Reseal an existing trace without regenerating declared manifest entries."""
+
+    try:
+        canonical_bytes(trace)
+    except (TypeError, UnicodeError, ValueError):
+        return [
+            {
+                "event": None,
+                "construction_error": "invalid-durable-input",
+            }
+        ]
 
     events = copy.deepcopy(trace)
     prior_receipt_digest: str | None = None
@@ -1492,6 +1792,7 @@ def merge_accepted_fixture_events(
                     "actor": canonical.get(
                         "actor_identity", "candidate-implementer-v1"
                     ),
+                    "path": canonical.get("path"),
                     "fixture_source_event": copy.deepcopy(raw_event),
                 },
             )
@@ -1607,10 +1908,28 @@ def build_fixture_trace(
                 event["contract_digest"] = raw_contract
             if "evaluation_digest" in event:
                 event["evaluation_digest"] = raw_evaluation
+        rubric = next(
+            event
+            for event in candidate_path
+            if event.get("artifact_type") == "rubric"
+        )
+        evaluation = next(
+            event
+            for event in candidate_path
+            if event.get("event") == "evaluation_frozen"
+        )
+        evaluation["cases"] = expected_evaluation_cases(
+            BUILDER_FIXTURES,
+            sorted(CRITERION_CATEGORY),
+            digest_value(raw_contract),
+            rubric["artifact_id"],
+            digest_value(rubric["rubric_digest"]),
+        )
         candidate_path[0]["target_manifest"] = fixture_manifest
         candidate_path[0]["selected_mode"] = fixture_mode
         if "requested_mode" in raw_resolution:
             candidate_path[0]["requested_mode"] = raw_resolution["requested_mode"]
+        bind_fixture_candidate_paths(candidate_path, fixture_workflow)
         return seal_trace(
             candidate_path,
             workflow_id=fixture_workflow,
@@ -1635,6 +1954,7 @@ def build_fixture_trace(
         "release_evidence_retained": "release-record",
     }
     latest: dict[str, str] = {}
+    current_owned_path: str | None = None
 
     def latest_ids(*types: str) -> list[str]:
         return [latest[item] for item in types if item in latest]
@@ -1650,6 +1970,8 @@ def build_fixture_trace(
                     else "production-target-write"
                 ),
             )
+            if current_owned_path is not None:
+                event.setdefault("path", current_owned_path)
         artifact_type = event.get("artifact_type") or type_by_event.get(event_name)
         if artifact_type is not None:
             event["artifact_type"] = artifact_type
@@ -1715,9 +2037,22 @@ def build_fixture_trace(
                     latest_ids("skill-contract", "user-confirmation-record"),
                 )
             elif event_name == "candidate_edit":
-                event.setdefault("revision", event.get("candidate_revision"))
+                candidate_revision = event.get("candidate_revision")
+                event.setdefault("revision", candidate_revision)
                 event.setdefault("actor_identity", "candidate-implementer-v1")
                 event.setdefault("actor_role", "candidate-implementer")
+                if isinstance(candidate_revision, str):
+                    locator = trusted_candidate_locator(
+                        fixture_workflow, candidate_revision
+                    )
+                    if locator is not None:
+                        current_owned_path = candidate_owned_path(
+                            fixture_workflow, candidate_revision
+                        )
+                        event.setdefault("write_scope", "isolated-candidate")
+                        event.setdefault("isolated_locator", locator)
+                        event.setdefault("owned_paths", [current_owned_path])
+                        event.setdefault("path", current_owned_path)
                 event.setdefault(
                     "input_artifact_ids",
                     latest_ids(
@@ -1905,6 +2240,7 @@ def validate_schema_boundary(
                 and bool(event["effect"])
                 and isinstance(event.get("actor"), str)
                 and bool(event["actor"])
+                and normalized_run_relative_path(event.get("path")) is not None
             )
         elif event_name == "delivery_attempt":
             shape_valid = (
@@ -1969,7 +2305,7 @@ def validate_schema_boundary(
                 )
             )
         elif event_name == "candidate_edit":
-            shape_valid = isinstance(event.get("candidate_revision"), str)
+            shape_valid = candidate_path_contract_is_valid(event)
         elif event_name == "user_confirmed":
             shape_valid = isinstance(event.get("contract_digest"), str)
         elif event_name == "review_recorded":
@@ -2312,6 +2648,10 @@ def accepted_finalization_trace(
     release_id = f"release-record-v1{artifact_suffix}"
     terminal_manifest_id = f"terminal-manifest-v1{artifact_suffix}"
     target_snapshot = "fixture-improve-snapshot-v1"
+    isolated_locator = trusted_candidate_locator(workflow_id, revision)
+    if isolated_locator is None:
+        raise ValueError("accepted candidate lacked a trusted isolated locator")
+    owned_candidate_path = candidate_owned_path(workflow_id, revision)
     base_binding = {
         "workflow_id": workflow_id,
         "target_identity": target_identity,
@@ -2335,23 +2675,13 @@ def accepted_finalization_trace(
     all_case_ids = [
         f"case-{criterion_id.lower()}" for criterion_id in sorted(CRITERION_CATEGORY)
     ]
-    evaluation_cases = [
-        {
-            "id": case_id,
-            "partition": (
-                "visible"
-                if index % 3 == 0
-                else "frozen-validation"
-                if index % 3 == 1
-                else "hidden-release"
-            ),
-            "raw_request_digest": digest_value({"request": case_id}),
-            "observable_assertions": [f"assert-{case_id}"],
-            "forbidden_effects": ["production-write"],
-            "pass_rule": "all assertions pass and no forbidden effect occurs",
-        }
-        for index, case_id in enumerate(all_case_ids)
-    ]
+    evaluation_cases = expected_evaluation_cases(
+        BUILDER_FIXTURES,
+        sorted(CRITERION_CATEGORY),
+        digest_value("contract-v1"),
+        rubric_id,
+        digest_value("target-rubric-v1"),
+    )
     evaluation_cases_by_id = {
         case["id"]: case for case in evaluation_cases
     }
@@ -2682,6 +3012,10 @@ def accepted_finalization_trace(
             "revision": revision,
             "actor_identity": "candidate-implementer-v1",
             "actor_role": "candidate-implementer",
+            "write_scope": "isolated-candidate",
+            "isolated_locator": isolated_locator,
+            "owned_paths": [owned_candidate_path],
+            "path": owned_candidate_path,
             "artifact_id": candidate_id,
             "artifact_type": "candidate-record",
             "input_artifact_ids": [
@@ -2710,7 +3044,7 @@ def accepted_finalization_trace(
             "candidate_revision": revision,
             "files": [
                 {
-                    "path": "candidate/SKILL.md",
+                    "path": owned_candidate_path,
                     "media_kind": "text/markdown",
                     "byte_count": 128,
                     "digest": f"candidate-content-{revision}",
@@ -3223,9 +3557,9 @@ def accepted_repair_trace(
             **binding,
         },
     ]
-    return seal_trace(
-        [*prefix, *repair_epoch, *suffix], workflow_id=workflow_id
-    )
+    repaired_events = [*prefix, *repair_epoch, *suffix]
+    bind_fixture_candidate_paths(repaired_events, workflow_id)
+    return seal_trace(repaired_events, workflow_id=workflow_id)
 
 
 def finalization_trace_after_aba(
@@ -3437,9 +3771,11 @@ def evaluate_trace(
     material_findings: dict[str, tuple[set[str], Any, int]] = {}
     verification: dict[str, Any] | None = None
     pause_record: dict[str, Any] | None = None
+    run_lifecycle_state = "active"
     identity_ambiguous = False
     current_workflow_id: str | None = None
     current_target_identity: str | None = None
+    current_mode: str | None = None
     current_candidate_revision: str | None = None
     current_candidate_implementer: str | None = None
     current_candidate_implementer_role: str | None = None
@@ -3470,6 +3806,8 @@ def evaluate_trace(
     ambiguous_artifact_ids: set[str] = set()
     seen_review_ids: set[str] = set()
     ambiguous_review_ids: set[str] = set()
+    category_evidence_ids_by_criterion: dict[str, list[str]] = {}
+    ambiguous_category_evidence_criterion_ids: set[str] = set()
     actor_roles: dict[str, set[str]] = {}
     artifact_generations: dict[str, tuple[int, int, int, int, int]] = {}
     invalidated_artifact_ids: set[str] = set()
@@ -3521,6 +3859,7 @@ def evaluate_trace(
         return (
             record.get("workflow_id") == current_workflow_id
             and record.get("target_identity") == current_target_identity
+            and record.get("mode") == current_mode
             and record.get("target_snapshot") == current_snapshot
             and record.get("identity_generation") == identity_generation
             and record.get("snapshot_generation") == snapshot_generation
@@ -3964,19 +4303,14 @@ def evaluate_trace(
             and review_findings_schema_is_valid(review)
         )
 
-    def category_evidence_resolves(
-        evidence_ids: object,
+    def category_evidence_record_is_valid(
+        record: dict[str, Any],
         binding: tuple[Any, Any, Any, Any, Any],
         category: str,
         criterion_id: str,
-        consumer: dict[str, Any],
         *,
         current_epoch: bool = False,
     ) -> bool:
-        records = resolved_artifacts(evidence_ids, consumer)
-        if records is None or len(records) != 1:
-            return False
-        record = records[0]
         raw_ids = record.get("raw_artifact_ids")
         receipt_ids = record.get("trial_receipt_ids")
         raw_records = resolved_artifacts(raw_ids, record)
@@ -4026,7 +4360,8 @@ def evaluate_trace(
             finding.get("id")
             for finding in (scoring_review or {}).get("findings", [])
             if isinstance(finding, dict)
-            and criterion_id in finding.get("affected_criteria", [])
+            and isinstance(finding.get("affected_criteria"), list)
+            and criterion_id in finding["affected_criteria"]
         }
         required_input_ids = {
             artifact_id
@@ -4042,6 +4377,7 @@ def evaluate_trace(
             record.get("artifact_type") == "category-evidence"
             and record.get("category") == category
             and record.get("criterion_id") == criterion_id
+            and CRITERION_CATEGORY.get(criterion_id) == category
             and record.get("frozen_parameter_id")
             == f"parameter-{criterion_id}"
             and record.get("case_id") == f"case-{criterion_id.lower()}"
@@ -4063,10 +4399,16 @@ def evaluate_trace(
             and evidence_types_resolve(
                 receipt_ids, frozenset({"trial-receipt"}), record
             )
-            and isinstance(record.get("review_finding_ids"), list)
+            and unique_nonempty_strings(record.get("review_finding_ids"))
             and set(record["review_finding_ids"])
             == related_review_finding_ids
             and record.get("review_id") == (scoring_review or {}).get("review_id")
+            and isinstance(review_artifact_id, str)
+            and artifact_is_current(review_artifact_id)
+            and scoring_review is not None
+            and record_lifecycle_validity.get(id(scoring_review), False)
+            and isinstance(evaluation_artifact_id, str)
+            and artifact_is_current(evaluation_artifact_id)
             and exact_evidence_resolves(
                 record.get("input_artifact_ids"), required_input_ids, record
             )
@@ -4074,6 +4416,28 @@ def evaluate_trace(
             and (
                 not current_epoch
                 or record_postdates_candidate(record)
+            )
+        )
+
+    def category_evidence_resolves(
+        evidence_ids: object,
+        binding: tuple[Any, Any, Any, Any, Any],
+        category: str,
+        criterion_id: str,
+        consumer: dict[str, Any],
+        *,
+        current_epoch: bool = False,
+    ) -> bool:
+        records = resolved_artifacts(evidence_ids, consumer)
+        return (
+            records is not None
+            and len(records) == 1
+            and category_evidence_record_is_valid(
+                records[0],
+                binding,
+                category,
+                criterion_id,
+                current_epoch=current_epoch,
             )
         )
 
@@ -4095,6 +4459,8 @@ def evaluate_trace(
             for artifact_id, artifact in retained_artifacts.items()
             if artifact.get("artifact_type") in CANDIDATE_BOUND_ARTIFACT_TYPES
         )
+        category_evidence_ids_by_criterion.clear()
+        ambiguous_category_evidence_criterion_ids.clear()
         category_scores.clear()
         conformance_record = None
         scoring_review = None
@@ -4429,6 +4795,32 @@ def evaluate_trace(
             record.get("input_artifact_ids"), claimed_ids, record
         )
 
+    inactive_forbidden_events = {
+        "artifact_retained",
+        "baseline_captured",
+        "builder_conformance_recorded",
+        "candidate_edit",
+        "category_scored",
+        "contract_changed",
+        "contract_written",
+        "delivery_attempt",
+        "designs_challenged",
+        "evaluation_frozen",
+        "evidence_sieved",
+        "finalized",
+        "goal_changed",
+        "release_evidence_retained",
+        "repair_completed",
+        "research_pack",
+        "review_recorded",
+        "spec_outcome_recorded",
+        "target_scorecard_recorded",
+        "target_snapshot_changed",
+        "user_confirmed",
+        "verification_recorded",
+        "write",
+    }
+
     for index, event in enumerate(trace):
         if index not in dispatchable_event_indices:
             continue
@@ -4527,6 +4919,18 @@ def evaluate_trace(
                 )
             )
             continue
+        if (
+            run_lifecycle_state != "active"
+            and event_name in inactive_forbidden_events
+        ):
+            failures.append(
+                OracleFailure(
+                    "INACTIVE_RUN_EFFECT",
+                    index,
+                    f"{event_name!r} occurred while the run was {run_lifecycle_state}",
+                )
+            )
+            continue
         if event_name == "actor_role_recorded":
             register_actor(event.get("actor_identity"), event.get("actor_role"))
         elif event_name == "resolve":
@@ -4575,6 +4979,32 @@ def evaluate_trace(
             new_target_identity = manifest.get("canonical_target") or event.get(
                 "target_identity"
             )
+            identity_ambiguous = manifest.get("identity_ambiguous", False)
+            expected_mode = (
+                None
+                if identity_ambiguous
+                else (
+                    "improve"
+                    if manifest.get("exact_target_exists")
+                    else "create"
+                )
+            )
+            expected_snapshot = digest_value(manifest["snapshot_digest"])
+            manifest_binding_valid = (
+                event.get("target_snapshot") == expected_snapshot
+                and (
+                    identity_ambiguous
+                    and event.get("selected_mode") == "unresolved"
+                    or not identity_ambiguous
+                    and event.get("selected_mode") == expected_mode
+                    and event.get("mode") == expected_mode
+                )
+                and (
+                    manifest.get("canonical_target") is None
+                    or event.get("target_identity")
+                    == manifest.get("canonical_target")
+                )
+            )
             if identity_resolution_seen:
                 identity_generation += 1
                 snapshot_generation += 1
@@ -4584,6 +5014,9 @@ def evaluate_trace(
                 snapshot_generation = 1
             current_workflow_id = new_workflow_id
             current_target_identity = new_target_identity
+            current_mode = (
+                event.get("mode") if identity_ambiguous else expected_mode
+            )
             identity_resolution_seen = True
             if (
                 event.get("target_identity") is not None
@@ -4596,7 +5029,6 @@ def evaluate_trace(
                         "resolved target identity disagreed with the exact target manifest",
                     )
                 )
-            identity_ambiguous = manifest.get("identity_ambiguous", False)
             if event["selected_mode"] == "create" and manifest.get(
                 "exact_target_exists"
             ):
@@ -4613,6 +5045,7 @@ def evaluate_trace(
             resolution_record = event
             record_schema_validity[id(event)] = (
                 artifact_envelope_is_valid(event, "resolution-record")
+                and manifest_binding_valid
                 and event.get("input_artifact_ids") == []
                 and event.get("actor_role") == "main-agent"
                 and event.get("target_identity") == current_target_identity
@@ -4626,6 +5059,8 @@ def evaluate_trace(
                         "resolution did not retain the required typed identity record",
                     )
                 )
+            else:
+                run_lifecycle_state = "active"
         elif event_name == "target_activated":
             if active_target is not None:
                 failures.append(
@@ -4668,7 +5103,21 @@ def evaluate_trace(
             snapshot_generation += 1
             invalidate_identity_or_snapshot_chain()
         elif event_name == "paused":
-            pause_record = event
+            pause_valid = (
+                run_lifecycle_state == "active"
+                and event.get("state_validated") is True
+            )
+            if pause_valid:
+                pause_record = event
+                run_lifecycle_state = "paused"
+            else:
+                failures.append(
+                    OracleFailure(
+                        "INVALID_PAUSE_STATE",
+                        index,
+                        "pause did not bind a validated active run state",
+                    )
+                )
         elif event_name == "resumed":
             revalidation_fields = (
                 "chain_revalidated",
@@ -4676,12 +5125,18 @@ def evaluate_trace(
                 "snapshot_revalidated",
                 "evidence_revalidated",
             )
-            if (
-                pause_record is None
-                or not pause_record["state_validated"]
-                or pause_record["target_identity"] != event["target_identity"]
-                or not all(event[field] for field in revalidation_fields)
-            ):
+            resume_valid = (
+                run_lifecycle_state == "paused"
+                and pause_record is not None
+                and pause_record.get("state_validated") is True
+                and pause_record.get("workflow_id") == event.get("workflow_id")
+                and pause_record.get("target_identity")
+                == event.get("target_identity")
+                and pause_record.get("target_snapshot")
+                == event.get("target_snapshot")
+                and all(event.get(field) is True for field in revalidation_fields)
+            )
+            if not resume_valid:
                 failures.append(
                     OracleFailure(
                         "RESUME_WITHOUT_REVALIDATION",
@@ -4689,6 +5144,13 @@ def evaluate_trace(
                         "resume did not revalidate the paused chain, identity, snapshot, and evidence",
                     )
                 )
+            else:
+                pause_record = None
+                run_lifecycle_state = "active"
+        elif event_name == "question_asked":
+            run_lifecycle_state = "unresolved"
+        elif event_name == "stopped":
+            run_lifecycle_state = "stopped"
         elif event_name == "finalization_receipt_validated":
             finalization_receipt = event
         elif event_name == "run_state_manifest_validated":
@@ -4933,6 +5395,14 @@ def evaluate_trace(
                 and event.get("workflow_id") == current_workflow_id
                 and event.get("target_identity") == current_target_identity
                 and event.get("actor") == current_candidate_implementer
+                and candidate_record is not None
+                and artifact_is_current(
+                    str(candidate_record.get("artifact_id"))
+                )
+                and candidate_path_contract_is_valid(candidate_record)
+                and event.get("path") in candidate_record.get(
+                    "owned_paths", []
+                )
                 and event.get("destination_scope") in allowed_writes
                 and event.get("effect") in candidate_effects
                 and event.get("effect") in delegated_effects
@@ -5140,6 +5610,9 @@ def evaluate_trace(
                 elif artifact_type == "candidate-manifest":
                     candidate_diffs = current_artifacts_of_type("candidate-diff")
                     files = event.get("files")
+                    candidate_owned_paths = (candidate_record or {}).get(
+                        "owned_paths"
+                    )
                     schema_valid = (
                         schema_valid
                         and len(candidate_diffs) == 1
@@ -5148,6 +5621,10 @@ def evaluate_trace(
                         and isinstance(files, list)
                         and bool(files)
                         and all(candidate_file_is_valid(entry) for entry in files)
+                        and unique_nonempty_strings(candidate_owned_paths)
+                        and {entry["path"] for entry in files}
+                        == set(candidate_owned_paths)
+                        and len(files) == len(candidate_owned_paths)
                         and manifest_header_is_valid(event, files)
                         and len({entry["path"] for entry in files}) == len(files)
                         and any(
@@ -5457,8 +5934,53 @@ def evaluate_trace(
                     if schema_valid:
                         terminal_manifest_record = event
                 elif artifact_type == "category-evidence":
+                    criterion_id = event.get("criterion_id")
+                    category = event.get("category")
+                    artifact_id = event.get("artifact_id")
+                    if (
+                        isinstance(criterion_id, str)
+                        and criterion_id
+                        and isinstance(artifact_id, str)
+                        and artifact_id
+                    ):
+                        criterion_artifact_ids = (
+                            category_evidence_ids_by_criterion.setdefault(
+                                criterion_id, []
+                            )
+                        )
+                        if criterion_artifact_ids:
+                            ambiguous_category_evidence_criterion_ids.add(
+                                criterion_id
+                            )
+                            failures.append(
+                                OracleFailure(
+                                    "DUPLICATE_CRITERION_EVIDENCE",
+                                    index,
+                                    "retained category evidence reused a criterion identity",
+                                    "target-quality",
+                                )
+                            )
+                        criterion_artifact_ids.append(artifact_id)
+                        if len(criterion_artifact_ids) > 1:
+                            for criterion_artifact_id in criterion_artifact_ids:
+                                prior = retained_artifacts.get(
+                                    criterion_artifact_id
+                                )
+                                if prior is not None:
+                                    invalidate_artifact(prior)
                     schema_valid = (
-                        schema_valid and record_binding(event) == current_binding()
+                        schema_valid
+                        and isinstance(category, str)
+                        and isinstance(criterion_id, str)
+                        and criterion_id
+                        not in ambiguous_category_evidence_criterion_ids
+                        and category_evidence_record_is_valid(
+                            event,
+                            current_binding(),
+                            category,
+                            criterion_id,
+                            current_epoch=True,
+                        )
                     )
                 record_schema_validity[id(event)] = schema_valid
                 if not schema_valid:
@@ -6365,6 +6887,17 @@ def evaluate_trace(
                     f"case-{criterion_id.lower()}"
                     for criterion_id in sorted(CRITERION_CATEGORY)
                 ]
+                expected_cases = (
+                    expected_evaluation_cases(
+                        fixture_root,
+                        sorted(CRITERION_CATEGORY),
+                        current_contract,
+                        rubrics[0]["artifact_id"],
+                        rubrics[0]["rubric_digest"],
+                    )
+                    if isinstance(current_contract, str) and len(rubrics) == 1
+                    else []
+                )
                 evaluation_valid = (
                     confirmation_precedes_freeze
                     and artifact_envelope_is_valid(event, "evaluation-pack")
@@ -6373,6 +6906,7 @@ def evaluate_trace(
                     and evaluation_event_shape_is_valid(event)
                     and event.get("case_ids") == expected_case_ids
                     and len(event.get("cases", [])) == len(expected_case_ids)
+                    and event.get("cases") == expected_cases
                     and set(event["frozen_parameter_ids"])
                     == {
                         f"parameter-{criterion_id}"
@@ -6401,6 +6935,13 @@ def evaluate_trace(
                     frozen_evaluation = None
                     frozen_contract_epoch = None
                     frozen_snapshot_epoch = None
+                    failures.append(
+                        OracleFailure(
+                            "INVALID_ARTIFACT_SCHEMA",
+                            index,
+                            "evaluation pack did not bind exact retained case contracts",
+                        )
+                    )
         elif event_name == "candidate_edit":
             if identity_ambiguous:
                 failures.append(
@@ -6577,12 +7118,21 @@ def evaluate_trace(
                 authority_record,
             )
             authority_valid = authority_binding_is_current(event)
+            candidate_path_valid = candidate_path_contract_is_valid(event)
             if not authority_valid:
                 failures.append(
                     OracleFailure(
                         "CANDIDATE_WITHOUT_AUTHORITY",
                         index,
                         "candidate effects lacked validated resolution-derived authority",
+                    )
+                )
+            if not candidate_path_valid:
+                failures.append(
+                    OracleFailure(
+                        "UNAUTHORIZED_PRODUCTION_WRITE",
+                        index,
+                        "candidate edit did not bind a trusted isolated owned path",
                     )
                 )
             prerequisite_chain_valid = (
@@ -6607,6 +7157,7 @@ def evaluate_trace(
                 )
                 and artifact_envelope_is_valid(event, "candidate-record")
                 and authority_valid
+                and candidate_path_valid
                 and event.get("revision") == candidate_revision
                 and isinstance(current_candidate_implementer, str)
                 and bool(current_candidate_implementer)
@@ -6954,7 +7505,10 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             failure.code for failure in evaluate_trace(mutant, BUILDER_FIXTURES)
         }
         self.assertIn("INVALID_EVENT_SCHEMA", codes)
-        self.assertIn("STALE_PREREQUISITE_GENERATION", codes)
+        self.assertTrue(
+            {"INVALID_ARTIFACT_SCHEMA", "STALE_PREREQUISITE_GENERATION"}
+            & codes
+        )
 
         repair_trace = load_traces("frozen-validation")[
             "accepted_negative_review_repair"
@@ -8978,6 +9532,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "effect": "production-target-write",
                 "authority": True,
                 "actor": "release-manager-v1",
+                "path": "production/fixture-terse-summary/SKILL.md",
             },
             {
                 "event": "delivery_attempt",
@@ -9031,6 +9586,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "destination_scope": "production-target",
                 "effect": "production-target-write",
                 "actor": "candidate-implementer-v1",
+                "path": "production/fixture-terse-summary/SKILL.md",
             },
             {
                 "event": "delivery_attempt",
@@ -9144,6 +9700,11 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "destination_scope": "isolated-candidate",
                 "effect": "isolated-candidate-write",
                 "actor": "candidate-implementer-v1",
+                "path": next(
+                    event["path"]
+                    for event in trace
+                    if event.get("event") == "candidate_edit"
+                ),
             },
         )
 
@@ -9348,6 +9909,309 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("INVALID_ARTIFACT_SCHEMA", terminal_codes)
         self.assertIn("FINALIZE_WITHOUT_TERMINAL_MANIFEST", terminal_codes)
 
+    def test_category_evidence_duplicate_identity_fails_in_either_order(self) -> None:
+        """Malformed duplicate criterion proofs cannot hide behind insertion order."""
+
+        for position in ("before", "after"):
+            with self.subTest(position=position):
+                trace = accepted_finalization_trace()
+                genuine_index = next(
+                    index
+                    for index, event in enumerate(trace)
+                    if event.get("artifact_type") == "category-evidence"
+                )
+                bogus = copy.deepcopy(trace[genuine_index])
+                bogus.update(
+                    {
+                        "artifact_id": f"bogus-duplicate-{position}",
+                        "frozen_parameter_id": "parameter-bogus",
+                        "case_id": "case-bogus",
+                        "raw_artifact_ids": [],
+                        "trial_receipt_ids": [],
+                        "raw_evidence_digest": "f" * 64,
+                        "trial_receipt_digest": "e" * 64,
+                        "review_finding_ids": [],
+                        "review_id": "bogus-review",
+                        "input_artifact_ids": [],
+                    }
+                )
+                insertion_index = genuine_index + (position == "after")
+                trace.insert(insertion_index, bogus)
+
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(trace), BUILDER_FIXTURES
+                    )
+                }
+
+                self.assertIn("DUPLICATE_CRITERION_EVIDENCE", codes)
+                self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+
+    def test_every_manifest_requires_the_exact_shared_header_keys(self) -> None:
+        """Null-valued header fields remain required on every manifest kind."""
+
+        for artifact_type in MANIFEST_ARTIFACT_TYPES:
+            with self.subTest(artifact_type=artifact_type):
+                trace = accepted_finalization_trace()
+                manifest = next(
+                    event
+                    for event in trace
+                    if event.get("artifact_type") == artifact_type
+                )
+                manifest.pop("overflow")
+
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        reseal_declared_trace(trace), BUILDER_FIXTURES
+                    )
+                }
+
+                self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+
+    def test_resolution_binds_snapshot_and_mode_to_exact_target_manifest(self) -> None:
+        """Caller-selected snapshot and mode cannot replace observed target facts."""
+
+        forged_snapshot = accepted_finalization_trace()
+        forged_snapshot[0]["target_snapshot"] = "forged-initial-snapshot"
+        snapshot_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                seal_trace(forged_snapshot), BUILDER_FIXTURES
+            )
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", snapshot_codes)
+
+        forged_mode = accepted_finalization_trace()
+        forged_mode[0].update(
+            {
+                "target_manifest": "targets/non-git-create/manifest.json",
+                "target_snapshot": "fixture-create-snapshot-v1",
+                "selected_mode": "improve",
+            }
+        )
+        mode_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                seal_trace(
+                    forged_mode,
+                    target_identity="fixture-release-notes",
+                    mode="improve",
+                ),
+                BUILDER_FIXTURES,
+            )
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", mode_codes)
+
+    def test_authorized_write_labels_do_not_authorize_unowned_paths(self) -> None:
+        """An isolated-write capability is valid only for a declared owned path."""
+
+        hostile_paths = {
+            "missing": None,
+            "absolute": "/production/fixture-terse-summary/SKILL.md",
+            "traversal": "candidate/../../production/SKILL.md",
+            "out-of-scope": "production/fixture-terse-summary/SKILL.md",
+        }
+        for name, path in hostile_paths.items():
+            with self.subTest(path_kind=name):
+                trace = accepted_finalization_trace()
+                final_index = next(
+                    index
+                    for index, event in enumerate(trace)
+                    if event.get("event") == "finalized"
+                )
+                write = {
+                    "event": "write",
+                    "destination_scope": "isolated-candidate",
+                    "effect": "isolated-candidate-write",
+                    "actor": "candidate-implementer-v1",
+                }
+                if path is not None:
+                    write["path"] = path
+                trace.insert(final_index, write)
+
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(trace), BUILDER_FIXTURES
+                    )
+                }
+
+                self.assertTrue(
+                    {"INVALID_EVENT_SCHEMA", "UNAUTHORIZED_PRODUCTION_WRITE"}
+                    & codes
+                )
+
+    def test_candidate_edit_cannot_self_declare_production_write_scope(self) -> None:
+        """The candidate record itself must bind one trusted isolated owned path."""
+
+        trace = accepted_finalization_trace()
+        candidate = next(
+            event for event in trace if event.get("event") == "candidate_edit"
+        )
+        candidate.update(
+            {
+                "write_scope": "production-target",
+                "path": "/production/fixture-terse-summary/SKILL.md",
+                "isolated_locator": "/production/fixture-terse-summary",
+                "owned_paths": [
+                    "/production/fixture-terse-summary/SKILL.md"
+                ],
+            }
+        )
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(seal_trace(trace), BUILDER_FIXTURES)
+        }
+
+        self.assertTrue(
+            {"INVALID_EVENT_SCHEMA", "UNAUTHORIZED_PRODUCTION_WRITE"} & codes
+        )
+
+    def test_inactive_run_states_block_downstream_finalization(self) -> None:
+        """Paused, stopped, and unresolved runs cannot keep mutating or finalize."""
+
+        blockers = {
+            "paused": {
+                "event": "paused",
+                "target_identity": "fixture-terse-summary",
+                "state_validated": True,
+            },
+            "stopped": {
+                "event": "stopped",
+                "reason": "explicit-stop",
+            },
+            "unresolved": {
+                "event": "question_asked",
+                "question_count": 1,
+                "decision": "awaiting-user-owned-decision",
+            },
+        }
+        for state, blocker in blockers.items():
+            with self.subTest(state=state):
+                trace = accepted_finalization_trace()
+                candidate_index = next(
+                    index
+                    for index, event in enumerate(trace)
+                    if event.get("event") == "candidate_edit"
+                )
+                trace.insert(candidate_index, blocker)
+
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(trace), BUILDER_FIXTURES
+                    )
+                }
+
+                self.assertIn("INACTIVE_RUN_EFFECT", codes)
+
+    def test_dot_paths_fail_across_manifest_and_envelope_boundaries(self) -> None:
+        """A dot is not a file path even though PurePosixPath has no parts for it."""
+
+        candidate_trace = accepted_finalization_trace()
+        candidate_manifest = next(
+            event
+            for event in candidate_trace
+            if event.get("artifact_type") == "candidate-manifest"
+        )
+        candidate_manifest["files"].append(
+            {
+                "path": ".",
+                "media_kind": "text/plain",
+                "byte_count": 1,
+                "digest": "dot-file",
+            }
+        )
+        candidate_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                seal_trace(candidate_trace), BUILDER_FIXTURES
+            )
+        }
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", candidate_codes)
+
+        envelope_trace = accepted_finalization_trace()
+        terminal = next(
+            event
+            for event in envelope_trace
+            if event.get("artifact_type") == "terminal-manifest"
+        )
+        terminal["artifact_envelope"]["payload_path"] = "."
+        envelope_codes = {
+            failure.code
+            for failure in evaluate_trace(
+                reseal_declared_trace(envelope_trace), BUILDER_FIXTURES
+            )
+        }
+        self.assertIn("INVALID_ARTIFACT_ENVELOPE", envelope_codes)
+
+    def test_frozen_cases_reject_placeholder_only_contracts(self) -> None:
+        """A full score cannot rest on labels unrelated to retained case bytes."""
+
+        trace = accepted_finalization_trace()
+        evaluation = next(
+            event for event in trace if event.get("event") == "evaluation_frozen"
+        )
+        for case in evaluation["cases"]:
+            case["observable_assertions"] = ["placeholder"]
+            case["forbidden_effects"] = ["placeholder"]
+            case["pass_rule"] = "placeholder"
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(seal_trace(trace), BUILDER_FIXTURES)
+        }
+
+        self.assertTrue(
+            {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
+        )
+
+    def test_fixture_construction_rejects_floats_and_invalid_unicode_cleanly(self) -> None:
+        """JSON-valid hostile values become deterministic failures, never exceptions."""
+
+        raw_events = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )["traces"]["accepted_exact_improve"]
+        mutants: dict[str, list[dict[str, Any]]] = {}
+
+        float_resolution = copy.deepcopy(raw_events)
+        float_resolution[0]["hostile"] = 1.25
+        mutants["float-resolution"] = float_resolution
+
+        float_lane = copy.deepcopy(raw_events)
+        research = next(
+            event for event in float_lane if event.get("event") == "research_pack"
+        )
+        research["lanes"][0]["evidence_cards"] = 1.25
+        mutants["float-lane"] = float_lane
+
+        invalid_unicode = copy.deepcopy(raw_events)
+        invalid_unicode[0]["hostile"] = "\ud800"
+        mutants["invalid-unicode"] = invalid_unicode
+
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name):
+                try:
+                    built = build_fixture_trace(
+                        "visible", "accepted_exact_improve", mutant
+                    )
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(built, BUILDER_FIXTURES)
+                    }
+                except (TypeError, UnicodeError, ValueError) as error:
+                    self.fail(
+                        f"fixture construction leaked {type(error).__name__}: {error}"
+                    )
+                self.assertTrue(
+                    {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
+                )
+
     def test_accepted_fixture_builder_preserves_supplied_events(self) -> None:
         """A hostile event injected into an accepted fixture reaches the oracle."""
 
@@ -9364,6 +10228,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                 "effect": "production-target-write",
                 "authority": True,
                 "actor": "release-manager-v1",
+                "path": "production/fixture-terse-summary/SKILL.md",
                 "fixture_marker": "must-survive-migration",
             }
         )
