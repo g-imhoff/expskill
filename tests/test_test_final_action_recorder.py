@@ -416,6 +416,28 @@ print('consumer-result=pass')
             self.assertTrue(path.is_dir())
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
 
+    def test_validation_rejects_overlapping_output_paths_without_side_effects(self) -> None:
+        """One recorder output cannot become the other output's parent."""
+
+        self.write_spec(
+            observation_path="outputs",
+            metadata_path="outputs/final.json",
+        )
+
+        completed = self.recorder(
+            "run",
+            "--root",
+            str(self.run_root),
+            "--",
+            sys.executable,
+            "product_action.py",
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("invalid-output-path", completed.stderr)
+        self.assertFalse((self.run_root / "outputs").exists())
+        self.assertFalse((self.repository / ".runtime").exists())
+
     def test_identity_is_derived_from_the_frozen_charter(self) -> None:
         self.write_spec()
 
