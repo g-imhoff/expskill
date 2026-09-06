@@ -317,10 +317,33 @@ def _validate_spec(
     if value.get("schema_version") != SCHEMA_VERSION:
         _error("invalid-spec-version", "unsupported final-action schema")
     expected_head, expected_branch = _read_charter_identity(repository, root)
-    observation = _output_path(root, value.get("observation_path"), label="observation_path")
-    metadata = _output_path(root, value.get("metadata_path"), label="metadata_path")
-    if observation == metadata:
-        _error("invalid-output-path", "observation and metadata paths must differ")
+    observation_relative = _relative_path(
+        value.get("observation_path"),
+        label="observation_path",
+    )
+    metadata_relative = _relative_path(
+        value.get("metadata_path"),
+        label="metadata_path",
+    )
+    if (
+        observation_relative == metadata_relative
+        or observation_relative in metadata_relative.parents
+        or metadata_relative in observation_relative.parents
+    ):
+        _error(
+            "invalid-output-path",
+            "observation and metadata paths must be distinct and non-overlapping",
+        )
+    observation = _output_path(
+        root,
+        observation_relative.as_posix(),
+        label="observation_path",
+    )
+    metadata = _output_path(
+        root,
+        metadata_relative.as_posix(),
+        label="metadata_path",
+    )
 
     expected_exit = value.get("expected_exit_code")
     if not isinstance(expected_exit, str) or not re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", expected_exit):
