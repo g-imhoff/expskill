@@ -264,35 +264,39 @@ print('consumer-result=pass')
     def test_handoff_rejects_inline_interpreters_before_composition(self) -> None:
         """An invalid command cannot publish a draft or consume the run root."""
 
-        recorder = _load_recorder_module()
-        root = self.run_root.resolve()
-        child_run = mock.Mock()
-        stderr = io.StringIO()
-        with (
-            mock.patch.object(recorder, "_repository", return_value=self.repository),
-            mock.patch.object(recorder, "_run_root", return_value=root),
-            mock.patch.object(recorder, "_read_spec", return_value={}),
-            mock.patch.object(recorder, "_validate_spec", return_value={}),
-            mock.patch.object(recorder.subprocess, "run", child_run),
-            redirect_stdout(io.StringIO()),
-            redirect_stderr(stderr),
-        ):
-            result = recorder.main(
-                [
-                    "handoff",
-                    "--root",
-                    str(root),
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "print('consumer-result=pass')",
-                ]
-            )
+        commands = (
+            [sys.executable, "-c", "print('consumer-result=pass')"],
+            [sys.executable, "-I", "-c", "print('consumer-result=pass')"],
+            [sys.executable, "-Ic", "print('consumer-result=pass')"],
+            ["env", "python3", "-c", "print('consumer-result=pass')"],
+            ["env", "-S", "python3 -c print('consumer-result=pass')"],
+            ["bash", "-xc", "printf accepted"],
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                recorder = _load_recorder_module()
+                root = self.run_root.resolve()
+                child_run = mock.Mock()
+                stderr = io.StringIO()
+                with (
+                    mock.patch.object(
+                        recorder, "_repository", return_value=self.repository
+                    ),
+                    mock.patch.object(recorder, "_run_root", return_value=root),
+                    mock.patch.object(recorder, "_read_spec", return_value={}),
+                    mock.patch.object(recorder, "_validate_spec", return_value={}),
+                    mock.patch.object(recorder.subprocess, "run", child_run),
+                    redirect_stdout(io.StringIO()),
+                    redirect_stderr(stderr),
+                ):
+                    result = recorder.main(
+                        ["handoff", "--root", str(root), "--", *command]
+                    )
 
-        self.assertEqual(result, 2)
-        self.assertIn("inline-command-forbidden", stderr.getvalue())
-        child_run.assert_not_called()
-        self.assertFalse((root / "draft.json").exists())
+                self.assertEqual(result, 2)
+                self.assertIn("inline-command-forbidden", stderr.getvalue())
+                child_run.assert_not_called()
+                self.assertFalse((root / "draft.json").exists())
 
     def test_product_cannot_mutate_authenticated_evidence_before_recording(self) -> None:
         """Evidence changed by the product action must never reach finalization."""
