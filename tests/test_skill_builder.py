@@ -1286,9 +1286,22 @@ def seal_trace(
                 )
             if artifact_type in {"artifact-manifest", "terminal-manifest"}:
                 prior_ids = list(artifact_envelopes)
-                event["manifested_artifact_ids"] = prior_ids
-                event["input_artifact_ids"] = prior_ids
-                event["files"] = _manifest_files(artifact_envelopes)
+                source_event = event.get("fixture_source_event")
+                if (
+                    not isinstance(source_event, dict)
+                    or "manifested_artifact_ids" not in source_event
+                ):
+                    event["manifested_artifact_ids"] = prior_ids
+                if (
+                    not isinstance(source_event, dict)
+                    or "input_artifact_ids" not in source_event
+                ):
+                    event["input_artifact_ids"] = prior_ids
+                if (
+                    not isinstance(source_event, dict)
+                    or "files" not in source_event
+                ):
+                    event["files"] = _manifest_files(artifact_envelopes)
             if artifact_type in MANIFEST_ARTIFACT_TYPES:
                 files = event.get("files", [])
                 manifest_body = {
@@ -1872,6 +1885,10 @@ def build_fixture_trace(
             )
             or "mode" in event
             and not isinstance(event["mode"], str)
+            or "contract_digest" in event
+            and not isinstance(event["contract_digest"], str)
+            or "evaluation_digest" in event
+            and not isinstance(event["evaluation_digest"], str)
         ):
             return invalid_fixture
         if event_name == "resolve":
@@ -1884,6 +1901,14 @@ def build_fixture_trace(
                 not isinstance(lane, dict)
                 or not isinstance(lane.get("role"), str)
                 or not lane["role"]
+                or not isinstance(lane.get("context_id"), str)
+                or not lane["context_id"]
+                or "actor_identity" in lane
+                and (
+                    not isinstance(lane["actor_identity"], str)
+                    or not lane["actor_identity"]
+                )
+                or type(lane.get("evidence_cards")) is not int
                 for lane in lanes
             ):
                 return invalid_fixture
@@ -1897,26 +1922,38 @@ def build_fixture_trace(
                 return invalid_fixture
         if event_name == "review_recorded":
             findings = event.get("findings")
-            if not isinstance(findings, list) or any(
-                not isinstance(finding, dict)
-                or not isinstance(finding.get("id"), str)
-                or "affected_categories" in finding
+            evidence = event.get("evidence")
+            if (
+                "evidence" in event
                 and (
-                    not isinstance(finding["affected_categories"], list)
+                    not isinstance(evidence, list)
                     or any(
-                        not isinstance(category, str)
-                        for category in finding["affected_categories"]
+                        not isinstance(evidence_id, str) or not evidence_id
+                        for evidence_id in evidence
                     )
                 )
-                or "affected_criteria" in finding
-                and (
-                    not isinstance(finding["affected_criteria"], list)
-                    or any(
-                        not isinstance(criterion, str)
-                        for criterion in finding["affected_criteria"]
+                or not isinstance(findings, list)
+                or any(
+                    not isinstance(finding, dict)
+                    or not isinstance(finding.get("id"), str)
+                    or "affected_categories" in finding
+                    and (
+                        not isinstance(finding["affected_categories"], list)
+                        or any(
+                            not isinstance(category, str)
+                            for category in finding["affected_categories"]
+                        )
                     )
+                    or "affected_criteria" in finding
+                    and (
+                        not isinstance(finding["affected_criteria"], list)
+                        or any(
+                            not isinstance(criterion, str)
+                            for criterion in finding["affected_criteria"]
+                        )
+                    )
+                    for finding in findings
                 )
-                for finding in findings
             ):
                 return invalid_fixture
         if event_name == "category_scored":
@@ -2014,13 +2051,20 @@ def build_fixture_trace(
             raw_events,
         )
         for event in candidate_path:
+            source_event = event.get("fixture_source_event")
             event["workflow_id"] = fixture_workflow
             event["target_identity"] = fixture_target
             event["target_snapshot"] = fixture_snapshot
             event["mode"] = fixture_mode
-            if "contract_digest" in event:
+            if "contract_digest" in event and (
+                not isinstance(source_event, dict)
+                or "contract_digest" not in source_event
+            ):
                 event["contract_digest"] = raw_contract
-            if "evaluation_digest" in event:
+            if "evaluation_digest" in event and (
+                not isinstance(source_event, dict)
+                or "evaluation_digest" not in source_event
+            ):
                 event["evaluation_digest"] = raw_evaluation
         rubric = next(
             event
@@ -10762,6 +10806,135 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                         f"fixture construction leaked {type(error).__name__}: {error}"
                     )
                 self.assertIn("INVALID_EVENT_SCHEMA", codes)
+
+    def test_fixture_builder_rejects_nested_actor_evidence_and_digest_shapes(self) -> None:
+        """Nested identities, evidence, and digest controls fail without escaping."""
+
+        payload = json.loads(
+            (BUILDER_FIXTURES / "visible" / "traces.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source = payload["traces"]["accepted_exact_improve"]
+        mutants: list[tuple[str, list[dict[str, Any]]]] = []
+
+        for actor_identity in ([], {}):
+            trace = copy.deepcopy(source)
+            research = next(
+                event
+                for event in trace
+                if event.get("event") == "research_pack"
+            )
+            research["lanes"][0]["actor_identity"] = actor_identity
+            mutants.append(
+                (f"lane_actor_{type(actor_identity).__name__}", trace)
+            )
+
+        for context_id in ([], {}):
+            trace = copy.deepcopy(source)
+            research = next(
+                event
+                for event in trace
+                if event.get("event") == "research_pack"
+            )
+            research["lanes"][0].pop("actor_identity", None)
+            research["lanes"][0]["context_id"] = context_id
+            mutants.append(
+                (f"lane_context_{type(context_id).__name__}", trace)
+            )
+
+        for evidence_cards in ([], {}):
+            trace = copy.deepcopy(source)
+            research = next(
+                event
+                for event in trace
+                if event.get("event") == "research_pack"
+            )
+            research["lanes"][0]["evidence_cards"] = evidence_cards
+            mutants.append(
+                (f"lane_cards_{type(evidence_cards).__name__}", trace)
+            )
+
+        for evidence_item in ([], {}):
+            trace = copy.deepcopy(source)
+            trace.append(
+                {
+                    "event": "review_recorded",
+                    "evidence": [evidence_item],
+                    "findings": [],
+                }
+            )
+            mutants.append(
+                (f"review_evidence_{type(evidence_item).__name__}", trace)
+            )
+
+        trace = copy.deepcopy(source)
+        for event in trace:
+            if "contract_digest" in event:
+                event["contract_digest"] = []
+        mutants.append(("contract_digest_list", trace))
+
+        trace = copy.deepcopy(source)
+        evaluation = next(
+            event
+            for event in trace
+            if event.get("event") == "evaluation_frozen"
+        )
+        evaluation["evaluation_digest"] = []
+        mutants.append(("evaluation_digest_list", trace))
+
+        for name, raw_events in mutants:
+            with self.subTest(mutant=name):
+                try:
+                    built = build_fixture_trace(
+                        "visible", "accepted_exact_improve", raw_events
+                    )
+                    codes = {
+                        failure.code
+                        for failure in evaluate_trace(built, BUILDER_FIXTURES)
+                    }
+                except (
+                    AttributeError,
+                    IndexError,
+                    KeyError,
+                    StopIteration,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    self.fail(
+                        f"fixture construction leaked {type(error).__name__}: {error}"
+                    )
+                self.assertTrue(
+                    {"INVALID_EVENT_SCHEMA", "INVALID_ARTIFACT_SCHEMA"} & codes
+                )
+
+    def test_accepted_fixture_builder_preserves_explicit_terminal_manifest_paths(self) -> None:
+        """Explicit retained and terminal paths must reach manifest validation."""
+
+        for artifact_type in ("artifact-manifest", "terminal-manifest"):
+            with self.subTest(artifact_type=artifact_type):
+                raw_events = accepted_finalization_trace()
+                manifest = next(
+                    event
+                    for event in raw_events
+                    if event.get("artifact_type") == artifact_type
+                )
+                manifest["files"][0]["path"] = "../hostile-escape"
+
+                built = build_fixture_trace(
+                    "visible", "accepted_manifest_path_probe", raw_events
+                )
+                built_manifest = next(
+                    event
+                    for event in built
+                    if event.get("artifact_type") == artifact_type
+                )
+
+                self.assertEqual(
+                    built_manifest["files"][0]["path"],
+                    "../hostile-escape",
+                )
+                self.assertTrue(evaluate_trace(built, BUILDER_FIXTURES))
 
     def test_accepted_fixture_builder_preserves_sieve_and_score_evidence(self) -> None:
         """Explicit malformed values must reach the oracle without replacement."""
