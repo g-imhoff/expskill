@@ -12,13 +12,13 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = ROOT / "plugins" / "codex-dev-flow" / "scripts" / "worktrees.py"
+HELPER_PATH = ROOT / "plugins" / "expskill" / "scripts" / "worktrees.py"
 
 
 def load_helper() -> object:
     if not HELPER_PATH.is_file():
         raise AssertionError(f"missing public route-neutral worktree helper: {HELPER_PATH}")
-    specification = importlib.util.spec_from_file_location("devflow_worktrees", HELPER_PATH)
+    specification = importlib.util.spec_from_file_location("expskill_worktrees", HELPER_PATH)
     if specification is None or specification.loader is None:
         raise ImportError(f"cannot load worktree helper: {HELPER_PATH}")
     module = importlib.util.module_from_spec(specification)
@@ -36,8 +36,8 @@ class WorktreeTests(unittest.TestCase):
         self.repo.mkdir()
         self.state_home = self.root / "state"
         self._git("init", "-b", "main")
-        self._git("config", "user.name", "Dev Flow Tests")
-        self._git("config", "user.email", "devflow-tests@example.invalid")
+        self._git("config", "user.name", "ExpSkill Tests")
+        self._git("config", "user.email", "expskill-tests@example.invalid")
         (self.repo / "README.md").write_text("initial\n", encoding="utf-8")
         self._git("add", "README.md")
         self._git("commit", "-m", "initial")
@@ -62,7 +62,7 @@ class WorktreeTests(unittest.TestCase):
     def _expected_path(self, run_id: str, task: str) -> Path:
         canonical_repo = Path(self._git("rev-parse", "--show-toplevel")).resolve()
         repository_hash = hashlib.sha256(str(canonical_repo).encode("utf-8")).hexdigest()
-        return self.state_home / "codex-dev-flow" / "worktrees" / repository_hash / run_id / task
+        return self.state_home / "expskill" / "worktrees" / repository_hash / run_id / task
 
     def _create(self, run_id: str = "run-1", task: str = "task-one") -> object:
         return self._helper().create_worktree(self.repo, "HEAD", run_id, task, self.state_home)
@@ -126,11 +126,11 @@ class WorktreeTests(unittest.TestCase):
         record = self._create()
         expected_path = self._expected_path("run-1", "task-one")
         self.assertEqual(record.path, expected_path)
-        self.assertEqual(record.branch, "devflow/run-1/task-one")
+        self.assertEqual(record.branch, "expskill/run-1/task-one")
         self.assertTrue(expected_path.is_dir())
         listing = self._git("worktree", "list", "--porcelain")
         self.assertIn(f"worktree {expected_path}", listing)
-        self.assertIn("branch refs/heads/devflow/run-1/task-one", listing)
+        self.assertIn("branch refs/heads/expskill/run-1/task-one", listing)
         self.assertEqual(self._git("rev-parse", "--show-toplevel", cwd=expected_path), str(expected_path))
         self.assertFalse((self.repo / ".git" / "worktrees").resolve() == expected_path.resolve())
 
@@ -144,7 +144,7 @@ class WorktreeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     helper.create_worktree(self.repo, "HEAD", "run-1", value, self.state_home)
         self.assertFalse(self.state_home.exists())
-        self.assertNotIn("devflow/", self._git("branch", "--format=%(refname:short)"))
+        self.assertNotIn("expskill/", self._git("branch", "--format=%(refname:short)"))
 
     def test_existing_target_is_refused_without_overwriting_it(self) -> None:
         target = self._expected_path("run-1", "task-one")
@@ -155,16 +155,16 @@ class WorktreeTests(unittest.TestCase):
             self._create()
         self.assertIn(str(target), str(context.exception))
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
-        self.assertNotIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
+        self.assertNotIn("expskill/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
 
     def test_existing_branch_is_refused_without_removing_it(self) -> None:
-        self._git("branch", "devflow/run-1/task-one", "HEAD")
+        self._git("branch", "expskill/run-1/task-one", "HEAD")
         target = self._expected_path("run-1", "task-one")
         with self.assertRaises(Exception) as context:
             self._create()
-        self.assertIn("devflow/run-1/task-one", str(context.exception))
+        self.assertIn("expskill/run-1/task-one", str(context.exception))
         self.assertFalse(target.exists())
-        self.assertIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
+        self.assertIn("expskill/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
 
     def test_invalid_base_is_refused_without_creating_target_or_branch(self) -> None:
         target = self._expected_path("run-1", "task-one")
@@ -172,7 +172,7 @@ class WorktreeTests(unittest.TestCase):
             self._helper().create_worktree(self.repo, "missing-base", "run-1", "task-one", self.state_home)
         self.assertIn("missing-base", str(context.exception))
         self.assertFalse(target.exists())
-        self.assertNotIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
+        self.assertNotIn("expskill/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
 
     def test_option_like_base_uses_the_resolved_commit(self) -> None:
         base_commit = self._git("rev-parse", "HEAD")
@@ -192,7 +192,7 @@ class WorktreeTests(unittest.TestCase):
     def test_state_hash_symlink_redirection_is_refused_without_git_state_changes(self) -> None:
         canonical_repo = Path(self._git("rev-parse", "--show-toplevel")).resolve()
         repository_hash = hashlib.sha256(str(canonical_repo).encode("utf-8")).hexdigest()
-        worktree_root = self.state_home / "codex-dev-flow" / "worktrees"
+        worktree_root = self.state_home / "expskill" / "worktrees"
         worktree_root.mkdir(parents=True)
         (worktree_root / repository_hash).symlink_to(self.repo, target_is_directory=True)
         target = self._expected_path("run-1", "task-one")
@@ -203,7 +203,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertFalse((self.repo / "run").exists())
         self.assertEqual(self._git("status", "--porcelain"), before_status)
-        self.assertNotIn("devflow/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
+        self.assertNotIn("expskill/run-1/task-one", self._git("branch", "--format=%(refname:short)"))
         self.assertNotIn(str(target), self._git("worktree", "list", "--porcelain"))
 
     def test_stale_upstream_preserves_worktree_metadata_and_ignored_files(self) -> None:
@@ -273,7 +273,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
 
     def test_non_directory_state_component_returns_worktree_error_and_cli_status(self) -> None:
-        component = self.state_home / "codex-dev-flow"
+        component = self.state_home / "expskill"
         component.parent.mkdir(parents=True)
         component.write_bytes(b"not a directory\n")
         target = self._expected_path("run-1", "task-one")
@@ -282,7 +282,7 @@ class WorktreeTests(unittest.TestCase):
             helper.create_worktree(self.repo, "HEAD", "run-1", "task-one", self.state_home)
         message = str(context.exception)
         self.assertIn(str(target), message)
-        self.assertIn("devflow/run-1/task-one", message)
+        self.assertIn("expskill/run-1/task-one", message)
         result = subprocess.run(
             [
                 "python3",
@@ -305,7 +305,7 @@ class WorktreeTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(target), result.stderr)
-        self.assertIn("devflow/run-1/task-one", result.stderr)
+        self.assertIn("expskill/run-1/task-one", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_duplicate_path_and_branch_are_refused_and_first_worktree_survives(self) -> None:
@@ -487,7 +487,7 @@ class WorktreeTests(unittest.TestCase):
     def test_registered_worktree_outside_owned_root_is_refused(self) -> None:
         helper = self._helper()
         outside = self.root / "outside-worktree"
-        branch = "devflow/run-1/task-one"
+        branch = "expskill/run-1/task-one"
         self._git("worktree", "add", "-b", branch, str(outside), "HEAD")
         original_state_home = os.environ.get("XDG_STATE_HOME")
         os.environ["XDG_STATE_HOME"] = str(self.state_home)
@@ -503,7 +503,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_branch_path_mismatch_is_refused(self) -> None:
         record = self._create()
-        wrong_branch = "devflow/run-1/other-task"
+        wrong_branch = "expskill/run-1/other-task"
         with self.assertRaises(Exception) as context:
             self._helper().finish_worktree(self.repo, record.path, wrong_branch, "main")
         message = str(context.exception)
@@ -515,7 +515,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_integrated_clean_worktree_removes_only_exact_branch(self) -> None:
         record = self._create()
-        similar_branch = "devflow/run-1/task-one-follow-up"
+        similar_branch = "expskill/run-1/task-one-follow-up"
         self._git("branch", similar_branch, "HEAD")
         (record.path / "feature.txt").write_text("integrated task\n", encoding="utf-8")
         self._git("add", "feature.txt", cwd=record.path)

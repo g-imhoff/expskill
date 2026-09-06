@@ -9,7 +9,7 @@
 - Require one public Grill Me skill, with no separate public Grilling skill.
 - Require pinned upstream snapshots, licenses, and digests.
 - Reject em dashes and semicolons in every shipped or repository-local skill file.
-- Require `$use-expand` to offer Grill Me only when unresolved, connected, consequential user decisions block progress.
+- Require `$use-expskill` to offer Grill Me only when unresolved, connected, consequential user decisions block progress.
 
 ## 2. Vendor exact upstream material
 
@@ -28,7 +28,7 @@
 
 - Merge the upstream wrapper and interview engine into one directly invokable `$grill-me` skill.
 - Keep it explicit-only and preserve its fact-finding, decision-tree, recommendation, and user-confirmation behavior.
-- Teach `$use-expand` to offer it only at the exact decision-frontier blocker and resume the owning phase after confirmation.
+- Teach `$use-expskill` to offer it only at the exact decision-frontier blocker and resume the owning phase after confirmation.
 
 ## 5. Clean, package, and verify
 

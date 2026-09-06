@@ -402,7 +402,7 @@ def _cli():
     try:
         payload=json.loads(raw); 
         if not isinstance(payload,dict): raise ValueError()
-        home=Path(sys.argv[3]) if len(sys.argv)==4 else Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state"))) / "codex-dev-flow"
+        home=Path(sys.argv[3]) if len(sys.argv)==4 else Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state"))) / "expskill"
         if len(sys.argv)==4: payload.pop("state_home",None)
         if command=="initialize": result=initialize_workflow(state_home=home,**payload)
         elif command=="discover": result=discover_workflow(state_home=home,**payload)

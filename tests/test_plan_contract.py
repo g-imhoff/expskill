@@ -6,12 +6,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "plugins" / "codex-dev-flow"
+PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 PLAN_ROOT = PLUGIN_ROOT / "skills" / "plan"
 HELPER_PATH = PLUGIN_ROOT / "scripts" / "plan_graph.py"
 PHASE_ROOTS = {
     name: PLUGIN_ROOT / "skills" / name
-    for name in ("implement", "use-expand")
+    for name in ("implement", "use-expskill")
 }
 
 
@@ -388,7 +388,7 @@ class PlanContractTests(unittest.TestCase):
                 "graph updates",
                 "do not make workers graph writers",
             ),
-            "use-expand": (
+            "use-expskill": (
                 "plan graph",
                 "revalidate its revision and commit",
                 "apply only receipts",
@@ -397,7 +397,7 @@ class PlanContractTests(unittest.TestCase):
         }
         for name, phrases in required.items():
             body = " ".join((PHASE_ROOTS[name] / "SKILL.md").read_text(encoding="utf-8").lower().split())
-            self.assertIn("plugins/codex-dev-flow/scripts/plan_graph.py", body)
+            self.assertIn("plugins/expskill/scripts/plan_graph.py", body)
             self.assertIn("../../scripts/plan_graph.py", body)
             self.assertIn("source-package locator", body)
             self.assertIn("branch", body)

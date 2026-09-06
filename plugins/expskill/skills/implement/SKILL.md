@@ -35,7 +35,7 @@ compact node results to the active coordinator for graph updates. A complete
 direct brief may run without a Plan Graph.
 
 Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
-`plugins/codex-dev-flow/scripts/plan_graph.py` is only the source-package locator.
+`plugins/expskill/scripts/plan_graph.py` is only the source-package locator.
 
 ## Execute runnable nodes
 
@@ -46,7 +46,7 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
 2. Use the target checkout for one safe serial writer. Give concurrent writers
    separate external worktrees created from the exact accepted commit. Each lane
    has one owner and one node.
-3. Launch one fresh `devflow-implementer` per node. Give it the accepted behavior,
+3. Launch one fresh `expskill-implementer` per node. Give it the accepted behavior,
    constraints, owned paths, base and branch, relevant code context, planned
    checks, and allowed effects. The worker may not delegate or expand scope.
 4. Require task-local red-green-refactor: demonstrate a meaningful failing test
@@ -63,10 +63,10 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
 For the exact immutable candidate commit, apply the final Review context
 contract and launch these fresh agents concurrently:
 
-- `devflow-review` inspects code quality, regressions, maintainability, safety,
+- `expskill-review` inspects code quality, regressions, maintainability, safety,
   and repository conventions. It returns only evidence-backed actionable
   findings and `ready` or `not ready`.
-- `devflow-spec` checks every accepted behavior, constraint, non-goal, proof
+- `expskill-spec` checks every accepted behavior, constraint, non-goal, proof
   obligation, and applicable Design decision. It may run checks but may not edit
   tracked source. It returns a criterion-by-criterion verdict and `pass` or
   `fail`.
@@ -75,7 +75,7 @@ Neither judge sees or edits the other's conclusion. The implementing worker does
 not review itself.
 
 If either gate fails, combine only current actionable findings into a correction
-brief and launch a new `devflow-implementer` on that node. Then rerun both judges
+brief and launch a new `expskill-implementer` on that node. Then rerun both judges
 against the new commit. Do not try to keep one agent alive across attempts. Stop
 for the user when a correction needs changed product intent, Design, scope, or
 authority. If the same cause survives three non-improving attempts, report that
@@ -92,7 +92,7 @@ Remove an external worktree and its local task branch only after its exact commi
 is present on the target, the integrated checks pass, and the lane is clean. Keep
 dirty, failing, unmerged, unknown, or still-needed lanes intact.
 
-After all nodes are integrated, launch one fresh `devflow-review` and one fresh `devflow-spec`
+After all nodes are integrated, launch one fresh `expskill-review` and one fresh `expskill-spec`
 concurrently over the whole target branch. Apply any final
 corrections through the same fresh-worker loop and rerun affected checks and both
 whole-branch gates.

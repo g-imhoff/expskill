@@ -1,20 +1,20 @@
-# Codex Dev Flow Design
+# ExpSkill Design
 
 ## Purpose
 
-Codex Dev Flow is a private Codex plugin with four independently usable
+ExpSkill is a private Codex plugin with four independently usable
 development skills and one optional lifecycle router. Users can invoke a skill
-directly without loading a pipeline, or invoke `use-expand` when they want the
+directly without loading a pipeline, or invoke `use-expskill` when they want the
 plugin to select the next lifecycle step.
 
-Only `use-expand` permits implicit invocation. It stays inactive for explicit
+Only `use-expskill` permits implicit invocation. It stays inactive for explicit
 skills, read-only analysis, reports, explanations, and non-code work.
 
 ## Public skill surface
 
 ```text
 skills/
-├── use-expand/
+├── use-expskill/
 ├── brainstorm/
 ├── plan/
 ├── design/
@@ -32,7 +32,7 @@ Direct invocation runs only the named skill and stops at its boundary.
 
 ## Lifecycle routing
 
-`use-expand` selects by the next unresolved decision:
+`use-expskill` selects by the next unresolved decision:
 
 - ambiguous outcome or experience → `brainstorm`;
 - concrete direction without an accepted technical execution → `plan`;
@@ -47,7 +47,7 @@ authority.
 ## Canonical workflow state
 
 `plan` owns the private versioned Plan Graph outside the repository through
-`plugins/codex-dev-flow/scripts/plan_graph.py`. It records accepted outcomes,
+`plugins/expskill/scripts/plan_graph.py`. It records accepted outcomes,
 constraints, decisions, work, dependencies, ownership, proof, projections, and
 logical Git topology against an exact non-protected branch and baseline.
 
@@ -62,15 +62,15 @@ The conversational coordinator grounds the accepted work and makes one cheap
 parallelism pass. Independent nodes receive distinct ownership and external
 worktrees; serial work may use the target checkout.
 
-Each node uses a context-free `devflow-implementer` with only its accepted brief,
+Each node uses a context-free `expskill-implementer` with only its accepted brief,
 owned scope, relevant repository instructions, and required evidence. The worker
 uses TDD, produces one coherent local commit, and cannot delegate or expand
 scope.
 
 The exact candidate is then judged concurrently by two fresh agents:
 
-- `devflow-review` inspects code quality and regressions read-only;
-- `devflow-spec` checks every accepted criterion and may run checks without
+- `expskill-review` inspects code quality and regressions read-only;
+- `expskill-spec` checks every accepted criterion and may run checks without
   editing tracked source.
 
 Any finding goes to a new implementer. Both judges rerun on every correction.
@@ -82,11 +82,11 @@ review and spec gates cover the whole target branch.
 
 | Profile | Purpose | Runtime policy |
 | --- | --- | --- |
-| `devflow-explorer` | Bounded repository evidence | Terra, medium, read-only |
-| `devflow-test-engineer` | Shared acceptance tests | Luna, high, workspace-write |
-| `devflow-implementer` | One owned TDD implementation node | Luna, medium, workspace-write |
-| `devflow-review` | Independent candidate review | Terra, medium, read-only |
-| `devflow-spec` | Independent specification compliance | Luna, high, workspace-write |
+| `expskill-explorer` | Bounded repository evidence | Terra, medium, read-only |
+| `expskill-test-engineer` | Shared acceptance tests | Luna, high, workspace-write |
+| `expskill-implementer` | One owned TDD implementation node | Luna, medium, workspace-write |
+| `expskill-review` | Independent candidate review | Terra, medium, read-only |
+| `expskill-spec` | Independent specification compliance | Luna, high, workspace-write |
 
 Checked-in profiles are the dispatch authority. Workers do not self-certify,
 judges do not implement, and no delegated agent launches another agent.
@@ -105,7 +105,7 @@ auto-merge, or enters a merge queue under the Implement skill.
 
 ## Distribution and validation
 
-The installable plugin lives under `plugins/codex-dev-flow/`; marketplace
+The installable plugin lives under `plugins/expskill/`; marketplace
 metadata lives at `.agents/plugins/marketplace.json`. `scripts/install.py`
 validates the package, installs the plugin, and links exactly the five checked-in
 agent profiles without overwriting foreign destinations.

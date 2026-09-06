@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "plugins" / "codex-dev-flow"
+PLUGIN = ROOT / "plugins" / "expskill"
 SKILLS = PLUGIN / "skills"
 DESIGN = SKILLS / "design"
 ACCEPTANCE = "accept" + "ance"
@@ -21,7 +21,7 @@ EXPECTED_SKILLS = {
     "implement",
     "skill-builder",
     "unslop",
-    "use-expand",
+    "use-expskill",
 }
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",

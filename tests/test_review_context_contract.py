@@ -12,7 +12,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "plugins" / "codex-dev-flow"
+PLUGIN = ROOT / "plugins" / "expskill"
 IMPLEMENT = PLUGIN / "skills" / "implement" / "SKILL.md"
 SKILL_BUILDER = PLUGIN / "skills" / "skill-builder" / "SKILL.md"
 EVALUATION_RUBRIC = (
@@ -85,7 +85,7 @@ class ReviewContextContractTests(unittest.TestCase):
                     self.assertIn(payload, body)
 
     def test_review_agents_self_inspect_the_pinned_target(self) -> None:
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             profile_path = PLUGIN / "assets" / "agents" / f"{name}.toml"
             profile = tomllib.loads(profile_path.read_text(encoding="utf-8"))
             instructions = " ".join(profile["developer_instructions"].lower().split())
@@ -101,11 +101,11 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_user_selected_agent_runtime_settings_are_preserved(self) -> None:
         expected = {
-            "devflow-explorer": ("gpt-5.6-luna", "max", "read-only"),
-            "devflow-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-            "devflow-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-            "devflow-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-            "devflow-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+            "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
+            "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+            "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+            "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
+            "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
         }
         for name, settings in expected.items():
             profile_path = PLUGIN / "assets" / "agents" / f"{name}.toml"
@@ -133,10 +133,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_a_removed_handoff_limit(self) -> None:
         guarded_paths = (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -173,10 +173,10 @@ class ReviewContextContractTests(unittest.TestCase):
             ),
         )
         guarded_paths = (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -207,13 +207,13 @@ class ReviewContextContractTests(unittest.TestCase):
             ),
             ("Do not request a copied diff", "Request a copied diff"),
         )
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             for old, new in mutations:
                 root = self.copy_repository()
                 path = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "assets"
                     / "agents"
                     / f"{name}.toml"
@@ -230,10 +230,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_appended_policy_contradictions(self) -> None:
         producer_paths = (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -252,12 +252,12 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             root = self.copy_repository()
             path = (
                 root
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -280,10 +280,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_removed_inherited_context_guards(self) -> None:
         producer_paths = (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -301,12 +301,12 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             root = self.copy_repository()
             path = (
                 root
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -323,12 +323,12 @@ class ReviewContextContractTests(unittest.TestCase):
                 )
 
     def test_judge_policy_validation_allows_whitespace_wrapping(self) -> None:
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             root = self.copy_repository()
             path = (
                 root
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -352,10 +352,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_canonical_validation_preserves_review_markdown_structure(self) -> None:
         for relative_path in (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         ):
@@ -373,12 +373,12 @@ class ReviewContextContractTests(unittest.TestCase):
                     errors,
                 )
 
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             root = self.copy_repository()
             path = (
                 root
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -399,18 +399,18 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_unrelated_producer_edits_do_not_invalidate_review_policy(self) -> None:
         mutations = (
             (
-                Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+                Path("plugins/expskill/skills/skill-builder/SKILL.md"),
                 "references/artifact-contracts.md",
                 "references/Artifact-Contracts.md",
             ),
             (
-                Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
+                Path("plugins/expskill/skills/implement/SKILL.md"),
                 "source-package locator",
                 "source package locator",
             ),
             (
                 Path(
-                    "plugins/codex-dev-flow/skills/skill-builder/"
+                    "plugins/expskill/skills/skill-builder/"
                     "references/evaluation-rubric.md"
                 ),
                 "outputs, consumers, handoffs",
@@ -432,10 +432,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_heading_must_be_live_top_level_markdown(self) -> None:
         guarded_paths = (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -459,10 +459,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_heading_requires_an_exact_column_zero_line(self) -> None:
         guarded_paths = (
-            Path("plugins/codex-dev-flow/skills/implement/SKILL.md"),
-            Path("plugins/codex-dev-flow/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/skills/implement/SKILL.md"),
+            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/codex-dev-flow/skills/skill-builder/"
+                "plugins/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -491,7 +491,7 @@ class ReviewContextContractTests(unittest.TestCase):
                     )
 
     def test_canonical_validation_preserves_markdown_hard_breaks(self) -> None:
-        producer_path = Path("plugins/codex-dev-flow/skills/implement/SKILL.md")
+        producer_path = Path("plugins/expskill/skills/implement/SKILL.md")
         root = self.copy_repository()
         path = root / producer_path
         contents = path.read_text(encoding="utf-8")
@@ -504,12 +504,12 @@ class ReviewContextContractTests(unittest.TestCase):
             errors,
         )
 
-        for name in ("devflow-review", "devflow-spec"):
+        for name in ("expskill-review", "expskill-spec"):
             root = self.copy_repository()
             path = (
                 root
                 / "plugins"
-                / "codex-dev-flow"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"

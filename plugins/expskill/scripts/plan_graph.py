@@ -359,8 +359,8 @@ def default_state_home() -> Path:
     """Return the helper-owned private state root for fresh sessions."""
     configured = os.environ.get("XDG_STATE_HOME")
     if configured:
-        return Path(configured) / "codex-dev-flow"
-    return Path.home() / ".local" / "state" / "codex-dev-flow"
+        return Path(configured) / "expskill"
+    return Path.home() / ".local" / "state" / "expskill"
 
 
 def _absolute_state_path(path: Path | None) -> Path:

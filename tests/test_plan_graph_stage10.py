@@ -17,7 +17,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "plugins/codex-dev-flow/scripts/plan_graph.py"
+HELPER = ROOT / "plugins/expskill/scripts/plan_graph.py"
 BRANCH = "feature/transaction-tests"
 
 

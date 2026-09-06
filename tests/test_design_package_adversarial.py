@@ -12,7 +12,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "plugins" / "codex-dev-flow"
+PLUGIN = ROOT / "plugins" / "expskill"
 HELPER = PLUGIN / "scripts" / "design_state.py"
 
 
@@ -53,7 +53,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         """Regression: the joined state helper is allowed without becoming required in this lane."""
 
         root = self._copy_repository()
-        scripts = root / "plugins" / "codex-dev-flow" / "skills" / "skill-builder" / "scripts"
+        scripts = root / "plugins" / "expskill" / "skills" / "skill-builder" / "scripts"
         scripts.mkdir(exist_ok=True)
         state_helper = scripts / "run_state.py"
         if not state_helper.exists():
@@ -73,13 +73,13 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
             "stale-six-skill-wording": ("readme", "seven independent skills"),
-            "use-expand-route": (
+            "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
             ),
             "lifecycle-coupling": ("skill-builder", "canonical boundary section"),
             "router-coupling": (
-                "use-expand",
+                "use-expskill",
                 "must not name skill-builder",
             ),
             "repository-local-duplicate": (".agents/skills/improve-skill", "must be absent"),
@@ -87,7 +87,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for mutation, fragments in expected_fragments.items():
             with self.subTest(mutation=mutation):
                 root = self._copy_repository()
-                plugin = root / "plugins" / "codex-dev-flow"
+                plugin = root / "plugins" / "expskill"
                 builder = plugin / "skills" / "skill-builder"
                 if mutation == "missing-builder":
                     shutil.rmtree(builder)
@@ -124,11 +124,11 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         ),
                         encoding="utf-8",
                     )
-                elif mutation == "use-expand-route":
+                elif mutation == "use-expskill-route":
                     contract = builder / "SKILL.md"
                     contract.write_text(
                         contract.read_text(encoding="utf-8")
-                        + "\nUse $use-expand after finalization.\n",
+                        + "\nUse $use-expskill after finalization.\n",
                         encoding="utf-8",
                     )
                 elif mutation == "lifecycle-coupling":
@@ -142,7 +142,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                 elif mutation == "router-coupling":
-                    router = plugin / "skills" / "use-expand" / "SKILL.md"
+                    router = plugin / "skills" / "use-expskill" / "SKILL.md"
                     router.write_text(
                         router.read_text(encoding="utf-8")
                         + "\nRoute to $skill-builder after implementation.\n",
@@ -173,7 +173,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "Never route to `$design`.",
             "Do not stop at finalization: invoke $plan after finalization.",
             "There is no delay: route through **$implement** after finalization.",
-            "Without delay, invoke $use-expand after finalization.",
+            "Without delay, invoke $use-expskill after finalization.",
             "Refuse to invoke $grill-me.",
             "Cannot finish without invoking $unslop.",
         )
@@ -183,7 +183,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 contract = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "skills"
                     / "skill-builder"
                     / "SKILL.md"
@@ -202,7 +202,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     f"cross-skill token escaped validation: {addition!r}: {errors}",
                 )
 
-    def test_validator_rejects_any_skill_builder_name_in_use_expand(self) -> None:
+    def test_validator_rejects_any_skill_builder_name_in_use_expskill(self) -> None:
         """Regression: the router cannot mention Skill Builder under any sentiment or markup."""
 
         additions = (
@@ -218,9 +218,9 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 router = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "skills"
-                    / "use-expand"
+                    / "use-expskill"
                     / "SKILL.md"
                 )
                 router.write_text(
@@ -230,7 +230,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 errors = tuple(error.lower() for error in validate_repository(root))
                 self.assertTrue(
                     any(
-                        "use-expand" in error and "must not name skill-builder" in error
+                        "use-expskill" in error and "must not name skill-builder" in error
                         for error in errors
                     ),
                     f"Skill Builder name escaped router validation: {addition!r}: {errors}",
@@ -262,7 +262,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 contract = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "skills"
                     / "skill-builder"
                     / "SKILL.md"
@@ -300,7 +300,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 manifest_path = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / ".codex-plugin"
                     / "plugin.json"
                 )
@@ -329,9 +329,9 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             ("skill-builder", "prefix$skill-builder"),
             ("skill-builder", "$skill-builder-v2"),
             ("skill-builder", "$Skill-Builder"),
-            ("use-expand", "prefix$use-expand"),
-            ("use-expand", "$use-expand-preview"),
-            ("use-expand", "$Use-Expand"),
+            ("use-expskill", "prefix$use-expskill"),
+            ("use-expskill", "$use-expskill-preview"),
+            ("use-expskill", "$Use-ExpSkill"),
         )
         for skill, replacement in cases:
             with self.subTest(skill=skill, replacement=replacement):
@@ -339,7 +339,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 metadata_path = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / "skills"
                     / skill
                     / "agents"
@@ -361,27 +361,27 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     f"metadata collision {replacement!r} escaped validation: {errors}",
                 )
 
-    def test_manifest_default_prompt_requires_exact_use_expand_token(self) -> None:
+    def test_manifest_default_prompt_requires_exact_use_expskill_token(self) -> None:
         """Regression: the router prompt must contain the exact case-sensitive invocation."""
 
         for replacement in (
-            "prefix$use-expand",
-            "$use-expand-preview",
-            "$Use-Expand",
+            "prefix$use-expskill",
+            "$use-expskill-preview",
+            "$Use-ExpSkill",
         ):
             with self.subTest(replacement=replacement):
                 root = self._copy_repository()
                 manifest_path = (
                     root
                     / "plugins"
-                    / "codex-dev-flow"
+                    / "expskill"
                     / ".codex-plugin"
                     / "plugin.json"
                 )
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["interface"]["defaultPrompt"] = manifest["interface"][
                     "defaultPrompt"
-                ].replace("$use-expand", replacement)
+                ].replace("$use-expskill", replacement)
                 manifest_path.write_text(
                     json.dumps(manifest, indent=2) + "\n",
                     encoding="utf-8",
@@ -389,7 +389,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 errors = tuple(error.lower() for error in validate_repository(root))
                 self.assertTrue(
                     any(
-                        "defaultprompt" in error and "invoke $use-expand" in error
+                        "defaultprompt" in error and "invoke $use-expskill" in error
                         for error in errors
                     ),
                     f"manifest collision {replacement!r} escaped validation: {errors}",
@@ -465,11 +465,11 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 root = self._copy_repository()
-                helper = root / "plugins" / "codex-dev-flow" / "scripts" / "design_state.py"
+                helper = root / "plugins" / "expskill" / "scripts" / "design_state.py"
                 if mutation == "missing":
                     helper.unlink()
                 elif mutation == "duplicate":
-                    shadow = root / "plugins" / "codex-dev-flow" / "assets" / "design_state.py"
+                    shadow = root / "plugins" / "expskill" / "assets" / "design_state.py"
                     shadow.write_bytes(helper.read_bytes())
                 elif mutation == "empty":
                     helper.write_bytes(b"")
@@ -490,7 +490,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
     def test_installer_does_not_mutate_on_design_helper_preflight_failure(self) -> None:
         """Regression: invalid Design package state must fail before links, receipts, or external commands change."""
         root = self._copy_repository()
-        helper = root / "plugins" / "codex-dev-flow" / "scripts" / "design_state.py"
+        helper = root / "plugins" / "expskill" / "scripts" / "design_state.py"
         helper.unlink()
         codex_home = root / "codex-home"
         state_home = root / "state-home"

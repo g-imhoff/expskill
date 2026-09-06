@@ -1,4 +1,4 @@
-# Codex Dev Flow Implementation Plan
+# ExpSkill Implementation Plan
 
 ## Goal
 
@@ -8,9 +8,9 @@ implementation orchestration, installation, and behavioral validation separate.
 
 ## Non-negotiable architecture
 
-- Public skills are exactly `use-expand`, `brainstorm`, `plan`, `design`, and
+- Public skills are exactly `use-expskill`, `brainstorm`, `plan`, `design`, and
   `implement`.
-- Only `use-expand` activates implicitly and it opens one skill per transition.
+- Only `use-expskill` activates implicitly and it opens one skill per transition.
 - `plan` owns the canonical private graph; no later skill invents another state
   engine.
 - `implement` owns TDD workers, independent review/spec gates, corrections,
@@ -24,22 +24,22 @@ implementation orchestration, installation, and behavioral validation separate.
 
 ```text
 .agents/plugins/marketplace.json
-plugins/codex-dev-flow/
+plugins/expskill/
 ├── .codex-plugin/plugin.json
 ├── assets/
 │   ├── execution-policy.json
 │   └── agents/
-│       ├── devflow-explorer.toml
-│       ├── devflow-test-engineer.toml
-│       ├── devflow-implementer.toml
-│       ├── devflow-review.toml
-│       └── devflow-spec.toml
+│       ├── expskill-explorer.toml
+│       ├── expskill-test-engineer.toml
+│       ├── expskill-implementer.toml
+│       ├── expskill-review.toml
+│       └── expskill-spec.toml
 ├── scripts/
 │   ├── design_state.py
 │   ├── plan_graph.py
 │   └── worktrees.py
 └── skills/
-    ├── use-expand/{SKILL.md,agents/openai.yaml}
+    ├── use-expskill/{SKILL.md,agents/openai.yaml}
     ├── brainstorm/{SKILL.md,agents/openai.yaml,references/brainstorm-techniques.csv}
     ├── plan/{SKILL.md,agents/openai.yaml}
     ├── design/{SKILL.md,agents/openai.yaml,references/*}
@@ -104,8 +104,8 @@ tests/{test_contracts.py,test_implement_contract.py,test_install.py,...}
 
 ```text
 python3 scripts/validate.py
-python3 /home/gimhoff/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/codex-dev-flow/skills/implement
-python3 /home/gimhoff/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/codex-dev-flow
+python3 /home/gimhoff/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/expskill/skills/implement
+python3 /home/gimhoff/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/expskill
 python3 -m pytest -q tests/test_implement_contract.py tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
 python3 -m pytest -q
 ```
