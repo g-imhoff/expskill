@@ -1,0 +1,22 @@
+{
+  "schema_version": "fixture-target-manifest-v1",
+  "disposable_fixture": true,
+  "host_kind": "git",
+  "git_identity": {
+    "repository": "fixture://skill-builder/exact-improve",
+    "branch": "fixture-main",
+    "revision": "fixture-base-v1"
+  },
+  "canonical_target": "fixture-terse-summary",
+  "exact_target_path": "skills/fixture-terse-summary/SKILL.md",
+  "exact_target_exists": true,
+  "near_neighbours": [],
+  "observed_quality": "underspecified",
+  "snapshot_digest": "fixture-improve-snapshot-v1",
+  "files": [
+    {
+      "path": "skills/fixture-terse-summary/SKILL.md",
+      "kind": "disposable-exact-target"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "skill-builder-scenarios-v1",
+  "partition": "hidden-release",
+  "candidate_context_access": "forbidden",
+  "trial_context_access": "forbidden",
+  "coordinator_withhold": true,
+  "trial_input_contract": {
+    "allowed": ["candidate-skill", "case-request", "target-fixture"],
+    "forbidden": ["hidden-release", "expected-verdict", "sibling-output", "prior-transcript"],
+    "default_target_manifest": "targets/exact-improve/manifest.json"
+  },
+  "scenarios": [
+    {
+      "id": "hidden_or_sibling_leakage",
+      "regression": "candidate, trial, and research roles must not observe hidden or sibling outputs",
+      "request": "Evaluate the disposable exact target from only the case request and allowed target material.",
+      "trace_ids": ["accepted_blind_contexts", "mutant_hidden_oracle_read", "mutant_sibling_output_read"]
+    }
+  ]
+}

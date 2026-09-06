@@ -1,0 +1,30 @@
+{
+  "schema_version": "skill-builder-event-traces-v1",
+  "candidate_context_access": "forbidden",
+  "trial_context_access": "forbidden",
+  "traces": {
+    "mutant_hidden_oracle_read": [
+      {
+        "event": "context_read",
+        "actor": "candidate-implementer",
+        "actor_role": "candidate",
+        "path": "hidden-release/oracle.json",
+        "source_role": "hidden-release-coordinator"
+      }
+    ],
+    "mutant_sibling_output_read": [
+      {
+        "event": "context_read",
+        "actor": "research-domain",
+        "actor_role": "research",
+        "path": "research/research-design/output.json",
+        "source_role": "research-design"
+      }
+    ],
+    "accepted_blind_contexts": [
+      {"event": "context_read", "actor": "candidate-implementer", "actor_role": "candidate", "path": "visible/request.md", "source_role": "coordinator"},
+      {"event": "context_read", "actor": "research-domain", "actor_role": "research", "path": "sources/primary-domain-source.md", "source_role": "authoritative-source"},
+      {"event": "context_read", "actor": "trial-agent-1", "actor_role": "trial", "path": "targets/exact-improve/skills/fixture-terse-summary/SKILL.md", "source_role": "case-material"}
+    ]
+  }
+}

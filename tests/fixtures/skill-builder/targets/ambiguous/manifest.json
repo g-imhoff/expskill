@@ -1,0 +1,16 @@
+{
+  "schema_version": "fixture-target-manifest-v1",
+  "disposable_fixture": true,
+  "host_kind": "non-git",
+  "git_identity": null,
+  "canonical_target": null,
+  "exact_target_path": null,
+  "exact_target_exists": false,
+  "identity_ambiguous": true,
+  "near_neighbours": [
+    "fixture-change-summary",
+    "fixture-release-summary"
+  ],
+  "snapshot_digest": "fixture-ambiguous-snapshot-v1",
+  "files": []
+}
