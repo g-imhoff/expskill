@@ -10,6 +10,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,13 +169,20 @@ KNOWN_EVENTS = frozenset(
     }
 )
 EVENT_REQUIRED_FIELDS = {
+    "actor_role_recorded": frozenset({"actor_identity", "actor_role"}),
     "resolve": frozenset(
         {"target_manifest", "selected_mode", "target_snapshot", "authority"}
     ),
     "queue_created": frozenset({"targets"}),
-    "target_activated": frozenset({"target_identity", "lock_nonce"}),
-    "target_finalized": frozenset({"target_identity"}),
-    "target_abandoned": frozenset({"target_identity"}),
+    "target_activated": frozenset(
+        {"target_identity", "lock_nonce", "lock_owner", "lock_acquired_at"}
+    ),
+    "target_finalized": frozenset(
+        {"target_identity", "lock_nonce", "lock_owner"}
+    ),
+    "target_abandoned": frozenset(
+        {"target_identity", "lock_nonce", "lock_owner"}
+    ),
     "contract_written": frozenset({"contract_digest"}),
     "contract_changed": frozenset({"contract_digest"}),
     "target_snapshot_changed": frozenset({"target_snapshot"}),
@@ -192,6 +200,22 @@ EVENT_REQUIRED_FIELDS = {
     "dependency_graph_recorded": frozenset({"dependencies"}),
     "write": frozenset({"destination_scope", "effect", "actor", "path"}),
     "delivery_attempt": frozenset({"destination_scope", "effect", "actor"}),
+    "delivery_accepted": frozenset(
+        {
+            "valid",
+            "accepted",
+            "action",
+            "destination_identity",
+            "resulting_destination_digest",
+            "acceptance_evidence",
+            "user_authority_event_digest",
+            "actor",
+            "timestamp",
+            "delivery_record_digest",
+            "finalized_revision",
+            "run_directory_identity",
+        }
+    ),
     "context_read": frozenset(
         {"path", "actor_role", "source_role", "actor"}
     ),
@@ -284,6 +308,32 @@ CANDIDATE_BOUND_ARTIFACT_TYPES = frozenset(
 )
 EVALUATION_BOUND_ARTIFACT_TYPES = CANDIDATE_BOUND_ARTIFACT_TYPES | {
     "evaluation-pack"
+}
+DEPENDENCY_NODE_ARTIFACT_TYPES = {
+    "baseline": frozenset({"baseline-report", "preserved-regressions"}),
+    "research": frozenset({"research-pack", "evidence-sieve"}),
+    "contract": frozenset(
+        {
+            "design-record",
+            "skill-contract",
+            "user-confirmation-record",
+            "confirmed-contract",
+        }
+    ),
+    "evaluation": frozenset({"rubric", "evaluation-pack"}),
+    "candidate": frozenset(
+        {"candidate-record", "candidate-diff", "candidate-manifest"}
+    ),
+    "trials": frozenset(
+        {"raw-trial-evidence", "trial-receipt", "trial-pack"}
+    ),
+    "review": frozenset({"review-record"}),
+    "scores": frozenset({"category-evidence", "target-scorecard"}),
+    "verification": frozenset(
+        {"spec-outcome-record", "verification-record"}
+    ),
+    "authority": frozenset({"authority-record"}),
+    "release.delivery": frozenset({"release-record", "terminal-manifest"}),
 }
 CONTRACT_BOUND_ARTIFACT_TYPES = EVALUATION_BOUND_ARTIFACT_TYPES | {
     "skill-contract",
@@ -2091,6 +2141,12 @@ def build_fixture_trace(
             if len(revisions) > 1
             else copy.deepcopy(complete[: last_index + 1])
         )
+        if len(revisions) == 1:
+            candidate_path = [
+                event
+                for event in candidate_path
+                if event.get("event") not in {"queue_created", "target_activated"}
+            ]
         raw_resolution = raw_resolutions[0]
         fixture_manifest = raw_resolution.get("target_manifest")
         fixture_target, inferred_mode = _target_from_manifest(fixture_manifest)
@@ -2156,10 +2212,22 @@ def build_fixture_trace(
                 rubric["artifact_id"],
                 digest_value(rubric["rubric_digest"]),
             )
-        candidate_path[0]["target_manifest"] = fixture_manifest
-        candidate_path[0]["selected_mode"] = fixture_mode
+        candidate_resolution = next(
+            event for event in candidate_path if event.get("event") == "resolve"
+        )
+        candidate_resolution["target_manifest"] = fixture_manifest
+        candidate_resolution["selected_mode"] = fixture_mode
         if "requested_mode" in raw_resolution:
-            candidate_path[0]["requested_mode"] = raw_resolution["requested_mode"]
+            candidate_resolution["requested_mode"] = raw_resolution["requested_mode"]
+        for event in candidate_path:
+            if event.get("event") == "queue_created":
+                event["targets"] = [fixture_target]
+            elif event.get("event") in {
+                "target_activated",
+                "target_finalized",
+                "target_abandoned",
+            }:
+                event["target_identity"] = fixture_target
         bind_fixture_candidate_paths(candidate_path, fixture_workflow)
         return seal_trace(
             candidate_path,
@@ -2402,7 +2470,12 @@ def validate_schema_boundary(
             and digest_claims_are_valid(event)
         )
         shape_valid = True
-        if event_name == "resolve":
+        if event_name == "actor_role_recorded":
+            shape_valid = all(
+                isinstance(event.get(field), str) and bool(event[field])
+                for field in ("actor_identity", "actor_role")
+            )
+        elif event_name == "resolve":
             authority = event.get("authority")
             shape_valid = (
                 all(
@@ -2451,11 +2524,16 @@ def validate_schema_boundary(
                 and bool(event["target_identity"])
                 and isinstance(event.get("lock_nonce"), str)
                 and bool(event["lock_nonce"])
+                and isinstance(event.get("lock_owner"), str)
+                and bool(event["lock_owner"])
+                and isinstance(event.get("lock_acquired_at"), str)
+                and RFC3339_UTC_RE.fullmatch(event["lock_acquired_at"])
+                is not None
             )
         elif event_name in {"target_finalized", "target_abandoned"}:
-            shape_valid = (
-                isinstance(event.get("target_identity"), str)
-                and bool(event["target_identity"])
+            shape_valid = all(
+                isinstance(event.get(field), str) and bool(event[field])
+                for field in ("target_identity", "lock_nonce", "lock_owner")
             )
         elif event_name in {"contract_written", "contract_changed"}:
             shape_valid = isinstance(event.get("contract_digest"), str)
@@ -2522,11 +2600,32 @@ def validate_schema_boundary(
                 and isinstance(event.get("actor"), str)
                 and bool(event["actor"])
             )
+        elif event_name == "delivery_accepted":
+            shape_valid = (
+                event.get("valid") is True
+                and event.get("accepted") is True
+                and all(
+                    isinstance(event.get(field), str) and bool(event[field])
+                    for field in (
+                        "action",
+                        "destination_identity",
+                        "actor",
+                        "finalized_revision",
+                        "run_directory_identity",
+                    )
+                )
+                and digest_is_valid(event.get("resulting_destination_digest"))
+                and digest_is_valid(event.get("user_authority_event_digest"))
+                and digest_is_valid(event.get("delivery_record_digest"))
+                and unique_nonempty_strings(event.get("acceptance_evidence"))
+                and isinstance(event.get("timestamp"), str)
+                and RFC3339_UTC_RE.fullmatch(event["timestamp"]) is not None
+            )
         elif event_name == "context_read":
             shape_valid = all(
-                isinstance(event.get(field), str)
+                isinstance(event.get(field), str) and bool(event[field])
                 for field in ("path", "actor_role", "source_role", "actor")
-            )
+            ) and normalized_run_relative_path(event.get("path")) is not None
         elif event_name == "research_pack":
             shape_valid = isinstance(event.get("lanes"), list) and all(
                 isinstance(lane, dict)
@@ -3112,6 +3211,17 @@ def accepted_finalization_trace(
     ]
     events = [
         {
+            "event": "queue_created",
+            "targets": [target_identity],
+        },
+        {
+            "event": "target_activated",
+            "target_identity": target_identity,
+            "lock_nonce": "fixture-terse-summary-lock-v1",
+            "lock_owner": "main-agent-v1",
+            "lock_acquired_at": "2026-01-01T00:00:01Z",
+        },
+        {
             "event": "resolve",
             "selected_mode": "improve",
             "target_manifest": "targets/exact-improve/manifest.json",
@@ -3597,8 +3707,19 @@ def accepted_finalization_trace(
             **binding,
         },
         {"event": "finalized", **binding},
+        {
+            "event": "target_finalized",
+            "target_identity": target_identity,
+            "lock_nonce": "fixture-terse-summary-lock-v1",
+            "lock_owner": "main-agent-v1",
+        },
     ]
-    return seal_trace(events)
+    return seal_trace(
+        events,
+        workflow_id=workflow_id,
+        target_identity=target_identity,
+        mode="improve",
+    )
 
 
 def accepted_repair_trace(
@@ -3846,7 +3967,29 @@ def finalization_trace_after_aba(
         for index, event in enumerate(original)
         if event["event"] == "candidate_edit"
     )
-    prefix = copy.deepcopy(original[:candidate_index])
+    queue_events = {
+        "queue_created",
+        "target_activated",
+        "target_finalized",
+        "target_abandoned",
+    }
+    prefix = copy.deepcopy(
+        [
+            event
+            for event in original[:candidate_index]
+            if event["event"] not in queue_events
+        ]
+    )
+    queue_open = copy.deepcopy(
+        [
+            event
+            for event in original
+            if event["event"] in {"queue_created", "target_activated"}
+        ]
+    )
+    queue_terminal = copy.deepcopy(
+        next(event for event in original if event["event"] == "target_finalized")
+    )
     replay = copy.deepcopy(original)
     id_map = {
         event["artifact_id"]: f"{event['artifact_id']}-{transition}-replay"
@@ -3875,7 +4018,9 @@ def finalization_trace_after_aba(
 
     replay = remap(replay)
     if transition in {"workflow", "target"}:
-        foreign = copy.deepcopy(original[0])
+        foreign = copy.deepcopy(
+            next(event for event in original if event.get("event") == "resolve")
+        )
         foreign.update(
             {
                 "artifact_id": f"foreign-{transition}-resolution",
@@ -3920,7 +4065,10 @@ def finalization_trace_after_aba(
             1 if stale_prerequisites and is_prerequisite else current_snapshot_generation
         )
 
-    return seal_trace([*prefix, *transitions, *replay])
+    replay = [event for event in replay if event["event"] not in queue_events]
+    return seal_trace(
+        [*prefix, *transitions, *queue_open, *replay, queue_terminal]
+    )
 
 
 def cleanup_trace(
@@ -3946,6 +4094,13 @@ def cleanup_trace(
             "event": "delivery_accepted",
             "valid": True,
             "accepted": True,
+            "action": "install",
+            "destination_identity": "fixture-terse-summary",
+            "resulting_destination_digest": "installed-target-v1",
+            "acceptance_evidence": ["fixture-install-check"],
+            "user_authority_event_digest": "delivery-authority-v1",
+            "actor": "main-agent-v1",
+            "timestamp": "2026-01-01T00:00:10Z",
             "delivery_record_digest": "delivery-1",
             **binding,
         },
@@ -4010,6 +4165,11 @@ def evaluate_trace(
             "INVALID_TRANSITION_RECEIPT",
         }
     }
+    finalization_indices = [
+        index
+        for index, event in enumerate(trace)
+        if isinstance(event, dict) and event.get("event") == "finalized"
+    ]
     current_contract: str | None = None
     confirmed_contract: str | None = None
     contract_epoch = 0
@@ -4039,10 +4199,16 @@ def evaluate_trace(
     prerequisite_generation_invalid = False
     research_lanes: list[dict[str, Any]] | None = None
     active_target: str | None = None
+    active_lock_nonce: str | None = None
+    active_lock_owner: str | None = None
+    active_lock_acquired_at: str | None = None
     declared_queue: list[str] | None = None
-    queue_position = 0
+    queue_states: dict[str, str] = {}
+    paused_queue_locks: dict[str, tuple[str, str, str]] = {}
+    builder_terminal_outcomes: dict[str, str] = {}
     queue_declaration_index: int | None = None
     dependency_graph: dict[str, list[str]] | None = None
+    dependency_graph_artifact_ids: dict[str, set[str]] | None = None
     material_findings: dict[str, tuple[set[str], Any, int]] = {}
     verification: dict[str, Any] | None = None
     pause_record: dict[str, Any] | None = None
@@ -5095,6 +5261,17 @@ def evaluate_trace(
         "verification_recorded",
         "write",
     }
+    post_finalization_allowed_events = frozenset(
+        {
+            "finalization_receipt_validated",
+            "delivery_attempt",
+            "delivery_accepted",
+            "cleanup_authority_recorded",
+            "run_state_manifest_validated",
+            "cleanup_tombstone_validated",
+            "cleanup_attempt",
+        }
+    )
 
     for index, event in enumerate(trace):
         if index not in dispatchable_event_indices:
@@ -5163,35 +5340,26 @@ def evaluate_trace(
                     "a candidate-dependent effect did not bind validated authority",
                 )
             )
-        if finalization_event_index is not None and event_name in {
-            "actor_role_recorded",
-            "artifact_retained",
-            "baseline_captured",
-            "builder_conformance_recorded",
-            "candidate_edit",
-            "category_scored",
-            "contract_changed",
-            "contract_written",
-            "evaluation_frozen",
-            "evidence_sieved",
-            "finalized",
-            "release_evidence_retained",
-            "repair_completed",
-            "research_pack",
-            "resolve",
-            "review_recorded",
-            "spec_outcome_recorded",
-            "target_scorecard_recorded",
-            "target_snapshot_changed",
-            "user_confirmed",
-            "verification_recorded",
-            "write",
-        }:
+        post_finalization_event_allowed = (
+            event_name in post_finalization_allowed_events
+            or (
+                event_name == "target_finalized"
+                and active_target is not None
+                and event.get("target_identity") == active_target
+            )
+        )
+        carries_artifact = any(
+            field in event
+            for field in ("artifact_id", "artifact_type", "artifact_envelope")
+        )
+        if finalization_event_index is not None and (
+            not post_finalization_event_allowed or carries_artifact
+        ):
             failures.append(
                 OracleFailure(
                     "EVENT_AFTER_FINALIZATION",
                     index,
-                    "revision-dependent work occurred after the finalized terminal event",
+                    "a non-terminal-tail effect or artifact occurred after finalization",
                 )
             )
             continue
@@ -5294,6 +5462,17 @@ def evaluate_trace(
                 event.get("mode") if identity_ambiguous else expected_mode
             )
             identity_resolution_seen = True
+            if declared_queue is not None and (
+                active_target != current_target_identity
+                or active_lock_owner != event.get("actor_identity")
+            ):
+                failures.append(
+                    OracleFailure(
+                        "QUEUE_TARGET_BINDING_MISMATCH",
+                        index,
+                        "resolution did not bind the active queued target and lock owner",
+                    )
+                )
             if (
                 event.get("target_identity") is not None
                 and event.get("target_identity") != current_target_identity
@@ -5352,14 +5531,16 @@ def evaluate_trace(
                 )
             else:
                 declared_queue = list(targets)
-                queue_position = 0
+                queue_states = {target: "pending" for target in targets}
         elif event_name == "target_activated":
             target_identity = event["target_identity"]
-            expected_target = (
-                declared_queue[queue_position]
-                if declared_queue is not None
-                and queue_position < len(declared_queue)
-                else None
+            expected_target = next(
+                (
+                    target
+                    for target in (declared_queue or [])
+                    if queue_states.get(target) == "pending"
+                ),
+                None,
             )
             if active_target is not None:
                 failures.append(
@@ -5379,18 +5560,62 @@ def evaluate_trace(
                 )
             elif active_target is None:
                 active_target = target_identity
+                active_lock_nonce = event["lock_nonce"]
+                active_lock_owner = event["lock_owner"]
+                active_lock_acquired_at = event["lock_acquired_at"]
+                queue_states[target_identity] = "active"
         elif event_name in {"target_finalized", "target_abandoned"}:
-            if event["target_identity"] == active_target:
-                active_target = None
-                queue_position += 1
-            else:
+            target_identity = event["target_identity"]
+            expected_outcome = (
+                "finalized"
+                if event_name == "target_finalized"
+                else "abandoned"
+            )
+            integrated_run = bool(finalization_indices) or identity_resolution_seen
+            outcome_valid = (
+                not integrated_run
+                or builder_terminal_outcomes.get(target_identity)
+                == expected_outcome
+            )
+            lock_valid = (
+                event.get("lock_nonce") == active_lock_nonce
+                and event.get("lock_owner") == active_lock_owner
+            )
+            if not outcome_valid:
                 failures.append(
                     OracleFailure(
-                        "QUEUE_TERMINAL_MISMATCH",
+                        "QUEUE_TERMINAL_BEFORE_BUILDER_OUTCOME",
                         index,
-                        f"terminal target {event['target_identity']!r} did not own the active lock",
+                        "queue terminal state did not follow the matching builder outcome",
                     )
                 )
+            if target_identity == active_target and not lock_valid:
+                failures.append(
+                    OracleFailure(
+                        "QUEUE_LOCK_MISMATCH",
+                        index,
+                        "queue terminal state did not echo the active lock owner and nonce",
+                    )
+                )
+            if (
+                target_identity == active_target
+                and outcome_valid
+                and lock_valid
+            ):
+                active_target = None
+                active_lock_nonce = None
+                active_lock_owner = None
+                active_lock_acquired_at = None
+                queue_states[target_identity] = expected_outcome
+            else:
+                if target_identity != active_target:
+                    failures.append(
+                        OracleFailure(
+                            "QUEUE_TERMINAL_MISMATCH",
+                            index,
+                            f"terminal target {target_identity!r} did not own the active lock",
+                        )
+                    )
         elif event_name in {"contract_written", "contract_changed"}:
             invalidate_contract_and_downstream()
             contract_epoch += 1
@@ -5434,10 +5659,29 @@ def evaluate_trace(
                 run_lifecycle_state == "active"
                 and event.get("state_validated") is True
                 and pause_binding_matches_active
+                and (
+                    active_target is None
+                    or (
+                        event.get("target_identity") == active_target
+                        and event.get("lock_nonce") == active_lock_nonce
+                        and event.get("lock_owner") == active_lock_owner
+                    )
+                )
             )
             if pause_valid:
                 pause_record = event
                 run_lifecycle_state = "paused"
+                if active_target is not None:
+                    paused_queue_locks[active_target] = (
+                        str(active_lock_nonce),
+                        str(active_lock_owner),
+                        str(active_lock_acquired_at),
+                    )
+                    queue_states[active_target] = "paused"
+                    active_target = None
+                    active_lock_nonce = None
+                    active_lock_owner = None
+                    active_lock_acquired_at = None
             else:
                 failures.append(
                     OracleFailure(
@@ -5452,6 +5696,22 @@ def evaluate_trace(
                 "identity_revalidated",
                 "snapshot_revalidated",
                 "evidence_revalidated",
+            )
+            paused_target = event.get("target_identity")
+            prior_queue_lock = paused_queue_locks.get(str(paused_target))
+            queued_resume_valid = (
+                prior_queue_lock is None
+                or (
+                    active_target is None
+                    and isinstance(event.get("lock_nonce"), str)
+                    and bool(event["lock_nonce"])
+                    and event.get("lock_nonce") != prior_queue_lock[0]
+                    and event.get("lock_owner") == prior_queue_lock[1]
+                    and isinstance(event.get("lock_acquired_at"), str)
+                    and RFC3339_UTC_RE.fullmatch(event["lock_acquired_at"])
+                    is not None
+                    and event["lock_acquired_at"] > prior_queue_lock[2]
+                )
             )
             resume_valid = (
                 run_lifecycle_state == "paused"
@@ -5482,6 +5742,7 @@ def evaluate_trace(
                     == snapshot_generation
                 )
                 and all(event.get(field) is True for field in revalidation_fields)
+                and queued_resume_valid
             )
             if not resume_valid:
                 failures.append(
@@ -5494,10 +5755,19 @@ def evaluate_trace(
             else:
                 pause_record = None
                 run_lifecycle_state = "active"
+                if prior_queue_lock is not None:
+                    active_target = str(paused_target)
+                    active_lock_nonce = event["lock_nonce"]
+                    active_lock_owner = event["lock_owner"]
+                    active_lock_acquired_at = event["lock_acquired_at"]
+                    queue_states[str(paused_target)] = "active"
+                    paused_queue_locks.pop(str(paused_target), None)
         elif event_name == "question_asked":
             run_lifecycle_state = "unresolved"
         elif event_name == "stopped":
             run_lifecycle_state = "stopped"
+            if active_target is not None:
+                builder_terminal_outcomes[active_target] = "abandoned"
         elif event_name == "finalization_receipt_validated":
             finalization_receipt = event
         elif event_name == "run_state_manifest_validated":
@@ -5514,6 +5784,41 @@ def evaluate_trace(
                 event.get("target_identity"),
                 event.get("finalized_revision"),
                 event.get("run_directory_identity"),
+            )
+            actual_finalized_event = (
+                trace[finalization_indices[0]]
+                if len(finalization_indices) == 1
+                else None
+            )
+            actual_finalized_receipt = (
+                actual_finalized_event.get("transition_receipt")
+                if isinstance(actual_finalized_event, dict)
+                else None
+            )
+            actual_finalization_anchor_valid = (
+                not finalization_indices
+                or (
+                    len(finalization_indices) == 1
+                    and finalization_event_index == finalization_indices[0]
+                    and cleanup_binding[:3]
+                    == (
+                        current_workflow_id,
+                        current_target_identity,
+                        current_candidate_revision,
+                    )
+                    and (
+                        actual_finalized_event.get("workflow_id"),
+                        actual_finalized_event.get("target_identity"),
+                        actual_finalized_event.get("revision"),
+                    )
+                    == cleanup_binding[:3]
+                    and isinstance(actual_finalized_receipt, dict)
+                    and finalization_receipt is not None
+                    and finalization_receipt.get("final_transition_digest")
+                    == actual_finalized_receipt.get("receipt_digest")
+                    and finalization_indices[0]
+                    < record_event_indices.get(id(finalization_receipt), -1)
+                )
             )
             state_home = (
                 run_state_manifest.get("xdg_state_home")
@@ -5584,6 +5889,15 @@ def evaluate_trace(
                     accepted_delivery.get("run_directory_identity"),
                 )
                 == cleanup_binding
+                and (
+                    not finalization_indices
+                    or (
+                        accepted_delivery.get("actor")
+                        == (resolution_record or {}).get("actor_identity")
+                        and accepted_delivery.get("destination_identity")
+                        == current_target_identity
+                    )
+                )
             )
             tombstone_valid = (
                 cleanup_tombstone is not None
@@ -5624,6 +5938,7 @@ def evaluate_trace(
                     finalization_receipt.get("run_directory_identity"),
                 )
                 == cleanup_binding
+                and actual_finalization_anchor_valid
             )
             provenance_valid = (
                 finalization_valid
@@ -5697,6 +6012,16 @@ def evaluate_trace(
                 )
         elif event_name == "dependency_graph_recorded":
             dependency_graph = copy.deepcopy(event["dependencies"])
+            dependency_graph_artifact_ids = {
+                node: {
+                    artifact_id
+                    for artifact_id, artifact in retained_artifacts.items()
+                    if artifact.get("artifact_type")
+                    in DEPENDENCY_NODE_ARTIFACT_TYPES.get(node, frozenset())
+                    and artifact_is_current(artifact_id)
+                }
+                for node in dependency_graph
+            }
         elif event_name == "goal_changed" and scenario is not None:
             if dependency_graph is None:
                 failures.append(
@@ -5731,6 +6056,18 @@ def evaluate_trace(
                     and change == scenario.get("change")
                     and graph_artifacts == expected_artifacts
                     and affected == scenario_required
+                    and (
+                        not identity_resolution_seen
+                        or (
+                            dependency_graph_artifact_ids is not None
+                            and set(dependency_graph_artifact_ids)
+                            == graph_artifacts
+                            and all(
+                                dependency_graph_artifact_ids[node]
+                                for node in graph_artifacts
+                            )
+                        )
+                    )
                 )
                 if not graph_valid:
                     failures.append(
@@ -5758,6 +6095,21 @@ def evaluate_trace(
                             f"goal change invalidated unrelated artifacts: {sorted(unrelated)}",
                         )
                     )
+
+                if identity_resolution_seen and dependency_graph_artifact_ids:
+                    invalidated_artifact_ids.update(
+                        artifact_id
+                        for node in affected
+                        for artifact_id in dependency_graph_artifact_ids.get(
+                            node, set()
+                        )
+                    )
+                    if "authority" in affected:
+                        authority_record = None
+                    if "release.delivery" in affected:
+                        release_evidence = None
+                        terminal_manifest_record = None
+                        accepted_delivery = None
 
                 retained = event.get("retained")
                 retained_valid = (
@@ -5831,11 +6183,16 @@ def evaluate_trace(
                 current_target_identity if delivery_effects else "none"
             )
             delivery_authorized = (
-                authority_binding_is_current(event)
+                finalization_event_index is not None
+                and finalization_event_index < index
+                and authority_binding_is_current(event)
                 and event.get("workflow_id") == current_workflow_id
                 and event.get("target_identity") == current_target_identity
                 and event.get("destination_scope") == expected_scope
                 and event.get("effect") in delivery_effects
+                and event.get("actor")
+                == (resolution_record or {}).get("actor_identity")
+                and (resolution_record or {}).get("actor_role") == "main-agent"
             )
             if not delivery_authorized:
                 failures.append(
@@ -5849,9 +6206,10 @@ def evaluate_trace(
             path = normalized_run_relative_path(event.get("path"))
             path_parts = PurePosixPath(path).parts if path is not None else ()
             actor_identity = event.get("actor")
+            prior_roles = actor_roles.get(actor_identity)
             effective_roles = {
                 event.get("actor_role"),
-                *actor_roles.get(actor_identity, set()),
+                *(prior_roles or set()),
             }
             actor_classes = {
                 actor_class
@@ -5863,17 +6221,32 @@ def evaluate_trace(
                 )
                 is not None
             }
+            actor_research_values = (
+                {actor_identity, *prior_roles}
+                if prior_roles is not None
+                else {actor_identity, event.get("actor_role")}
+            )
             actor_research_identities = {
-                research_identity
-                for role in effective_roles
-                if (
-                    research_identity := canonical_research_context_identity(
-                        actor_identity, role
-                    )
-                )
-                is not None
+                RESEARCH_CONTEXT_ALIASES[value]
+                for value in actor_research_values
+                if isinstance(value, str) and value in RESEARCH_CONTEXT_ALIASES
             }
+            governing_research_identity = (
+                next(iter(actor_research_identities))
+                if len(actor_research_identities) == 1
+                else None
+            )
             source_role = event.get("source_role")
+            source_research_identities = {
+                RESEARCH_CONTEXT_ALIASES[value]
+                for value in (*path_parts, source_role)
+                if isinstance(value, str) and value in RESEARCH_CONTEXT_ALIASES
+            }
+            source_research_identity = (
+                next(iter(source_research_identities))
+                if len(source_research_identities) == 1
+                else None
+            )
             hidden_source = (
                 isinstance(source_role, str)
                 and (
@@ -5888,7 +6261,9 @@ def evaluate_trace(
                     or source_role.startswith("frozen-validation-")
                 )
             )
-            if actor_classes.intersection({"candidate", "trial"}) and (
+            if actor_classes.intersection(
+                {"candidate", "trial", "research"}
+            ) and (
                 "hidden-release" in path_parts or hidden_source
             ):
                 failures.append(
@@ -5910,9 +6285,12 @@ def evaluate_trace(
                 )
             elif (
                 "research" in actor_classes
-                and canonical_research_context_identity(source_role) is not None
-                and canonical_research_context_identity(source_role)
-                not in actor_research_identities
+                and bool(source_research_identities)
+                and (
+                    governing_research_identity is None
+                    or source_research_identity is None
+                    or source_research_identity != governing_research_identity
+                )
             ):
                 failures.append(
                     OracleFailure(
@@ -7034,6 +7412,26 @@ def evaluate_trace(
             verification = event
         elif event_name == "finalized":
             expected_binding = current_binding()
+            queue_lifecycle_valid = (
+                declared_queue is not None
+                and active_target == current_target_identity
+                and queue_states.get(str(current_target_identity)) == "active"
+                and isinstance(active_lock_nonce, str)
+                and bool(active_lock_nonce)
+                and active_lock_owner
+                == (resolution_record or {}).get("actor_identity")
+                and isinstance(active_lock_acquired_at, str)
+                and RFC3339_UTC_RE.fullmatch(active_lock_acquired_at)
+                is not None
+            )
+            if not queue_lifecycle_valid:
+                failures.append(
+                    OracleFailure(
+                        "FINALIZE_WITHOUT_ACTIVE_QUEUE_TARGET",
+                        index,
+                        "builder finalization lacked its resolved active queue target and lock",
+                    )
+                )
             if (
                 None in expected_binding
                 or not isinstance(current_workflow_id, str)
@@ -7245,6 +7643,8 @@ def evaluate_trace(
                         "finalization lacked a complete last-moment manifest of every retained artifact",
                     )
                 )
+            if queue_lifecycle_valid and current_target_identity is not None:
+                builder_terminal_outcomes[current_target_identity] = "finalized"
             finalization_event_index = index
         elif event_name == "user_confirmed":
             if resolution_record is not None:
@@ -7659,7 +8059,10 @@ def evaluate_trace(
     if (
         queue_declaration_index is not None
         and declared_queue is not None
-        and (active_target is not None or queue_position != len(declared_queue))
+        and any(
+            queue_states.get(target) not in {"finalized", "abandoned"}
+            for target in declared_queue
+        )
     ):
         failures.append(
             OracleFailure(
@@ -7669,11 +8072,6 @@ def evaluate_trace(
             )
         )
 
-    finalization_indices = [
-        index
-        for index, event in enumerate(trace)
-        if isinstance(event, dict) and event.get("event") == "finalized"
-    ]
     terminal_intent = bool(finalization_indices) or any(
         isinstance(event, dict)
         and (
@@ -7999,9 +8397,21 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         accepted = accepted_finalization_trace()
         self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
 
-        missing_final = copy.deepcopy(accepted[:-1])
+        missing_final = [
+            copy.deepcopy(event)
+            for event in accepted
+            if event.get("event") != "finalized"
+        ]
         duplicate_final = copy.deepcopy(accepted)
-        duplicate_final.append(copy.deepcopy(accepted[-1]))
+        duplicate_final.append(
+            copy.deepcopy(
+                next(
+                    event
+                    for event in accepted
+                    if event.get("event") == "finalized"
+                )
+            )
+        )
         unknown = copy.deepcopy(accepted)
         unknown.insert(-1, {"event": "unsupported_transition"})
         malformed = copy.deepcopy(accepted)
@@ -8013,7 +8423,11 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             if event.get("event") == "artifact_retained"
         )["artifact_type"] = []
         missing_manifest = copy.deepcopy(accepted)
-        missing_manifest[0]["target_manifest"] = "targets/missing/manifest.json"
+        next(
+            event
+            for event in missing_manifest
+            if event.get("event") == "resolve"
+        )["target_manifest"] = "targets/missing/manifest.json"
         missing_manifest = seal_trace(missing_manifest)
 
         for mutant, expected in (
@@ -8107,7 +8521,9 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         """Resolution-derived authority is a candidate and downstream dependency."""
 
         trace = accepted_finalization_trace()
-        resolution = trace[0]
+        resolution = next(
+            event for event in trace if event.get("event") == "resolve"
+        )
         authority_record = next(
             event
             for event in trace
@@ -8135,7 +8551,11 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("FINALIZATION_BINDING_MISMATCH", codes)
 
         changed_authority = accepted_finalization_trace()
-        changed_authority[0]["authority"]["candidate_effects"] = []
+        next(
+            event
+            for event in changed_authority
+            if event.get("event") == "resolve"
+        )["authority"]["candidate_effects"] = []
         changed_authority = seal_trace(changed_authority)
         changed_codes = {
             failure.code
@@ -8455,8 +8875,13 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES), ())
 
         stale_snapshot = accepted_finalization_trace()
+        final_index = next(
+            index
+            for index, event in enumerate(stale_snapshot)
+            if event["event"] == "finalized"
+        )
         stale_snapshot.insert(
-            -1,
+            final_index,
             {"event": "target_snapshot_changed", "target_snapshot": "snapshot-v2"},
         )
         stale_codes = {
@@ -8465,7 +8890,12 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("FINALIZATION_SNAPSHOT_MISMATCH", stale_codes)
 
         aba_snapshot = accepted_finalization_trace()
-        aba_snapshot[-1:-1] = [
+        final_index = next(
+            index
+            for index, event in enumerate(aba_snapshot)
+            if event["event"] == "finalized"
+        )
+        aba_snapshot[final_index:final_index] = [
             {"event": "target_snapshot_changed", "target_snapshot": "snapshot-v2"},
             {
                 "event": "target_snapshot_changed",
@@ -8686,6 +9116,472 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         }
         self.assertIn("EVENT_AFTER_FINALIZATION", failure_codes)
 
+    def test_finalization_allows_only_delivery_and_cleanup_tail(self) -> None:
+        """A finalized run cannot be reopened by a valid pause/resume pair."""
+
+        finalized = accepted_finalization_trace()
+        final_index = len(finalized)
+        reopened = seal_trace(
+            [
+                *finalized,
+                {
+                    "event": "paused",
+                    "state_validated": True,
+                    "target_identity": "fixture-terse-summary",
+                },
+                {
+                    "event": "resumed",
+                    "target_identity": "fixture-terse-summary",
+                    "chain_revalidated": True,
+                    "identity_revalidated": True,
+                    "snapshot_revalidated": True,
+                    "evidence_revalidated": True,
+                },
+            ]
+        )
+        self.assertEqual(
+            [
+                failure.event_index
+                for failure in evaluate_trace(reopened, BUILDER_FIXTURES)
+                if failure.code == "EVENT_AFTER_FINALIZATION"
+            ],
+            [final_index, final_index + 1],
+        )
+
+        workflow_id = "b" * 32
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / workflow_id
+        )
+        cleanup_tail = cleanup_trace(owned_path, workflow_id=workflow_id)
+        final_transition_digest = next(
+            event["transition_receipt"]["receipt_digest"]
+            for event in finalized
+            if event.get("event") == "finalized"
+        )
+        for event in cleanup_tail:
+            if "final_transition_digest" in event:
+                event["final_transition_digest"] = final_transition_digest
+        finalized_and_cleaned = seal_trace(
+            [*finalized, *cleanup_tail],
+            workflow_id=workflow_id,
+        )
+        self.assertEqual(
+            evaluate_trace(finalized_and_cleaned, BUILDER_FIXTURES), ()
+        )
+        self.assertEqual(
+            evaluate_trace(cleanup_tail, BUILDER_FIXTURES), ()
+        )
+
+        trusted_authority = _resolution_authority()
+        trusted_authority["delivery_effects"] = ["publish-production-target"]
+        with mock.patch(
+            f"{__name__}._resolution_authority",
+            return_value=trusted_authority,
+        ):
+            deliverable = accepted_finalization_trace()
+            next(
+                event
+                for event in deliverable
+                if event.get("artifact_type") == "authority-record"
+            )["authorized_delivery_scope"] = "fixture-terse-summary"
+            authorized_delivery = {
+                "event": "delivery_attempt",
+                "destination_scope": "fixture-terse-summary",
+                "effect": "publish-production-target",
+                "actor": "main-agent-v1",
+            }
+            deliverable.append(authorized_delivery)
+            self.assertEqual(
+                evaluate_trace(seal_trace(deliverable), BUILDER_FIXTURES), ()
+            )
+
+            premature_delivery = accepted_finalization_trace()
+            next(
+                event
+                for event in premature_delivery
+                if event.get("artifact_type") == "authority-record"
+            )["authorized_delivery_scope"] = "fixture-terse-summary"
+            premature_final_index = next(
+                index
+                for index, event in enumerate(premature_delivery)
+                if event.get("event") == "finalized"
+            )
+            premature_delivery.insert(
+                premature_final_index, copy.deepcopy(authorized_delivery)
+            )
+
+            delegated_delivery = copy.deepcopy(deliverable)
+            delegated_delivery[-1]["actor"] = "candidate-implementer-v1"
+            for mutant in (premature_delivery, delegated_delivery):
+                self.assertIn(
+                    "UNAUTHORIZED_DELIVERY",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(
+                            seal_trace(mutant), BUILDER_FIXTURES
+                        )
+                    },
+                )
+
+    def test_post_finalization_rejects_artifact_bearing_events(self) -> None:
+        """Late event aliases cannot append artifacts omitted by the terminal manifest."""
+
+        late_events = {
+            "context-read": {
+                "event": "context_read",
+                "actor": "opaque-coordinator",
+                "actor_role": "coordinator",
+                "path": "visible/request.md",
+                "source_role": "coordinator-context",
+            },
+            "pause": {
+                "event": "paused",
+                "state_validated": True,
+                "target_identity": "fixture-terse-summary",
+            },
+            "dependency-graph": {
+                "event": "dependency_graph_recorded",
+                "dependencies": {"late-candidate-diff": ["late-input"]},
+            },
+            "delivery-alias": {
+                "event": "delivery_accepted",
+                "valid": True,
+                "accepted": True,
+                "action": "install",
+                "destination_identity": "fixture-terse-summary",
+                "resulting_destination_digest": "late-installed-target",
+                "acceptance_evidence": ["late-install-check"],
+                "user_authority_event_digest": "late-delivery-authority",
+                "actor": "main-agent-v1",
+                "timestamp": "2026-01-01T00:00:10Z",
+                "delivery_record_digest": "late-delivery",
+                "finalized_revision": "candidate-v1",
+                "run_directory_identity": "run-directory-1",
+            },
+        }
+        for label, late_event in late_events.items():
+            with self.subTest(event=label):
+                late_event.update(
+                    {
+                        "artifact_id": "late-candidate-diff",
+                        "artifact_type": "candidate-diff",
+                        "input_artifact_ids": [],
+                        "valid": True,
+                    }
+                )
+                trace = seal_trace(
+                    [*accepted_finalization_trace(), late_event]
+                )
+                self.assertIn(
+                    "EVENT_AFTER_FINALIZATION",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
+
+    def test_queue_target_can_only_be_finalized_after_run_finalization(self) -> None:
+        """Terminal queue closure permits finalization, never later abandonment."""
+
+        finalized = accepted_finalization_trace()
+        abandoned = copy.deepcopy(finalized)
+        abandoned[-1]["event"] = "target_abandoned"
+        abandoned_codes = {
+            failure.code
+            for failure in evaluate_trace(abandoned, BUILDER_FIXTURES)
+        }
+        self.assertIn("EVENT_AFTER_FINALIZATION", abandoned_codes)
+        self.assertEqual(evaluate_trace(finalized, BUILDER_FIXTURES), ())
+
+    def test_complete_run_binds_queue_target_and_lock_lifecycle(self) -> None:
+        """Completion owns one resolved queue target and its exact lock."""
+
+        unwrapped = [
+            event
+            for event in accepted_finalization_trace()
+            if event.get("event")
+            not in {
+                "queue_created",
+                "target_activated",
+                "target_finalized",
+                "target_abandoned",
+            }
+        ]
+
+        def wrapped_run(
+            *,
+            target: str = "fixture-terse-summary",
+            terminal_nonce: str = "lock-current",
+            terminal_owner: str = "main-agent-v1",
+            terminal_before_builder: bool = False,
+        ) -> list[dict[str, Any]]:
+            trace = [
+                {"event": "queue_created", "targets": [target]},
+                {
+                    "event": "target_activated",
+                    "target_identity": target,
+                    "lock_nonce": "lock-current",
+                    "lock_owner": "main-agent-v1",
+                    "lock_acquired_at": "2026-01-01T00:00:01Z",
+                },
+                *copy.deepcopy(unwrapped),
+            ]
+            terminal = {
+                "event": "target_finalized",
+                "target_identity": target,
+                "lock_nonce": terminal_nonce,
+                "lock_owner": terminal_owner,
+            }
+            if terminal_before_builder:
+                final_index = next(
+                    index
+                    for index, event in enumerate(trace)
+                    if event.get("event") == "finalized"
+                )
+                trace.insert(final_index, terminal)
+            else:
+                trace.append(terminal)
+            return seal_trace(
+                trace,
+                workflow_id="b" * 32,
+                target_identity="fixture-terse-summary",
+                mode="improve",
+            )
+
+        with self.subTest(case="missing-lifecycle"):
+            self.assertIn(
+                "FINALIZE_WITHOUT_ACTIVE_QUEUE_TARGET",
+                {
+                    failure.code
+                    for failure in evaluate_trace(unwrapped, BUILDER_FIXTURES)
+                },
+            )
+        for label, trace, expected_code in (
+            (
+                "foreign-target",
+                wrapped_run(target="foreign-target"),
+                "QUEUE_TARGET_BINDING_MISMATCH",
+            ),
+            (
+                "premature-terminal",
+                wrapped_run(terminal_before_builder=True),
+                "QUEUE_TERMINAL_BEFORE_BUILDER_OUTCOME",
+            ),
+            (
+                "terminal-nonce",
+                wrapped_run(terminal_nonce="lock-foreign"),
+                "QUEUE_LOCK_MISMATCH",
+            ),
+            (
+                "terminal-owner",
+                wrapped_run(terminal_owner="foreign-owner"),
+                "QUEUE_LOCK_MISMATCH",
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assertIn(
+                    expected_code,
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
+        self.assertEqual(evaluate_trace(wrapped_run(), BUILDER_FIXTURES), ())
+
+        pause_base = load_traces("frozen-validation")["accepted_pause_resume"]
+        pause_resolve = copy.deepcopy(pause_base[0])
+        pause_event = copy.deepcopy(pause_base[1])
+        pause_event.update(
+            {
+                "lock_nonce": "lock-current",
+                "lock_owner": "main-agent-v1",
+            }
+        )
+        paused_handoff = seal_trace(
+            [
+                {
+                    "event": "queue_created",
+                    "targets": ["fixture-terse-summary", "fixture-next"],
+                },
+                {
+                    "event": "target_activated",
+                    "target_identity": "fixture-terse-summary",
+                    "lock_nonce": "lock-current",
+                    "lock_owner": "main-agent-v1",
+                    "lock_acquired_at": "2026-01-01T00:00:01Z",
+                },
+                pause_resolve,
+                pause_event,
+                {
+                    "event": "target_activated",
+                    "target_identity": "fixture-next",
+                    "lock_nonce": "lock-next",
+                    "lock_owner": "main-agent-v1",
+                    "lock_acquired_at": "2026-01-01T00:00:02Z",
+                },
+            ],
+            workflow_id="b" * 32,
+            target_identity="fixture-terse-summary",
+            mode="improve",
+        )
+        handoff_codes = {
+            failure.code
+            for failure in evaluate_trace(paused_handoff, BUILDER_FIXTURES)
+        }
+        self.assertFalse(
+            {"MULTIPLE_ACTIVE_TARGETS", "QUEUE_ACTIVATION_ORDER"}
+            & handoff_codes
+        )
+
+    def test_cleanup_tail_is_anchored_to_actual_finalization(self) -> None:
+        """Cleanup provenance must bind the actual terminal revision and receipt."""
+
+        workflow_id = "b" * 32
+        owned_path = str(
+            BUILDER_FIXTURES
+            / "private-state"
+            / "codex-dev-flow"
+            / "skill-builder"
+            / "runs"
+            / workflow_id
+        )
+
+        finalized = accepted_finalization_trace()
+        final_transition_digest = next(
+            event["transition_receipt"]["receipt_digest"]
+            for event in finalized
+            if event.get("event") == "finalized"
+        )
+
+        def cleanup_tail() -> list[dict[str, Any]]:
+            tail = cleanup_trace(owned_path, workflow_id=workflow_id)
+            for event in tail:
+                if "final_transition_digest" in event:
+                    event["final_transition_digest"] = final_transition_digest
+            return tail
+
+        foreign_revision = [
+            *accepted_finalization_trace(),
+            *cleanup_tail(),
+        ]
+        for event in foreign_revision:
+            if event.get("event") in {
+                "finalization_receipt_validated",
+                "delivery_accepted",
+                "cleanup_authority_recorded",
+                "run_state_manifest_validated",
+                "cleanup_tombstone_validated",
+                "cleanup_attempt",
+            }:
+                event["finalized_revision"] = "foreign-revision"
+
+        invented_transition = [
+            *accepted_finalization_trace(),
+            *cleanup_tail(),
+        ]
+        for event in invented_transition:
+            if "final_transition_digest" in event:
+                event["final_transition_digest"] = "f" * 64
+
+        final_index = next(
+            index
+            for index, event in enumerate(finalized)
+            if event.get("event") == "finalized"
+        )
+        terminal_manifest_index = next(
+            index
+            for index, event in enumerate(finalized)
+            if event.get("artifact_type") == "terminal-manifest"
+        )
+        premature_before_final = [
+            *finalized[:final_index],
+            *cleanup_tail(),
+            *finalized[final_index:],
+        ]
+        premature_before_manifest = [
+            *finalized[:terminal_manifest_index],
+            *cleanup_tail(),
+            *finalized[terminal_manifest_index:],
+        ]
+
+        for label, trace in {
+            "foreign-revision": foreign_revision,
+            "invented-final-transition": invented_transition,
+            "cleanup-before-finalized": premature_before_final,
+            "cleanup-before-terminal-manifest": premature_before_manifest,
+        }.items():
+            with self.subTest(mutant=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(trace, workflow_id=workflow_id),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn("INVALID_CLEANUP_PROVENANCE", codes)
+
+        accepted_tail = seal_trace(
+            [*finalized, *cleanup_tail()],
+            workflow_id=workflow_id,
+        )
+        self.assertEqual(evaluate_trace(accepted_tail, BUILDER_FIXTURES), ())
+        self.assertEqual(
+            evaluate_trace(cleanup_tail(), BUILDER_FIXTURES), ()
+        )
+
+    def test_delivery_acceptance_requires_complete_terminal_evidence(self) -> None:
+        """Accepted delivery identifies its action, authority, actor, and result."""
+
+        delivery = {
+            "event": "delivery_accepted",
+            "valid": True,
+            "accepted": True,
+            "action": "install",
+            "destination_identity": "fixture-terse-summary",
+            "resulting_destination_digest": "installed-target-v1",
+            "acceptance_evidence": ["fixture-install-check"],
+            "user_authority_event_digest": "delivery-authority-v1",
+            "actor": "main-agent-v1",
+            "timestamp": "2026-01-01T00:00:10Z",
+            "delivery_record_digest": "delivery-record-v1",
+            "finalized_revision": "candidate-v1",
+            "run_directory_identity": "run-directory-1",
+        }
+        self.assertEqual(
+            evaluate_trace(
+                seal_trace([delivery], workflow_id="a" * 32),
+                BUILDER_FIXTURES,
+            ),
+            (),
+        )
+        for field in (
+            "action",
+            "destination_identity",
+            "resulting_destination_digest",
+            "acceptance_evidence",
+            "user_authority_event_digest",
+            "actor",
+            "timestamp",
+        ):
+            with self.subTest(missing=field):
+                malformed = copy.deepcopy(delivery)
+                malformed.pop(field)
+                self.assertIn(
+                    "INVALID_EVENT_SCHEMA",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(
+                            seal_trace([malformed], workflow_id="a" * 32),
+                            BUILDER_FIXTURES,
+                        )
+                    },
+                )
+
     def test_finalization_rejects_foreign_workflow_and_target_gate_records(self) -> None:
         """Regression: matching revision strings cannot join another run or target."""
 
@@ -8714,7 +9610,12 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         """Regression: re-freezing the old value cannot reset a changed snapshot epoch."""
 
         trace = accepted_finalization_trace()
-        trace[-1:-1] = [
+        final_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "finalized"
+        )
+        trace[final_index:final_index] = [
             {"event": "target_snapshot_changed", "target_snapshot": "snapshot-v2"},
             {
                 "event": "target_snapshot_changed",
@@ -8811,7 +9712,12 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         replacement["category"] = "safety"
         replacement["criterion_id"] = "SA1"
-        trace.insert(-1, replacement)
+        final_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event["event"] == "finalized"
+        )
+        trace.insert(final_index, replacement)
 
         failure_codes = {
             failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
@@ -8845,7 +9751,12 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         for criterion in workflow_score["criteria"]:
             criterion["evidence"] = ["accepted-wf1-proof"]
-        trace = first_revision[:-1] + second_revision
+        first_final_index = next(
+            index
+            for index, event in enumerate(first_revision)
+            if event["event"] == "finalized"
+        )
+        trace = first_revision[:first_final_index] + second_revision
 
         failure_codes = {
             failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
@@ -8921,13 +9832,23 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         """Regression: value ABA cannot revive gates from an older transition epoch."""
 
         contract_aba = accepted_finalization_trace()
-        contract_aba[-1:-1] = [
+        final_index = next(
+            index
+            for index, event in enumerate(contract_aba)
+            if event["event"] == "finalized"
+        )
+        contract_aba[final_index:final_index] = [
             {"event": "contract_changed", "contract_digest": "contract-v2"},
             {"event": "contract_written", "contract_digest": "contract-v1"},
         ]
 
         evaluation_aba = accepted_finalization_trace()
-        evaluation_aba[-1:-1] = [
+        final_index = next(
+            index
+            for index, event in enumerate(evaluation_aba)
+            if event["event"] == "finalized"
+        )
+        evaluation_aba[final_index:final_index] = [
             {
                 "event": "evaluation_frozen",
                 "contract_digest": "contract-v1",
@@ -9053,7 +9974,12 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     for event in second_revision:
                         if event["event"] == "category_scored":
                             event["review_id"] = reused_id
-                trace = first_revision[:-1] + second_revision
+                first_final_index = next(
+                    index
+                    for index, event in enumerate(first_revision)
+                    if event["event"] == "finalized"
+                )
+                trace = first_revision[:first_final_index] + second_revision
 
                 failure_codes = {
                     failure.code for failure in evaluate_trace(trace, BUILDER_FIXTURES)
@@ -9300,7 +10226,12 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         ):
             with self.subTest(stale_final_binding=field):
                 stale_final_binding = accepted_finalization_trace()
-                stale_final_binding[-1][field] = stale_value
+                finalization = next(
+                    event
+                    for event in stale_final_binding
+                    if event["event"] == "finalized"
+                )
+                finalization[field] = stale_value
                 self.assertIn(
                     "FINALIZATION_BINDING_MISMATCH",
                     {
@@ -10015,7 +10946,9 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         """A self-consistent caller grant cannot broaden trusted fixture policy."""
 
         trace = accepted_finalization_trace()
-        authority = trace[0]["authority"]
+        authority = next(
+            event for event in trace if event.get("event") == "resolve"
+        )["authority"]
         authority["allowed_writes"].append("production-target")
         authority["delegation"]["candidate-implementer"].append(
             "production-target-write"
@@ -10071,7 +11004,9 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         """Invalid path bytes cannot escape resolution as a ValueError."""
 
         trace = accepted_finalization_trace()
-        trace[0]["target_manifest"] = (
+        next(
+            event for event in trace if event.get("event") == "resolve"
+        )["target_manifest"] = (
             "targets/improve-exact/manifest.json\x00suffix"
         )
 
@@ -10318,7 +11253,9 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             fixture_root = Path(temporary)
             (fixture_root / "manifest.json").write_text("{}\n", encoding="utf-8")
             trace = accepted_finalization_trace()
-            trace[0]["target_manifest"] = "manifest.json"
+            next(
+                event for event in trace if event.get("event") == "resolve"
+            )["target_manifest"] = "manifest.json"
             try:
                 codes = {
                     failure.code
@@ -10436,7 +11373,10 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         """Caller-selected snapshot and mode cannot replace observed target facts."""
 
         forged_snapshot = accepted_finalization_trace()
-        forged_snapshot[0]["target_snapshot"] = "forged-initial-snapshot"
+        resolution = next(
+            event for event in forged_snapshot if event["event"] == "resolve"
+        )
+        resolution["target_snapshot"] = "forged-initial-snapshot"
         snapshot_codes = {
             failure.code
             for failure in evaluate_trace(
@@ -10446,7 +11386,10 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("INVALID_ARTIFACT_SCHEMA", snapshot_codes)
 
         forged_mode = accepted_finalization_trace()
-        forged_mode[0].update(
+        resolution = next(
+            event for event in forged_mode if event["event"] == "resolve"
+        )
+        resolution.update(
             {
                 "target_manifest": "targets/non-git-create/manifest.json",
                 "target_snapshot": "fixture-create-snapshot-v1",
@@ -10538,8 +11481,15 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         blockers = {
             "paused": {
                 "event": "paused",
+                "workflow_id": "b" * 32,
                 "target_identity": "fixture-terse-summary",
+                "target_snapshot": "fixture-improve-snapshot-v1",
+                "mode": "improve",
+                "identity_generation": 1,
+                "snapshot_generation": 1,
                 "state_validated": True,
+                "lock_nonce": "fixture-terse-summary-lock-v1",
+                "lock_owner": "main-agent-v1",
             },
             "stopped": {
                 "event": "stopped",
@@ -11476,6 +12426,23 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
     def test_queue_rejects_invalid_membership_order_and_completion(self) -> None:
         """A serialized queue must consume unique declared targets in exact order."""
 
+        def activation(target: str) -> dict[str, Any]:
+            return {
+                "event": "target_activated",
+                "target_identity": target,
+                "lock_nonce": f"lock-{target}",
+                "lock_owner": f"owner-{target}",
+                "lock_acquired_at": "2026-01-01T00:00:01Z",
+            }
+
+        def terminal(target: str) -> dict[str, Any]:
+            return {
+                "event": "target_finalized",
+                "target_identity": target,
+                "lock_nonce": f"lock-{target}",
+                "lock_owner": f"owner-{target}",
+            }
+
         cases = {
             "duplicate-membership": (
                 [
@@ -11492,30 +12459,18 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                         "event": "queue_created",
                         "targets": ["fixture-alpha", "fixture-beta"],
                     },
-                    {
-                        "event": "target_activated",
-                        "target_identity": "fixture-beta",
-                        "lock_nonce": "lock-beta",
-                    },
-                    {"event": "target_finalized", "target_identity": "fixture-beta"},
-                    {
-                        "event": "target_activated",
-                        "target_identity": "fixture-alpha",
-                        "lock_nonce": "lock-alpha",
-                    },
-                    {"event": "target_finalized", "target_identity": "fixture-alpha"},
+                    activation("fixture-beta"),
+                    terminal("fixture-beta"),
+                    activation("fixture-alpha"),
+                    terminal("fixture-alpha"),
                 ],
                 "QUEUE_ACTIVATION_ORDER",
             ),
             "undeclared-target": (
                 [
                     {"event": "queue_created", "targets": ["fixture-alpha"]},
-                    {
-                        "event": "target_activated",
-                        "target_identity": "fixture-gamma",
-                        "lock_nonce": "lock-gamma",
-                    },
-                    {"event": "target_finalized", "target_identity": "fixture-gamma"},
+                    activation("fixture-gamma"),
+                    terminal("fixture-gamma"),
                 ],
                 "QUEUE_ACTIVATION_ORDER",
             ),
@@ -11525,24 +12480,16 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                         "event": "queue_created",
                         "targets": ["fixture-alpha", "fixture-beta"],
                     },
-                    {
-                        "event": "target_activated",
-                        "target_identity": "fixture-alpha",
-                        "lock_nonce": "lock-alpha",
-                    },
-                    {"event": "target_finalized", "target_identity": "fixture-alpha"},
+                    activation("fixture-alpha"),
+                    terminal("fixture-alpha"),
                 ],
                 "INCOMPLETE_QUEUE",
             ),
             "wrong-terminal-target": (
                 [
                     {"event": "queue_created", "targets": ["fixture-alpha"]},
-                    {
-                        "event": "target_activated",
-                        "target_identity": "fixture-alpha",
-                        "lock_nonce": "lock-alpha",
-                    },
-                    {"event": "target_finalized", "target_identity": "fixture-beta"},
+                    activation("fixture-alpha"),
+                    terminal("fixture-beta"),
                 ],
                 "QUEUE_TERMINAL_MISMATCH",
             ),
@@ -11644,6 +12591,362 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             evaluate_trace(legitimate_coordinator, BUILDER_FIXTURES), ()
         )
 
+    def test_known_research_actor_cannot_claim_a_sibling_role(self) -> None:
+        """Prior research ownership overrides a known actor's read-time relabel."""
+
+        relabeled = seal_trace(
+            [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-researcher-4",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-researcher-4",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                },
+            ],
+            workflow_id="8" * 32,
+        )
+        self.assertIn(
+            "SIBLING_OUTPUT_LEAK",
+            {
+                failure.code
+                for failure in evaluate_trace(relabeled, BUILDER_FIXTURES)
+            },
+        )
+
+        unbound_design_researcher = seal_trace(
+            [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-unbound-researcher-5",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                }
+            ],
+            workflow_id="9" * 32,
+        )
+        self.assertEqual(
+            evaluate_trace(unbound_design_researcher, BUILDER_FIXTURES), ()
+        )
+
+    def test_research_context_requires_one_unambiguous_governing_identity(
+        self,
+    ) -> None:
+        """Prior bindings and source metadata must resolve to one matching lane."""
+
+        denied_cases = {
+            "conflicting-prior-bindings": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-conflicted-researcher",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-conflicted-researcher",
+                    "actor_role": "agent-skill-design",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-conflicted-researcher",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                },
+            ],
+            "nonresearch-prior-binding": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-bound-coordinator",
+                    "actor_role": "coordinator",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-bound-coordinator",
+                    "actor_role": "domain-techniques",
+                    "path": "research/domain-techniques/output.json",
+                    "source_role": "domain-techniques",
+                },
+            ],
+            "path-only-sibling-identity": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-domain-path-reader",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-domain-path-reader",
+                    "actor_role": "domain-techniques",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "coordinator-context",
+                },
+            ],
+            "conflicting-path-and-source": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-source-conflict-reader",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-source-conflict-reader",
+                    "actor_role": "domain-techniques",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "domain-techniques",
+                },
+            ],
+        }
+        for label, events in denied_cases.items():
+            with self.subTest(denied=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(events, workflow_id="c" * 32),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn("SIBLING_OUTPUT_LEAK", codes)
+
+        accepted_cases = {
+            "single-matching-prior-role": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-single-domain-researcher",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-single-domain-researcher",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/domain-techniques/output.json",
+                    "source_role": "domain-techniques",
+                },
+            ],
+            "unbound-canonical-role": [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-unbound-design-researcher",
+                    "actor_role": "agent-skill-design",
+                    "path": "research/agent-skill-design/output.json",
+                    "source_role": "agent-skill-design",
+                }
+            ],
+        }
+        for label, events in accepted_cases.items():
+            with self.subTest(accepted=label):
+                self.assertEqual(
+                    evaluate_trace(
+                        seal_trace(events, workflow_id="d" * 32),
+                        BUILDER_FIXTURES,
+                    ),
+                    (),
+                )
+
+    def test_actor_role_records_require_nonempty_string_bindings(self) -> None:
+        """Malformed role records cannot silently leave a restricted actor unbound."""
+
+        malformed_bindings = {
+            "missing-identity": {
+                "event": "actor_role_recorded",
+                "actor_role": "candidate-implementer",
+            },
+            "missing-role": {
+                "event": "actor_role_recorded",
+                "actor_identity": "opaque-malformed-reader",
+            },
+            "list-identity": {
+                "event": "actor_role_recorded",
+                "actor_identity": ["opaque-malformed-reader"],
+                "actor_role": "candidate-implementer",
+            },
+            "dict-identity": {
+                "event": "actor_role_recorded",
+                "actor_identity": {"id": "opaque-malformed-reader"},
+                "actor_role": "candidate-implementer",
+            },
+            "list-role": {
+                "event": "actor_role_recorded",
+                "actor_identity": "opaque-malformed-reader",
+                "actor_role": ["candidate-implementer"],
+            },
+            "dict-role": {
+                "event": "actor_role_recorded",
+                "actor_identity": "opaque-malformed-reader",
+                "actor_role": {"role": "candidate-implementer"},
+            },
+            "empty-identity": {
+                "event": "actor_role_recorded",
+                "actor_identity": "",
+                "actor_role": "candidate-implementer",
+            },
+            "empty-role": {
+                "event": "actor_role_recorded",
+                "actor_identity": "opaque-malformed-reader",
+                "actor_role": "",
+            },
+        }
+        hidden_read = {
+            "event": "context_read",
+            "actor": "opaque-malformed-reader",
+            "actor_role": "coordinator",
+            "path": "hidden-release/oracle.json",
+            "source_role": "hidden-release-coordinator",
+        }
+        for label, binding in malformed_bindings.items():
+            with self.subTest(malformed=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(
+                            [binding, hidden_read], workflow_id="e" * 32
+                        ),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn("INVALID_EVENT_SCHEMA", codes)
+
+        valid_binding = {
+            "event": "actor_role_recorded",
+            "actor_identity": "opaque-malformed-reader",
+            "actor_role": "candidate-implementer",
+        }
+        self.assertEqual(
+            {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(
+                        [valid_binding, hidden_read], workflow_id="f" * 32
+                    ),
+                    BUILDER_FIXTURES,
+                )
+            },
+            {"HIDDEN_ORACLE_LEAK"},
+        )
+
+    def test_hidden_release_is_withheld_from_research_actors(self) -> None:
+        """Research lanes cannot inspect hidden-release oracle material."""
+
+        denied_cases = {
+            "prior-bound-researcher": [
+                {
+                    "event": "actor_role_recorded",
+                    "actor_identity": "opaque-hidden-researcher",
+                    "actor_role": "domain-techniques",
+                },
+                {
+                    "event": "context_read",
+                    "actor": "opaque-hidden-researcher",
+                    "actor_role": "coordinator",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                },
+            ],
+            "unbound-canonical-role": [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-unbound-hidden-researcher",
+                    "actor_role": "domain-techniques",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                }
+            ],
+            "canonical-actor-alias": [
+                {
+                    "event": "context_read",
+                    "actor": "research-domain",
+                    "actor_role": "coordinator",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                }
+            ],
+        }
+        for label, events in denied_cases.items():
+            with self.subTest(denied=label):
+                codes = {
+                    failure.code
+                    for failure in evaluate_trace(
+                        seal_trace(events, workflow_id="1" * 32),
+                        BUILDER_FIXTURES,
+                    )
+                }
+                self.assertIn("HIDDEN_ORACLE_LEAK", codes)
+
+        unbound_coordinator = seal_trace(
+            [
+                {
+                    "event": "context_read",
+                    "actor": "opaque-hidden-coordinator",
+                    "actor_role": "coordinator",
+                    "path": "hidden-release/oracle.json",
+                    "source_role": "hidden-release-coordinator",
+                }
+            ],
+            workflow_id="2" * 32,
+        )
+        self.assertEqual(evaluate_trace(unbound_coordinator, BUILDER_FIXTURES), ())
+
+    def test_context_read_rejects_noncanonical_paths_and_empty_fields(self) -> None:
+        """Invalid paths and empty identities cannot bypass classification."""
+
+        for path in (
+            "/tmp/work/hidden-release/oracle.json",
+            "x/../hidden-release/oracle.json",
+        ):
+            with self.subTest(path=path):
+                trace = seal_trace(
+                    [
+                        {
+                            "event": "actor_role_recorded",
+                            "actor_identity": "opaque-path-reader-6",
+                            "actor_role": "candidate-implementer",
+                        },
+                        {
+                            "event": "context_read",
+                            "actor": "opaque-path-reader-6",
+                            "actor_role": "coordinator",
+                            "path": path,
+                            "source_role": "coordinator-context",
+                        },
+                    ],
+                    workflow_id="a" * 32,
+                )
+
+                self.assertIn(
+                    "INVALID_EVENT_SCHEMA",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
+
+        valid_context = {
+            "event": "context_read",
+            "actor": "opaque-path-reader-6",
+            "actor_role": "coordinator",
+            "path": "visible/request.md",
+            "source_role": "coordinator-context",
+        }
+        for field in ("path", "actor_role", "source_role", "actor"):
+            with self.subTest(empty_field=field):
+                empty_field = copy.deepcopy(valid_context)
+                empty_field[field] = ""
+                trace = seal_trace([empty_field], workflow_id="b" * 32)
+
+                self.assertIn(
+                    "INVALID_EVENT_SCHEMA",
+                    {
+                        failure.code
+                        for failure in evaluate_trace(trace, BUILDER_FIXTURES)
+                    },
+                )
+
     def test_selective_invalidation_uses_preexisting_dependency_state(self) -> None:
         """Invalidation is derived from a prior graph and explicit artifact statuses."""
 
@@ -11727,6 +13030,56 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         self.assertEqual(set(accepted_goal.get("retained", [])), set(retained))
         self.assertEqual(evaluate_trace(accepted, BUILDER_FIXTURES, scenario), ())
+
+    def test_goal_change_invalidates_concrete_full_trace_artifacts(self) -> None:
+        """A valid change cone retires its retained authority and release records."""
+
+        scenario = load_scenarios("frozen-validation")[
+            "goal_change_selective_invalidation"
+        ]
+        dependencies = {
+            "baseline": [],
+            "research": ["baseline"],
+            "contract": ["baseline", "research"],
+            "evaluation": ["contract"],
+            "candidate": ["contract", "evaluation"],
+            "trials": ["candidate", "evaluation"],
+            "review": ["trials"],
+            "scores": ["review"],
+            "verification": ["candidate"],
+            "authority": ["delivery_intent"],
+            "release.delivery": ["authority"],
+        }
+        trace = accepted_finalization_trace()
+        terminal_manifest_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event.get("artifact_type") == "terminal-manifest"
+        )
+        trace[terminal_manifest_index:terminal_manifest_index] = [
+            {
+                "event": "dependency_graph_recorded",
+                "dependencies": dependencies,
+            },
+            {
+                "event": "goal_changed",
+                "change": "delivery_intent",
+                "invalidated": ["authority", "release.delivery"],
+                "retained": list(scenario["preserved_artifacts"]),
+            },
+        ]
+        codes = {
+            failure.code
+            for failure in evaluate_trace(
+                seal_trace(trace), BUILDER_FIXTURES, scenario
+            )
+        }
+        self.assertTrue(
+            {
+                "FINALIZE_WITHOUT_CONFORMANCE",
+                "FINALIZE_WITHOUT_RELEASE_EVIDENCE",
+            }.issubset(codes)
+        )
 
     def test_accepted_create_improve_repair_resume_queue_and_blindness_traces(self) -> None:
         """Control: valid process paths must not be rejected by the independent oracle."""
