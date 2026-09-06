@@ -739,23 +739,19 @@ def retained_manifest_entry_is_valid(
     )
 
 
-def retained_manifest_is_valid(
-    record: dict[str, Any],
-    expected_ids: set[str],
-    retained_artifacts: dict[str, dict[str, Any]],
+def manifest_header_is_valid(
+    record: dict[str, Any], files: object
 ) -> bool:
-    files = record.get("files")
     return (
-        record.get("schema_version") == "skill-builder-raw-manifest-v1"
-        and record.get("collection_type") == record.get("artifact_type")
-        and isinstance(files, list)
+        isinstance(files, list)
         and all(
-            retained_manifest_entry_is_valid(entry, retained_artifacts)
+            isinstance(entry, dict)
+            and type(entry.get("byte_count")) is int
+            and entry["byte_count"] >= 0
             for entry in files
         )
-        and [entry["artifact_id"] for entry in files]
-        == list(dict.fromkeys(entry["artifact_id"] for entry in files))
-        and {entry["artifact_id"] for entry in files} == expected_ids
+        and record.get("schema_version") == "skill-builder-raw-manifest-v1"
+        and record.get("collection_type") == record.get("artifact_type")
         and type(record.get("declared_item_count")) is int
         and record.get("declared_item_count") == len(files)
         and type(record.get("observed_item_count")) is int
@@ -764,6 +760,25 @@ def retained_manifest_is_valid(
         and record.get("observed_byte_count")
         == sum(entry["byte_count"] for entry in files)
         and record.get("overflow") is None
+    )
+
+
+def retained_manifest_is_valid(
+    record: dict[str, Any],
+    expected_ids: set[str],
+    retained_artifacts: dict[str, dict[str, Any]],
+) -> bool:
+    files = record.get("files")
+    return (
+        manifest_header_is_valid(record, files)
+        and all(
+            retained_manifest_entry_is_valid(entry, retained_artifacts)
+            for entry in files
+        )
+        and [entry["artifact_id"] for entry in files]
+        == list(dict.fromkeys(entry["artifact_id"] for entry in files))
+        and len({entry["path"] for entry in files}) == len(files)
+        and {entry["artifact_id"] for entry in files} == expected_ids
     )
 
 
@@ -1727,6 +1742,7 @@ def validate_schema_boundary(
     failures: list[OracleFailure] = []
     dispatchable: set[int] = set()
     prior_envelopes: dict[str, dict[str, Any]] = {}
+    prior_payload_paths: dict[str, str] = {}
     prior_receipt_digest: str | None = None
     source_stage: str | None = None
     authority_digest: str | None = None
@@ -2140,8 +2156,18 @@ def validate_schema_boundary(
                     )
                 )
                 envelope_valid = False
+            elif envelope["payload_path"] in prior_payload_paths:
+                failures.append(
+                    OracleFailure(
+                        "INVALID_ARTIFACT_ENVELOPE",
+                        index,
+                        "artifact envelope reused a retained payload path",
+                    )
+                )
+                envelope_valid = False
             if envelope_valid:
                 prior_envelopes[artifact_id] = envelope
+                prior_payload_paths[envelope["payload_path"]] = artifact_id
 
         relevant: list[dict[str, str]] = []
         if isinstance(envelope, dict):
@@ -4504,18 +4530,27 @@ def evaluate_trace(
         if event_name == "actor_role_recorded":
             register_actor(event.get("actor_identity"), event.get("actor_role"))
         elif event_name == "resolve":
-            fixture_root_resolved = fixture_root.resolve()
-            manifest_path = (fixture_root / event["target_manifest"]).resolve()
+            manifest = None
             try:
-                manifest_in_fixture_root = manifest_path.is_relative_to(
-                    fixture_root_resolved
+                fixture_root_resolved = fixture_root.resolve()
+                manifest_locator = normalized_run_relative_path(
+                    event.get("target_manifest")
                 )
-                manifest = (
-                    json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if manifest_in_fixture_root
-                    else None
-                )
-            except (OSError, UnicodeError, json.JSONDecodeError):
+                if manifest_locator is not None:
+                    manifest_path = (
+                        fixture_root_resolved / manifest_locator
+                    ).resolve()
+                    if manifest_path.is_relative_to(fixture_root_resolved):
+                        manifest = json.loads(
+                            manifest_path.read_text(encoding="utf-8")
+                        )
+            except (
+                OSError,
+                RuntimeError,
+                TypeError,
+                UnicodeError,
+                ValueError,
+            ):
                 manifest = None
             if not fixture_target_manifest_is_valid(manifest):
                 failures.append(
@@ -4523,6 +4558,16 @@ def evaluate_trace(
                         "INVALID_RESOLUTION_MANIFEST",
                         index,
                         "resolution referenced no readable target manifest object within the fixture root",
+                    )
+                )
+                continue
+            trusted_authority = _resolution_authority()
+            if event.get("authority") != trusted_authority:
+                failures.append(
+                    OracleFailure(
+                        "INVALID_RESOLUTION_AUTHORITY",
+                        index,
+                        "resolution authority did not equal the frozen fixture policy",
                     )
                 )
                 continue
@@ -5103,6 +5148,7 @@ def evaluate_trace(
                         and isinstance(files, list)
                         and bool(files)
                         and all(candidate_file_is_valid(entry) for entry in files)
+                        and manifest_header_is_valid(event, files)
                         and len({entry["path"] for entry in files}) == len(files)
                         and any(
                             PurePosixPath(entry["path"]).name == "SKILL.md"
@@ -8947,6 +8993,140 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
 
         self.assertIn("UNAUTHORIZED_PRODUCTION_WRITE", codes)
         self.assertIn("UNAUTHORIZED_DELIVERY", codes)
+
+    def test_resolution_cannot_expand_frozen_fixture_authority(self) -> None:
+        """A self-consistent caller grant cannot broaden trusted fixture policy."""
+
+        trace = accepted_finalization_trace()
+        authority = trace[0]["authority"]
+        authority["allowed_writes"].append("production-target")
+        authority["delegation"]["candidate-implementer"].append(
+            "production-target-write"
+        )
+        authority["candidate_effects"].append("production-target-write")
+        authority["delivery_effects"].append("publish-production-target")
+        authority_record = next(
+            event
+            for event in trace
+            if event.get("artifact_type") == "authority-record"
+        )
+        authority_record["authorized_candidate_effects"] = list(
+            authority["candidate_effects"]
+        )
+        authority_record["authorized_delivery_scope"] = "fixture-terse-summary"
+        authority_record["authorized_delivery_effects"] = list(
+            authority["delivery_effects"]
+        )
+        authority_record["resolution_authority_digest"] = canonical_digest(
+            authority
+        )
+        final_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event.get("event") == "finalized"
+        )
+        trace[final_index:final_index] = [
+            {
+                "event": "write",
+                "destination_scope": "production-target",
+                "effect": "production-target-write",
+                "actor": "candidate-implementer-v1",
+            },
+            {
+                "event": "delivery_attempt",
+                "destination_scope": "fixture-terse-summary",
+                "effect": "publish-production-target",
+                "actor": "candidate-implementer-v1",
+            },
+        ]
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(seal_trace(trace), BUILDER_FIXTURES)
+        }
+
+        self.assertIn("INVALID_RESOLUTION_AUTHORITY", codes)
+        self.assertIn("UNAUTHORIZED_PRODUCTION_WRITE", codes)
+        self.assertIn("UNAUTHORIZED_DELIVERY", codes)
+
+    def test_resolution_locator_with_nul_fails_closed(self) -> None:
+        """Invalid path bytes cannot escape resolution as a ValueError."""
+
+        trace = accepted_finalization_trace()
+        trace[0]["target_manifest"] = (
+            "targets/improve-exact/manifest.json\x00suffix"
+        )
+
+        try:
+            codes = {
+                failure.code
+                for failure in evaluate_trace(
+                    seal_trace(trace), BUILDER_FIXTURES
+                )
+            }
+        except (OSError, RuntimeError, ValueError) as error:
+            self.fail(
+                f"invalid resolution locator leaked {type(error).__name__}: {error}"
+            )
+
+        self.assertIn("INVALID_RESOLUTION_MANIFEST", codes)
+
+    def test_candidate_manifest_uses_shared_header_contract(self) -> None:
+        """Candidate manifests cannot self-seal false counts or overflow."""
+
+        trace = accepted_finalization_trace()
+        manifest_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event.get("artifact_type") == "candidate-manifest"
+        )
+        trace = trace[: manifest_index + 1]
+        manifest = trace[-1]
+        manifest.update(
+            {
+                "declared_item_count": 99,
+                "observed_item_count": 98,
+                "observed_byte_count": 0,
+                "overflow": {"ignored": True},
+            }
+        )
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(
+                reseal_declared_trace(trace), BUILDER_FIXTURES
+            )
+        }
+
+        self.assertIn("INVALID_ARTIFACT_SCHEMA", codes)
+
+    def test_payload_paths_are_globally_unique_before_manifests(self) -> None:
+        """Two retained artifacts cannot claim the same normalized payload path."""
+
+        trace = accepted_finalization_trace()
+        manifest_index = next(
+            index
+            for index, event in enumerate(trace)
+            if event.get("artifact_type") == "candidate-manifest"
+        )
+        trace = trace[: manifest_index + 1]
+        artifact_events = [
+            event
+            for event in trace
+            if isinstance(event.get("artifact_envelope"), dict)
+        ]
+        artifact_events[1]["artifact_envelope"]["payload_path"] = (
+            artifact_events[0]["artifact_envelope"]["payload_path"]
+        )
+
+        codes = {
+            failure.code
+            for failure in evaluate_trace(
+                reseal_declared_trace(trace), BUILDER_FIXTURES
+            )
+        }
+
+        self.assertIn("INVALID_ARTIFACT_ENVELOPE", codes)
 
     def test_resolution_authority_allows_bound_isolated_candidate_write(self) -> None:
         """The canonical resolution grants its declared isolated candidate effect."""
