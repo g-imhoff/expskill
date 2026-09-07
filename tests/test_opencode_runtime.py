@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,27 +15,67 @@ POLICY_PLUGIN = ROOT / "packages" / "opencode" / "plugins" / "execution-policy.j
 NODE = shutil.which("node")
 needs_node = unittest.skipUnless(NODE, "node is required for opencode plugin runtime tests")
 
-UNSLP_CASE = """
+UNSLP_CASE = r"""
 import(%s).then(async (module) => {
-  const hooks = await module.UnslopPlugin({});
-  const output = { system: ['base instructions'] };
-  const transform = hooks['experimental.chat.system.transform'];
-  const compacting = hooks['experimental.session.compacting'];
+  const callableExports = Object.entries(module).filter(([, value]) => typeof value === 'function');
   const assert = (name, condition) => {
     console.log((condition ? 'ok:' : 'FAIL:') + name);
     if (!condition) process.exitCode = 1;
   };
-  await transform({ sessionID: 's1' }, output);
-  assert('inject-once', output.system[0].startsWith('base instructions') && output.system[0].includes('<unslop-scope>'));
-  assert('under-limit', output.system[0].length <= 5600);
-  const once = output.system[0];
-  await transform({ sessionID: 's1' }, output);
-  assert('dedup-same-session', output.system[0] === once);
-  await transform({ sessionID: 's2' }, output);
-  assert('dedup-marker', output.system[0] === once);
+  assert(
+    'single-callable-export',
+    callableExports.length === 1 && callableExports[0][0] === 'UnslopPlugin'
+  );
+  const hooks = await module.UnslopPlugin({});
+  const transform = hooks['experimental.chat.system.transform'];
+  const compacting = hooks['experimental.session.compacting'];
+
+  const firstOutput = { system: ['base instructions'] };
+  await transform({ sessionID: 's1' }, firstOutput);
+  const firstText = firstOutput.system.join('\n');
+  const match = firstText.match(/(?:^|\n)<unslop-scope>\n([\s\S]*?)\n<\/unslop-scope>(?:$|\n)/);
+  const openingTags = firstText.match(/^<unslop-scope>$/gm) ?? [];
+  const closingTags = firstText.match(/^<\/unslop-scope>$/gm) ?? [];
+  assert(
+    'well-formed-marker',
+    match !== null &&
+      openingTags.length === 1 &&
+      closingTags.length === 1 &&
+      !firstText.includes('<<unslop-scope>>') &&
+      !firstText.includes('</<unslop-scope>>')
+  );
+  const payload = match?.[1] ?? '';
+  const completeBlock = `<unslop-scope>\n${payload}\n</unslop-scope>`;
+  assert('under-limit', completeBlock.length <= 5000);
+  const numberedRules = [...payload.matchAll(/^(\d+)\. \*\*[^*]+\*\*/gm)].map((entry) => Number(entry[1]));
+  assert('all-numbered-rules', JSON.stringify(numberedRules) === JSON.stringify(Array.from({ length: 31 }, (_, index) => index + 1)));
+  assert('terminal-rule-complete', payload.endsWith('The fancier synonym is rarely clearer.'));
+  assert('self-audit-preserved', payload.includes('What makes this obviously AI generated?') && payload.includes('Fix remaining tells.'));
+
+  const firstSnapshot = JSON.stringify(firstOutput.system);
+  await transform({ sessionID: 's1' }, firstOutput);
+  assert('dedup-current-output', JSON.stringify(firstOutput.system) === firstSnapshot);
+
+  const freshOutput = { system: ['fresh request instructions'] };
+  await transform({ sessionID: 's1' }, freshOutput);
+  const freshText = freshOutput.system.join('\n');
+  assert('inject-fresh-request', freshText.includes('\n<unslop-scope>\n'));
+  assert('one-block-per-output', (freshText.match(/<unslop-scope>/g) ?? []).length === 1);
+
   const context = { context: [] };
   await compacting({}, context);
-  assert('compacting', context.context.length === 1);
+  assert('compacting', context.context.length === 1 && context.context[0].includes('Preserve the Unslop prose-style rules'));
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
+UNSLP_MISSING_SKILL_CASE = """
+import(%s).then(async (module) => {
+  const hooks = await module.UnslopPlugin({});
+  const output = { system: ['base instructions'] };
+  await hooks['experimental.chat.system.transform']({ sessionID: 'missing' }, output);
+  const unchanged = output.system.length === 1 && output.system[0] === 'base instructions';
+  console.log((unchanged ? 'ok:' : 'FAIL:') + 'missing-skill-noop');
+  if (!unchanged) process.exitCode = 1;
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
@@ -84,7 +126,12 @@ import(%s).then(async (module) => {
 """
 
 
-def run_node_case(plugin: Path, case: str) -> subprocess.CompletedProcess[str]:
+def run_node_case(
+    plugin: Path,
+    case: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     assert NODE is not None
     script = case % repr(plugin.as_uri())
     return subprocess.run(
@@ -92,6 +139,7 @@ def run_node_case(plugin: Path, case: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         cwd=ROOT,
+        env=env,
         timeout=60,
     )
 
@@ -111,17 +159,31 @@ class OpencodeRuntimeTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     @needs_node
-    def test_unslop_plugin_injects_shared_skill_once(self) -> None:
+    def test_unslop_plugin_injects_complete_scope_once_per_request(self) -> None:
         result = run_node_case(UNSLP_PLUGIN, UNSLP_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
-            "ok:inject-once",
+            "ok:single-callable-export",
+            "ok:well-formed-marker",
             "ok:under-limit",
-            "ok:dedup-same-session",
-            "ok:dedup-marker",
+            "ok:all-numbered-rules",
+            "ok:terminal-rule-complete",
+            "ok:self-audit-preserved",
+            "ok:dedup-current-output",
+            "ok:inject-fresh-request",
+            "ok:one-block-per-output",
             "ok:compacting",
         ):
             self.assertIn(token, result.stdout)
+
+    @needs_node
+    def test_unslop_plugin_ignores_a_missing_shared_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            env = os.environ.copy()
+            env["EXPSKILL_HOME"] = temporary
+            result = run_node_case(UNSLP_PLUGIN, UNSLP_MISSING_SKILL_CASE, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ok:missing-skill-noop", result.stdout)
 
     @needs_node
     def test_execution_policy_plugin_enforces_shared_budgets(self) -> None:
