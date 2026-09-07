@@ -7,9 +7,129 @@ const SCOPE = `Apply the following Unslop rules to natural-language user-facing 
 `;
 
 const LIMIT = 5000;
-const MARKER = "<unslop-scope>";
+const MARKER = "unslop-scope";
+const OPEN_MARKER = `<${MARKER}>`;
+const CLOSE_MARKER = `</${MARKER}>`;
 
-export function skillBody(contents) {
+const RULES = [
+  ["Puffery.", "Cut grand claims and state what happened."],
+  [
+    "Name-dropping.",
+    "Do not list media outlets without context. Name one relevant source and say what it reported.",
+  ],
+  [
+    "Superficial -ing phrases.",
+    "Delete dangling claims such as highlighting, ensuring, reflecting, showcasing, or fostering, or support them with real sources.",
+  ],
+  [
+    "Promotional language.",
+    "Replace sales language such as vibrant, breathtaking, groundbreaking, renowned, stunning, or must-visit with neutral descriptions.",
+  ],
+  [
+    "Vague attributions.",
+    "Name the source behind claims attributed to experts, reports, or critics, or delete the claim.",
+  ],
+  [
+    "Formulaic challenges.",
+    'Replace templates such as "despite challenges, it continues to thrive" with specific facts.',
+  ],
+  [
+    "AI vocabulary.",
+    "Replace additionally, crucial, delve, enduring, enhance, fostering, garner, interplay, intricate, abstract landscape, pivotal, showcase, abstract tapestry, testament, underscore, and vibrant with plain words.",
+  ],
+  [
+    'Fancy ways to say "is".',
+    "Replace serves as, stands as, boasts, and features with is or has.",
+  ],
+  ["\"Not just X, but Y.\"", "State the point directly."],
+  [
+    "Rule of three.",
+    "Do not force ideas into groups of three. Use the natural number.",
+  ],
+  [
+    "Synonym cycling.",
+    "Pick one term for a thing and repeat it instead of cycling synonyms.",
+  ],
+  [
+    "False ranges.",
+    "Use from X to Y only for a meaningful scale. Otherwise list the topics directly.",
+  ],
+  [
+    "Em dash overuse.",
+    "Avoid em dashes entirely. Use periods or commas, not parentheses, en dashes, or hyphens as substitute dashes.",
+  ],
+  [
+    "Colon overuse.",
+    "Use colons before lists or examples, not as generic mid-sentence connectors.",
+  ],
+  ["Boldface overuse.", "Do not bold every proper noun or acronym."],
+  [
+    "Inline-header lists.",
+    "Remove bold labels that merely repeat a line. A bold lead-in is acceptable only when the following text adds new detail.",
+  ],
+  ["Title case headings.", "Use sentence case."],
+  ["Decorative emojis.", "Remove them from headings and bullets."],
+  ["Curly quotes.", "Use straight quotes."],
+  [
+    "Chatbot phrases.",
+    'Remove canned phrases such as "I hope this helps", "Let me know if", "Of course", and "Certainly".',
+  ],
+  [
+    "Cutoff disclaimers.",
+    "For claims introduced with disclaimers about limited details, find sources or remove the claim.",
+  ],
+  [
+    "Sycophantic tone.",
+    'Skip praise such as "Great question" or "You\'re absolutely right" and answer directly.',
+  ],
+  [
+    "Filler phrases.",
+    'Shorten wordy phrases: use "to" for "in order to", "because" for "due to the fact that", and delete "it is important to note that".',
+  ],
+  ["Excessive hedging.", "Replace stacked qualifiers with one accurate qualifier."],
+  ["Generic conclusions.", "Replace empty optimism with specific plans or facts."],
+  [
+    "Abstract metaphor nouns.",
+    "Use concrete words instead of substrate, wedge, vector, locus, vantage, nexus, noun-form primitive, metaphorical harness or surface, bedrock, metaphorical scaffolding, modality, paradigm, gold-plating, metaphorical ratchet, evacuate for moving code, endgame, north star, or flywheel.",
+  ],
+  [
+    "Say what it does, not how it feels.",
+    "Give a concrete instruction, fact, mechanism, or number. Cut a sentence if it could describe any project unchanged.",
+  ],
+  [
+    "Shorten or split dense sentences.",
+    "Use one idea per sentence so readers do not need to backtrack.",
+  ],
+  [
+    "Active voice.",
+    "Name the actor. Use passive voice only when the actor is unknown or does not matter.",
+  ],
+  [
+    "Cut adverbs, or use a stronger verb.",
+    "Replace weak verb-adverb pairs with a stronger verb or a measured result.",
+  ],
+  [
+    "Prefer the plain word.",
+    "Use plain words such as use, help, many, and if instead of utilize, leverage, facilitate, numerous, and in the event that. The fancier synonym is rarely clearer.",
+  ],
+];
+
+const RUNTIME_SKILL = `# Unslop
+
+Edit text to remove AI patterns and add human voice without changing its meaning or intended tone.
+
+## Process
+
+1. Scan for every pattern below.
+2. Rewrite while preserving meaning and tone.
+3. Add voice: have opinions, vary sentence rhythm, acknowledge complexity, use \"I\" when it fits, allow natural imperfection, and be specific.
+4. Self-audit: \"What makes this obviously AI generated?\" Fix remaining tells.
+
+## Patterns to detect and fix
+
+${RULES.map(([name, instruction], index) => `${index + 1}. **${name}** ${instruction}`).join("\n")}`;
+
+function skillBody(contents) {
   const lines = contents.split("\n");
   if (lines.length === 0 || lines[0] !== "---") {
     throw new Error("Unslop skill is missing frontmatter");
@@ -21,12 +141,27 @@ export function skillBody(contents) {
   return lines.slice(end + 1).join("\n").trim() + "\n";
 }
 
-export function buildBlock(contents) {
-  const block = SCOPE + skillBody(contents);
-  return block.length > LIMIT ? block.slice(0, LIMIT) : block;
+function buildBlock(contents) {
+  const body = skillBody(contents);
+  const sourceRuleNames = [...body.matchAll(/^\d+\. \*\*([^*]+)\*\*/gm)].map(
+    (match) => match[1]
+  );
+  const runtimeRuleNames = RULES.map(([name]) => name);
+  if (JSON.stringify(sourceRuleNames) !== JSON.stringify(runtimeRuleNames)) {
+    throw new Error("Unslop runtime rules do not match the shared skill");
+  }
+  if (!body.includes('Self-audit: "What makes this obviously AI generated?"')) {
+    throw new Error("Unslop skill is missing its self-audit");
+  }
+  const payload = SCOPE + RUNTIME_SKILL;
+  const block = `${OPEN_MARKER}\n${payload}\n${CLOSE_MARKER}`;
+  if (block.length > LIMIT) {
+    throw new Error(`Unslop runtime instructions exceed ${LIMIT} characters`);
+  }
+  return block;
 }
 
-export function resolveSkillPath(env, pluginFile) {
+function resolveSkillPath(env, pluginFile) {
   const home = env?.EXPSKILL_HOME;
   if (home) {
     return path.resolve(home, "packages", "codex", "skills", "unslop", "SKILL.md");
@@ -35,36 +170,33 @@ export function resolveSkillPath(env, pluginFile) {
   return path.resolve(base, "..", "skills", "unslop", "SKILL.md");
 }
 
-export const UnslopPlugin = async (ctx) => {
-  const seen = new Set();
+export const UnslopPlugin = async () => {
   const skillPath = resolveSkillPath(process.env, import.meta.url);
   return {
-    "experimental.chat.system.transform": async (input, output) => {
+    "experimental.chat.system.transform": async (_input, output) => {
       const system = output?.system;
       if (!Array.isArray(system)) {
         return;
       }
-      if (system.some((entry) => typeof entry === "string" && entry.includes(MARKER))) {
+      if (
+        system.some(
+          (entry) =>
+            typeof entry === "string" &&
+            (entry.startsWith(`${OPEN_MARKER}\n`) || entry.includes(`\n${OPEN_MARKER}\n`))
+        )
+      ) {
         return;
       }
-      const sessionID = input?.sessionID;
-      if (sessionID && seen.has(sessionID)) {
-        return;
-      }
-      let block;
+      let text;
       try {
-        block = buildBlock(await readFile(skillPath, "utf8"));
+        text = buildBlock(await readFile(skillPath, "utf8"));
       } catch {
         return;
       }
-      const text = `<${MARKER}>\n${block}\n</${MARKER}>`;
       if (system.length > 0 && typeof system[0] === "string") {
         system[0] += `\n\n${text}`;
       } else {
         system.push(text);
-      }
-      if (sessionID) {
-        seen.add(sessionID);
       }
     },
     "experimental.session.compacting": async (_input, output) => {
