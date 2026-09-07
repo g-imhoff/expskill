@@ -344,7 +344,7 @@ class DesignStateContractV2Tests(unittest.TestCase):
             state = module.load_workflow(workflow_id=workflow_id, state_home=state_home)
             self.assertEqual(
                 set(state),
-                {"schema_version", "workflow_id", "revision", "lifecycle", "identity", "ui_contract", "scope", "components", "dependencies", "evidence", "approvals", "invalidations", "selected_rules", "seed_permission", "questions", "delivery", "candidate_payload", "review_evidence", "manifest"},
+                {"schema_version", "workflow_id", "revision", "lifecycle", "identity", "ui_contract", "scope", "components", "dependencies", "evidence", "approvals", "invalidations", "selected_rules", "seed_permission", "questions", "delivery", "candidate_payload", "review_evidence", "manifest", "brief", "candidate", "invocation_mode"},
             )
             self.assertEqual(state["candidate_payload"], candidate)
             self.assertEqual(state["review_evidence"], review)

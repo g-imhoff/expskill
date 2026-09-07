@@ -47,6 +47,10 @@ import(%s).then(async (module) => {
     if (!condition) process.exitCode = 1;
   };
   assert('route-values', budget.maxAgentCalls === 30 && budget.maxConcurrency === 6 && budget.maxRetries === 3 && budget.maxElapsedMs === 7200000);
+  const planDesign = module.routePolicy(policy, 'use-expskill', 'parallel-plan-design');
+  assert('plan-design-route', planDesign.maxAgentCalls === 2 && planDesign.maxConcurrency === 2 && planDesign.maxRetries === 0 && planDesign.allowedProfiles.length === 2);
+  const table = module.routeBudgets(policy);
+  assert('route-table', table['expskill-planner'].route === 'use-expskill.parallel-plan-design' && table['expskill-implementer'].route === 'implement.standard');
   const tracker = module.createBudgetTracker(budget);
   for (let index = 0; index < 30; index++) {
     tracker.beforeCall('s', 'expskill-implementer', 1000);
@@ -125,6 +129,8 @@ class OpencodeRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
             "ok:route-values",
+            "ok:plan-design-route",
+            "ok:route-table",
             "ok:thirty-calls",
             "ok:blocks-31st-call",
             "ok:blocks-7th-concurrent",

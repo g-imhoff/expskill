@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +23,12 @@ class WorktreeError(RuntimeError):
 class WorktreeRecord(NamedTuple):
     path: Path
     branch: str
+
+
+class UIHarnessSeed(NamedTuple):
+    worktree: Path
+    branch: str
+    files: tuple[str, ...]
 
 
 def _git(cwd: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -321,6 +330,168 @@ def create_worktree(repo: Path, base: str, run_id: str, task: str, state_home: P
     return WorktreeRecord(path=target, branch=branch)
 
 
+def _inspector_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "skills" / "setup-ui-testing" / "scripts" / "inspect_setup.py"
+
+
+def _inspect_ui_harness(project: Path, inspector: Path | None = None) -> dict[str, object]:
+    helper = Path(inspector or _inspector_path())
+    if helper.is_symlink() or not helper.is_file():
+        raise WorktreeError(f"UI testing inspector is unavailable: {helper}")
+    result = subprocess.run(
+        [sys.executable, str(helper), "--project-root", str(project)],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, ValueError) as error:
+        raise WorktreeError("UI testing inspector returned malformed output") from error
+    if result.returncode != 0 or payload.get("classification") != "ready":
+        raise WorktreeError("source UI testing setup is not ready")
+    if payload.get("project_root") != str(project):
+        raise WorktreeError("UI testing inspector returned another project root")
+    return payload
+
+
+def _seed_record_path(repo: Path, branch: str, state_home: Path) -> Path:
+    run_id, task = _branch_parts(branch)
+    target = _owned_path(repo, run_id, task, state_home)
+    return target.parent / f".{task}.ui-harness-seed.json"
+
+
+def _regular_file(path: Path, label: str) -> os.stat_result:
+    try:
+        details = path.lstat()
+    except OSError as error:
+        raise WorktreeError(f"cannot inspect {label}: {path}") from error
+    if not stat.S_ISREG(details.st_mode):
+        raise WorktreeError(f"{label} is not a regular file: {path}")
+    return details
+
+
+def _agent_files(source: Path) -> list[Path]:
+    if not _path_exists(source):
+        return []
+    if source.is_symlink() or not source.is_dir():
+        raise WorktreeError(f"agent-only UI support is unsafe: {source}")
+    files: list[Path] = []
+    for directory, names, filenames in os.walk(source, followlinks=False):
+        root = Path(directory)
+        for name in names:
+            path = root / name
+            if path.is_symlink() or not path.is_dir():
+                raise WorktreeError(f"agent-only UI support contains an unsafe directory: {path}")
+        for name in filenames:
+            path = root / name
+            _regular_file(path, "agent-only UI support file")
+            files.append(path)
+    return sorted(files)
+
+
+def _copy_regular(source: Path, destination: Path) -> str:
+    source_details = _regular_file(source, "UI testing source file")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened_details = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(opened_details.st_mode)
+            or opened_details.st_dev != source_details.st_dev
+            or opened_details.st_ino != source_details.st_ino
+        ):
+            raise WorktreeError(f"UI testing source file changed during inspection: {source}")
+        mode = 0o700 if source_details.st_mode & stat.S_IXUSR else 0o600
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
+        )
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            offset = 0
+            while offset < len(chunk):
+                offset += os.write(destination_fd, chunk[offset:])
+        os.fsync(destination_fd)
+    finally:
+        os.close(source_fd)
+        if "destination_fd" in locals():
+            os.close(destination_fd)
+    return digest.hexdigest()
+
+
+def seed_ui_harness(
+    repo: Path,
+    worktree: Path,
+    state_home: Path,
+    inspector: Path | None = None,
+) -> UIHarnessSeed:
+    source_root = _canonical_repository(repo)
+    target = Path(worktree).expanduser().resolve(strict=True)
+    registered = _registered_worktrees(source_root)
+    branch = registered.get(target)
+    if not branch or target == source_root:
+        raise WorktreeError("UI testing setup destination is not an isolated registered worktree")
+    expected_run, expected_task = _branch_parts(branch)
+    expected_target = _owned_path(source_root, expected_run, expected_task, _state_home(state_home))
+    if target != expected_target:
+        raise WorktreeError("UI testing setup destination is outside its helper-owned worktree")
+    _inspect_ui_harness(source_root, inspector)
+    tracked = _git(source_root, "ls-files", "-z", "--", ".ui-harness", check=False)
+    if tracked.returncode or tracked.stdout:
+        raise WorktreeError("source UI testing setup contains tracked paths")
+    source_harness = source_root / ".ui-harness"
+    guide = source_harness / "README.md"
+    _regular_file(guide, "UI testing guide")
+    sources = [guide, *_agent_files(source_harness / "agent")]
+    destination = target / ".ui-harness"
+    record_path = _seed_record_path(source_root, branch, _state_home(state_home))
+    if _path_exists(destination) or _path_exists(record_path):
+        raise WorktreeError("UI testing setup destination already exists")
+    inventory: list[dict[str, str]] = []
+    try:
+        destination.mkdir(mode=0o700)
+        for source in sources:
+            relative = source.relative_to(source_harness)
+            if relative.parts[0] not in {"README.md", "agent"}:
+                raise WorktreeError("UI testing source escaped its allowed inventory")
+            target_file = destination / relative
+            digest = _copy_regular(source, target_file)
+            inventory.append({"path": str(Path(".ui-harness") / relative), "digest": digest})
+        copied = [item["path"] for item in inventory]
+        for relative in copied:
+            ignored = _git(target, "check-ignore", "--quiet", "--no-index", "--", relative, check=False)
+            if ignored.returncode != 0:
+                raise WorktreeError(f"copied UI testing path is not ignored: {relative}")
+        if _git(target, "ls-files", "-z", "--", ".ui-harness", check=False).stdout:
+            raise WorktreeError("copied UI testing setup became tracked")
+        record = {
+            "schema_version": "worktree-ui-harness-seed.v1",
+            "repository": str(source_root),
+            "worktree": str(target),
+            "branch": branch,
+            "inventory": inventory,
+        }
+        encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+        descriptor = os.open(record_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except BaseException:
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        raise
+    return UIHarnessSeed(target, branch, tuple(item["path"] for item in inventory))
+
+
 def _registered_worktrees(repo: Path) -> dict[Path, str | None]:
     result = _git(repo, "worktree", "list", "--porcelain", check=False)
     if result.returncode:
@@ -354,7 +525,51 @@ def _branch_parts(branch: str) -> tuple[str, str]:
     return parts[1], parts[2]
 
 
-def _status(repo: Path) -> tuple[bool, bool, str]:
+def _load_seed_record(repo: Path, path: Path, branch: str, state_home: Path) -> Path | None:
+    record_path = _seed_record_path(repo, branch, state_home)
+    if not _path_exists(record_path):
+        return None
+    details = _regular_file(record_path, "UI testing seed record")
+    if details.st_mode & 0o077:
+        raise WorktreeError("UI testing seed record has unsafe permissions")
+    try:
+        value = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise WorktreeError("UI testing seed record is malformed") from error
+    if not isinstance(value, dict) or set(value) != {"schema_version", "repository", "worktree", "branch", "inventory"}:
+        raise WorktreeError("UI testing seed record schema is incomplete")
+    if value.get("schema_version") != "worktree-ui-harness-seed.v1" or value.get("repository") != str(repo) or value.get("worktree") != str(path) or value.get("branch") != branch:
+        raise WorktreeError("UI testing seed record identity mismatch")
+    inventory = value.get("inventory")
+    if not isinstance(inventory, list) or not inventory:
+        raise WorktreeError("UI testing seed record inventory is empty")
+    for item in inventory:
+        if not isinstance(item, dict) or set(item) != {"path", "digest"} or not isinstance(item["path"], str) or not re.fullmatch(r"[0-9a-f]{64}", str(item["digest"])):
+            raise WorktreeError("UI testing seed record inventory is invalid")
+        relative = Path(item["path"])
+        parts = tuple(item["path"].split("/"))
+        allowed = parts == (".ui-harness", "README.md") or (
+            len(parts) >= 3 and parts[:2] == (".ui-harness", "agent")
+        )
+        if (
+            relative.is_absolute()
+            or "\\" in item["path"]
+            or any(part in {"", ".", ".."} for part in parts)
+            or not allowed
+        ):
+            raise WorktreeError("UI testing seed record inventory is invalid")
+    return record_path
+
+
+def _source_ui_harness_ready(repo: Path) -> bool:
+    try:
+        _inspect_ui_harness(repo)
+    except (OSError, subprocess.SubprocessError, WorktreeError):
+        return False
+    return True
+
+
+def _status(repo: Path, allow_ui_harness: bool = False) -> tuple[bool, bool, str]:
     commands = (
         ("tracked", ("status", "--porcelain", "--untracked-files=no"), ""),
         ("untracked", ("ls-files", "--others", "--exclude-standard"), "?? "),
@@ -369,7 +584,10 @@ def _status(repo: Path) -> tuple[bool, bool, str]:
         if label == "tracked":
             details.extend(result.stdout.splitlines())
         else:
-            details.extend(f"{prefix}{path}" for path in result.stdout.splitlines())
+            paths = result.stdout.splitlines()
+            if label == "ignored" and allow_ui_harness:
+                paths = [path for path in paths if path != ".ui-harness" and not path.startswith(".ui-harness/")]
+            details.extend(f"{prefix}{path}" for path in paths)
     output = "\n".join(details)
     return True, not details, output
 
@@ -474,13 +692,16 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
     reasons: list[str] = []
     attached_branch: str | None = None
     canonical_state: Path | None = None
+    seed_record: Path | None = None
     try:
         run_id, task = _branch_parts(branch)
         canonical_state = _state_home()
         expected = _owned_path(canonical_repo, run_id, task, canonical_state)
         if target != expected:
             reasons.append(f"path is outside its exact owned target {expected}")
-    except (ValueError, OSError) as error:
+        else:
+            seed_record = _load_seed_record(canonical_repo, target, branch, canonical_state)
+    except (ValueError, OSError, WorktreeError) as error:
         reasons.append(str(error))
     try:
         registered = _registered_worktrees(canonical_repo)
@@ -492,7 +713,7 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
         attached_branch = registered[target]
         if attached_branch != branch:
             reasons.append(f"worktree is attached to {attached_branch!r}, not {branch!r}")
-        task_status_readable, clean_task, task_status = _status(target)
+        task_status_readable, clean_task, task_status = _status(target, allow_ui_harness=seed_record is not None)
         if not task_status_readable:
             reasons.append(f"task worktree status is unavailable: {task_status.strip()}")
         elif not clean_task:
@@ -518,7 +739,9 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
         reasons.append(f"branch tip {branch} is not an ancestor of integration checkout HEAD")
     if branch_commit and upstream_commit and not _is_ancestor(canonical_repo, branch_commit, upstream_commit):
         reasons.append(f"branch tip {branch} is not an ancestor of its configured upstream")
-    integration_status_readable, clean_integration, integration_status = _status(canonical_repo)
+    integration_status_readable, clean_integration, integration_status = _status(
+        canonical_repo, allow_ui_harness=_source_ui_harness_ready(canonical_repo)
+    )
     if not integration_status_readable:
         reasons.append(f"integration checkout status is unavailable: {integration_status.strip()}")
     elif not clean_integration:
@@ -541,6 +764,11 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
             canonical_state = _state_home()
         restored, restore_detail = _restore_worktree(canonical_repo, target, branch, canonical_state)
         raise _post_removal_error(canonical_repo, target, branch, [details, restore_detail], restored)
+    if seed_record is not None:
+        try:
+            seed_record.unlink()
+        except OSError as error:
+            raise WorktreeError(f"integrated worktree finished but UI testing seed record remains: {seed_record}: {error}") from error
 
 
 def _default_parser() -> argparse.ArgumentParser:
@@ -551,6 +779,9 @@ def _default_parser() -> argparse.ArgumentParser:
     create.add_argument("--base", required=True)
     create.add_argument("--run-id", required=True)
     create.add_argument("--task", required=True)
+    seed = commands.add_parser("seed-ui-harness")
+    seed.add_argument("--repo", required=True)
+    seed.add_argument("--path", required=True)
     finish = commands.add_parser("finish")
     finish.add_argument("--repo", required=True)
     finish.add_argument("--path", required=True)
@@ -573,6 +804,14 @@ def main(arguments: list[str] | None = None) -> int:
             )
             print(f"path={record.path}")
             print(f"branch={record.branch}")
+        elif options.command == "seed-ui-harness":
+            record = seed_ui_harness(
+                Path(options.repo), Path(options.path), _state_home()
+            )
+            print(f"path={record.worktree}")
+            print(f"branch={record.branch}")
+            for relative in record.files:
+                print(f"file={relative}")
         else:
             finish_worktree(Path(options.repo), Path(options.path), options.branch, options.integrated_ref)
     except (ValueError, WorktreeError) as error:

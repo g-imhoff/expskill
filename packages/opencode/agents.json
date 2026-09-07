@@ -18,6 +18,40 @@
         "external_directory": "deny"
       }
     },
+    "expskill-planner": {
+      "closing": "Return only what your assignment requires.",
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "git push *": "deny",
+          "git merge *": "deny",
+          "git rebase *": "deny",
+          "gh *": "deny",
+          "rm -rf *": "deny"
+        },
+        "task": "deny",
+        "question": "deny",
+        "external_directory": "ask"
+      }
+    },
+    "expskill-designer": {
+      "closing": "Return only what your assignment requires.",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "git push *": "deny",
+          "git merge *": "deny",
+          "git rebase *": "deny",
+          "gh *": "deny",
+          "rm -rf *": "deny"
+        },
+        "task": "deny",
+        "question": "deny",
+        "external_directory": "ask"
+      }
+    },
     "expskill-implementer": {
       "closing": "Never push, merge, rebase, open or update a merge request, approve, or deliver remotely. Return only what your assignment requires.",
       "permission": {
@@ -33,6 +67,23 @@
         "task": "deny",
         "question": "deny",
         "external_directory": "ask"
+      }
+    },
+    "expskill-test-engineer": {
+      "closing": "Return only what your assignment requires.",
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "git status *": "allow",
+          "git diff *": "allow",
+          "git log *": "allow",
+          "git show *": "allow",
+          "git branch *": "allow"
+        },
+        "task": "deny",
+        "question": "deny",
+        "external_directory": "deny"
       }
     },
     "expskill-review": {
@@ -70,23 +121,6 @@
         "external_directory": "deny"
       },
       "temperature": 0.1
-    },
-    "expskill-test-engineer": {
-      "closing": "Return only what your assignment requires.",
-      "permission": {
-        "edit": "deny",
-        "bash": {
-          "*": "deny",
-          "git status *": "allow",
-          "git diff *": "allow",
-          "git log *": "allow",
-          "git show *": "allow",
-          "git branch *": "allow"
-        },
-        "task": "deny",
-        "question": "deny",
-        "external_directory": "deny"
-      }
     }
   },
   "default_model_profile": "opencode-go",

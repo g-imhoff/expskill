@@ -37,6 +37,8 @@ SKILLS = (
 )
 AGENTS = (
     "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
     "expskill-implementer",
     "expskill-test-engineer",
     "expskill-review",
@@ -136,7 +138,7 @@ class OpencodeContractTests(unittest.TestCase):
                 self.assertIn("permission", mappings)
                 self.assertIn("task: deny", contents)
                 self.assertIn("question: deny", contents)
-                if name == "expskill-implementer":
+                if name in ("expskill-implementer", "expskill-designer"):
                     self.assertIn("edit: allow", contents)
                     self.assertIn('git push *": deny', contents)
                 else:
