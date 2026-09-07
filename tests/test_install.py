@@ -1391,6 +1391,95 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(retry_runner.calls, [])
             self.assertFalse(receipt.exists())
 
+    def test_agents_only_install_links_profiles_without_cli_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner([])
+
+            result = install(repo, codex_home, state_home, runner, agents_only=True)
+
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(len(result.created_links), len(PROFILE_NAMES))
+            for name in PROFILE_NAMES:
+                destination = destination_paths(codex_home)[name]
+                self.assertTrue(destination.is_symlink())
+            receipt = json.loads(receipt_path(state_home).read_text(encoding="utf-8"))
+            self.assertEqual(len(receipt["links"]), len(PROFILE_NAMES))
+            self.assertFalse(receipt["marketplace_added"])
+            self.assertFalse(receipt["plugin_installed"])
+
+    def test_agents_only_uninstall_removes_links_without_cli_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+
+            runner = FakeRunner([])
+            result = uninstall(repo, codex_home, state_home, runner, agents_only=True)
+
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(len(result.removed_links), len(PROFILE_NAMES))
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertTrue(
+                all(not os.path.lexists(path) for path in destination_paths(codex_home).values())
+            )
+
+    def test_full_install_after_agents_only_claims_cli_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+
+            runner = FakeRunner(install_results(repo))
+            result = install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(result.created_links, ())
+            receipt = json.loads(receipt_path(state_home).read_text(encoding="utf-8"))
+            self.assertEqual(len(receipt["links"]), len(PROFILE_NAMES))
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+
+    def test_agents_only_uninstall_preserves_cli_managed_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+
+            runner = FakeRunner([])
+            result = uninstall(repo, codex_home, state_home, runner, agents_only=True)
+
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(len(result.removed_links), len(PROFILE_NAMES))
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_agents_only_dry_run_lists_links_without_cli_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            output = StringIO()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+                with redirect_stdout(output):
+                    from scripts.install import _print_dry_run
+
+                    _print_dry_run(repo, codex_home, agents_only=True)
+            lines = output.getvalue().splitlines()
+            self.assertEqual(len(lines), len(PROFILE_NAMES) + 1)
+            self.assertFalse(
+                any("codex plugin marketplace add" in line for line in lines)
+            )
+            self.assertFalse(any("codex plugin add " in line for line in lines))
+
 
 if __name__ == "__main__":
     unittest.main()

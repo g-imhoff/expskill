@@ -687,6 +687,7 @@ def install(
     codex_home: Path,
     state_home: Path,
     run: Runner | Callable[[Sequence[str]], object],
+    agents_only: bool = False,
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
     links = preflight_links(canonical_root, codex_home)
@@ -694,40 +695,42 @@ def install(
     plugin_version = _validated_manifest_version(canonical_root)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_receipt(receipt_path_value, canonical_root, receipt_links)
-    marketplace_payload = _run_json(
-        run,
-        ["codex", "plugin", "marketplace", "list", "--json"],
-    )
-    marketplace_state = _marketplace_state(marketplace_payload, canonical_root)
-    if marketplace_state == "foreign":
-        raise InstallError("marketplace name conflict from another repository")
+    if not agents_only:
+        marketplace_payload = _run_json(
+            run,
+            ["codex", "plugin", "marketplace", "list", "--json"],
+        )
+        marketplace_state = _marketplace_state(marketplace_payload, canonical_root)
+        if marketplace_state == "foreign":
+            raise InstallError("marketplace name conflict from another repository")
     created_links: list[ProfileLink] = []
     marketplace_new = False
     plugin_new = False
     removed_links: tuple[ProfileLink, ...] = ()
     try:
         _create_links(links, created_links)
-        marketplace_add_command = [
-            "codex",
-            "plugin",
-            "marketplace",
-            "add",
-            str(canonical_root),
-            "--json",
-        ]
-        marketplace_add_result = _run_command(run, marketplace_add_command)
-        _require_success(marketplace_add_command, marketplace_add_result)
-        marketplace_new = marketplace_state == "absent"
-        marketplace_add_json = _parse_json(marketplace_add_command, marketplace_add_result)
-        _validate_marketplace_add(marketplace_add_json, canonical_root)
-        plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
-        plugin_state = _plugin_presence(plugin_payload)
-        plugin_add_command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
-        plugin_add_result = _run_command(run, plugin_add_command)
-        _require_success(plugin_add_command, plugin_add_result)
-        plugin_new = plugin_state == "absent"
-        plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
-        _validate_plugin_add(plugin_add_json, plugin_version)
+        if not agents_only:
+            marketplace_add_command = [
+                "codex",
+                "plugin",
+                "marketplace",
+                "add",
+                str(canonical_root),
+                "--json",
+            ]
+            marketplace_add_result = _run_command(run, marketplace_add_command)
+            _require_success(marketplace_add_command, marketplace_add_result)
+            marketplace_new = marketplace_state == "absent"
+            marketplace_add_json = _parse_json(marketplace_add_command, marketplace_add_result)
+            _validate_marketplace_add(marketplace_add_json, canonical_root)
+            plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+            plugin_state = _plugin_presence(plugin_payload)
+            plugin_add_command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
+            plugin_add_result = _run_command(run, plugin_add_command)
+            _require_success(plugin_add_command, plugin_add_result)
+            plugin_new = plugin_state == "absent"
+            plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
+            _validate_plugin_add(plugin_add_json, plugin_version)
         if receipt is not None:
             receipt, removed_links = _prune_retired_links(
                 receipt_path_value,
@@ -816,6 +819,7 @@ def uninstall(
     codex_home: Path,
     state_home: Path,
     run: Runner | Callable[[Sequence[str]], object],
+    agents_only: bool = False,
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
     links = _allowlisted_links(canonical_root, codex_home)
@@ -826,10 +830,10 @@ def uninstall(
     current = receipt
     plugin_state: str | None = None
     marketplace_state: str | None = None
-    if receipt.plugin_installed:
+    if not agents_only and receipt.plugin_installed:
         plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
         plugin_state = _plugin_state(plugin_payload, canonical_root)
-    if receipt.marketplace_added:
+    if not agents_only and receipt.marketplace_added:
         marketplace_payload = _run_json(
             run,
             ["codex", "plugin", "marketplace", "list", "--json"],
@@ -891,10 +895,13 @@ def _default_state_home() -> Path:
     ).expanduser()
 
 
-def _print_dry_run(repo_root: Path, codex_home: Path) -> None:
+def _print_dry_run(repo_root: Path, codex_home: Path, agents_only: bool = False) -> None:
     links = preflight_links(repo_root, codex_home)
     for link in links:
         print(f"link {link.destination} -> {link.source}")
+    if agents_only:
+        print("codex agent links only: the plugin itself stays managed through codex plugin CLI")
+        return
     repository = links[0].source.parent.parent.parent.parent.parent
     print(f"codex plugin marketplace add {repository} --json")
     print(f"codex plugin add {PLUGIN_SELECTOR} --json")
@@ -1067,6 +1074,11 @@ def _print_opencode_dry_run(repo_root: Path, config_dir: Path) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install the expskill marketplace and profiles.")
     parser.add_argument("--target", choices=("codex", "opencode"), default="codex")
+    parser.add_argument(
+        "--agents-only",
+        action="store_true",
+        help="codex target only: link agent profiles without touching plugin CLI state",
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true")
     group.add_argument("--uninstall", action="store_true")
@@ -1084,12 +1096,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 install_opencode(repository_root, config_dir, state_home)
             return 0
         codex_home = _default_codex_home()
+        if arguments.agents_only and arguments.target != "codex":
+            print("install error: --agents-only applies to the codex target only", file=sys.stderr)
+            return 1
         if arguments.dry_run:
-            _print_dry_run(repository_root, codex_home)
+            _print_dry_run(repository_root, codex_home, arguments.agents_only)
         elif arguments.uninstall:
-            uninstall(repository_root, codex_home, state_home, _subprocess_runner)
+            uninstall(
+                repository_root, codex_home, state_home, _subprocess_runner, arguments.agents_only
+            )
         else:
-            install(repository_root, codex_home, state_home, _subprocess_runner)
+            install(
+                repository_root, codex_home, state_home, _subprocess_runner, arguments.agents_only
+            )
     except InstallError as error:
         print(f"install error: {error}", file=sys.stderr)
         return 1
