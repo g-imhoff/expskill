@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -23,6 +24,10 @@ needs_node_and_npm = unittest.skipUnless(
 EXPECTED_EXPORTS = ("ExecutionPolicyPlugin", "UnslopPlugin")
 SHARED_HELPERS = ("design_state.py", "plan_graph.py", "worktrees.py")
 THIRD_PARTY_LICENSES = ("mattpocock-skills-MIT.txt", "pstack-MIT.txt")
+
+
+def is_python_cache(path: Path) -> bool:
+    return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
 
 
 def run(
@@ -69,6 +74,11 @@ class OpencodePackageTests(unittest.TestCase):
                 )
                 if links:
                     problems.append(f"tarball contains links: {links}")
+                caches = sorted(
+                    name for name in members if is_python_cache(Path(name))
+                )
+                if caches:
+                    problems.append(f"tarball contains Python caches: {caches}")
 
                 def packed_bytes(relative: str) -> bytes | None:
                     name = f"package/{relative}"
@@ -99,9 +109,10 @@ class OpencodePackageTests(unittest.TestCase):
                 missing_skills: list[str] = []
                 changed_skills: list[str] = []
                 for source in sorted((CODEX_ROOT / "skills").rglob("*")):
-                    if not source.is_file():
+                    relative_path = source.relative_to(CODEX_ROOT / "skills")
+                    if is_python_cache(relative_path) or not source.is_file():
                         continue
-                    relative = source.relative_to(CODEX_ROOT / "skills").as_posix()
+                    relative = relative_path.as_posix()
                     name = f"package/skills/{relative}"
                     member = members.get(name)
                     if member is None or not member.isfile():
@@ -217,6 +228,52 @@ console.log(JSON.stringify(names));
                             problems.append(f"installed package exports are {exported!r}")
 
             self.assertEqual(problems, [], "\n".join(problems))
+
+    @needs_node_and_npm
+    def test_npm_pack_omits_python_caches_after_packaged_helper_runs(self) -> None:
+        assert NPM is not None
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            package = temporary_root / "package"
+            shutil.copytree(PACKAGE_ROOT, package)
+            helper_env = dict(os.environ)
+            helper_env.pop("PYTHONDONTWRITEBYTECODE", None)
+            helper_result = run(
+                [sys.executable, "-c", "import plan_graph"],
+                package / "scripts",
+                env=helper_env,
+            )
+            self.assertEqual(
+                helper_result.returncode,
+                0,
+                f"packaged helper failed:\n{helper_result.stdout}\n{helper_result.stderr}",
+            )
+            self.assertTrue(
+                any(
+                    is_python_cache(path.relative_to(package))
+                    for path in (package / "scripts").rglob("*")
+                ),
+                "packaged helper did not leave a Python cache to exercise npm ignores",
+            )
+            pack_result = run(
+                [NPM, "pack", "--json", "--pack-destination", str(temporary_root)],
+                package,
+            )
+            self.assertEqual(
+                pack_result.returncode,
+                0,
+                f"npm pack failed:\n{pack_result.stdout}\n{pack_result.stderr}",
+            )
+            report = json.loads(pack_result.stdout)
+            self.assertEqual(len(report), 1, report)
+            tarball = temporary_root / report[0]["filename"]
+            with tarfile.open(tarball, "r:gz") as archive:
+                caches = sorted(
+                    member.name
+                    for member in archive.getmembers()
+                    if is_python_cache(Path(member.name))
+                )
+            self.assertEqual(caches, [])
 
 
 if __name__ == "__main__":
