@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import tarfile
 import tempfile
 import unittest
 import urllib.error
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +20,7 @@ from tests import cli_verification
 from tests.cli_verification import (
     CLI_MODE_ENV,
     CLI_RELEASE_MANIFEST,
+    CliAcquisitionUnavailable,
     CliVerificationError,
     _asset_for,
     ensure_binary,
@@ -53,6 +56,18 @@ def _patched_manifest(kind: str, archive_name: str, binary_name: str, archive_by
     return manifest
 
 
+@contextmanager
+def _assert_cli_failure(test_case: unittest.TestCase):
+    """Treat an unexpected SkipTest as a hard test failure."""
+
+    try:
+        yield
+    except Exception as error:
+        test_case.assertIsInstance(error, CliVerificationError)
+    else:
+        test_case.fail("expected CliVerificationError")
+
+
 class CliVerificationTests(unittest.TestCase):
     def test_manifest_keeps_authoritative_provenance_and_pinned_versions(self) -> None:
         self.assertEqual(
@@ -68,7 +83,7 @@ class CliVerificationTests(unittest.TestCase):
 
     def test_required_mode_fails_when_platform_asset_is_unsupported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     Path(temporary),
@@ -114,7 +129,7 @@ class CliVerificationTests(unittest.TestCase):
                         manifest["clis"]["codex"]["platforms"] = malformed_platforms
                         with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
                             with tempfile.TemporaryDirectory() as temporary:
-                                with self.assertRaises(CliVerificationError):
+                                with _assert_cli_failure(self):
                                     ensure_binary(
                                         "codex",
                                         Path(temporary),
@@ -129,7 +144,7 @@ class CliVerificationTests(unittest.TestCase):
                 manifest["clis"]["codex"]["platforms"]["linux-x86_64"] = "not-an-asset"
                 with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
                     with tempfile.TemporaryDirectory() as temporary:
-                        with self.assertRaises(CliVerificationError):
+                        with _assert_cli_failure(self):
                             ensure_binary(
                                 "codex",
                                 Path(temporary),
@@ -145,7 +160,7 @@ class CliVerificationTests(unittest.TestCase):
                 destination.write_bytes(b"partial archive")
                 raise OSError("connection reset")
 
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     cache_root,
@@ -168,7 +183,7 @@ class CliVerificationTests(unittest.TestCase):
                 destination.write_bytes(b"partial archive")
                 raise OSError("connection reset")
 
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     cache_root,
@@ -188,7 +203,7 @@ class CliVerificationTests(unittest.TestCase):
                     platform_key=PLATFORM,
                     mode="optional",
                     downloader=lambda _url, _destination: (_ for _ in ()).throw(
-                        urllib.error.URLError("offline")
+                        CliAcquisitionUnavailable("offline")
                     ),
                 )
 
@@ -204,9 +219,9 @@ class CliVerificationTests(unittest.TestCase):
             def offline(_url: str, _destination: Path) -> None:
                 nonlocal called
                 called = True
-                raise urllib.error.URLError("offline")
+                raise CliAcquisitionUnavailable("offline")
 
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     cache_root,
@@ -225,9 +240,9 @@ class CliVerificationTests(unittest.TestCase):
             def offline(_url: str, _destination: Path) -> None:
                 nonlocal called
                 called = True
-                raise urllib.error.URLError("offline")
+                raise CliAcquisitionUnavailable("offline")
 
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     cache_root,
@@ -245,7 +260,7 @@ class CliVerificationTests(unittest.TestCase):
                 destination.unlink()
                 destination.mkdir()
 
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     cache_root,
@@ -257,7 +272,7 @@ class CliVerificationTests(unittest.TestCase):
 
     def test_optional_mode_fails_local_downloader_filesystem_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     Path(temporary),
@@ -267,6 +282,117 @@ class CliVerificationTests(unittest.TestCase):
                         PermissionError("temporary archive is not writable")
                     ),
                 )
+
+    def test_optional_mode_fails_local_mkstemp_network_errno(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(
+                cli_verification.tempfile,
+                "mkstemp",
+                side_effect=OSError(errno.ETIMEDOUT, "local staging timed out"),
+            ):
+                with _assert_cli_failure(self):
+                    ensure_binary(
+                        "codex",
+                        Path(temporary),
+                        platform_key=PLATFORM,
+                        mode="optional",
+                    )
+
+    def test_optional_mode_fails_local_hash_network_errno(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(
+                cli_verification,
+                "_sha256",
+                side_effect=OSError(errno.ETIMEDOUT, "local hash timed out"),
+            ):
+                with _assert_cli_failure(self):
+                    ensure_binary(
+                        "codex",
+                        Path(temporary),
+                        platform_key=PLATFORM,
+                        mode="optional",
+                        downloader=lambda _url, destination: destination.write_bytes(b"archive"),
+                    )
+
+    def test_optional_mode_fails_local_publication_network_errno(self) -> None:
+        archive_name = "fixture-codex.tar.gz"
+        archive_bytes = _archive("fixture-codex", b"trusted binary")
+        manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                with mock.patch.object(
+                    cli_verification.os,
+                    "replace",
+                    side_effect=OSError(errno.ETIMEDOUT, "local publication timed out"),
+                ):
+                    with _assert_cli_failure(self):
+                        ensure_binary(
+                            "codex",
+                            Path(temporary),
+                            platform_key=PLATFORM,
+                            mode="optional",
+                            downloader=lambda _url, destination: destination.write_bytes(archive_bytes),
+                        )
+
+    def test_optional_mode_fails_wrapped_local_permission_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            wrapped = urllib.error.URLError(PermissionError(errno.EACCES, "local policy denied"))
+            with _assert_cli_failure(self):
+                ensure_binary(
+                    "codex",
+                    Path(temporary),
+                    platform_key=PLATFORM,
+                    mode="optional",
+                    downloader=lambda _url, _destination: (_ for _ in ()).throw(wrapped),
+                )
+
+    def test_default_downloader_distinguishes_destination_io_from_network_failure(self) -> None:
+        class Response:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self, _size: int) -> bytes:
+                payload, self.payload = self.payload, b""
+                return payload
+
+        with tempfile.TemporaryDirectory() as temporary:
+            destination_error = OSError(errno.ETIMEDOUT, "destination write timed out")
+            with mock.patch.object(
+                cli_verification.urllib.request,
+                "urlopen",
+                return_value=Response(b"archive"),
+            ), mock.patch.object(
+                cli_verification.Path,
+                "open",
+                side_effect=destination_error,
+            ):
+                with _assert_cli_failure(self):
+                    ensure_binary(
+                        "codex",
+                        Path(temporary),
+                        platform_key=PLATFORM,
+                        mode="optional",
+                    )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(
+                cli_verification.urllib.request,
+                "urlopen",
+                side_effect=urllib.error.URLError("offline"),
+            ):
+                with self.assertRaises(unittest.SkipTest):
+                    ensure_binary(
+                        "codex",
+                        Path(temporary),
+                        platform_key=PLATFORM,
+                        mode="optional",
+                    )
 
     def test_optional_mode_fails_local_staging_and_publication_errors(self) -> None:
         archive_name = "fixture-codex.tar.gz"
@@ -288,7 +414,7 @@ class CliVerificationTests(unittest.TestCase):
                 cache_root = Path(temporary)
                 (cache_root / archive_name).write_bytes(archive_bytes)
                 with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                    with patcher, self.assertRaises(CliVerificationError):
+                    with patcher, _assert_cli_failure(self):
                         ensure_binary(
                             "codex",
                             cache_root,
@@ -304,7 +430,7 @@ class CliVerificationTests(unittest.TestCase):
             manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
             (cache_root / archive_name).write_bytes(b"corrupt archive")
             with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                with self.assertRaises(CliVerificationError):
+                with _assert_cli_failure(self):
                     ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="optional")
 
     def test_corrupt_cached_archive_fails_before_extraction(self) -> None:
@@ -315,7 +441,7 @@ class CliVerificationTests(unittest.TestCase):
             manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
             (cache_root / archive_name).write_bytes(b"corrupt archive")
             with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                with self.assertRaises(CliVerificationError):
+                with _assert_cli_failure(self):
                     ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="required")
             self.assertFalse((cache_root / "codex-0.153.4").exists())
 
@@ -327,7 +453,7 @@ class CliVerificationTests(unittest.TestCase):
             manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
             (cache_root / archive_name).write_bytes(archive_bytes)
             with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                with self.assertRaises(CliVerificationError):
+                with _assert_cli_failure(self):
                     ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="required")
             self.assertFalse((cache_root / "codex-0.153.4").exists())
 
@@ -344,7 +470,7 @@ class CliVerificationTests(unittest.TestCase):
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 self.assertEqual(metadata["binary_sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
                 binary.write_bytes(b"tampered binary")
-                with self.assertRaises(CliVerificationError):
+                with _assert_cli_failure(self):
                     ensure_binary("opencode", cache_root, platform_key=PLATFORM, mode="required")
 
     def test_marker_without_integrity_metadata_is_not_reused(self) -> None:
@@ -375,7 +501,7 @@ class CliVerificationTests(unittest.TestCase):
             (cache_dir / "bin").write_bytes(b"untrusted cache")
             (cache_dir / ".integrity.json").write_text("not json", encoding="utf-8")
             with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                with self.assertRaises(CliVerificationError):
+                with _assert_cli_failure(self):
                     ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="required")
 
     def test_cache_without_archive_is_not_authorized_by_its_receipt(self) -> None:
@@ -388,7 +514,7 @@ class CliVerificationTests(unittest.TestCase):
             with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
                 binary = ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="required")
                 (cache_root / archive_name).unlink()
-                with self.assertRaises(CliVerificationError):
+                with _assert_cli_failure(self):
                     ensure_binary(
                         "codex",
                         cache_root,
@@ -430,17 +556,28 @@ class CliVerificationTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                    expected_error = unittest.SkipTest if mode == "optional" else CliVerificationError
-                    with self.assertRaises(expected_error):
-                        ensure_binary(
-                            "codex",
-                            cache_root,
-                            platform_key=PLATFORM,
-                            mode=mode,
-                            downloader=lambda _url, _destination: (_ for _ in ()).throw(
-                                urllib.error.URLError("archive unavailable")
-                            ),
-                        )
+                    if mode == "optional":
+                        with self.assertRaises(unittest.SkipTest):
+                            ensure_binary(
+                                "codex",
+                                cache_root,
+                                platform_key=PLATFORM,
+                                mode=mode,
+                                downloader=lambda _url, _destination: (_ for _ in ()).throw(
+                                    CliAcquisitionUnavailable("archive unavailable")
+                                ),
+                            )
+                    else:
+                        with _assert_cli_failure(self):
+                            ensure_binary(
+                                "codex",
+                                cache_root,
+                                platform_key=PLATFORM,
+                                mode=mode,
+                                downloader=lambda _url, _destination: (_ for _ in ()).throw(
+                                    CliAcquisitionUnavailable("archive unavailable")
+                                ),
+                            )
                 self.assertEqual(binary.read_bytes(), forged)
 
     def test_self_consistent_forged_cache_never_passes_with_valid_archive(self) -> None:
@@ -474,7 +611,7 @@ class CliVerificationTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
-                    with self.assertRaises(CliVerificationError):
+                    with _assert_cli_failure(self):
                         ensure_binary(
                             "codex",
                             cache_root,
@@ -489,7 +626,7 @@ class CliVerificationTests(unittest.TestCase):
             override.write_bytes(b"trusted override")
             override.chmod(0o755)
             environment = {"EXPSKILL_TEST_CODEX_BIN": str(override)}
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary("codex", Path(temporary), environ=environment, mode="required")
             environment["EXPSKILL_TEST_CODEX_BIN_SHA256"] = hashlib.sha256(
                 b"trusted override"
@@ -567,7 +704,7 @@ class CliVerificationTests(unittest.TestCase):
     def test_mode_environment_is_explicit_and_rejects_unknown_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             environment = {CLI_MODE_ENV: "sometimes"}
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     Path(temporary),
@@ -577,7 +714,7 @@ class CliVerificationTests(unittest.TestCase):
 
     def test_mode_defaults_to_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaises(CliVerificationError):
+            with _assert_cli_failure(self):
                 ensure_binary(
                     "codex",
                     Path(temporary),

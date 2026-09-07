@@ -55,6 +55,15 @@ class CliVerificationError(RuntimeError):
     """Raised when a CLI cannot be proven safe to use."""
 
 
+class CliAcquisitionUnavailable(RuntimeError):
+    """Downloader contract for failures opening or reading the remote response.
+
+    Injected downloaders may raise this exception only for a remote acquisition
+    failure.  Local destination, cache, hashing, and publication errors must
+    propagate as their original exception and are always hard failures.
+    """
+
+
 @dataclass(frozen=True)
 class CliAsset:
     kind: str
@@ -126,7 +135,15 @@ def _failure(
 def _is_acquisition_unavailable(error: BaseException) -> bool:
     """Return whether an acquisition failure can be skipped in optional mode."""
 
-    if isinstance(error, (ConnectionError, TimeoutError, urllib.error.URLError)):
+    if isinstance(error, CliAcquisitionUnavailable):
+        cause = error.__cause__
+        return cause is None or _is_acquisition_unavailable(cause)
+    if isinstance(error, urllib.error.URLError):
+        reason = error.reason
+        if reason is None or isinstance(reason, str):
+            return True
+        return _is_acquisition_unavailable(reason)
+    if isinstance(error, (ConnectionError, TimeoutError)):
         return True
     return isinstance(error, OSError) and error.errno in _NETWORK_ERRNOS
 
@@ -201,15 +218,31 @@ def _asset_for(kind: str, key: tuple[str, str], selected_mode: str) -> CliAsset:
 
 def _default_downloader(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "expskill-cli-integrity-test"})
-    with urllib.request.urlopen(request, timeout=_NETWORK_TIMEOUT) as response:
-        with destination.open("wb") as stream:
-            while True:
-                chunk = response.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                stream.write(chunk)
-            stream.flush()
-            os.fsync(stream.fileno())
+    try:
+        response = urllib.request.urlopen(request, timeout=_NETWORK_TIMEOUT)
+    except Exception as error:
+        raise CliAcquisitionUnavailable(f"could not open CLI response: {url}") from error
+    with response:
+        try:
+            stream = destination.open("wb")
+        except Exception as error:
+            raise CliVerificationError(f"could not open downloaded CLI archive: {destination}") from error
+        try:
+            with stream:
+                while True:
+                    try:
+                        chunk = response.read(_CHUNK_SIZE)
+                    except Exception as error:
+                        raise CliAcquisitionUnavailable(f"could not read CLI response: {url}") from error
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except CliAcquisitionUnavailable:
+            raise
+        except Exception as error:
+            raise CliVerificationError(f"could not write downloaded CLI archive: {destination}") from error
 
 
 def _ensure_cache_root(cache_root: Path, selected_mode: str) -> Path:
@@ -247,38 +280,62 @@ def _download_archive(
 
     temporary: Path | None = None
     try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{asset.archive}.", suffix=".part", dir=cache_root
-        )
-        os.close(descriptor)
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{asset.archive}.", suffix=".part", dir=cache_root
+            )
+            os.close(descriptor)
+        except OSError as error:
+            _failure(
+                selected_mode,
+                f"cannot create temporary CLI archive in {cache_root}: {error}",
+                cause=error,
+            )
         temporary = Path(temporary_name)
         # The downloader owns only this disposable path; the named cache file
         # is changed after both download completion and digest verification.
-        downloader(asset.url, temporary)
+        try:
+            downloader(asset.url, temporary)
+        except CliVerificationError:
+            raise
+        except CliAcquisitionUnavailable as error:
+            _failure(
+                selected_mode,
+                f"CLI download failed for {asset.url}: {error}",
+                cause=error,
+                skippable=_is_acquisition_unavailable(error),
+            )
+        except Exception as error:
+            _failure(
+                selected_mode,
+                f"CLI download failed for {asset.url}: {error}",
+                cause=error,
+            )
         if not _is_regular_file(temporary):
             _failure(
                 selected_mode,
                 f"CLI download did not produce a regular archive: {asset.url}",
             )
-        actual = _sha256(temporary)
+        try:
+            actual = _sha256(temporary)
+        except OSError as error:
+            _failure(selected_mode, f"downloaded CLI archive cannot be hashed: {temporary}", cause=error)
         if actual != asset.sha256:
             _failure(
                 selected_mode,
                 f"downloaded {asset.kind} archive hash mismatch for {asset.archive}: "
                 f"expected {asset.sha256}, got {actual}",
             )
-        os.replace(temporary, archive)
+        try:
+            os.replace(temporary, archive)
+        except OSError as error:
+            _failure(
+                selected_mode,
+                f"cannot publish downloaded CLI archive {archive}: {error}",
+                cause=error,
+            )
         temporary = None
         return archive
-    except CliVerificationError:
-        raise
-    except Exception as error:
-        _failure(
-            selected_mode,
-            f"CLI download failed for {asset.url}: {error}",
-            cause=error,
-            skippable=_is_acquisition_unavailable(error),
-        )
     finally:
         if temporary is not None:
             try:
@@ -676,6 +733,7 @@ def ensure_binary(
 __all__ = [
     "CLI_MODE_ENV",
     "CLI_RELEASE_MANIFEST",
+    "CliAcquisitionUnavailable",
     "CliAsset",
     "CliVerificationError",
     "OPTIONAL_MODE",
