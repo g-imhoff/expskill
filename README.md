@@ -25,6 +25,31 @@ The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.
 
+## Install through the Codex plugin CLI
+
+The plugin itself installs through plain Codex commands with no script
+involved. Point the marketplace at a local checkout or at a reachable Git
+source, then add the plugin:
+
+```bash
+codex plugin marketplace add /path/to/expskill
+codex plugin add expskill@expskill
+```
+
+That CLI flow installs the skills and the hook. The seven agent profiles
+cannot ride along because Codex loads custom profiles only from the agents
+directory, so link them with the installer in agents-only mode:
+
+```bash
+python3 scripts/install.py --agents-only
+python3 scripts/install.py --agents-only --uninstall
+```
+
+Agents-only mode never calls the plugin CLI. It only creates the profile
+links and records them in its own receipt, and a later full
+`python3 scripts/install.py` run keeps those links while claiming the CLI
+ownership it performed.
+
 ## Skills
 
 Invoke a skill directly when you know what you want:
