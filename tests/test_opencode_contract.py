@@ -12,6 +12,7 @@ from scripts.validate import (
     _parse_overlay_frontmatter,
     validate_repository,
 )
+from scripts.sync_opencode_package import check_generated_assets, sync as sync_package_assets
 
 
 try:
@@ -64,10 +65,10 @@ class OpencodeContractTests(unittest.TestCase):
             f"opencode contract errors: {[e for e in errors if 'opencode' in e]}",
         )
 
-    def test_skills_entry_links_the_shared_codex_base(self) -> None:
+    def test_skills_entry_is_a_regular_packaging_mirror(self) -> None:
         entry = OPENCODE_ROOT / "skills"
-        self.assertTrue(entry.is_symlink(), "opencode skills entry must be a symlink")
-        self.assertEqual(entry.resolve(), (CODEX_ROOT / "skills").resolve())
+        self.assertTrue(entry.is_dir(), "opencode skills entry must be a directory")
+        self.assertFalse(entry.is_symlink(), "npm cannot pack the skills as a symlink")
 
     def test_every_shared_skill_is_byte_identical_on_both_surfaces(self) -> None:
         for name in SKILLS:
@@ -75,6 +76,87 @@ class OpencodeContractTests(unittest.TestCase):
                 canonical = (CODEX_ROOT / "skills" / name / "SKILL.md").read_bytes()
                 exposed = (OPENCODE_ROOT / "skills" / name / "SKILL.md").read_bytes()
                 self.assertEqual(exposed, canonical)
+
+    def test_every_generated_package_asset_matches_its_canonical_source(self) -> None:
+        self.assertEqual(check_generated_assets(ROOT), [])
+
+    def test_changed_nested_package_asset_is_rejected(self) -> None:
+        root = self.copy_repository()
+        reference = (
+            root
+            / "packages"
+            / "opencode"
+            / "skills"
+            / "design"
+            / "references"
+            / "geometry.md"
+        )
+        reference.write_text(
+            reference.read_text(encoding="utf-8") + "\nGenerated drift.\n",
+            encoding="utf-8",
+        )
+        errors = validate_repository(root)
+        self.assertIn(
+            "generated opencode package asset differs: skills/design/references/geometry.md",
+            errors,
+        )
+
+    def test_unexpected_generated_package_entry_is_rejected(self) -> None:
+        root = self.copy_repository()
+        extra = root / "packages" / "opencode" / "scripts" / "stale.py"
+        extra.write_text("stale = True\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(
+            any(
+                "generated opencode package files are unexpected" in error
+                and "scripts/stale.py" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_package_asset_generator_repairs_drift_and_extra_entries(self) -> None:
+        root = self.copy_repository()
+        helper = root / "packages" / "opencode" / "scripts" / "plan_graph.py"
+        helper.write_text("drift\n", encoding="utf-8")
+        (helper.parent / "stale.py").write_text("stale\n", encoding="utf-8")
+        sync_package_assets(root)
+        self.assertEqual(check_generated_assets(root), [])
+
+    def test_generated_asset_check_ignores_canonical_python_caches(self) -> None:
+        root = self.copy_repository()
+        cache = root / "packages" / "codex" / "scripts" / "__pycache__"
+        cache.mkdir()
+        (cache / "plan_graph.cpython-313.pyc").write_bytes(b"ignored cache")
+        self.assertEqual(check_generated_assets(root), [])
+
+    def test_package_asset_sync_and_check_ignore_python_caches_on_both_surfaces(self) -> None:
+        root = self.copy_repository()
+        canonical_skills = root / "packages" / "codex" / "skills" / "design"
+        canonical_scripts = root / "packages" / "codex" / "scripts"
+        (canonical_skills / "__pycache__").mkdir()
+        (canonical_skills / "__pycache__" / "skill.cpython-313.pyc").write_bytes(
+            b"canonical skill cache"
+        )
+        (canonical_scripts / "plan_graph.pyo").write_bytes(b"canonical script cache")
+
+        package_skills = root / "packages" / "opencode" / "skills" / "design"
+        package_scripts = root / "packages" / "opencode" / "scripts"
+        (package_skills / "__pycache__").mkdir()
+        (package_skills / "__pycache__" / "stale.pyc").write_bytes(b"stale mirror cache")
+        (package_scripts / "stale.pyo").write_bytes(b"stale script cache")
+
+        self.assertEqual(check_generated_assets(root), [])
+        sync_package_assets(root)
+        self.assertEqual(check_generated_assets(root), [])
+        package_root = root / "packages" / "opencode"
+        caches = [
+            path
+            for tree in (package_root / "skills", package_root / "scripts")
+            for path in tree.rglob("*")
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+        ]
+        self.assertEqual(caches, [])
 
     def test_every_shared_skill_declares_exact_opencode_metadata(self) -> None:
         for name in SKILLS:

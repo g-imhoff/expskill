@@ -1,0 +1,774 @@
+{
+  "schema_version": "test-evidence-contract.v1",
+  "terminal_states": [
+    "PASS",
+    "FAIL",
+    "BLOCKED",
+    "EXEMPT"
+  ],
+  "finding_kinds": [
+    "product-defect",
+    "test-system-defect",
+    "environment-blocker",
+    "unresolved-cause"
+  ],
+  "bundle": {
+    "type": "object",
+    "additional_properties": false,
+    "required": [
+      "schema_version",
+      "run_id",
+      "workflow_id",
+      "repository",
+      "branch",
+      "head",
+      "environment_digest",
+      "scope",
+      "rule_applicability",
+      "checks",
+      "journeys",
+      "exploration",
+      "findings",
+      "artifacts",
+      "teardown",
+      "test_side_commits",
+      "limitations",
+      "result",
+      "bundle_digest",
+      "started_at",
+      "completed_at"
+    ],
+    "properties": {
+      "schema_version": {
+        "type": "string",
+        "min_length": 1,
+        "const": "test-evidence-bundle.v1"
+      },
+      "run_id": {
+        "type": "string",
+        "min_length": 1
+      },
+      "workflow_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "min_length": 1,
+        "nullable_when": "direct invocation without Plan ancestry"
+      },
+      "repository": {
+        "type": "string",
+        "min_length": 1
+      },
+      "branch": {
+        "type": "string",
+        "min_length": 1
+      },
+      "head": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{40,64}$"
+      },
+      "environment_digest": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{64}$",
+        "semantics": "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete recorded environment identity used for this run"
+      },
+      "scope": {
+        "type": "object",
+        "additional_properties": false,
+        "required": [
+          "accepted_behavior",
+          "inner_ring",
+          "adjacent_ring",
+          "broader_ring"
+        ],
+        "properties": {
+          "accepted_behavior": {
+            "type": "string",
+            "min_length": 1
+          },
+          "inner_ring": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 1,
+            "unique_items": true
+          },
+          "adjacent_ring": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": true
+          },
+          "broader_ring": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": true
+          }
+        }
+      },
+      "rule_applicability": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additional_properties": false,
+          "required": [
+            "rule_id",
+            "status",
+            "evidence"
+          ],
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "min_length": 1,
+              "pattern": "^[a-z][a-z0-9.-]+$"
+            },
+            "status": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "active",
+                "inactive",
+                "unknown"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1
+              },
+              "min_items": 1,
+              "unique_items": false
+            }
+          }
+        },
+        "min_items": 0,
+        "unique_items": false
+      },
+      "checks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additional_properties": false,
+          "required": [
+            "check_id",
+            "ring",
+            "action",
+            "expected",
+            "actual",
+            "status",
+            "artifact_ids"
+          ],
+          "properties": {
+            "check_id": {
+              "type": "string",
+              "min_length": 1
+            },
+            "ring": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "inner",
+                "adjacent",
+                "broader"
+              ]
+            },
+            "action": {
+              "type": "string",
+              "min_length": 1
+            },
+            "expected": {
+              "type": "string",
+              "min_length": 1
+            },
+            "actual": {
+              "type": "string",
+              "min_length": 1
+            },
+            "status": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "pass",
+                "fail",
+                "blocked"
+              ]
+            },
+            "artifact_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1
+              },
+              "min_items": 0,
+              "unique_items": true
+            }
+          }
+        },
+        "min_items": 0,
+        "unique_items": false
+      },
+      "journeys": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additional_properties": false,
+          "required": [
+            "journey_id",
+            "ring",
+            "path",
+            "expected",
+            "actual",
+            "status",
+            "artifact_ids"
+          ],
+          "properties": {
+            "journey_id": {
+              "type": "string",
+              "min_length": 1
+            },
+            "ring": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "inner",
+                "adjacent",
+                "broader"
+              ]
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1
+              },
+              "min_items": 1,
+              "unique_items": false
+            },
+            "expected": {
+              "type": "string",
+              "min_length": 1
+            },
+            "actual": {
+              "type": "string",
+              "min_length": 1
+            },
+            "status": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "pass",
+                "fail",
+                "blocked"
+              ]
+            },
+            "artifact_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1
+              },
+              "min_items": 0,
+              "unique_items": true
+            }
+          }
+        },
+        "min_items": 0,
+        "unique_items": false
+      },
+      "exploration": {
+        "type": "object",
+        "additional_properties": false,
+        "required": [
+          "mission",
+          "evidence_budget",
+          "actions",
+          "observations",
+          "stop_condition",
+          "teardown"
+        ],
+        "properties": {
+          "mission": {
+            "type": "string",
+            "min_length": 1
+          },
+          "evidence_budget": {
+            "type": "string",
+            "min_length": 1
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": false
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": false
+          },
+          "stop_condition": {
+            "type": "string",
+            "min_length": 1
+          },
+          "teardown": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": false
+          }
+        }
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additional_properties": false,
+          "required": [
+            "kind",
+            "severity",
+            "repository",
+            "head",
+            "environment_digest",
+            "ring",
+            "journey",
+            "expected",
+            "actual",
+            "reproduction",
+            "violated_rule_ids",
+            "artifacts"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "product-defect",
+                "test-system-defect",
+                "environment-blocker",
+                "unresolved-cause"
+              ]
+            },
+            "severity": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low"
+              ]
+            },
+            "repository": {
+              "type": "string",
+              "min_length": 1
+            },
+            "head": {
+              "type": "string",
+              "min_length": 1,
+              "pattern": "^[0-9a-f]{40,64}$"
+            },
+            "environment_digest": {
+              "type": "string",
+              "min_length": 1,
+              "pattern": "^[0-9a-f]{64}$",
+              "semantics": "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete recorded environment identity used for this run"
+            },
+            "ring": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "inner",
+                "adjacent",
+                "broader"
+              ]
+            },
+            "journey": {
+              "type": "string",
+              "min_length": 1
+            },
+            "expected": {
+              "type": "string",
+              "min_length": 1
+            },
+            "actual": {
+              "type": "string",
+              "min_length": 1
+            },
+            "reproduction": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1
+              },
+              "min_items": 1,
+              "unique_items": false
+            },
+            "violated_rule_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1,
+                "pattern": "^[a-z][a-z0-9.-]+$"
+              },
+              "min_items": 0,
+              "unique_items": true
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "min_length": 1
+              },
+              "min_items": 0,
+              "unique_items": true
+            }
+          }
+        },
+        "min_items": 0,
+        "unique_items": false
+      },
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additional_properties": false,
+          "required": [
+            "artifact_id",
+            "kind",
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "artifact_id": {
+              "type": "string",
+              "min_length": 1
+            },
+            "kind": {
+              "type": "string",
+              "min_length": 1,
+              "enum": [
+                "screenshot",
+                "trace",
+                "video",
+                "log",
+                "console",
+                "network",
+                "reproduction",
+                "metadata"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "min_length": 1
+            },
+            "sha256": {
+              "type": "string",
+              "min_length": 1,
+              "pattern": "^[0-9a-f]{64}$",
+              "semantics": "SHA-256 lowercase hex over the retained artifact bytes"
+            }
+          }
+        },
+        "min_items": 0,
+        "unique_items": false
+      },
+      "teardown": {
+        "type": "object",
+        "additional_properties": false,
+        "required": [
+          "status",
+          "actions",
+          "artifact_ids"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "min_length": 1,
+            "enum": [
+              "pass",
+              "fail",
+              "not-required"
+            ]
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": false
+          },
+          "artifact_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "min_length": 1
+            },
+            "min_items": 0,
+            "unique_items": true
+          }
+        }
+      },
+      "test_side_commits": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "min_length": 1,
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "min_items": 0,
+        "unique_items": true
+      },
+      "limitations": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "min_length": 1
+        },
+        "min_items": 0,
+        "unique_items": false
+      },
+      "result": {
+        "type": "string",
+        "min_length": 1,
+        "enum": [
+          "PASS",
+          "FAIL",
+          "BLOCKED",
+          "EXEMPT"
+        ]
+      },
+      "bundle_digest": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{64}$",
+        "semantics": "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete bundle with only the bundle_digest field omitted"
+      },
+      "started_at": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$"
+      },
+      "completed_at": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$"
+      }
+    }
+  },
+  "receipt": {
+    "type": "object",
+    "additional_properties": false,
+    "required": [
+      "schema_version",
+      "run_id",
+      "workflow_id",
+      "repository",
+      "branch",
+      "head",
+      "environment_digest",
+      "selected_scope_digest",
+      "bundle_digest",
+      "test_side_commits",
+      "result"
+    ],
+    "properties": {
+      "schema_version": {
+        "type": "string",
+        "min_length": 1,
+        "const": "test-evidence-receipt.v1"
+      },
+      "run_id": {
+        "type": "string",
+        "min_length": 1
+      },
+      "workflow_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "min_length": 1,
+        "nullable_when": "direct invocation without Plan ancestry"
+      },
+      "repository": {
+        "type": "string",
+        "min_length": 1
+      },
+      "branch": {
+        "type": "string",
+        "min_length": 1
+      },
+      "head": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{40,64}$"
+      },
+      "environment_digest": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{64}$",
+        "semantics": "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete recorded environment identity used for this run"
+      },
+      "selected_scope_digest": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{64}$",
+        "semantics": "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the selected three-ring scope recorded in the retained bundle"
+      },
+      "bundle_digest": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{64}$",
+        "semantics": "Exact bundle_digest from the retained evidence bundle"
+      },
+      "test_side_commits": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "min_length": 1,
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "min_items": 0,
+        "unique_items": true
+      },
+      "result": {
+        "type": "string",
+        "min_length": 1,
+        "enum": [
+          "PASS",
+          "FAIL",
+          "BLOCKED",
+          "EXEMPT"
+        ]
+      }
+    }
+  },
+  "finding": {
+    "type": "object",
+    "additional_properties": false,
+    "required": [
+      "kind",
+      "severity",
+      "repository",
+      "head",
+      "environment_digest",
+      "ring",
+      "journey",
+      "expected",
+      "actual",
+      "reproduction",
+      "violated_rule_ids",
+      "artifacts"
+    ],
+    "properties": {
+      "kind": {
+        "type": "string",
+        "min_length": 1,
+        "enum": [
+          "product-defect",
+          "test-system-defect",
+          "environment-blocker",
+          "unresolved-cause"
+        ]
+      },
+      "severity": {
+        "type": "string",
+        "min_length": 1,
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      "repository": {
+        "type": "string",
+        "min_length": 1
+      },
+      "head": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{40,64}$"
+      },
+      "environment_digest": {
+        "type": "string",
+        "min_length": 1,
+        "pattern": "^[0-9a-f]{64}$",
+        "semantics": "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete recorded environment identity used for this run"
+      },
+      "ring": {
+        "type": "string",
+        "min_length": 1,
+        "enum": [
+          "inner",
+          "adjacent",
+          "broader"
+        ]
+      },
+      "journey": {
+        "type": "string",
+        "min_length": 1
+      },
+      "expected": {
+        "type": "string",
+        "min_length": 1
+      },
+      "actual": {
+        "type": "string",
+        "min_length": 1
+      },
+      "reproduction": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "min_length": 1
+        },
+        "min_items": 1,
+        "unique_items": false
+      },
+      "violated_rule_ids": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "min_length": 1,
+          "pattern": "^[a-z][a-z0-9.-]+$"
+        },
+        "min_items": 0,
+        "unique_items": true
+      },
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "min_length": 1
+        },
+        "min_items": 0,
+        "unique_items": true
+      }
+    }
+  }
+}
