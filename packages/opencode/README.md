@@ -13,7 +13,7 @@ The ten skills are not copied here. `skills` is a symlink to `../codex/skills`, 
 - `agents/` seven subagent ports of the Codex agent profiles with permission frontmatter
 - `agents.json` single source of truth for the opencode agent layer: model
   profiles, temperature, permission matrices, and runtime paragraphs
-- `plugins/unslop.js` session start injector, ported from the Codex SessionStart hook
+- `plugins/unslop.js` model-request injector, ported from the Codex SessionStart hook
 - `plugins/execution-policy.js` budget counters driven by the shared execution policy JSON
 
 ## Agent sources
@@ -47,4 +47,4 @@ The installer symlinks skills, commands, agents, and plugins into the opencode c
 
 ## Unslop hook divergence
 
-Codex reviews a new hook through a trust prompt before running it. opencode loads local plugins at startup without that prompt. Installing this package activates the Unslop injector immediately. The injector reads the shared `unslop` skill at session start, caps the injected block at 5000 characters, and reasserts the rules across compaction.
+Codex reviews a new hook through a trust prompt before running it. opencode loads local plugins at startup without that prompt. Installing this package activates the Unslop injector immediately. Before every model request, the injector checks the shared `unslop` skill and adds one complete, compact instruction block to that request's system output. The tagged block stays within 5000 characters, and the plugin reasserts the rules across compaction.
