@@ -867,6 +867,13 @@ def uninstall(
         raise InstallError("owned link cleanup failed: " + "; ".join(link_failures))
     if current.links:
         raise InstallError("owned link cleanup did not converge")
+    if current.marketplace_added or current.plugin_installed:
+        return InstallResult(
+            links=links,
+            removed_links=removed_links,
+            marketplace_added=current.marketplace_added,
+            plugin_installed=current.plugin_installed,
+        )
     if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
