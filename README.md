@@ -149,9 +149,10 @@ python3 -m pytest -q tests/test_cli_install_integration.py
 ## opencode package
 
 `packages/opencode` distributes the same ten skills to opencode as
-`opencode-expskill`. `packages/opencode/skills` is a symlink to the shared
-`packages/codex/skills` base, so one exact `SKILL.md` file serves both
-runtimes. The package adds ten thin `/name` commands, seven permission-scoped
+`opencode-expskill`. The canonical skill source remains
+`packages/codex/skills`, and `packages/opencode/skills` is a generated,
+byte-identical regular-file mirror for npm packaging. The package adds ten thin
+`/name` commands, seven permission-scoped
 subagents, the Unslop session injector, and budget counters driven by the
 shared execution policy. Agent descriptions and instructions render from the
 canonical Codex profiles through `packages/opencode/agents.json`, which also

@@ -1,1 +1,27 @@
-{"description": "ExpSkill lifecycle skills, agents, commands, and hooks for opencode. Skills are shared with the Codex package through the skills symlink.", "license": "MIT", "name": "opencode-expskill", "private": true, "type": "module", "version": "0.1.0"}
+{
+  "name": "opencode-expskill",
+  "version": "0.1.0",
+  "description": "ExpSkill lifecycle skills, agents, commands, and hooks for OpenCode.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "index.js",
+    "agents.json",
+    "agents/",
+    "assets/",
+    "commands/",
+    "plugins/",
+    "scripts/",
+    "skills/",
+    "third-party/licenses/"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

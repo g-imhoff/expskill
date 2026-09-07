@@ -14,11 +14,15 @@ from typing import Any
 
 
 try:
-    from scripts.sync_opencode_agents import SyncError
+    from scripts.sync_opencode_agents import SyncError as AgentSyncError
     from scripts.sync_opencode_agents import render_all as _render_opencode_agents
+    from scripts.sync_opencode_package import SyncError as PackageSyncError
+    from scripts.sync_opencode_package import check_generated_assets
 except ModuleNotFoundError:
-    from sync_opencode_agents import SyncError
+    from sync_opencode_agents import SyncError as AgentSyncError
     from sync_opencode_agents import render_all as _render_opencode_agents
+    from sync_opencode_package import SyncError as PackageSyncError
+    from sync_opencode_package import check_generated_assets
 
 
 MARKETPLACE_NAME = "expskill"
@@ -2674,6 +2678,20 @@ OPENCODE_AGENTS = (
     "expskill-spec",
 )
 OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
+OPENCODE_PACKAGE_EXPORTS = {".": "./index.js"}
+OPENCODE_PACKAGE_FILES = (
+    "LICENSE",
+    "README.md",
+    "index.js",
+    "agents.json",
+    "agents/",
+    "assets/",
+    "commands/",
+    "plugins/",
+    "scripts/",
+    "skills/",
+    "third-party/licenses/",
+)
 OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
     "description",
     "mode",
@@ -2847,6 +2865,12 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
         return
     codex_root = repository_root / "packages" / "codex"
     _validate_opencode_manifest(package_root, errors)
+    try:
+        generated_problems = check_generated_assets(repository_root)
+    except PackageSyncError as error:
+        errors.append(f"opencode package assets cannot be generated: {error}")
+    else:
+        errors.extend(generated_problems)
     _validate_opencode_agent_spec(package_root, errors)
     _validate_opencode_shared_skills(codex_root, package_root, errors)
     _validate_opencode_commands(package_root, errors)
@@ -2881,6 +2905,18 @@ def _validate_opencode_manifest(package_root: Path, errors: list[str]) -> None:
             f"opencode package version must match the Codex base version "
             f"{PLUGIN_VERSION!r}, got {version!r}"
         )
+    if manifest.get("private") is True:
+        errors.append("opencode package manifest must be publishable")
+    if manifest.get("type") != "module":
+        errors.append("opencode package manifest type must be 'module'")
+    if manifest.get("main") != "./index.js":
+        errors.append("opencode package manifest main must be './index.js'")
+    if manifest.get("exports") != OPENCODE_PACKAGE_EXPORTS:
+        errors.append("opencode package manifest must declare the exact root export")
+    if manifest.get("files") != list(OPENCODE_PACKAGE_FILES):
+        errors.append("opencode package manifest must declare the exact publish file roster")
+    if manifest.get("license") != "MIT":
+        errors.append("opencode package manifest license must be 'MIT'")
 
 
 def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None:
@@ -3030,7 +3066,7 @@ def _validate_opencode_agents(
         errors.append(f"opencode unexpected agent entry {name!r}")
     try:
         rendered = _render_opencode_agents(repository_root)
-    except SyncError as error:
+    except AgentSyncError as error:
         errors.append(f"opencode agents cannot be rendered from shared sources: {error}")
         return
     stale: list[str] = []
