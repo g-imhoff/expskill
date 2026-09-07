@@ -6,6 +6,7 @@ to know how the integration suite obtains its external CLI executables.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import stat
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -32,6 +34,21 @@ _CHUNK_SIZE = 1024 * 1024
 _NETWORK_TIMEOUT = 300
 _INTEGRITY_FILENAME = ".integrity.json"
 _READY_FILENAME = ".ready"
+_NETWORK_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in (
+        "ECONNABORTED",
+        "ECONNREFUSED",
+        "ECONNRESET",
+        "EHOSTDOWN",
+        "EHOSTUNREACH",
+        "ENETDOWN",
+        "ENETUNREACH",
+        "ENETRESET",
+        "ETIMEDOUT",
+    )
+    if hasattr(errno, name)
+)
 
 
 class CliVerificationError(RuntimeError):
@@ -104,6 +121,14 @@ def _failure(
     if cause is not None:
         raise error from cause
     raise error
+
+
+def _is_acquisition_unavailable(error: BaseException) -> bool:
+    """Return whether an acquisition failure can be skipped in optional mode."""
+
+    if isinstance(error, (ConnectionError, TimeoutError, urllib.error.URLError)):
+        return True
+    return isinstance(error, OSError) and error.errno in _NETWORK_ERRNOS
 
 
 def _is_regular_file(path: Path) -> bool:
@@ -234,7 +259,6 @@ def _download_archive(
             _failure(
                 selected_mode,
                 f"CLI download did not produce a regular archive: {asset.url}",
-                skippable=True,
             )
         actual = _sha256(temporary)
         if actual != asset.sha256:
@@ -253,12 +277,15 @@ def _download_archive(
             selected_mode,
             f"CLI download failed for {asset.url}: {error}",
             cause=error,
-            skippable=True,
+            skippable=_is_acquisition_unavailable(error),
         )
     finally:
         if temporary is not None:
             try:
-                temporary.unlink()
+                if temporary.is_dir() and not temporary.is_symlink():
+                    shutil.rmtree(temporary)
+                else:
+                    temporary.unlink()
             except FileNotFoundError:
                 pass
             except OSError:
@@ -391,7 +418,7 @@ def _read_json(path: Path) -> dict[str, object] | None:
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -406,12 +433,19 @@ def _recover_cache(cache_dir: Path) -> None:
         if backup.is_dir() and not backup.is_symlink():
             try:
                 os.replace(backup, cache_dir)
-            except OSError:
-                pass
+            except OSError as error:
+                raise CliVerificationError(
+                    f"could not recover cached CLI directory {cache_dir}: {error}"
+                ) from error
             return
 
 
-def _cache_is_valid(cache_dir: Path, asset: CliAsset, archive: Path, selected_mode: str) -> Path | None:
+def _cache_is_valid(
+    cache_dir: Path,
+    asset: CliAsset,
+    archive: Path | None,
+    selected_mode: str,
+) -> Path | None:
     if not os.path.lexists(cache_dir):
         return None
     if cache_dir.is_symlink() or not cache_dir.is_dir():
@@ -442,8 +476,35 @@ def _cache_is_valid(cache_dir: Path, asset: CliAsset, archive: Path, selected_mo
             or metadata.get("binary_name") != asset.binary_name
             or metadata.get("url") != asset.url
             or not isinstance(metadata.get("binary_sha256"), str)
+            or len(metadata["binary_sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in metadata["binary_sha256"])
         ):
             _failure(selected_mode, f"cached {asset.kind} integrity receipt is inconsistent: {metadata_path}")
+        try:
+            receipt_actual = _sha256(binary)
+        except OSError as error:
+            _failure(selected_mode, f"cached {asset.kind} executable cannot be hashed: {binary}", cause=error)
+        if receipt_actual != metadata["binary_sha256"]:
+            _failure(
+                selected_mode,
+                f"cached {asset.kind} executable hash disagrees with its integrity receipt: {binary}",
+            )
+        if not _is_regular_file(marker):
+            _failure(selected_mode, f"cached {asset.kind} ready marker is missing: {marker}")
+        try:
+            marker_value = marker.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            _failure(selected_mode, f"cached {asset.kind} ready marker cannot be read: {marker}", cause=error)
+        if marker_value != asset.version:
+            _failure(
+                selected_mode,
+                f"cached {asset.kind} ready marker is for {marker_value!r}, expected {asset.version!r}",
+            )
+        # A local receipt is not enough to authorize reuse.  The archive must
+        # be acquired and its pinned member digest checked before comparing
+        # the cached executable bytes.
+        if archive is None:
+            return None
         expected_binary_sha256 = _archive_member_sha256(archive, asset, selected_mode)
         if metadata["binary_sha256"] != expected_binary_sha256:
             _failure(
@@ -459,17 +520,6 @@ def _cache_is_valid(cache_dir: Path, asset: CliAsset, archive: Path, selected_mo
                 selected_mode,
                 f"cached {asset.kind} executable hash mismatch for {binary}: "
                 f"expected {expected_binary_sha256}, got {actual}",
-            )
-        if not _is_regular_file(marker):
-            _failure(selected_mode, f"cached {asset.kind} ready marker is missing: {marker}")
-        try:
-            marker_value = marker.read_text(encoding="utf-8").strip()
-        except OSError as error:
-            _failure(selected_mode, f"cached {asset.kind} ready marker cannot be read: {marker}", cause=error)
-        if marker_value != asset.version:
-            _failure(
-                selected_mode,
-                f"cached {asset.kind} ready marker is for {marker_value!r}, expected {asset.version!r}",
             )
         return binary
 
@@ -534,7 +584,11 @@ def _install_verified_cache(
                 backup = None
             except OSError:
                 pass
-        _failure(selected_mode, f"could not commit verified CLI cache for {asset.kind}: {error}", cause=error)
+        _failure(
+            selected_mode,
+            f"could not commit verified CLI cache for {asset.kind}: {error}",
+            cause=error,
+        )
     finally:
         if backup is not None:
             # Keep a recoverable backup if restoring it failed.  The next call
@@ -543,6 +597,20 @@ def _install_verified_cache(
         if stage is not None:
             shutil.rmtree(stage, ignore_errors=True)
     raise AssertionError("unreachable")
+
+
+def _resolve_override_path(kind: str, value: str, environ: Mapping[str, str]) -> Path:
+    supplied = Path(value).expanduser()
+    if not supplied.is_absolute() and len(supplied.parts) == 1 and value == supplied.name:
+        selected = shutil.which(str(supplied), path=environ.get("PATH"))
+        if selected is None:
+            raise CliVerificationError(
+                f"explicit {kind} CLI override was not found on PATH: {value!r}"
+            )
+        supplied = Path(selected)
+    if not supplied.is_absolute():
+        supplied = Path.cwd() / supplied
+    return supplied.absolute()
 
 
 def _verified_override(kind: str, path: Path, environ: Mapping[str, str]) -> Path:
@@ -590,13 +658,14 @@ def ensure_binary(
     override_name = f"EXPSKILL_TEST_{kind.upper()}_BIN"
     override = env.get(override_name)
     if override:
-        return _verified_override(kind, Path(override).expanduser(), env)
+        return _verified_override(kind, _resolve_override_path(kind, override, env), env)
 
     selected_platform = platform_key if platform_key is not None else globals()["platform_key"]()
     asset = _asset_for(kind, selected_platform, selected_mode)
     root = _ensure_cache_root(Path(cache_root), selected_mode)
     cache_dir = root / f"{kind}-{asset.version}"
     _recover_cache(cache_dir)
+    _cache_is_valid(cache_dir, asset, None, selected_mode)
     archive = _download_archive(asset, root, selected_mode, downloader or _default_downloader)
     cached = _cache_is_valid(cache_dir, asset, archive, selected_mode)
     if cached is not None:

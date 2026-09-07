@@ -6,9 +6,11 @@ import copy
 import hashlib
 import io
 import json
+import os
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -186,9 +188,113 @@ class CliVerificationTests(unittest.TestCase):
                     platform_key=PLATFORM,
                     mode="optional",
                     downloader=lambda _url, _destination: (_ for _ in ()).throw(
-                        OSError("offline")
+                        urllib.error.URLError("offline")
                     ),
                 )
+
+    def test_optional_mode_fails_malformed_cache_before_offline_acquisition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary)
+            cache_dir = cache_root / "codex-0.153.4"
+            cache_dir.mkdir()
+            (cache_dir / "bin").write_bytes(b"untrusted cache")
+            (cache_dir / ".integrity.json").write_text("not json", encoding="utf-8")
+            called = False
+
+            def offline(_url: str, _destination: Path) -> None:
+                nonlocal called
+                called = True
+                raise urllib.error.URLError("offline")
+
+            with self.assertRaises(CliVerificationError):
+                ensure_binary(
+                    "codex",
+                    cache_root,
+                    platform_key=PLATFORM,
+                    mode="optional",
+                    downloader=offline,
+                )
+            self.assertFalse(called)
+
+    def test_optional_mode_fails_non_directory_cache_before_offline_acquisition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary)
+            (cache_root / "codex-0.153.4").write_bytes(b"not a cache directory")
+            called = False
+
+            def offline(_url: str, _destination: Path) -> None:
+                nonlocal called
+                called = True
+                raise urllib.error.URLError("offline")
+
+            with self.assertRaises(CliVerificationError):
+                ensure_binary(
+                    "codex",
+                    cache_root,
+                    platform_key=PLATFORM,
+                    mode="optional",
+                    downloader=offline,
+                )
+            self.assertFalse(called)
+
+    def test_optional_mode_fails_nonregular_downloader_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary)
+
+            def produces_directory(_url: str, destination: Path) -> None:
+                destination.unlink()
+                destination.mkdir()
+
+            with self.assertRaises(CliVerificationError):
+                ensure_binary(
+                    "codex",
+                    cache_root,
+                    platform_key=PLATFORM,
+                    mode="optional",
+                    downloader=produces_directory,
+                )
+            self.assertEqual(list(cache_root.glob("*.part")), [])
+
+    def test_optional_mode_fails_local_downloader_filesystem_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(CliVerificationError):
+                ensure_binary(
+                    "codex",
+                    Path(temporary),
+                    platform_key=PLATFORM,
+                    mode="optional",
+                    downloader=lambda _url, _destination: (_ for _ in ()).throw(
+                        PermissionError("temporary archive is not writable")
+                    ),
+                )
+
+    def test_optional_mode_fails_local_staging_and_publication_errors(self) -> None:
+        archive_name = "fixture-codex.tar.gz"
+        archive_bytes = _archive("fixture-codex", b"trusted binary")
+        manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
+        for patcher in (
+            mock.patch.object(
+                cli_verification.tempfile,
+                "mkdtemp",
+                side_effect=OSError("staging unavailable"),
+            ),
+            mock.patch.object(
+                cli_verification.os,
+                "replace",
+                side_effect=OSError("publication unavailable"),
+            ),
+        ):
+            with self.subTest(fault=patcher.attribute), tempfile.TemporaryDirectory() as temporary:
+                cache_root = Path(temporary)
+                (cache_root / archive_name).write_bytes(archive_bytes)
+                with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                    with patcher, self.assertRaises(CliVerificationError):
+                        ensure_binary(
+                            "codex",
+                            cache_root,
+                            platform_key=PLATFORM,
+                            mode="optional",
+                        )
 
     def test_optional_mode_still_fails_integrity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -332,7 +438,7 @@ class CliVerificationTests(unittest.TestCase):
                             platform_key=PLATFORM,
                             mode=mode,
                             downloader=lambda _url, _destination: (_ for _ in ()).throw(
-                                OSError("archive unavailable")
+                                urllib.error.URLError("archive unavailable")
                             ),
                         )
                 self.assertEqual(binary.read_bytes(), forged)
@@ -392,6 +498,71 @@ class CliVerificationTests(unittest.TestCase):
                 ensure_binary("codex", Path(temporary), environ=environment, mode="required"),
                 override,
             )
+
+    def test_relative_override_returns_absolute_path_across_cwd_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            elsewhere = root / "elsewhere"
+            source.mkdir()
+            elsewhere.mkdir()
+            override = source / "codex"
+            override.write_bytes(b"trusted relative override")
+            override.chmod(0o755)
+            environment = {
+                "EXPSKILL_TEST_CODEX_BIN": "./codex",
+                "EXPSKILL_TEST_CODEX_BIN_SHA256": hashlib.sha256(
+                    b"trusted relative override"
+                ).hexdigest(),
+            }
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(source)
+                resolved = ensure_binary(
+                    "codex",
+                    root / "cache",
+                    environ=environment,
+                    mode="required",
+                )
+                os.chdir(elsewhere)
+                self.assertEqual(resolved, override)
+                self.assertTrue(resolved.is_absolute())
+            finally:
+                os.chdir(old_cwd)
+
+    def test_bare_name_override_uses_path_not_forged_cwd_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path_dir = root / "path-bin"
+            cwd_dir = root / "cwd"
+            path_dir.mkdir()
+            cwd_dir.mkdir()
+            trusted = path_dir / "opencode"
+            trusted.write_bytes(b"trusted PATH override")
+            trusted.chmod(0o755)
+            forged = cwd_dir / "opencode"
+            forged.write_bytes(b"forged cwd override")
+            forged.chmod(0o755)
+            environment = {
+                "EXPSKILL_TEST_OPENCODE_BIN": "opencode",
+                "EXPSKILL_TEST_OPENCODE_BIN_SHA256": hashlib.sha256(
+                    b"trusted PATH override"
+                ).hexdigest(),
+                "PATH": str(path_dir),
+            }
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(cwd_dir)
+                resolved = ensure_binary(
+                    "opencode",
+                    root / "cache",
+                    environ=environment,
+                    mode="required",
+                )
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(resolved, trusted)
+            self.assertTrue(resolved.is_absolute())
 
     def test_mode_environment_is_explicit_and_rejects_unknown_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
