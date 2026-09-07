@@ -47,8 +47,8 @@ def test_router_has_one_bounded_parallel_plan_design_route() -> None:
     assert route["allowed_profiles"] == ["expskill-planner", "expskill-designer"]
     assert route["max_agent_calls"] == 2
     assert route["max_concurrency"] == 2
-    assert route["max_depth"] == 1
-    assert route["max_retries"] == 0
+    assert "max_depth" not in route
+    assert "max_retries" not in route
 
 
 def test_setup_plan_and_design_remain_independently_invokable() -> None:

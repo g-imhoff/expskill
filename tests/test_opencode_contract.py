@@ -191,6 +191,28 @@ class OpencodeContractTests(unittest.TestCase):
         self.assertEqual(package["name"], "opencode-expskill")
         self.assertEqual(package["version"], str(manifest["version"]).split("+")[0])
 
+    def test_execution_policy_only_advertises_hook_enforced_limits(self) -> None:
+        policy = json.loads(
+            (CODEX_ROOT / "assets" / "execution-policy.json").read_text(encoding="utf-8")
+        )
+        expected_fields = {
+            "allowed_profiles",
+            "selected",
+            "max_agent_calls",
+            "max_concurrency",
+            "max_elapsed_ms",
+        }
+        for route, lanes in policy["routes"].items():
+            for lane, budget in lanes.items():
+                with self.subTest(route=route, lane=lane):
+                    self.assertEqual(set(budget), expected_fields)
+
+        plugin = (OPENCODE_ROOT / "plugins" / "execution-policy.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("requestedAgent(output?.args)", plugin)
+        self.assertNotIn("recordRetry", plugin)
+
     def test_diverged_shared_skill_is_rejected(self) -> None:
         root = self.copy_repository()
         diverged = root / "packages" / "opencode" / "skills" / "plan" / "SKILL.md"

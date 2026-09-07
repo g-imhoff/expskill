@@ -4,35 +4,68 @@ import { fileURLToPath } from "node:url";
 
 const TASK_TOOLS = new Set(["task", "subagent"]);
 
-export function resolvePolicyPath(env, pluginFile) {
+function resolvePolicyPath(env, pluginFile) {
   const home = env?.EXPSKILL_HOME;
   if (home) {
     return path.resolve(home, "packages", "codex", "assets", "execution-policy.json");
   }
   const base = path.dirname(fileURLToPath(pluginFile));
-  return path.resolve(base, "..", "..", "codex", "assets", "execution-policy.json");
+  return path.resolve(base, "..", "assets", "execution-policy.json");
 }
 
-export function routePolicy(policy, route, lane) {
+function routePolicy(policy, route, lane) {
   const node = policy?.routes?.[route]?.[lane];
-  if (!node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) {
     throw new Error(`unknown execution-policy route: ${route}.${lane}`);
   }
+  for (const field of ["max_depth", "max_retries"]) {
+    if (field in node) {
+      throw new Error(`execution-policy route ${route}.${lane} advertises unsupported field: ${field}`);
+    }
+  }
+  const allowedProfiles = node.allowed_profiles;
+  if (
+    !Array.isArray(allowedProfiles) ||
+    allowedProfiles.length === 0 ||
+    allowedProfiles.some((profile) => typeof profile !== "string" || profile.length === 0) ||
+    new Set(allowedProfiles).size !== allowedProfiles.length
+  ) {
+    throw new Error(`execution-policy route ${route}.${lane} has invalid allowed_profiles`);
+  }
+  const positiveInteger = (field) => {
+    const value = node[field];
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`execution-policy route ${route}.${lane} has invalid ${field}`);
+    }
+    return value;
+  };
+  const maxAgentCalls = positiveInteger("max_agent_calls");
+  const maxConcurrency = positiveInteger("max_concurrency");
+  const maxElapsedMs = positiveInteger("max_elapsed_ms");
+  if (maxConcurrency > maxAgentCalls) {
+    throw new Error(
+      `execution-policy route ${route}.${lane} max_concurrency exceeds max_agent_calls`
+    );
+  }
   return {
-    allowedProfiles: [...(node.allowed_profiles ?? [])],
-    maxAgentCalls: node.max_agent_calls,
-    maxConcurrency: node.max_concurrency,
-    maxDepth: node.max_depth,
-    maxRetries: node.max_retries,
-    maxElapsedMs: node.max_elapsed_ms,
+    allowedProfiles: [...allowedProfiles],
+    maxAgentCalls,
+    maxConcurrency,
+    maxElapsedMs,
   };
 }
 
-export function routeBudgets(policy) {
-  const table = {};
+function routeBudgets(policy) {
+  if (policy?.policy_version !== "execution-budget-policy.v1") {
+    throw new Error("unsupported execution-policy version");
+  }
+  const table = Object.create(null);
   const add = (route, lane) => {
     const budget = routePolicy(policy, route, lane);
     for (const agent of budget.allowedProfiles) {
+      if (Object.hasOwn(table, agent)) {
+        throw new Error(`execution-policy assigns agent to multiple routes: ${agent}`);
+      }
       table[agent] = { route: `${route}.${lane}`, budget };
     }
   };
@@ -41,12 +74,12 @@ export function routeBudgets(policy) {
   return table;
 }
 
-export function createBudgetTracker(budget) {
+function createBudgetTracker(budget) {
   const sessions = new Map();
   const stateFor = (sessionID) => {
     let state = sessions.get(sessionID);
     if (!state) {
-      state = { calls: 0, inFlight: 0, maxInFlight: 0, startedAt: null, retries: new Map() };
+      state = { calls: 0, inFlight: 0, startedAt: null };
       sessions.set(sessionID, state);
     }
     return state;
@@ -80,8 +113,6 @@ export function createBudgetTracker(budget) {
       }
       state.calls += 1;
       state.inFlight += 1;
-      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
-      return { calls: state.calls, inFlight: state.inFlight };
     },
     afterCall(sessionID) {
       const state = sessions.get(sessionID);
@@ -89,84 +120,78 @@ export function createBudgetTracker(budget) {
         state.inFlight -= 1;
       }
     },
-    recordRetry(sessionID, key) {
-      const state = stateFor(sessionID);
-      const count = (state.retries.get(key) ?? 0) + 1;
-      state.retries.set(key, count);
-      if (count > budget.maxRetries) {
-        throw new Error(
-          `execution-policy budget exhausted: ${count} retries exceed max ${budget.maxRetries}`
-        );
-      }
-      return count;
-    },
-    snapshot(sessionID) {
-      const state = sessions.get(sessionID);
-      if (!state) {
-        return { calls: 0, inFlight: 0, maxInFlight: 0 };
-      }
-      return { calls: state.calls, inFlight: state.inFlight, maxInFlight: state.maxInFlight };
-    },
   };
 }
 
-function requestedAgent(input) {
-  const args = input?.args ?? input?.input ?? {};
+function requestedAgent(args) {
   if (typeof args === "object" && args !== null) {
     return args.subagent_type ?? args.agent ?? args.subagentType ?? null;
   }
   return null;
 }
 
-export const ExecutionPolicyPlugin = async (ctx) => {
+function hookCall(input) {
+  const sessionID = input?.sessionID;
+  const callID = input?.callID;
+  if (typeof sessionID !== "string" || sessionID.length === 0) {
+    throw new Error("execution-policy requires tool hook sessionID");
+  }
+  if (typeof callID !== "string" || callID.length === 0) {
+    throw new Error("execution-policy requires tool hook callID");
+  }
+  return { sessionID, callID, key: `${sessionID}\u0000${callID}` };
+}
+
+export const ExecutionPolicyPlugin = async (_ctx) => {
   const policyPath = resolvePolicyPath(process.env, import.meta.url);
   let table;
   try {
     const policy = JSON.parse(await readFile(policyPath, "utf8"));
     table = routeBudgets(policy);
-  } catch {
-    return {};
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`execution-policy failed to load ${policyPath}: ${detail}`);
   }
   const trackers = new Map();
-  const trackerFor = (agent) => {
-    const entry = table[agent];
-    if (!entry) {
-      return null;
-    }
+  const activeCalls = new Map();
+  const trackerFor = (entry) => {
     if (!trackers.has(entry.route)) {
       trackers.set(entry.route, createBudgetTracker(entry.budget));
     }
     return trackers.get(entry.route);
   };
-  const sessionOf = (input) => input?.sessionID ?? input?.sessionId ?? "default";
   return {
-    "tool.execute.before": async (input, _output) => {
+    "tool.execute.before": async (input, output) => {
       if (!TASK_TOOLS.has(input?.tool)) {
         return;
       }
-      const agent = requestedAgent(input);
-      if (!agent) {
-        return;
+      const agent = requestedAgent(output?.args);
+      if (typeof agent !== "string" || agent.length === 0) {
+        throw new Error("execution-policy denies task call without an agent");
       }
-      const tracker = trackerFor(agent);
-      if (!tracker) {
-        return;
+      const entry = table[agent];
+      if (!entry) {
+        throw new Error(`execution-policy denies agent: ${agent}`);
       }
-      tracker.beforeCall(sessionOf(input), agent);
+      const call = hookCall(input);
+      if (activeCalls.has(call.key)) {
+        throw new Error(`execution-policy received duplicate active callID: ${call.callID}`);
+      }
+      const tracker = trackerFor(entry);
+      tracker.beforeCall(call.sessionID, agent);
+      activeCalls.set(call.key, { sessionID: call.sessionID, tracker });
     },
     "tool.execute.after": async (input, _output) => {
       if (!TASK_TOOLS.has(input?.tool)) {
         return;
       }
-      const agent = requestedAgent(input);
-      if (!agent) {
+      const call = hookCall(input);
+      const active = activeCalls.get(call.key);
+      if (!active) {
         return;
       }
-      const tracker = trackerFor(agent);
-      if (!tracker) {
-        return;
-      }
-      tracker.afterCall(sessionOf(input));
+      activeCalls.delete(call.key);
+      active.tracker.afterCall(active.sessionID);
     },
   };
 };
