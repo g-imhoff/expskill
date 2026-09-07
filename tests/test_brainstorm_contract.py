@@ -14,7 +14,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "brainstorm"
+SKILL_ROOT = ROOT / "packages" / "codex" / "skills" / "brainstorm"
 ENTRYPOINT = SKILL_ROOT / "SKILL.md"
 METADATA = SKILL_ROOT / "agents" / "openai.yaml"
 CATALOG = SKILL_ROOT / "references" / "brainstorm-techniques.csv"
@@ -186,7 +186,7 @@ class BrainstormContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        for relative in (".agents", "plugins", "scripts"):
+        for relative in (".agents", "packages", "scripts"):
             shutil.copytree(ROOT / relative, temporary / relative)
         return temporary
 
@@ -230,8 +230,8 @@ class BrainstormContractTests(unittest.TestCase):
         missing_root = self.copy_repository()
         missing_catalog = (
             missing_root
-            / "plugins"
-            / "expskill"
+            / "packages"
+            / "codex"
             / "skills"
             / "brainstorm"
             / "references"
@@ -252,8 +252,8 @@ class BrainstormContractTests(unittest.TestCase):
                 changed_root = self.copy_repository()
                 changed_catalog = (
                     changed_root
-                    / "plugins"
-                    / "expskill"
+                    / "packages"
+                    / "codex"
                     / "skills"
                     / "brainstorm"
                     / "references"
@@ -273,8 +273,12 @@ class BrainstormContractTests(unittest.TestCase):
 
     def test_frontmatter_and_metadata_advertise_the_exact_public_job(self) -> None:
         frontmatter = _frontmatter(self.contents)
-        self.assertEqual(set(frontmatter), {"name", "description"})
+        self.assertEqual(set(frontmatter) - {"metadata"}, {"name", "description"})
         self.assertEqual(frontmatter["name"], "brainstorm")
+        self.assertEqual(
+            frontmatter.get("metadata"),
+            {"opencode/slash": "true", "opencode/autoinvoke": "false"},
+        )
         description = str(frontmatter["description"]).lower()
         for phrase in ("explicit", "vague idea", "stress-tested concept", "read-only"):
             self.assertIn(phrase, description)

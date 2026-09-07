@@ -19,8 +19,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = (
     ROOT
-    / "plugins"
-    / "expskill"
+    / "packages"
+    / "codex"
     / "skills"
     / "skill-builder"
     / "scripts"

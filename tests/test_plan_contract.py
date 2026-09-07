@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "plugins" / "expskill"
+PLUGIN_ROOT = ROOT / "packages" / "codex"
 PLAN_ROOT = PLUGIN_ROOT / "skills" / "plan"
 HELPER_PATH = PLUGIN_ROOT / "scripts" / "plan_graph.py"
 PHASE_ROOTS = {
@@ -109,8 +109,12 @@ class PlanContractTests(unittest.TestCase):
 
     def test_frontmatter_and_metadata_remain_explicit_plan_only(self) -> None:
         frontmatter = _frontmatter(self.skill_path)
-        self.assertEqual(set(frontmatter), {"name", "description"})
+        self.assertEqual(set(frontmatter) - {"metadata"}, {"name", "description"})
         self.assertEqual(frontmatter["name"], "plan")
+        self.assertEqual(
+            frontmatter.get("metadata"),
+            {"opencode/slash": "true", "opencode/autoinvoke": "false"},
+        )
         self.assertIsInstance(frontmatter["description"], str)
         self.assertTrue(str(frontmatter["description"]).strip())
         metadata = _parse_simple_yaml_mapping(self.metadata_path.read_text(encoding="utf-8"))
@@ -397,7 +401,7 @@ class PlanContractTests(unittest.TestCase):
         }
         for name, phrases in required.items():
             body = " ".join((PHASE_ROOTS[name] / "SKILL.md").read_text(encoding="utf-8").lower().split())
-            self.assertIn("plugins/expskill/scripts/plan_graph.py", body)
+            self.assertIn("packages/codex/scripts/plan_graph.py", body)
             self.assertIn("../../scripts/plan_graph.py", body)
             self.assertIn("source-package locator", body)
             self.assertIn("branch", body)

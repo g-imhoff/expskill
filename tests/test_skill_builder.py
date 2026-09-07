@@ -16,8 +16,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
-SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "skill-builder"
-PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "skills"
+SKILL_ROOT = ROOT / "packages" / "codex" / "skills" / "skill-builder"
+PUBLIC_SKILLS_ROOT = ROOT / "packages" / "codex" / "skills"
 TRIAL_CONTROL_PATH = "controls/recorded-trial-control.json"
 VERIFICATION_CONTROL_PATH = "controls/recorded-verification-control.json"
 USER_AUTHORITY_CONTROL_PATH = "controls/trusted-user-authority.json"

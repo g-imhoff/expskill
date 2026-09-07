@@ -36,6 +36,31 @@ RETIRED_PROFILE_NAMES = (
 )
 RECEIPT_DIRECTORY = "expskill"
 RECEIPT_FILENAME = "install.json"
+OPENCODE_RECEIPT_FILENAME = "install-opencode.json"
+OPENCODE_PACKAGE_NAME = "opencode-expskill"
+OPENCODE_SKILLS = (
+    "brainstorm",
+    "design",
+    "grill-me",
+    "implement",
+    "plan",
+    "setup-ui-testing",
+    "skill-builder",
+    "test",
+    "unslop",
+    "use-expskill",
+)
+OPENCODE_AGENTS = (
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+OPENCODE_PLUGINS = (
+    "unslop.js",
+    "execution-policy.js",
+)
 
 
 class InstallError(RuntimeError):
@@ -109,9 +134,9 @@ def _assert_no_symlink_components(root: Path, relative: Sequence[str]) -> None:
 def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
     _assert_no_symlink_components(
         repository_root,
-        ("plugins", PLUGIN_NAME, "assets", "agents"),
+        ("packages", "codex", "assets", "agents"),
     )
-    agents_root = repository_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
+    agents_root = repository_root / "packages" / "codex" / "assets" / "agents"
     if not agents_root.is_dir():
         raise InstallError(f"agent source directory is missing: {agents_root}")
     try:
@@ -202,7 +227,7 @@ def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, 
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
-    source_directory = canonical_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
+    source_directory = canonical_root / "packages" / "codex" / "assets" / "agents"
     return tuple(
         ProfileLink(
             source=_lexical_absolute(source_directory / f"{name}.toml"),
@@ -502,7 +527,7 @@ def _plugin_state(payload: Mapping[str, Any], repository_root: Path) -> str:
 
 
 def _validated_manifest_version(repository_root: Path) -> str:
-    manifest_path = repository_root / "plugins" / PLUGIN_NAME / ".codex-plugin" / "plugin.json"
+    manifest_path = repository_root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -527,12 +552,16 @@ def _validate_plugin_add(payload: Mapping[str, Any], expected_version: str) -> N
 
 
 def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> None:
-    if links:
+    parents: list[Path] = []
+    for link in links:
+        if link.destination.parent not in parents:
+            parents.append(link.destination.parent)
+    for parent in parents:
         try:
-            links[0].destination.parent.mkdir(parents=True, exist_ok=True)
+            parent.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise InstallError(
-                f"cannot create agent destination directory: {links[0].destination.parent}: {error}"
+                f"cannot create agent destination directory: {parent}: {error}"
             ) from error
     for link in links:
         if _lexists(link.destination):
@@ -867,16 +896,190 @@ def _print_dry_run(repo_root: Path, codex_home: Path) -> None:
     print(f"codex plugin add {PLUGIN_SELECTOR} --json")
 
 
+def _default_opencode_config_dir() -> Path:
+    return Path(
+        os.environ.get("OPENCODE_CONFIG_DIR", str(Path.home() / ".config" / "opencode"))
+    ).expanduser()
+
+
+def _opencode_receipt_path(state_home: Path) -> Path:
+    canonical_state_home = Path(state_home).expanduser().resolve(strict=False)
+    return canonical_state_home / RECEIPT_DIRECTORY / OPENCODE_RECEIPT_FILENAME
+
+
+def _require_opencode_source(path: Path, label: str) -> Path:
+    if path.is_symlink():
+        raise InstallError(f"opencode source must not be a symlink: {path}")
+    if not path.exists():
+        raise InstallError(f"opencode source is missing: {label}: {path}")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise InstallError(f"opencode source cannot be resolved: {path}: {error}") from error
+    return resolved
+
+
+def _opencode_expected_links(repo_root: Path, config_dir: Path) -> tuple[ProfileLink, ...]:
+    canonical_root = _canonical_repository_root(repo_root)
+    _validate_repository(canonical_root)
+    canonical_config = Path(config_dir).expanduser().resolve(strict=False)
+    codex_skills = canonical_root / "packages" / "codex" / "skills"
+    package_root = canonical_root / "packages" / "opencode"
+    links: list[ProfileLink] = []
+    for name in OPENCODE_SKILLS:
+        source = _require_opencode_source(codex_skills / name, f"shared skill {name!r}")
+        if not source.is_dir():
+            raise InstallError(f"shared skill source is not a directory: {source}")
+        links.append(ProfileLink(source=source, destination=canonical_config / "skills" / name))
+    for name in OPENCODE_SKILLS:
+        source = _require_opencode_source(
+            package_root / "commands" / f"{name}.md", f"command {name!r}"
+        )
+        if not source.is_file():
+            raise InstallError(f"command source is not a regular file: {source}")
+        links.append(ProfileLink(source=source, destination=canonical_config / "commands" / f"{name}.md"))
+    for name in OPENCODE_AGENTS:
+        source = _require_opencode_source(
+            package_root / "agents" / f"{name}.md", f"agent {name!r}"
+        )
+        if not source.is_file():
+            raise InstallError(f"agent source is not a regular file: {source}")
+        links.append(ProfileLink(source=source, destination=canonical_config / "agents" / f"{name}.md"))
+    for name in OPENCODE_PLUGINS:
+        source = _require_opencode_source(package_root / "plugins" / name, f"plugin {name!r}")
+        if not source.is_file():
+            raise InstallError(f"plugin source is not a regular file: {source}")
+        links.append(ProfileLink(source=source, destination=canonical_config / "plugins" / name))
+    return tuple(links)
+
+
+def preflight_opencode_links(repo_root: Path, config_dir: Path) -> tuple[ProfileLink, ...]:
+    links = _opencode_expected_links(repo_root, config_dir)
+    for link in links:
+        if not _lexists(link.destination):
+            continue
+        if not _same_owned_link(link.destination, link.source):
+            raise InstallError(f"refusing conflicting opencode destination: {link.destination}")
+    return links
+
+
+def install_opencode(
+    repo_root: Path,
+    config_dir: Path,
+    state_home: Path,
+) -> InstallResult:
+    canonical_root = _canonical_repository_root(repo_root)
+    links = preflight_opencode_links(canonical_root, config_dir)
+    receipt_path_value = _opencode_receipt_path(state_home)
+    receipt = _read_receipt(receipt_path_value, canonical_root, links)
+    created_links: list[ProfileLink] = []
+    try:
+        _create_links(links, created_links)
+        previous_links = () if receipt is None else receipt.links
+        merged_links = list(previous_links)
+        known_destinations = {link.destination for link in merged_links}
+        for link in created_links:
+            if link.destination not in known_destinations:
+                merged_links.append(link)
+                known_destinations.add(link.destination)
+        merged_receipt = _Receipt(
+            repository_root=canonical_root,
+            links=tuple(merged_links),
+            marketplace_added=False,
+            plugin_installed=True,
+        )
+        _write_receipt(receipt_path_value, merged_receipt)
+    except Exception as error:
+        for failure in _rollback_links(created_links):
+            error = InstallError(f"{error}; residual state or rollback failures: {failure}")
+        if isinstance(error, InstallError):
+            raise error
+        raise InstallError(str(error)) from error
+    return InstallResult(
+        links=links,
+        created_links=tuple(created_links),
+        removed_links=(),
+        marketplace_added=False,
+        plugin_installed=True,
+    )
+
+
+def uninstall_opencode(
+    repo_root: Path,
+    config_dir: Path,
+    state_home: Path,
+) -> InstallResult:
+    canonical_root = _canonical_repository_root(repo_root)
+    links = _opencode_expected_links(canonical_root, config_dir)
+    receipt_path_value = _opencode_receipt_path(state_home)
+    receipt = _read_receipt(receipt_path_value, canonical_root, links)
+    if receipt is None:
+        return InstallResult(links=links)
+    current = receipt
+    removed: list[ProfileLink] = []
+    failures: list[str] = []
+    for link in receipt.links:
+        if not _lexists(link.destination):
+            current = _persist_receipt(receipt_path_value, current, links=tuple(item for item in current.links if item != link))
+            continue
+        if not _same_recorded_link(link.destination, link.source):
+            current = _persist_receipt(receipt_path_value, current, links=tuple(item for item in current.links if item != link))
+            continue
+        try:
+            if link.destination.is_dir() and not link.destination.is_symlink():
+                failures.append(f"link {link.destination} is a real directory")
+                continue
+            link.destination.unlink()
+        except OSError as error:
+            failures.append(f"link {link.destination}: {error}")
+            continue
+        removed.append(link)
+        current = _persist_receipt(receipt_path_value, current, links=tuple(item for item in current.links if item != link))
+    if failures:
+        raise InstallError("owned opencode link cleanup failed: " + "; ".join(failures))
+    if current.links:
+        raise InstallError("owned opencode link cleanup did not converge")
+    if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
+        raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
+    try:
+        receipt_path_value.unlink()
+    except OSError as error:
+        raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
+    return InstallResult(
+        links=links,
+        removed_links=tuple(removed),
+        marketplace_added=False,
+        plugin_installed=True,
+    )
+
+
+def _print_opencode_dry_run(repo_root: Path, config_dir: Path) -> None:
+    links = preflight_opencode_links(repo_root, config_dir)
+    for link in links:
+        print(f"link {link.destination} -> {link.source}")
+    print(f"opencode {OPENCODE_PACKAGE_NAME} receipt {_opencode_receipt_path(_default_state_home())}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install the expskill marketplace and profiles.")
+    parser.add_argument("--target", choices=("codex", "opencode"), default="codex")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true")
     group.add_argument("--uninstall", action="store_true")
     arguments = parser.parse_args(argv)
     repository_root = Path(__file__).resolve().parents[1]
-    codex_home = _default_codex_home()
     state_home = _default_state_home()
     try:
+        if arguments.target == "opencode":
+            config_dir = _default_opencode_config_dir()
+            if arguments.dry_run:
+                _print_opencode_dry_run(repository_root, config_dir)
+            elif arguments.uninstall:
+                uninstall_opencode(repository_root, config_dir, state_home)
+            else:
+                install_opencode(repository_root, config_dir, state_home)
+            return 0
+        codex_home = _default_codex_home()
         if arguments.dry_run:
             _print_dry_run(repository_root, codex_home)
         elif arguments.uninstall:

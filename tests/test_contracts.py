@@ -13,7 +13,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "plugins" / "expskill"
+PLUGIN_ROOT = ROOT / "packages" / "codex"
 ROUTER_ROOT = PLUGIN_ROOT / "skills" / "use-expskill"
 SKILL_BUILDER_ROOT = PLUGIN_ROOT / "skills" / "skill-builder"
 PHASE_ROOTS = {
@@ -109,14 +109,14 @@ class ContractTests(unittest.TestCase):
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
         shutil.copytree(ROOT / ".agents", temporary / ".agents")
-        shutil.copytree(ROOT / "plugins", temporary / "plugins")
+        shutil.copytree(ROOT / "packages", temporary / "packages")
         shutil.copytree(ROOT / "scripts", temporary / "scripts")
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
 
     def load_manifest(self, root: Path) -> dict[str, object]:
         return json.loads(
-            (root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json").read_text(
+            (root / "packages" / "codex" / ".codex-plugin" / "plugin.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -158,14 +158,14 @@ class ContractTests(unittest.TestCase):
 
     def test_missing_skills_directory_is_rejected(self) -> None:
         root = self.copy_repository()
-        skills_path = root / "plugins" / "expskill" / "skills"
+        skills_path = root / "packages" / "codex" / "skills"
         shutil.rmtree(skills_path)
         errors = validate_repository(root)
         self.assertIn(f"skills directory is missing: {skills_path}", errors)
 
     def test_skills_file_is_rejected(self) -> None:
         root = self.copy_repository()
-        skills_path = root / "plugins" / "expskill" / "skills"
+        skills_path = root / "packages" / "codex" / "skills"
         shutil.rmtree(skills_path, ignore_errors=True)
         skills_path.write_text("not a directory\n", encoding="utf-8")
         errors = validate_repository(root)
@@ -173,7 +173,7 @@ class ContractTests(unittest.TestCase):
 
     def test_missing_required_skill_is_rejected(self) -> None:
         root = self.copy_repository()
-        missing = root / "plugins" / "expskill" / "skills" / "brainstorm"
+        missing = root / "packages" / "codex" / "skills" / "brainstorm"
         self.assertTrue(missing.is_dir(), missing)
         if not missing.is_dir():
             return
@@ -185,7 +185,7 @@ class ContractTests(unittest.TestCase):
         """Regression: the public creator must remain in the installable roster."""
 
         root = self.copy_repository()
-        missing = root / "plugins" / "expskill" / "skills" / "skill-builder"
+        missing = root / "packages" / "codex" / "skills" / "skill-builder"
         shutil.rmtree(missing)
         errors = validate_repository(root)
         self.assertIn("required skill 'skill-builder' is missing", errors)
@@ -204,8 +204,8 @@ class ContractTests(unittest.TestCase):
                     root = self.copy_repository()
                     reference = (
                         root
-                        / "plugins"
-                        / "expskill"
+                        / "packages"
+                        / "codex"
                         / "skills"
                         / "skill-builder"
                         / relative
@@ -237,7 +237,7 @@ class ContractTests(unittest.TestCase):
 
     def test_unexpected_skill_is_rejected(self) -> None:
         root = self.copy_repository()
-        unexpected = root / "plugins" / "expskill" / "skills" / "surprise"
+        unexpected = root / "packages" / "codex" / "skills" / "surprise"
         unexpected.mkdir()
         (unexpected / "SKILL.md").write_text(
             "---\nname: surprise\ndescription: Unexpected skill\n---\n\nBody.\n",
@@ -248,7 +248,7 @@ class ContractTests(unittest.TestCase):
 
     def test_required_skill_file_is_rejected(self) -> None:
         root = self.copy_repository()
-        skill_path = root / "plugins" / "expskill" / "skills" / "brainstorm"
+        skill_path = root / "packages" / "codex" / "skills" / "brainstorm"
         self.assertTrue(skill_path.is_dir(), skill_path)
         if not skill_path.is_dir():
             return
@@ -259,7 +259,7 @@ class ContractTests(unittest.TestCase):
 
     def test_required_skill_without_skill_markdown_is_rejected(self) -> None:
         root = self.copy_repository()
-        skill_path = root / "plugins" / "expskill" / "skills" / "brainstorm"
+        skill_path = root / "packages" / "codex" / "skills" / "brainstorm"
         self.assertTrue(skill_path.is_dir(), skill_path)
         if not skill_path.is_dir():
             return
@@ -290,7 +290,7 @@ class ContractTests(unittest.TestCase):
             ROOT / ".agents" / "skills" / "improve-skill",
             ROOT / "docs" / "plans",
             ROOT / "docs" / "specs",
-            ROOT / "plugins" / "expskill",
+            ROOT / "packages" / "codex",
             ROOT / "scripts",
             ROOT / "tests",
         )
@@ -354,10 +354,15 @@ class ContractTests(unittest.TestCase):
         """Regression: removing the phase must not ban ordinary acceptance vocabulary."""
 
         root = self.copy_repository()
-        plan = root / "plugins" / "expskill" / "skills" / "plan" / "SKILL.md"
+        plan = root / "packages" / "codex" / "skills" / "plan" / "SKILL.md"
+        addition = "\nDocument acceptance criteria and the acceptance test suite here.\n"
         plan.write_text(
-            plan.read_text(encoding="utf-8")
-            + "\nDocument acceptance criteria and the acceptance test suite here.\n",
+            plan.read_text(encoding="utf-8") + addition,
+            encoding="utf-8",
+        )
+        mirror = root / "packages" / "opencode" / "skills" / "plan" / "SKILL.md"
+        mirror.write_text(
+            mirror.read_text(encoding="utf-8") + addition,
             encoding="utf-8",
         )
         self.assertEqual(validate_repository(root), ())
@@ -366,7 +371,7 @@ class ContractTests(unittest.TestCase):
         """Regression: a stale acceptance directory must fail repository validation."""
 
         root = self.copy_repository()
-        acceptance = root / "plugins" / "expskill" / "skills" / REMOVED_PUBLIC_SKILL
+        acceptance = root / "packages" / "codex" / "skills" / REMOVED_PUBLIC_SKILL
         self.assertFalse(acceptance.exists())
         acceptance.mkdir()
         (acceptance / "SKILL.md").write_text(
@@ -396,7 +401,7 @@ class ContractTests(unittest.TestCase):
         """Regression: a stale public token must fail validation independently of a stale directory."""
 
         root = self.copy_repository()
-        manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+        manifest_path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["interface"]["longDescription"] += f" {REMOVED_PUBLIC_TOKEN}"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -413,7 +418,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(manifest["interface"]["category"], "Developer Tools")
         self.assertEqual(marketplace["name"], "expskill")
         self.assertEqual(marketplace["plugins"][0]["name"], "expskill")
-        self.assertEqual(marketplace["plugins"][0]["source"]["path"], "./plugins/expskill")
+        self.assertEqual(marketplace["plugins"][0]["source"]["path"], "./packages/codex")
         self.assertEqual(marketplace["plugins"][0]["category"], "Developer Tools")
 
     def test_plugin_metadata_describes_the_actual_standalone_skill_surface(self) -> None:
@@ -469,7 +474,7 @@ class ContractTests(unittest.TestCase):
         for section, field, replacement in mutations:
             with self.subTest(section=section, field=field):
                 root = self.copy_repository()
-                path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+                path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 if field is None:
                     payload[section] = replacement
@@ -485,7 +490,7 @@ class ContractTests(unittest.TestCase):
         for field in sorted(PLUGIN_INTERFACE_FIELDS):
             with self.subTest(missing_field=field):
                 root = self.copy_repository()
-                path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+                path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 payload["interface"].pop(field)
                 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -504,7 +509,7 @@ class ContractTests(unittest.TestCase):
         for field, replacement in wrong_types.items():
             with self.subTest(wrong_type=field):
                 root = self.copy_repository()
-                path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+                path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 payload["interface"][field] = replacement
                 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -514,7 +519,7 @@ class ContractTests(unittest.TestCase):
         for token in sorted(PUBLIC_SKILL_TOKENS):
             with self.subTest(missing_phase_token=token):
                 root = self.copy_repository()
-                path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+                path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 payload["interface"]["longDescription"] = payload["interface"]["longDescription"].replace(
                     token, token.removeprefix("$"),
@@ -527,7 +532,7 @@ class ContractTests(unittest.TestCase):
                 )
 
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+        path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         payload["interface"]["unexpected"] = True
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -646,7 +651,7 @@ class ContractTests(unittest.TestCase):
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
             with self.subTest(version=version):
                 root = self.copy_repository()
-                manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+                manifest_path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["version"] = version
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -665,7 +670,7 @@ class ContractTests(unittest.TestCase):
         for version in invalid_versions:
             with self.subTest(version=version):
                 root = self.copy_repository()
-                manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+                manifest_path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["version"] = version
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -754,8 +759,8 @@ class ContractTests(unittest.TestCase):
                     if surface == "public":
                         path = (
                             root
-                            / "plugins"
-                            / "expskill"
+                            / "packages"
+                            / "codex"
                             / "skills"
                             / "unslop"
                             / "SKILL.md"
@@ -791,7 +796,7 @@ class ContractTests(unittest.TestCase):
         ):
             with self.subTest(mutation=mutation):
                 root = self.copy_repository()
-                hook_root = root / "plugins" / "expskill" / "hooks"
+                hook_root = root / "packages" / "codex" / "hooks"
                 if mutation == "missing-config":
                     (hook_root / "hooks.json").unlink()
                 elif mutation == "tampered-command":
@@ -820,8 +825,8 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = (
             root
-            / "plugins"
-            / "expskill"
+            / "packages"
+            / "codex"
             / "third-party"
             / "sources"
             / "pstack"
@@ -836,7 +841,7 @@ class ContractTests(unittest.TestCase):
         for name in ("unslop", "grill-me"):
             with self.subTest(skill=name):
                 root = self.copy_repository()
-                path = root / "plugins" / "expskill" / "skills" / name / "SKILL.md"
+                path = root / "packages" / "codex" / "skills" / name / "SKILL.md"
                 path.write_text(
                     path.read_text(encoding="utf-8") + "\nUntracked behavioral addition.\n",
                     encoding="utf-8",
@@ -849,13 +854,13 @@ class ContractTests(unittest.TestCase):
 
     def test_missing_profile_is_rejected(self) -> None:
         root = self.copy_repository()
-        (root / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml").unlink()
+        (root / "packages" / "codex" / "assets" / "agents" / "expskill-review.toml").unlink()
         errors = validate_repository(root)
         self.assertTrue(any("expskill-review" in error and "missing" in error for error in errors))
 
     def test_unexpected_profile_is_rejected(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-surprise.toml"
+        path = root / "packages" / "codex" / "assets" / "agents" / "expskill-surprise.toml"
         path.write_text(
             '\n'.join(
                 (
@@ -875,7 +880,7 @@ class ContractTests(unittest.TestCase):
 
     def test_duplicate_skill_name_is_rejected(self) -> None:
         root = self.copy_repository()
-        skills_root = root / "plugins" / "expskill" / "skills"
+        skills_root = root / "packages" / "codex" / "skills"
         for directory in (skills_root / "first", skills_root / "second"):
             directory.mkdir(parents=True)
             (directory / "SKILL.md").write_text(
@@ -887,7 +892,7 @@ class ContractTests(unittest.TestCase):
 
     def test_wrong_explorer_model_is_rejected(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-explorer.toml"
+        path = root / "packages" / "codex" / "assets" / "agents" / "expskill-explorer.toml"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
                 f'model = "{EXPECTED_AGENTS["expskill-explorer"][0]}"',
@@ -900,7 +905,7 @@ class ContractTests(unittest.TestCase):
 
     def test_reviewer_must_be_read_only(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+        path = root / "packages" / "codex" / "assets" / "agents" / "expskill-review.toml"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
                 'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
@@ -912,7 +917,7 @@ class ContractTests(unittest.TestCase):
 
     def test_invalid_manifest_path_is_rejected(self) -> None:
         root = self.copy_repository()
-        manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
+        manifest_path = root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["skills"] = "./missing-skills/"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -921,7 +926,7 @@ class ContractTests(unittest.TestCase):
 
     def test_placeholder_text_is_rejected(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-spec.toml"
+        path = root / "packages" / "codex" / "assets" / "agents" / "expskill-spec.toml"
         path.write_text(path.read_text(encoding="utf-8") + "\n# [TODO: remove this]\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("placeholder" in error.lower() or "todo" in error.lower() for error in errors))
@@ -932,7 +937,7 @@ class ContractTests(unittest.TestCase):
         for mutation in ("missing", "symlink", "empty", "duplicate"):
             with self.subTest(mutation=mutation):
                 root = self.copy_repository()
-                plugin = root / "plugins" / "expskill"
+                plugin = root / "packages" / "codex"
                 helper = plugin / "scripts" / "plan_graph.py"
                 if mutation == "missing":
                     helper.unlink()
@@ -954,14 +959,14 @@ class ContractTests(unittest.TestCase):
 
     def test_validation_aggregates_independent_errors(self) -> None:
         root = self.copy_repository()
-        reviewer = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+        reviewer = root / "packages" / "codex" / "assets" / "agents" / "expskill-review.toml"
         reviewer.write_text(
             reviewer.read_text(encoding="utf-8").replace(
                 'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
             ),
             encoding="utf-8",
         )
-        (root / "plugins" / "expskill" / "assets" / "agents" / "expskill-explorer.toml").unlink()
+        (root / "packages" / "codex" / "assets" / "agents" / "expskill-explorer.toml").unlink()
         errors = validate_repository(root)
         self.assertGreaterEqual(len(errors), 2)
         self.assertTrue(any("expskill-review" in error for error in errors))
@@ -973,9 +978,14 @@ class ContractTests(unittest.TestCase):
         for name, skill_root in PUBLIC_SKILL_ROOTS.items():
             with self.subTest(skill=name):
                 frontmatter = self.load_skill_frontmatter(skill_root)
-                self.assertEqual(set(frontmatter), {"name", "description"})
+                self.assertEqual(set(frontmatter) - {"metadata"}, {"name", "description"})
                 self.assertEqual(frontmatter["name"], name)
                 self.assertTrue(str(frontmatter["description"]).strip())
+                expected_autoinvoke = "true" if name == "use-expskill" else "false"
+                self.assertEqual(
+                    frontmatter.get("metadata"),
+                    {"opencode/slash": "true", "opencode/autoinvoke": expected_autoinvoke},
+                )
 
     def test_public_skill_metadata_has_exact_invocation_contract(self) -> None:
         """Regression: an independent skill becomes ambient or the router cannot be selected."""
@@ -1086,8 +1096,8 @@ class ContractTests(unittest.TestCase):
                 root = self.copy_repository()
                 skill_path = (
                     root
-                    / "plugins"
-                    / "expskill"
+                    / "packages"
+                    / "codex"
                     / "skills"
                     / "brainstorm"
                     / "SKILL.md"
@@ -1105,8 +1115,8 @@ class ContractTests(unittest.TestCase):
                 root = self.copy_repository()
                 metadata_path = (
                     root
-                    / "plugins"
-                    / "expskill"
+                    / "packages"
+                    / "codex"
                     / "skills"
                     / "brainstorm"
                     / "agents"
