@@ -5846,9 +5846,11 @@ def test_recovery_reapplies_live_baseline_semantics_to_rehashed_receipt(
     }
     receipt["receipt_digest"] = helper.canonical_digest(receipt, "receipt_digest")
     run = state_root / "live" / started["workflow_id"]
-    (run / "receipts" / f"{receipt['sequence']:08d}.json").write_bytes(
+    forged_receipt = run / "receipts" / f"{receipt['sequence']:08d}.json"
+    forged_receipt.write_bytes(
         helper.canonical_json_bytes(receipt)
     )
+    os.chmod(forged_receipt, 0o600)
     (run / "current.json").write_text("{broken", encoding="utf-8")
 
     try:
