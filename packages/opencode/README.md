@@ -81,6 +81,15 @@ in `agents.json`. To switch provider, change `default_model_profile` or edit a
 profile, re-render, and reinstall. Validation rejects any agent file that
 differs from its rendered source.
 
+The four read-only workflow profiles use a finite Git inspection allow-list.
+Committed revision arguments are accepted only after fixed no-pager,
+no-external-diff, no-textconv prefixes and `--end-of-options`, branch/path
+patterns are accepted only after `--`. Branch creation, deletion, movement,
+copying, output-writing options, shell redirection, external diff/textconv
+execution, and arbitrary Git subcommands remain denied. Keep this policy in
+`agents.json` and regenerate the four affected files with the sync command
+above.
+
 ## Repository-link install
 
 From the repository root:

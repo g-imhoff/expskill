@@ -8,11 +8,28 @@ permission:
   edit: deny
   bash:
     "*": deny
-    "git status *": allow
-    "git diff *": allow
-    "git log *": allow
-    "git show *": allow
-    "git branch *": allow
+    "git status": allow
+    "git status --short": allow
+    "git status --short --branch": allow
+    "git status --porcelain": allow
+    "git status --porcelain=v1": allow
+    "git branch": allow
+    "git branch --show-current": allow
+    "git branch --list": allow
+    "git branch --list -- *": allow
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames": allow
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames --end-of-options *": allow
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames -- *": allow
+    "git --no-pager log --no-ext-diff --no-textconv --no-renames": allow
+    "git --no-pager log --no-ext-diff --no-textconv --no-renames --end-of-options *": allow
+    "git --no-pager show --no-ext-diff --no-textconv --no-renames": allow
+    "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options *": allow
+    "git * --output*": deny
+    "git * -o*": deny
+    "git * --ext-diff*": deny
+    "git * --textconv*": deny
+    "git *>*": deny
+    "git *<*": deny
   task: deny
   question: deny
   external_directory: deny
