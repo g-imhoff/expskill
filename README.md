@@ -140,31 +140,33 @@ python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_install
 
 The networked integration suite obtains pinned Codex `0.153.4` and opencode
 `1.18.29` executables into the repository-local `.testbin` directory, verifies
-the official release archive SHA-256, records and rechecks the extracted
-executable digest, installs both targets through the real CLIs, and verifies
-detection. Run it in the required, fail-closed mode:
+the official release archive SHA-256, retains or reacquires that verified
+archive, checks the expected executable member before reusing cached bytes,
+installs both targets through the real CLIs, and verifies detection. Run it in
+the required, fail-closed mode:
 
 ```bash
 EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
 ```
 
 The checked-in manifest records the archive digests and their authoritative
-release metadata URLs (the Codex and opencode GitHub release APIs). A missing
-binary, unsupported platform, download failure, corrupt archive or cache,
-unexpected archive layout, and any digest mismatch fails this command; none
-can become a skip. The suite runs only install/list/remove and config-startup
-smoke commands, never a model call.
+release metadata URLs from the Codex and opencode GitHub release APIs. A
+missing binary, unsupported platform, download failure, corrupt archive or
+cache, unexpected archive layout, and any digest mismatch fails this command;
+none can become a skip. The suite runs only install/list/remove and
+config-startup smoke commands, never a model call.
 
 An explicit executable override is permitted only with an independently
 verified companion digest. Do not compute a digest from an untrusted file and
 use it as proof:
 
 ```bash
-EXPSKILL_TEST_CODEX_BIN=/path/to/codex
-EXPSKILL_TEST_CODEX_BIN_SHA256=<independently-verified-sha256>
-EXPSKILL_TEST_OPENCODE_BIN=/path/to/opencode
-EXPSKILL_TEST_OPENCODE_BIN_SHA256=<independently-verified-sha256>
-EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
+export EXPSKILL_TEST_CODEX_BIN_SHA256="independently-verified-sha256"
+export EXPSKILL_TEST_OPENCODE_BIN="/path/to/opencode"
+export EXPSKILL_TEST_OPENCODE_BIN_SHA256="independently-verified-sha256"
+export EXPSKILL_CLI_MODE=required
+python3 -m pytest -q tests/test_cli_install_integration.py
 ```
 
 For a deliberately local/offline check, opt in explicitly with
