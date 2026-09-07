@@ -37,6 +37,8 @@ PUBLIC_SKILL_ROOTS = {
 EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
     "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
     "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
     "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
@@ -608,7 +610,7 @@ class ContractTests(unittest.TestCase):
         )
 
     def test_setup_ui_testing_is_a_bounded_independent_setup_skill(self) -> None:
-        """Regression: one-time UI setup stays reusable, local, and outside routing."""
+        """Regression: one-time UI setup stays reusable and independently callable."""
 
         root = PHASE_ROOTS["setup-ui-testing"]
         files = {
@@ -640,7 +642,9 @@ class ContractTests(unittest.TestCase):
             self.assertIn(phrase, skill)
         self.assertIn("<!-- expskill:setup-ui-testing:v1 -->", capability)
         self.assertIn("Non-interactive components", capability)
-        self.assertNotIn("$setup-ui-testing", router)
+        self.assertIn("$setup-ui-testing", router)
+        self.assertIn("inspect_setup.py", router)
+        self.assertIn("parallel-plan-design", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
@@ -710,6 +714,18 @@ class ContractTests(unittest.TestCase):
                 "one owned branch",
                 "no delegation",
                 "no scope expansion",
+            ),
+            "expskill-planner": (
+                "private plan graph",
+                "never edit",
+                "only plan graph writer",
+                "do not delegate",
+            ),
+            "expskill-designer": (
+                "isolated helper-owned worktree",
+                "one coherent local candidate commit",
+                "do not write the plan graph",
+                "do not delegate",
             ),
             "expskill-review": (
                 "read-only",

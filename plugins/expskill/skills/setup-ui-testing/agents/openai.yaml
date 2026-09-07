@@ -1,7 +1,7 @@
 interface:
   display_name: "Setup UI Testing"
-  short_description: "Explicit-only UI setup, never production redesign"
-  default_prompt: "Use $setup-ui-testing explicitly to establish this project's one-time isolated UI inspection setup, not to redesign production UI."
+  short_description: "Direct or routed UI setup, never production redesign"
+  default_prompt: "Use $setup-ui-testing directly or after router selection to establish this project's one-time isolated UI inspection setup, not to redesign production UI."
 
 policy:
   allow_implicit_invocation: false

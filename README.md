@@ -42,9 +42,18 @@ Invoke a skill directly when you know what you want:
   fact-grounded interview and mandatory final confirmation.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
-skill. It opens one skill per transition, coordinates against the canonical
-Plan Graph when one exists, validates revision-bound receipts, and preserves
-the implementation gates. It is the only skill that may activate implicitly.
+skill. It normally opens one skill per transition. For unresolved UI work with
+a ready project UI testing setup, it may launch one Plan session and one Design
+session concurrently from the same baseline. It coordinates against the
+canonical Plan Graph when one exists, validates revision-bound receipts, and
+preserves the implementation gates. It is the only skill that may activate
+implicitly.
+
+Before routing UI work, the router inspects the constant project-local
+`.ui-harness/README.md` capability record. An absent or invalid record routes
+only to `$setup-ui-testing`. A ready record can be copied with agent-only
+support into the isolated Design worktree. Those temporary copies and their
+evidence disappear when the accepted worktree is integrated and cleaned up.
 
 When a routed phase is blocked by several connected, consequential decisions
 that only the user can make, `$use-expskill` may offer `$grill-me`. It waits for
@@ -71,6 +80,11 @@ proof obligations. Workers and independent judges return bound receipts; only
 the coordinator validates and applies them. Direct `$plan` use stops when the
 plan is ready and never emits a next-skill route. Findings, blocked work, stale
 evidence, and unresolved user decisions do not advance.
+
+During bounded parallel UI preparation, Plan remains the sole graph writer and
+Design works on one isolated candidate commit. The graph cannot become ready
+until Plan validates and records the approved Design receipt from that same
+baseline.
 
 `$brainstorm`, `$setup-ui-testing`, and `$test` remain independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
