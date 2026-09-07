@@ -158,7 +158,9 @@ config-startup smoke commands, never a model call.
 
 An explicit executable override is permitted only with an independently
 verified companion digest. Do not compute a digest from an untrusted file and
-use it as proof:
+use it as proof. Relative overrides are resolved to a stable absolute path
+before verification; a bare executable name is resolved through `PATH` at that
+time:
 
 ```bash
 export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
