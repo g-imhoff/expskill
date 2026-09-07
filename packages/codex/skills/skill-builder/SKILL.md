@@ -57,7 +57,9 @@ Bind the baseline to the target snapshot and run revision. If the target changes
 
 ### 3. Run three blind research lanes
 
-Launch exactly three bounded, blind, independent web research lanes. Assign GPT-5.6-Luna at max reasoning to each lane:
+Launch exactly three bounded, blind, independent high-reasoning research lanes. Use an executable route exposed by the current host. On Codex, request `gpt-5.6-luna` at max reasoning for each lane when the dispatch mechanism supports choosing the engine and reasoning effort. Otherwise, use a fresh subagent at the host's highest available reasoning tier and record the actual engine and effort. On OpenCode, select the named `expskill-explorer` subagent in each Task call. Its generated active provider setting supplies the engine and `xhigh` reasoning effort, while its external-research overlay supplies the evidence-only role. Never invent unsupported engine or reasoning fields. If the host exposes no high-reasoning route, stop and record the capability failure before design or candidate work.
+
+Assign one bounded web-research role to each lane:
 
 1. Domain techniques relevant to the target's job.
 2. Agent-skill design, instruction, interaction, and tooling practices.
