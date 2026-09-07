@@ -1,29 +1,27 @@
 """Networked integration test for the documented CLI install flows.
 
-Downloads pinned codex and opencode binaries into the repository local
-.testbin directory on first run and reuses them afterwards. Set
-EXPSKILL_TEST_CODEX_BIN or EXPSKILL_TEST_OPENCODE_BIN to bypass the download
-with an existing executable. Any download failure skips the suite instead of
-failing it. No model calls are made: only install, list, and remove commands
-run, so no authentication is required.
+The default ``required`` mode fails closed when a pinned CLI cannot be
+verified. Set ``EXPSKILL_CLI_MODE=optional`` only for an explicitly requested
+local/offline run that may skip acquisition failures. Explicit executable
+overrides also require their companion SHA-256 variables; see the root README.
+No model calls are made: only install, list, and remove commands run, so no
+authentication is required.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import platform
-import shutil
-import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import unittest
-import urllib.error
-import urllib.request
-import zipfile
 from pathlib import Path
+
+try:
+    from tests.cli_verification import ensure_binary
+except ModuleNotFoundError:  # direct ``python tests/test_cli_install_integration.py``
+    from cli_verification import ensure_binary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,101 +54,11 @@ AGENTS = (
     "expskill-spec",
 )
 
-PLATFORM_ASSETS = {
-    ("linux", "x86_64"): {
-        "codex_asset": "codex-x86_64-unknown-linux-musl.tar.gz",
-        "opencode_asset": "opencode-linux-x64.tar.gz",
-    },
-    ("linux", "aarch64"): {
-        "codex_asset": None,
-        "opencode_asset": "opencode-linux-arm64.tar.gz",
-    },
-    ("darwin", "arm64"): {
-        "codex_asset": "codex-aarch64-apple-darwin.tar.gz",
-        "opencode_asset": "opencode-darwin-arm64.zip",
-    },
-}
-
-NETWORK_TIMEOUT = 300
 COMMAND_TIMEOUT = 300
 
 
-def _platform_key() -> tuple[str, str]:
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    if machine in ("x86_64", "amd64"):
-        machine = "x86_64"
-    return system, machine
-
-
-def _download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "expskill-integration-test"})
-    try:
-        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response:
-            with destination.open("wb") as stream:
-                shutil.copyfileobj(response, stream, length=1024 * 256)
-    except (OSError, urllib.error.URLError) as error:
-        raise unittest.SkipTest(f"CLI download is unavailable: {error}")
-
-
-def _extract_single_binary(archive: Path, target_dir: Path, preferred: str) -> Path:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as bundle:
-            names = [info.filename for info in bundle.infolist() if not info.is_dir()]
-            bundle.extractall(target_dir)
-    else:
-        with tarfile.open(archive, "r:gz") as bundle:
-            names = [member.name for member in bundle.getmembers() if member.isfile()]
-            bundle.extractall(target_dir, filter="data")
-    top_level = sorted({name for name in names if "/" not in name.rstrip("/")})
-    candidates = [target_dir / name for name in top_level if (target_dir / name).is_file()]
-    if len(candidates) == 1:
-        binary = candidates[0]
-    else:
-        matches = [path for path in candidates if path.name == preferred]
-        if len(matches) != 1:
-            raise unittest.SkipTest(f"unexpected CLI archive layout in {archive.name}")
-        binary = matches[0]
-    mode = binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    binary.chmod(mode)
-    return binary
-
-
 def _ensure_binary(kind: str) -> Path:
-    override = os.environ.get(f"EXPSKILL_TEST_{kind.upper()}_BIN")
-    if override:
-        binary = Path(override)
-        if not binary.is_file():
-            raise unittest.SkipTest(f"override binary is missing: {binary}")
-        return binary
-    assets = PLATFORM_ASSETS.get(_platform_key())
-    if assets is None or not assets.get(f"{kind}_asset"):
-        raise unittest.SkipTest(f"no pinned {kind} asset for this platform")
-    version = CODEX_VERSION if kind == "codex" else OPENCODE_VERSION
-    cached = BIN_DIR / f"{kind}-{version}" / "bin"
-    marker = BIN_DIR / f"{kind}-{version}" / ".ready"
-    if cached.is_file() and marker.is_file():
-        return cached
-    if kind == "codex":
-        url = f"https://github.com/openai/codex/releases/download/{CODEX_TAG}/{assets['codex_asset']}"
-    else:
-        url = f"https://github.com/sst/opencode/releases/download/v{OPENCODE_VERSION}/{assets['opencode_asset']}"
-    BIN_DIR.mkdir(parents=True, exist_ok=True)
-    archive = BIN_DIR / assets[f"{kind}_asset"]
-    if not archive.is_file():
-        _download(url, archive)
-    workdir = BIN_DIR / f"{kind}-{version}.work"
-    if workdir.exists():
-        shutil.rmtree(workdir)
-    extracted = _extract_single_binary(archive, workdir, kind)
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    if cached.exists():
-        cached.unlink()
-    shutil.move(str(extracted), cached)
-    shutil.rmtree(workdir, ignore_errors=True)
-    marker.write_text(version, encoding="utf-8")
-    return cached
+    return ensure_binary(kind, BIN_DIR)
 
 
 def _run(
