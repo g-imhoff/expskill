@@ -68,14 +68,19 @@ PUBLIC_SKILL_TOKENS = {
     "$use-expskill",
     "$design",
     "$grill-me",
+    "$setup-ui-testing",
     "$skill-builder",
     "$unslop",
 }
-PUBLIC_SKILL_COUNT_TEXT = "eight independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "nine independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
     "references/evaluation-rubric.md",
+)
+SETUP_UI_TESTING_REQUIRED_RESOURCES = (
+    "references/capability-contract.md",
+    "scripts/inspect_setup.py",
 )
 SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
     sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
@@ -116,11 +121,16 @@ EXPECTED_SKILLS = {
     "implement",
     "test",
     "grill-me",
+    "setup-ui-testing",
     "skill-builder",
     "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
+SETUP_UI_TESTING_ALLOWED_FULL_CONTEXTS = re.compile(
+    r"\bfull(?:\s+closed|\s+three-size|-page)\b",
+    re.IGNORECASE,
+)
 # Keep only Test's safety-critical Boundary section closed. Later accepted
 # boundary changes update this snapshot explicitly; other sections remain open.
 TEST_PROTECTED_BOUNDARY = """`$test` is a standalone, explicit-only skill for behavior that is already
@@ -1159,7 +1169,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise eight independent skills and one optional "
+                "plugin description must advertise nine independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
@@ -1281,6 +1291,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 *SKILL_BUILDER_REQUIRED_REFERENCES,
                 "scripts/run_state.py",
             })
+        if skill_root.name == "setup-ui-testing":
+            expected_files.update(SETUP_UI_TESTING_REQUIRED_RESOURCES)
         if skill_root.name == "test":
             expected_files.update({
                 "references/quality-rules.json",
@@ -1297,6 +1309,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         if skill_root.name == "design":
             expected_directories.add("references")
         if skill_root.name == "skill-builder":
+            expected_directories.update({"references", "scripts"})
+        if skill_root.name == "setup-ui-testing":
             expected_directories.update({"references", "scripts"})
         if skill_root.name == "test":
             expected_directories.add("references")
@@ -1324,6 +1338,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                     plugin_root,
                     f"{relative_skill}/{relative}",
                     f"skill 'skill-builder' required reference {relative!r}",
+                    errors,
+                )
+        if skill_root.name == "setup-ui-testing":
+            for relative in SETUP_UI_TESTING_REQUIRED_RESOURCES:
+                _required_nonempty_package_file(
+                    plugin_root,
+                    f"{relative_skill}/{relative}",
+                    f"skill 'setup-ui-testing' required resource {relative!r}",
                     errors,
                 )
         skill_path = _required_package_path(
@@ -1363,16 +1385,24 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 errors.append(f"skill {skill_root.name!r} has an invalid frontmatter name")
         if not isinstance(description, str) or not description.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter description")
-        elif not 20 <= len(description) <= 300:
-            errors.append(f"skill {skill_root.name!r} description must be 20-300 characters")
-        elif any(character in description for character in "<>\r\n"):
+        else:
+            maximum_description_length = 400 if skill_root.name == "setup-ui-testing" else 300
+            if not 20 <= len(description) <= maximum_description_length:
+                errors.append(
+                    f"skill {skill_root.name!r} description must be "
+                    f"20-{maximum_description_length} characters"
+                )
+        if isinstance(description, str) and any(character in description for character in "<>\r\n"):
             errors.append(f"skill {skill_root.name!r} description contains forbidden characters")
         if len(contents.splitlines()) >= 500:
             errors.append(f"skill {skill_root.name!r} SKILL.md body is overlong")
         normalized_contents = contents.lower()
         if any(retired in normalized_contents for retired in RETIRED_SKILLS):
             errors.append(f"skill {skill_root.name!r} references a retired skill")
-        if PUBLIC_SKILL_JARGON.search(contents):
+        policy_contents = contents
+        if skill_root.name == "setup-ui-testing":
+            policy_contents = SETUP_UI_TESTING_ALLOWED_FULL_CONTEXTS.sub("", contents)
+        if PUBLIC_SKILL_JARGON.search(policy_contents):
             errors.append(f"skill {skill_root.name!r} contains private policy vocabulary")
         _validate_skill_metadata(skill_root, errors)
         if skill_root.name == "brainstorm":
@@ -2007,10 +2037,10 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
     normalized = " ".join(readme.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "README must describe eight independent skills and one optional lifecycle router"
+            "README must describe nine independent skills and one optional lifecycle router"
         )
-    if re.search(r"\bseven independent skills\b", normalized):
-        errors.append("README contains stale seven-skill wording")
+    if re.search(r"\b(?:seven|eight) independent skills\b", normalized):
+        errors.append("README contains stale public-skill count wording")
     if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
         errors.append("README must advertise $skill-builder")
     readme_lines = readme.splitlines()

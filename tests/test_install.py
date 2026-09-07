@@ -36,6 +36,7 @@ SKILL_NAMES = (
     "plan",
     "implement",
     "test",
+    "setup-ui-testing",
     "skill-builder",
     "unslop",
 )
