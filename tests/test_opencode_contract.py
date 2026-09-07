@@ -213,6 +213,30 @@ class OpencodeContractTests(unittest.TestCase):
         self.assertIn("requestedAgent(output?.args)", plugin)
         self.assertNotIn("recordRetry", plugin)
 
+    def test_opencode_execution_policy_mirrors_canonical_asset(self) -> None:
+        canonical = (CODEX_ROOT / "assets" / "execution-policy.json").read_bytes()
+        mirror = (OPENCODE_ROOT / "assets" / "execution-policy.json").read_bytes()
+        self.assertEqual(mirror, canonical)
+
+    def test_missing_opencode_execution_policy_mirror_is_rejected(self) -> None:
+        root = self.copy_repository()
+        (root / "packages" / "opencode" / "assets" / "execution-policy.json").unlink()
+        errors = validate_repository(root)
+        self.assertTrue(
+            any("opencode execution policy asset" in error and "missing" in error for error in errors),
+            f"expected missing opencode policy asset error, got: {errors}",
+        )
+
+    def test_diverged_opencode_execution_policy_mirror_is_rejected(self) -> None:
+        root = self.copy_repository()
+        mirror = root / "packages" / "opencode" / "assets" / "execution-policy.json"
+        mirror.write_text(mirror.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(
+            any("opencode execution policy asset" in error and "mirror" in error for error in errors),
+            f"expected diverged opencode policy asset error, got: {errors}",
+        )
+
     def test_diverged_shared_skill_is_rejected(self) -> None:
         root = self.copy_repository()
         diverged = root / "packages" / "opencode" / "skills" / "plan" / "SKILL.md"

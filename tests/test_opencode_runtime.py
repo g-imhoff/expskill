@@ -43,12 +43,27 @@ import(%s).then(async (module) => {
   const os = await import('node:os');
   const path = await import('node:path');
   const url = await import('node:url');
-  process.env.EXPSKILL_HOME = process.cwd();
-  const policy = JSON.parse(await fs.readFile('packages/codex/assets/execution-policy.json', 'utf8'));
   const assert = (name, condition) => {
     console.log((condition ? 'ok:' : 'FAIL:') + name);
     if (!condition) process.exitCode = 1;
   };
+  delete process.env.EXPSKILL_HOME;
+  const repositoryHooks = await module.ExecutionPolicyPlugin({});
+  assert(
+    'repository-fallback-policy',
+    'tool.execute.before' in repositoryHooks && 'tool.execute.after' in repositoryHooks,
+  );
+  const fallbackInput = {
+    tool: 'task',
+    sessionID: 'repository-fallback',
+    callID: 'implementer',
+  };
+  const fallbackArgs = { subagent_type: 'expskill-implementer' };
+  await repositoryHooks['tool.execute.before'](fallbackInput, { args: fallbackArgs });
+  await repositoryHooks['tool.execute.after']({ ...fallbackInput, args: fallbackArgs }, {});
+  assert('repository-fallback-policy-enforces-valid-agent', true);
+  process.env.EXPSKILL_HOME = process.cwd();
+  const policy = JSON.parse(await fs.readFile('packages/codex/assets/execution-policy.json', 'utf8'));
   assert(
     'single-plugin-export',
     Object.keys(module).length === 1 && typeof module.ExecutionPolicyPlugin === 'function',
@@ -76,23 +91,36 @@ import(%s).then(async (module) => {
   await before({ tool: 'bash' }, { args: { command: 'true' } });
   assert('ignores-unrelated-tools', true);
 
+  await before(
+    { tool: 'task', sessionID: 'host-agent', callID: 'general' },
+    { args: { subagent_type: 'general' } },
+  );
+  await before(
+    { tool: 'task', sessionID: 'host-agent', callID: 'explore' },
+    { args: { subagent_type: 'explore' } },
+  );
+  assert('allows-unrelated-host-agents', true);
+
   const plannerArgs = { subagent_type: 'expskill-planner' };
   await before({ tool: 'task', sessionID: 'real-shape', callID: 'call-1' }, { args: plannerArgs });
   await after({ tool: 'task', sessionID: 'real-shape', callID: 'call-1', args: plannerArgs }, {});
   assert('allows-output-args-agent', true);
+  for (const [index, agent] of ['expskill-explorer', 'expskill-test-engineer'].entries()) {
+    const input = { tool: 'task', sessionID: 'unbound-profile', callID: `profile-${index}` };
+    await before(input, { args: { subagent_type: agent } });
+    await after({ ...input, args: { subagent_type: agent } }, {});
+  }
+  assert('allows-all-declared-profiles', true);
   let blocked = false;
   try {
     await before(
       { tool: 'task', sessionID: 'rejects-agent', callID: 'call-2' },
-      { args: { subagent_type: 'general' } },
+      { args: { subagent_type: 'expskill-undeclared' } },
     );
   } catch { blocked = true; }
-  assert('rejects-unlisted-agent', blocked);
-  blocked = false;
-  try {
-    await before({ tool: 'task', sessionID: 'rejects-agent', callID: 'missing-agent' }, { args: {} });
-  } catch { blocked = true; }
-  assert('rejects-missing-agent', blocked);
+  assert('rejects-undeclared-expskill-agent', blocked);
+  await before({ tool: 'task', sessionID: 'host-agent', callID: 'missing-agent' }, { args: {} });
+  assert('ignores-unidentified-task', true);
 
   await before({ tool: 'task', sessionID: 'call-limit', callID: 'call-3' }, { args: plannerArgs });
   await after({ tool: 'task', sessionID: 'call-limit', callID: 'call-3', args: plannerArgs }, {});
@@ -192,6 +220,11 @@ import(%s).then(async (module) => {
       'packed-policy-constructor',
       'tool.execute.before' in packedHooks && 'tool.execute.after' in packedHooks,
     );
+    const packedInput = { tool: 'task', sessionID: 'packed-policy', callID: 'implementer' };
+    const packedArgs = { subagent_type: 'expskill-implementer' };
+    await packedHooks['tool.execute.before'](packedInput, { args: packedArgs });
+    await packedHooks['tool.execute.after']({ ...packedInput, args: packedArgs }, {});
+    assert('packed-policy-enforces-valid-agent', true);
   } finally {
     process.env.EXPSKILL_HOME = process.cwd();
     await fs.rm(packedRoot, { recursive: true, force: true });
@@ -200,23 +233,136 @@ import(%s).then(async (module) => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'expskill-policy-'));
   try {
     process.env.EXPSKILL_HOME = temporary;
-    blocked = false;
-    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
-    assert('missing-policy-fails-closed', blocked);
+    let loadHooks = await module.ExecutionPolicyPlugin({});
+    let loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'missing' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'missing-policy-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
+    await loadHooks['tool.execute.before'](
+      { tool: 'task', sessionID: 'load-error', callID: 'host' },
+      { args: { subagent_type: 'general' } },
+    );
+    await loadHooks['tool.execute.before']({ tool: 'bash' }, { args: { command: 'true' } });
     const assets = path.join(temporary, 'packages', 'codex', 'assets');
     await fs.mkdir(assets, { recursive: true });
     await fs.writeFile(path.join(assets, 'execution-policy.json'), '{invalid', 'utf8');
-    blocked = false;
-    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
-    assert('malformed-policy-fails-closed', blocked);
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'malformed' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'malformed-policy-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
     await fs.writeFile(
       path.join(assets, 'execution-policy.json'),
       JSON.stringify({ policy_version: 'execution-budget-policy.v1', routes: {} }),
       'utf8',
     );
-    blocked = false;
-    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
-    assert('invalid-policy-shape-fails-closed', blocked);
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'shape' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'invalid-policy-shape-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
+    const missingRoute = JSON.parse(JSON.stringify(policy));
+    delete missingRoute.routes.implement.standard;
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify(missingRoute),
+      'utf8',
+    );
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'missing-route' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'missing-required-route-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
+    const renamedRoute = JSON.parse(JSON.stringify(policy));
+    renamedRoute.routes.implement.renamed = renamedRoute.routes.implement.standard;
+    delete renamedRoute.routes.implement.standard;
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify(renamedRoute),
+      'utf8',
+    );
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'renamed-route' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'renamed-required-route-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
+    const missingParallelRoute = JSON.parse(JSON.stringify(policy));
+    delete missingParallelRoute.routes['use-expskill']['parallel-plan-design'];
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify(missingParallelRoute),
+      'utf8',
+    );
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'missing-parallel-route' },
+        { args: { subagent_type: 'expskill-planner' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'missing-parallel-plan-design-route-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
+    const invalidAssignment = JSON.parse(JSON.stringify(policy));
+    invalidAssignment.routes.implement.standard.allowed_profiles = [
+      'expskill-planner',
+      'expskill-review',
+      'expskill-spec',
+    ];
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify(invalidAssignment),
+      'utf8',
+    );
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'invalid-assignment' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'invalid-required-profile-assignment-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
     const unsupported = JSON.parse(JSON.stringify(policy));
     unsupported.routes.implement.standard.max_depth = 1;
     await fs.writeFile(
@@ -224,9 +370,37 @@ import(%s).then(async (module) => {
       JSON.stringify(unsupported),
       'utf8',
     );
-    blocked = false;
-    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
-    assert('unsupported-policy-field-fails-closed', blocked);
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'unsupported' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'unsupported-policy-field-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
+    const invalidSelected = JSON.parse(JSON.stringify(policy));
+    invalidSelected.routes.implement.standard.selected[0].profile = 'expskill-undeclared';
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify(invalidSelected),
+      'utf8',
+    );
+    loadHooks = await module.ExecutionPolicyPlugin({});
+    loadError = null;
+    try {
+      await loadHooks['tool.execute.before'](
+        { tool: 'task', sessionID: 'load-error', callID: 'selected' },
+        { args: { subagent_type: 'expskill-implementer' } },
+      );
+    } catch (error) { loadError = error; }
+    assert(
+      'invalid-selected-reference-fails-closed',
+      loadError instanceof Error && loadError.message.includes('failed to load'),
+    );
   } finally {
     process.env.EXPSKILL_HOME = process.cwd();
     await fs.rm(temporary, { recursive: true, force: true });
@@ -283,10 +457,14 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:route-values",
             "ok:honest-policy-surface",
             "ok:hooks",
+            "ok:repository-fallback-policy",
+            "ok:repository-fallback-policy-enforces-valid-agent",
             "ok:ignores-unrelated-tools",
+            "ok:allows-unrelated-host-agents",
             "ok:allows-output-args-agent",
-            "ok:rejects-unlisted-agent",
-            "ok:rejects-missing-agent",
+            "ok:allows-all-declared-profiles",
+            "ok:rejects-undeclared-expskill-agent",
+            "ok:ignores-unidentified-task",
             "ok:hook-blocks-configured-call-limit",
             "ok:hook-blocks-thirty-first-call",
             "ok:hook-blocks-configured-concurrency",
@@ -294,10 +472,16 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:hook-blocks-elapsed-budget",
             "ok:fresh-instance-has-fresh-budget",
             "ok:packed-policy-constructor",
+            "ok:packed-policy-enforces-valid-agent",
             "ok:missing-policy-fails-closed",
             "ok:malformed-policy-fails-closed",
             "ok:invalid-policy-shape-fails-closed",
+            "ok:missing-required-route-fails-closed",
+            "ok:renamed-required-route-fails-closed",
+            "ok:missing-parallel-plan-design-route-fails-closed",
+            "ok:invalid-required-profile-assignment-fails-closed",
             "ok:unsupported-policy-field-fails-closed",
+            "ok:invalid-selected-reference-fails-closed",
         ):
             self.assertIn(token, result.stdout)
 
