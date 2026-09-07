@@ -35,6 +35,8 @@ SKILL_NAMES = (
     "grill-me",
     "plan",
     "implement",
+    "test",
+    "setup-ui-testing",
     "skill-builder",
     "unslop",
 )

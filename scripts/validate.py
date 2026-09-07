@@ -64,17 +64,23 @@ PUBLIC_SKILL_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
+    "$test",
     "$use-expskill",
     "$design",
     "$grill-me",
+    "$setup-ui-testing",
     "$skill-builder",
     "$unslop",
 }
-PUBLIC_SKILL_COUNT_TEXT = "seven independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "nine independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
     "references/evaluation-rubric.md",
+)
+SETUP_UI_TESTING_REQUIRED_RESOURCES = (
+    "references/capability-contract.md",
+    "scripts/inspect_setup.py",
 )
 SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
     sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
@@ -113,12 +119,349 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "plan",
     "implement",
+    "test",
     "grill-me",
+    "setup-ui-testing",
     "skill-builder",
     "unslop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
+SETUP_UI_TESTING_ALLOWED_FULL_CONTEXTS = re.compile(
+    r"\bfull(?:\s+closed|\s+three-size|-page)\b",
+    re.IGNORECASE,
+)
+# Keep only Test's safety-critical Boundary section closed. Later accepted
+# boundary changes update this snapshot explicitly; other sections remain open.
+TEST_PROTECTED_BOUNDARY = """`$test` is a standalone, explicit-only skill for behavior that is already
+implemented at the exact repository head. Accept a direct request without
+requiring `$use-expskill` or a Plan Graph.
+
+Exercise the accepted behavior through a real product path and its material
+dependencies in a safe non-production environment. Bind the actions, expected
+and observed outcomes, limitations, and result to the exact repository head.
+
+Do not edit production code. Do not plan work, choose a testing framework,
+review source or specification compliance, route the lifecycle, integrate
+branches, push, or deliver remotely. When the behavior fails or credible
+evidence is unavailable, stop and report that result instead of repairing the
+product or claiming success."""
+TEST_QUALITY_CATALOG_RELATIVE = "skills/test/references/quality-rules.json"
+TEST_QUALITY_CATALOG_VERSION = "test-quality-rules.v1"
+TEST_QUALITY_CATALOG_FIELDS = {"schema_version", "rules"}
+TEST_QUALITY_RULE_FIELDS = {
+    "id",
+    "level",
+    "applies_when",
+    "requirement",
+    "failure_prevented",
+    "required_evidence",
+    "allowed_exceptions",
+}
+TEST_QUALITY_EXCEPTION_FIELDS = {"predicate", "required_evidence"}
+TEST_QUALITY_APPLICABILITY = {
+    "always",
+    "durable-test-added",
+    "ui-material",
+    "persistence-material",
+    "messaging-material",
+    "contract-material",
+    "external-service-material",
+    "parallel-run",
+    "accessibility-material",
+    "visual-material",
+}
+TEST_QUALITY_RULE_ID_PATTERN = re.compile(
+    r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+\Z"
+)
+TEST_EVIDENCE_CONTRACT_RELATIVE = "skills/test/references/evidence-contract.json"
+TEST_EVIDENCE_CONTRACT_VERSION = "test-evidence-contract.v1"
+TEST_EVIDENCE_CONTRACT_FIELDS = {
+    "schema_version",
+    "terminal_states",
+    "finding_kinds",
+    "bundle",
+    "receipt",
+    "finding",
+}
+TEST_EVIDENCE_TERMINAL_STATES = ["PASS", "FAIL", "BLOCKED", "EXEMPT"]
+TEST_EVIDENCE_FINDING_KINDS = [
+    "product-defect",
+    "test-system-defect",
+    "environment-blocker",
+    "unresolved-cause",
+]
+TEST_EVIDENCE_SHA256_PATTERN = "^[0-9a-f]{64}$"
+TEST_EVIDENCE_HEAD_PATTERN = "^[0-9a-f]{40,64}$"
+TEST_EVIDENCE_BUNDLE_DIGEST_SEMANTICS = (
+    "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete "
+    "bundle with only the bundle_digest field omitted"
+)
+TEST_EVIDENCE_ENVIRONMENT_DIGEST_SEMANTICS = (
+    "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the complete "
+    "recorded environment identity used for this run"
+)
+TEST_EVIDENCE_SCOPE_DIGEST_SEMANTICS = (
+    "SHA-256 lowercase hex over the RFC 8785 canonical JSON of the selected "
+    "three-ring scope recorded in the retained bundle"
+)
+
+
+def _test_evidence_string_schema(
+    *,
+    constant: str | None = None,
+    enum: list[str] | None = None,
+    pattern: str | None = None,
+    semantics: str | None = None,
+) -> dict[str, object]:
+    schema: dict[str, object] = {"type": "string", "min_length": 1}
+    if constant is not None:
+        schema["const"] = constant
+    if enum is not None:
+        schema["enum"] = enum
+    if pattern is not None:
+        schema["pattern"] = pattern
+    if semantics is not None:
+        schema["semantics"] = semantics
+    return schema
+
+
+def _test_evidence_workflow_schema() -> dict[str, object]:
+    return {
+        "type": ["string", "null"],
+        "min_length": 1,
+        "nullable_when": "direct invocation without Plan ancestry",
+    }
+
+
+def _test_evidence_array_schema(
+    items: dict[str, object], *, min_items: int = 0, unique_items: bool = False
+) -> dict[str, object]:
+    return {
+        "type": "array",
+        "items": items,
+        "min_items": min_items,
+        "unique_items": unique_items,
+    }
+
+
+def _test_evidence_object_schema(
+    properties: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "type": "object",
+        "additional_properties": False,
+        "required": list(properties),
+        "properties": properties,
+    }
+
+
+TEST_EVIDENCE_ARTIFACT_SCHEMA = _test_evidence_object_schema(
+    {
+        "artifact_id": _test_evidence_string_schema(),
+        "kind": _test_evidence_string_schema(
+            enum=[
+                "screenshot",
+                "trace",
+                "video",
+                "log",
+                "console",
+                "network",
+                "reproduction",
+                "metadata",
+            ]
+        ),
+        "path": _test_evidence_string_schema(),
+        "sha256": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics="SHA-256 lowercase hex over the retained artifact bytes",
+        ),
+    }
+)
+TEST_EVIDENCE_FINDING_SCHEMA = _test_evidence_object_schema(
+    {
+        "kind": _test_evidence_string_schema(enum=TEST_EVIDENCE_FINDING_KINDS),
+        "severity": _test_evidence_string_schema(
+            enum=["critical", "high", "medium", "low"]
+        ),
+        "repository": _test_evidence_string_schema(),
+        "head": _test_evidence_string_schema(pattern=TEST_EVIDENCE_HEAD_PATTERN),
+        "environment_digest": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics=TEST_EVIDENCE_ENVIRONMENT_DIGEST_SEMANTICS,
+        ),
+        "ring": _test_evidence_string_schema(
+            enum=["inner", "adjacent", "broader"]
+        ),
+        "journey": _test_evidence_string_schema(),
+        "expected": _test_evidence_string_schema(),
+        "actual": _test_evidence_string_schema(),
+        "reproduction": _test_evidence_array_schema(
+            _test_evidence_string_schema(), min_items=1
+        ),
+        "violated_rule_ids": _test_evidence_array_schema(
+            _test_evidence_string_schema(pattern="^[a-z][a-z0-9.-]+$"),
+            unique_items=True,
+        ),
+        "artifacts": _test_evidence_array_schema(
+            _test_evidence_string_schema(), unique_items=True
+        ),
+    }
+)
+TEST_EVIDENCE_SCOPE_SCHEMA = _test_evidence_object_schema(
+    {
+        "accepted_behavior": _test_evidence_string_schema(),
+        "inner_ring": _test_evidence_array_schema(
+            _test_evidence_string_schema(), min_items=1, unique_items=True
+        ),
+        "adjacent_ring": _test_evidence_array_schema(
+            _test_evidence_string_schema(), unique_items=True
+        ),
+        "broader_ring": _test_evidence_array_schema(
+            _test_evidence_string_schema(), unique_items=True
+        ),
+    }
+)
+TEST_EVIDENCE_RULE_APPLICABILITY_SCHEMA = _test_evidence_object_schema(
+    {
+        "rule_id": _test_evidence_string_schema(pattern="^[a-z][a-z0-9.-]+$"),
+        "status": _test_evidence_string_schema(
+            enum=["active", "inactive", "unknown"]
+        ),
+        "evidence": _test_evidence_array_schema(
+            _test_evidence_string_schema(), min_items=1
+        ),
+    }
+)
+TEST_EVIDENCE_CHECK_SCHEMA = _test_evidence_object_schema(
+    {
+        "check_id": _test_evidence_string_schema(),
+        "ring": _test_evidence_string_schema(
+            enum=["inner", "adjacent", "broader"]
+        ),
+        "action": _test_evidence_string_schema(),
+        "expected": _test_evidence_string_schema(),
+        "actual": _test_evidence_string_schema(),
+        "status": _test_evidence_string_schema(enum=["pass", "fail", "blocked"]),
+        "artifact_ids": _test_evidence_array_schema(
+            _test_evidence_string_schema(), unique_items=True
+        ),
+    }
+)
+TEST_EVIDENCE_JOURNEY_SCHEMA = _test_evidence_object_schema(
+    {
+        "journey_id": _test_evidence_string_schema(),
+        "ring": _test_evidence_string_schema(
+            enum=["inner", "adjacent", "broader"]
+        ),
+        "path": _test_evidence_array_schema(
+            _test_evidence_string_schema(), min_items=1
+        ),
+        "expected": _test_evidence_string_schema(),
+        "actual": _test_evidence_string_schema(),
+        "status": _test_evidence_string_schema(enum=["pass", "fail", "blocked"]),
+        "artifact_ids": _test_evidence_array_schema(
+            _test_evidence_string_schema(), unique_items=True
+        ),
+    }
+)
+TEST_EVIDENCE_EXPLORATION_SCHEMA = _test_evidence_object_schema(
+    {
+        "mission": _test_evidence_string_schema(),
+        "evidence_budget": _test_evidence_string_schema(),
+        "actions": _test_evidence_array_schema(_test_evidence_string_schema()),
+        "observations": _test_evidence_array_schema(_test_evidence_string_schema()),
+        "stop_condition": _test_evidence_string_schema(),
+        "teardown": _test_evidence_array_schema(_test_evidence_string_schema()),
+    }
+)
+TEST_EVIDENCE_TEARDOWN_SCHEMA = _test_evidence_object_schema(
+    {
+        "status": _test_evidence_string_schema(
+            enum=["pass", "fail", "not-required"]
+        ),
+        "actions": _test_evidence_array_schema(_test_evidence_string_schema()),
+        "artifact_ids": _test_evidence_array_schema(
+            _test_evidence_string_schema(), unique_items=True
+        ),
+    }
+)
+TEST_EVIDENCE_BUNDLE_SCHEMA = _test_evidence_object_schema(
+    {
+        "schema_version": _test_evidence_string_schema(
+            constant="test-evidence-bundle.v1"
+        ),
+        "run_id": _test_evidence_string_schema(),
+        "workflow_id": _test_evidence_workflow_schema(),
+        "repository": _test_evidence_string_schema(),
+        "branch": _test_evidence_string_schema(),
+        "head": _test_evidence_string_schema(pattern=TEST_EVIDENCE_HEAD_PATTERN),
+        "environment_digest": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics=TEST_EVIDENCE_ENVIRONMENT_DIGEST_SEMANTICS,
+        ),
+        "scope": TEST_EVIDENCE_SCOPE_SCHEMA,
+        "rule_applicability": _test_evidence_array_schema(
+            TEST_EVIDENCE_RULE_APPLICABILITY_SCHEMA
+        ),
+        "checks": _test_evidence_array_schema(TEST_EVIDENCE_CHECK_SCHEMA),
+        "journeys": _test_evidence_array_schema(TEST_EVIDENCE_JOURNEY_SCHEMA),
+        "exploration": TEST_EVIDENCE_EXPLORATION_SCHEMA,
+        "findings": _test_evidence_array_schema(TEST_EVIDENCE_FINDING_SCHEMA),
+        "artifacts": _test_evidence_array_schema(TEST_EVIDENCE_ARTIFACT_SCHEMA),
+        "teardown": TEST_EVIDENCE_TEARDOWN_SCHEMA,
+        "test_side_commits": _test_evidence_array_schema(
+            _test_evidence_string_schema(pattern=TEST_EVIDENCE_HEAD_PATTERN),
+            unique_items=True,
+        ),
+        "limitations": _test_evidence_array_schema(_test_evidence_string_schema()),
+        "result": _test_evidence_string_schema(enum=TEST_EVIDENCE_TERMINAL_STATES),
+        "bundle_digest": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics=TEST_EVIDENCE_BUNDLE_DIGEST_SEMANTICS,
+        ),
+        "started_at": _test_evidence_string_schema(
+            pattern="^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$"
+        ),
+        "completed_at": _test_evidence_string_schema(
+            pattern="^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$"
+        ),
+    }
+)
+TEST_EVIDENCE_RECEIPT_SCHEMA = _test_evidence_object_schema(
+    {
+        "schema_version": _test_evidence_string_schema(
+            constant="test-evidence-receipt.v1"
+        ),
+        "run_id": _test_evidence_string_schema(),
+        "workflow_id": _test_evidence_workflow_schema(),
+        "repository": _test_evidence_string_schema(),
+        "branch": _test_evidence_string_schema(),
+        "head": _test_evidence_string_schema(pattern=TEST_EVIDENCE_HEAD_PATTERN),
+        "environment_digest": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics=TEST_EVIDENCE_ENVIRONMENT_DIGEST_SEMANTICS,
+        ),
+        "selected_scope_digest": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics=TEST_EVIDENCE_SCOPE_DIGEST_SEMANTICS,
+        ),
+        "bundle_digest": _test_evidence_string_schema(
+            pattern=TEST_EVIDENCE_SHA256_PATTERN,
+            semantics="Exact bundle_digest from the retained evidence bundle",
+        ),
+        "test_side_commits": _test_evidence_array_schema(
+            _test_evidence_string_schema(pattern=TEST_EVIDENCE_HEAD_PATTERN),
+            unique_items=True,
+        ),
+        "result": _test_evidence_string_schema(enum=TEST_EVIDENCE_TERMINAL_STATES),
+    }
+)
+TEST_EVIDENCE_EXPECTED_SCHEMAS = {
+    "bundle": TEST_EVIDENCE_BUNDLE_SCHEMA,
+    "receipt": TEST_EVIDENCE_RECEIPT_SCHEMA,
+    "finding": TEST_EVIDENCE_FINDING_SCHEMA,
+}
 BRAINSTORM_CATALOG_RELATIVE = "skills/brainstorm/references/brainstorm-techniques.csv"
 BRAINSTORM_CATALOG_SHA256 = "0ab5878b1dbc9e3fa98cb72abfc3920a586b9e2b42609211bb0516eefd542039"
 BRAINSTORM_CATALOG_PREAMBLE = (
@@ -826,7 +1169,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise seven independent skills and one optional "
+                "plugin description must advertise nine independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
@@ -948,6 +1291,18 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 *SKILL_BUILDER_REQUIRED_REFERENCES,
                 "scripts/run_state.py",
             })
+        if skill_root.name == "setup-ui-testing":
+            expected_files.update(SETUP_UI_TESTING_REQUIRED_RESOURCES)
+        if skill_root.name == "test":
+            expected_files.update({
+                "references/quality-rules.json",
+                "references/evidence-contract.json",
+                "scripts/append_ledger.py",
+                "scripts/bootstrap_run.py",
+                "scripts/finalize_evidence.py",
+                "scripts/freeze_charter.py",
+                "scripts/record_final_action.py",
+            })
         expected_directories = {"agents"}
         if skill_root.name == "brainstorm":
             expected_directories.add("references")
@@ -955,6 +1310,11 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             expected_directories.add("references")
         if skill_root.name == "skill-builder":
             expected_directories.update({"references", "scripts"})
+        if skill_root.name == "setup-ui-testing":
+            expected_directories.update({"references", "scripts"})
+        if skill_root.name == "test":
+            expected_directories.add("references")
+            expected_directories.add("scripts")
         actual_files = {
             path.relative_to(skill_root).as_posix()
             for path in skill_root.rglob("*")
@@ -978,6 +1338,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                     plugin_root,
                     f"{relative_skill}/{relative}",
                     f"skill 'skill-builder' required reference {relative!r}",
+                    errors,
+                )
+        if skill_root.name == "setup-ui-testing":
+            for relative in SETUP_UI_TESTING_REQUIRED_RESOURCES:
+                _required_nonempty_package_file(
+                    plugin_root,
+                    f"{relative_skill}/{relative}",
+                    f"skill 'setup-ui-testing' required resource {relative!r}",
                     errors,
                 )
         skill_path = _required_package_path(
@@ -1017,20 +1385,32 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 errors.append(f"skill {skill_root.name!r} has an invalid frontmatter name")
         if not isinstance(description, str) or not description.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter description")
-        elif not 20 <= len(description) <= 300:
-            errors.append(f"skill {skill_root.name!r} description must be 20-300 characters")
-        elif any(character in description for character in "<>\r\n"):
+        else:
+            maximum_description_length = 400 if skill_root.name == "setup-ui-testing" else 300
+            if not 20 <= len(description) <= maximum_description_length:
+                errors.append(
+                    f"skill {skill_root.name!r} description must be "
+                    f"20-{maximum_description_length} characters"
+                )
+        if isinstance(description, str) and any(character in description for character in "<>\r\n"):
             errors.append(f"skill {skill_root.name!r} description contains forbidden characters")
         if len(contents.splitlines()) >= 500:
             errors.append(f"skill {skill_root.name!r} SKILL.md body is overlong")
         normalized_contents = contents.lower()
         if any(retired in normalized_contents for retired in RETIRED_SKILLS):
             errors.append(f"skill {skill_root.name!r} references a retired skill")
-        if PUBLIC_SKILL_JARGON.search(contents):
+        policy_contents = contents
+        if skill_root.name == "setup-ui-testing":
+            policy_contents = SETUP_UI_TESTING_ALLOWED_FULL_CONTEXTS.sub("", contents)
+        if PUBLIC_SKILL_JARGON.search(policy_contents):
             errors.append(f"skill {skill_root.name!r} contains private policy vocabulary")
         _validate_skill_metadata(skill_root, errors)
         if skill_root.name == "brainstorm":
             _validate_brainstorm_catalog(skill_root, errors)
+        if skill_root.name == "test":
+            _validate_test_boundary(contents, errors)
+            _validate_test_quality_catalog(skill_root, errors)
+            _validate_test_evidence_contract(skill_root, errors)
     duplicates = sorted({name for name in names if names.count(name) > 1})
     for name in duplicates:
         errors.append(f"skill name {name!r} is duplicated")
@@ -1081,6 +1461,348 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
         else:
             if SKILL_BUILDER_NAME_PATTERN.search(router):
                 errors.append("use-expskill must not name skill-builder")
+
+
+def _validate_test_boundary(contents: str, errors: list[str]) -> None:
+    sections = re.findall(
+        r"^## Boundary[ \t]*\n(?P<body>.*?)(?=^## [^\n]+[ \t]*$|\Z)",
+        contents,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    expected = " ".join(TEST_PROTECTED_BOUNDARY.split())
+    if len(sections) != 1 or " ".join(sections[0].split()) != expected:
+        errors.append("skill 'test' protected Boundary contract drift")
+
+
+def _validate_test_quality_catalog(skill_root: Path, errors: list[str]) -> None:
+    plugin_root = skill_root.parent.parent
+    catalog_path = _required_package_path(
+        plugin_root,
+        TEST_QUALITY_CATALOG_RELATIVE,
+        "test quality catalog",
+        "file",
+        errors,
+    )
+    if catalog_path is None:
+        return
+    catalog = _load_json_object(catalog_path, "test quality catalog", errors)
+    if catalog is None:
+        return
+    if set(catalog) != TEST_QUALITY_CATALOG_FIELDS:
+        errors.append(
+            "test quality catalog keys must be exactly schema_version and rules"
+        )
+        return
+    if catalog.get("schema_version") != TEST_QUALITY_CATALOG_VERSION:
+        errors.append(
+            f"test quality catalog schema_version must be {TEST_QUALITY_CATALOG_VERSION!r}"
+        )
+    rules = catalog.get("rules")
+    if not isinstance(rules, list) or not rules:
+        errors.append("test quality catalog rules must be a non-empty list")
+        return
+
+    identifiers: set[str] = set()
+    for index, rule in enumerate(rules):
+        label = f"test quality catalog rules[{index}]"
+        if not isinstance(rule, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        if set(rule) != TEST_QUALITY_RULE_FIELDS:
+            errors.append(
+                f"{label} keys must be exactly id, level, applies_when, requirement, "
+                "failure_prevented, required_evidence, and allowed_exceptions"
+            )
+            continue
+
+        identifier = rule["id"]
+        if (
+            not isinstance(identifier, str)
+            or TEST_QUALITY_RULE_ID_PATTERN.fullmatch(identifier) is None
+        ):
+            errors.append(f"{label}.id must be a kebab/dot identifier")
+        elif identifier in identifiers:
+            errors.append(f"{label}.id is a duplicate rule id: {identifier!r}")
+        else:
+            identifiers.add(identifier)
+
+        if rule["level"] != "hard":
+            errors.append(f"{label}.level must be 'hard'")
+
+        applicability = rule["applies_when"]
+        if not isinstance(applicability, list) or not applicability:
+            errors.append(f"{label}.applies_when must be a non-empty list")
+        else:
+            for applicability_index, condition in enumerate(applicability):
+                if (
+                    not isinstance(condition, str)
+                    or condition not in TEST_QUALITY_APPLICABILITY
+                ):
+                    errors.append(
+                        f"{label}.applies_when[{applicability_index}] must be one of "
+                        f"{sorted(TEST_QUALITY_APPLICABILITY)!r}"
+                    )
+
+        for field in ("requirement", "failure_prevented"):
+            value = rule[field]
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{label}.{field} must be a non-empty string")
+
+        _validate_non_empty_string_list(
+            rule["required_evidence"], f"{label}.required_evidence", errors
+        )
+
+        exceptions = rule["allowed_exceptions"]
+        if not isinstance(exceptions, list):
+            errors.append(f"{label}.allowed_exceptions must be a list")
+            continue
+        for exception_index, exception in enumerate(exceptions):
+            exception_label = f"{label}.allowed_exceptions[{exception_index}]"
+            if not isinstance(exception, dict):
+                errors.append(f"{exception_label} must be an object")
+                continue
+            if set(exception) != TEST_QUALITY_EXCEPTION_FIELDS:
+                errors.append(
+                    f"{exception_label} keys must be exactly predicate and required_evidence"
+                )
+                continue
+            predicate = exception["predicate"]
+            if not isinstance(predicate, str) or not predicate.strip():
+                errors.append(f"{exception_label}.predicate must be a non-empty string")
+            _validate_non_empty_string_list(
+                exception["required_evidence"],
+                f"{exception_label}.required_evidence",
+                errors,
+            )
+
+
+def _validate_test_evidence_contract(skill_root: Path, errors: list[str]) -> None:
+    plugin_root = skill_root.parent.parent
+    contract_path = _required_package_path(
+        plugin_root,
+        TEST_EVIDENCE_CONTRACT_RELATIVE,
+        "test evidence contract",
+        "file",
+        errors,
+    )
+    if contract_path is None:
+        return
+    contract = _load_json_object(contract_path, "test evidence contract", errors)
+    if contract is None:
+        return
+    if set(contract) != TEST_EVIDENCE_CONTRACT_FIELDS:
+        errors.append(
+            "test evidence contract keys must be exactly schema_version, "
+            "terminal_states, finding_kinds, bundle, receipt, and finding"
+        )
+        return
+    if contract.get("schema_version") != TEST_EVIDENCE_CONTRACT_VERSION:
+        errors.append(
+            "test evidence contract schema_version must be "
+            f"{TEST_EVIDENCE_CONTRACT_VERSION!r}"
+        )
+    if contract.get("terminal_states") != TEST_EVIDENCE_TERMINAL_STATES:
+        errors.append(
+            "test evidence contract terminal_states must be exactly "
+            "PASS, FAIL, BLOCKED, and EXEMPT"
+        )
+    if contract.get("finding_kinds") != TEST_EVIDENCE_FINDING_KINDS:
+        errors.append(
+            "test evidence contract finding_kinds must be exactly product-defect, "
+            "test-system-defect, environment-blocker, and unresolved-cause"
+        )
+
+    for name, expected_schema in TEST_EVIDENCE_EXPECTED_SCHEMAS.items():
+        _validate_test_evidence_schema(
+            contract.get(name),
+            expected_schema,
+            f"test evidence contract {name}",
+            errors,
+        )
+    _validate_test_evidence_bindings(contract, errors)
+
+
+def _validate_test_evidence_schema(
+    schema: object,
+    expected: dict[str, object],
+    label: str,
+    errors: list[str],
+) -> None:
+    if not isinstance(schema, dict):
+        errors.append(f"{label} must be an object schema")
+        return
+
+    expected_type = expected["type"]
+    if schema.get("type") != expected_type:
+        errors.append(f"{label} must match the required schema")
+        return
+
+    if expected_type == "object":
+        if schema.get("additional_properties") is not False:
+            errors.append(f"{label}.additional_properties must be false")
+        if set(schema) != set(expected):
+            errors.append(f"{label} must match the required schema")
+
+        expected_required = expected["required"]
+        required = schema.get("required")
+        if (
+            not isinstance(required, list)
+            or len(required) != len(expected_required)
+            or any(not isinstance(field, str) for field in required)
+            or set(required) != set(expected_required)
+        ):
+            errors.append(
+                f"{label}.required must contain each required field exactly once"
+            )
+
+        expected_properties = expected["properties"]
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or set(properties) != set(expected_properties):
+            errors.append(
+                f"{label}.properties keys must be exactly "
+                f"{', '.join(expected_properties)}"
+            )
+            return
+        for field, expected_child in expected_properties.items():
+            _validate_test_evidence_schema(
+                properties[field],
+                expected_child,
+                f"{label}.properties.{field}",
+                errors,
+            )
+        return
+
+    if expected_type == "array":
+        if set(schema) != set(expected):
+            errors.append(f"{label} must match the required schema")
+            return
+        for field in ("min_items", "unique_items"):
+            if schema.get(field) != expected[field]:
+                errors.append(f"{label} must match the required schema")
+        _validate_test_evidence_schema(
+            schema.get("items"),
+            expected["items"],
+            f"{label}.items",
+            errors,
+        )
+        return
+
+    if schema != expected:
+        errors.append(f"{label} must match the required schema")
+
+
+def _test_evidence_property_schema(
+    contract: dict[str, Any], definition: str, field: str
+) -> object:
+    schema = contract.get(definition)
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    return properties.get(field)
+
+
+def _validate_test_evidence_bindings(
+    contract: dict[str, Any], errors: list[str]
+) -> None:
+    for definition in ("bundle", "receipt"):
+        if (
+            _test_evidence_property_schema(contract, definition, "workflow_id")
+            != _test_evidence_workflow_schema()
+        ):
+            errors.append(
+                "test evidence contract workflow_id must be nullable only for "
+                "direct invocation"
+            )
+
+    for definition in ("bundle", "receipt", "finding"):
+        head = _test_evidence_property_schema(contract, definition, "head")
+        if not isinstance(head, dict) or head.get("pattern") != TEST_EVIDENCE_HEAD_PATTERN:
+            errors.append(
+                f"test evidence contract {definition}.head must bind exact head"
+            )
+
+        environment = _test_evidence_property_schema(
+            contract, definition, "environment_digest"
+        )
+        if (
+            not isinstance(environment, dict)
+            or environment.get("pattern") != TEST_EVIDENCE_SHA256_PATTERN
+            or environment.get("semantics")
+            != TEST_EVIDENCE_ENVIRONMENT_DIGEST_SEMANTICS
+        ):
+            errors.append(
+                f"test evidence contract {definition}.environment_digest must bind "
+                "exact environment"
+            )
+
+    bundle_digest = _test_evidence_property_schema(
+        contract, "bundle", "bundle_digest"
+    )
+    if (
+        not isinstance(bundle_digest, dict)
+        or bundle_digest.get("pattern") != TEST_EVIDENCE_SHA256_PATTERN
+        or bundle_digest.get("semantics")
+        != TEST_EVIDENCE_BUNDLE_DIGEST_SEMANTICS
+    ):
+        errors.append(
+            "test evidence contract bundle.bundle_digest must omit bundle_digest "
+            "from RFC 8785 canonical JSON before SHA-256"
+        )
+
+    receipt_bundle_digest = _test_evidence_property_schema(
+        contract, "receipt", "bundle_digest"
+    )
+    if (
+        not isinstance(receipt_bundle_digest, dict)
+        or receipt_bundle_digest.get("pattern") != TEST_EVIDENCE_SHA256_PATTERN
+        or receipt_bundle_digest.get("semantics")
+        != "Exact bundle_digest from the retained evidence bundle"
+    ):
+        errors.append(
+            "test evidence contract receipt.bundle_digest must bind retained bundle"
+        )
+
+    selected_scope_digest = _test_evidence_property_schema(
+        contract, "receipt", "selected_scope_digest"
+    )
+    if (
+        not isinstance(selected_scope_digest, dict)
+        or selected_scope_digest.get("pattern") != TEST_EVIDENCE_SHA256_PATTERN
+        or selected_scope_digest.get("semantics")
+        != TEST_EVIDENCE_SCOPE_DIGEST_SEMANTICS
+    ):
+        errors.append(
+            "test evidence contract receipt.selected_scope_digest must bind selected scope"
+        )
+
+    for definition in ("bundle", "receipt"):
+        result = _test_evidence_property_schema(contract, definition, "result")
+        if not isinstance(result, dict) or result.get("enum") != contract.get(
+            "terminal_states"
+        ):
+            errors.append(
+                f"test evidence contract {definition} result enum must match terminal_states"
+            )
+    finding_kind = _test_evidence_property_schema(contract, "finding", "kind")
+    if not isinstance(finding_kind, dict) or finding_kind.get("enum") != contract.get(
+        "finding_kinds"
+    ):
+        errors.append(
+            "test evidence contract finding kind enum must match finding_kinds"
+        )
+
+
+def _validate_non_empty_string_list(
+    value: object, label: str, errors: list[str]
+) -> None:
+    if not isinstance(value, list) or not value:
+        errors.append(f"{label} must be a non-empty list")
+        return
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"{label}[{index}] must be a non-empty string")
 
 
 def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -1315,10 +2037,10 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
     normalized = " ".join(readme.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "README must describe seven independent skills and one optional lifecycle router"
+            "README must describe nine independent skills and one optional lifecycle router"
         )
-    if re.search(r"\bsix independent skills\b", normalized):
-        errors.append("README contains stale six-skill wording")
+    if re.search(r"\b(?:seven|eight) independent skills\b", normalized):
+        errors.append("README contains stale public-skill count wording")
     if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
         errors.append("README must advertise $skill-builder")
     readme_lines = readme.splitlines()
