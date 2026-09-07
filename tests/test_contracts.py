@@ -22,6 +22,7 @@ PHASE_ROOTS = {
         "brainstorm",
         "design",
         "grill-me",
+        "setup-ui-testing",
         "plan",
         "implement",
         "test",
@@ -45,6 +46,7 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "design",
     "grill-me",
+    "setup-ui-testing",
     "plan",
     "implement",
     "test",
@@ -421,7 +423,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("eight", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("nine", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -536,7 +538,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\beight independent skills and one optional lifecycle router\b"
+            r"\bnine independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -604,6 +606,41 @@ class ContractTests(unittest.TestCase):
             "$skill-builder",
             ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8"),
         )
+
+    def test_setup_ui_testing_is_a_bounded_independent_setup_skill(self) -> None:
+        """Regression: one-time UI setup stays reusable, local, and outside routing."""
+
+        root = PHASE_ROOTS["setup-ui-testing"]
+        files = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(
+            files,
+            {
+                "SKILL.md",
+                "agents/openai.yaml",
+                "references/capability-contract.md",
+                "scripts/inspect_setup.py",
+            },
+        )
+        skill = root.joinpath("SKILL.md").read_text(encoding="utf-8")
+        capability = root.joinpath("references/capability-contract.md").read_text(
+            encoding="utf-8"
+        )
+        router = ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8")
+        for phrase in (
+            ".ui-harness/README.md",
+            "ordinary invocation",
+            "compact",
+            "intermediate",
+            "wide",
+        ):
+            self.assertIn(phrase, skill)
+        self.assertIn("<!-- expskill:setup-ui-testing:v1 -->", capability)
+        self.assertIn("Non-interactive components", capability)
+        self.assertNotIn("$setup-ui-testing", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
@@ -972,7 +1009,13 @@ class ContractTests(unittest.TestCase):
                     continue
                 body = skill_path.read_text(encoding="utf-8")
                 self.assertGreater(len(body.splitlines()), 4, name)
-                if name not in {"brainstorm", "design", "skill-builder", "test"}:
+                if name not in {
+                    "brainstorm",
+                    "design",
+                    "setup-ui-testing",
+                    "skill-builder",
+                    "test",
+                }:
                     self.assertNotIn("references/", body.lower(), name)
                 self.assertNotIn("route-code-change", body, name)
                 self.assertNotIn("quick-code-change", body, name)
