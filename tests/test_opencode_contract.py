@@ -130,6 +130,34 @@ class OpencodeContractTests(unittest.TestCase):
         (cache / "plan_graph.cpython-313.pyc").write_bytes(b"ignored cache")
         self.assertEqual(check_generated_assets(root), [])
 
+    def test_package_asset_sync_and_check_ignore_python_caches_on_both_surfaces(self) -> None:
+        root = self.copy_repository()
+        canonical_skills = root / "packages" / "codex" / "skills" / "design"
+        canonical_scripts = root / "packages" / "codex" / "scripts"
+        (canonical_skills / "__pycache__").mkdir()
+        (canonical_skills / "__pycache__" / "skill.cpython-313.pyc").write_bytes(
+            b"canonical skill cache"
+        )
+        (canonical_scripts / "plan_graph.pyo").write_bytes(b"canonical script cache")
+
+        package_skills = root / "packages" / "opencode" / "skills" / "design"
+        package_scripts = root / "packages" / "opencode" / "scripts"
+        (package_skills / "__pycache__").mkdir()
+        (package_skills / "__pycache__" / "stale.pyc").write_bytes(b"stale mirror cache")
+        (package_scripts / "stale.pyo").write_bytes(b"stale script cache")
+
+        self.assertEqual(check_generated_assets(root), [])
+        sync_package_assets(root)
+        self.assertEqual(check_generated_assets(root), [])
+        package_root = root / "packages" / "opencode"
+        caches = [
+            path
+            for tree in (package_root / "skills", package_root / "scripts")
+            for path in tree.rglob("*")
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+        ]
+        self.assertEqual(caches, [])
+
     def test_every_shared_skill_declares_exact_opencode_metadata(self) -> None:
         for name in SKILLS:
             with self.subTest(skill=name):

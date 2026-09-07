@@ -2691,6 +2691,9 @@ OPENCODE_PACKAGE_FILES = (
     "scripts/",
     "skills/",
     "third-party/licenses/",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo",
 )
 OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
     "description",

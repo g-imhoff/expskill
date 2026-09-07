@@ -18,7 +18,10 @@
     "plugins/",
     "scripts/",
     "skills/",
-    "third-party/licenses/"
+    "third-party/licenses/",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo"
   ],
   "license": "MIT",
   "publishConfig": {

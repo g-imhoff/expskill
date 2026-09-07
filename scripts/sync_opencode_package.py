@@ -73,6 +73,12 @@ def _is_python_cache(path: Path) -> bool:
     return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
 
 
+def _ignore_python_caches(_directory: str, names: list[str]) -> set[str]:
+    """Keep Python bytecode out of generated package trees."""
+
+    return {name for name in names if _is_python_cache(Path(name))}
+
+
 def generated_asset_sources(repo_root: Path | None = None) -> dict[Path, Path]:
     root = _resolved_root(repo_root)
     generated: dict[Path, Path] = {}
@@ -130,6 +136,8 @@ def check_generated_assets(repo_root: Path | None = None) -> list[str]:
         actual_directories.add(managed_root)
         for target in sorted(target_root.rglob("*")):
             relative = target.relative_to(package_root)
+            if _is_python_cache(relative):
+                continue
             if target.is_symlink():
                 problems.append(
                     f"generated opencode package entry is a symlink: {relative}"
@@ -197,7 +205,11 @@ def sync(repo_root: Path | None = None) -> tuple[Path, ...]:
     for managed_root in MANAGED_ROOTS:
         _remove_managed_root(package_root / managed_root)
     for source_relative, target_relative in TREE_MAPPINGS:
-        shutil.copytree(root / source_relative, package_root / target_relative)
+        shutil.copytree(
+            root / source_relative,
+            package_root / target_relative,
+            ignore=_ignore_python_caches,
+        )
     for source_relative, target_relative in FILE_MAPPINGS:
         target = package_root / target_relative
         target.parent.mkdir(parents=True, exist_ok=True)

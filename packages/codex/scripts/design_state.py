@@ -547,7 +547,7 @@ def _cli():
     raw=sys.stdin.read(1024*1024+1)
     if len(raw)>1024*1024: return 2
     try:
-        payload=json.loads(raw); 
+        payload=json.loads(raw)
         if not isinstance(payload,dict): raise ValueError()
         home=Path(sys.argv[3]) if len(sys.argv)==4 else Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state"))) / "expskill"
         if len(sys.argv)==4: payload.pop("state_home",None)
