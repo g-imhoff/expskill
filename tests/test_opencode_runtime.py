@@ -40,46 +40,197 @@ import(%s).then(async (module) => {
 POLICY_CASE = """
 import(%s).then(async (module) => {
   const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const url = await import('node:url');
+  process.env.EXPSKILL_HOME = process.cwd();
   const policy = JSON.parse(await fs.readFile('packages/codex/assets/execution-policy.json', 'utf8'));
-  const budget = module.routePolicy(policy, 'implement', 'standard');
   const assert = (name, condition) => {
     console.log((condition ? 'ok:' : 'FAIL:') + name);
     if (!condition) process.exitCode = 1;
   };
-  assert('route-values', budget.maxAgentCalls === 30 && budget.maxConcurrency === 6 && budget.maxRetries === 3 && budget.maxElapsedMs === 7200000);
-  const planDesign = module.routePolicy(policy, 'use-expskill', 'parallel-plan-design');
-  assert('plan-design-route', planDesign.maxAgentCalls === 2 && planDesign.maxConcurrency === 2 && planDesign.maxRetries === 0 && planDesign.allowedProfiles.length === 2);
-  const table = module.routeBudgets(policy);
-  assert('route-table', table['expskill-planner'].route === 'use-expskill.parallel-plan-design' && table['expskill-implementer'].route === 'implement.standard');
-  const tracker = module.createBudgetTracker(budget);
-  for (let index = 0; index < 30; index++) {
-    tracker.beforeCall('s', 'expskill-implementer', 1000);
-    tracker.afterCall('s');
-  }
-  assert('thirty-calls', tracker.snapshot('s').calls === 30);
-  let blocked = false;
-  try { tracker.beforeCall('s', 'expskill-implementer', 1000); } catch { blocked = true; }
-  assert('blocks-31st-call', blocked);
-  const parallel = module.createBudgetTracker(budget);
-  for (let index = 0; index < 6; index++) parallel.beforeCall('c', 'expskill-review', 1000);
-  blocked = false;
-  try { parallel.beforeCall('c', 'expskill-spec', 1000); } catch { blocked = true; }
-  assert('blocks-7th-concurrent', blocked);
-  blocked = false;
-  try { tracker.beforeCall('s', 'expskill-planner', 1000); } catch { blocked = true; }
-  assert('blocks-foreign-agent', blocked);
-  blocked = false;
-  try { tracker.beforeCall('s', 'expskill-implementer', 1000 + 7200000 + 1); } catch { blocked = true; }
-  assert('blocks-elapsed', blocked);
-  const retries = module.createBudgetTracker(budget);
-  retries.recordRetry('r', 'node-1');
-  retries.recordRetry('r', 'node-1');
-  retries.recordRetry('r', 'node-1');
-  blocked = false;
-  try { retries.recordRetry('r', 'node-1'); } catch { blocked = true; }
-  assert('blocks-fourth-retry', blocked);
+  assert(
+    'single-plugin-export',
+    Object.keys(module).length === 1 && typeof module.ExecutionPolicyPlugin === 'function',
+  );
+  const implementPolicy = policy.routes.implement.standard;
+  const planDesignPolicy = policy.routes['use-expskill']['parallel-plan-design'];
+  assert(
+    'route-values',
+    implementPolicy.max_agent_calls === 30 &&
+      implementPolicy.max_concurrency === 6 &&
+      implementPolicy.max_elapsed_ms === 7200000 &&
+      planDesignPolicy.max_agent_calls === 2,
+  );
+  assert(
+    'honest-policy-surface',
+    [implementPolicy, planDesignPolicy].every(
+      (route) => !('max_depth' in route) && !('max_retries' in route),
+    ),
+  );
+
   const hooks = await module.ExecutionPolicyPlugin({});
   assert('hooks', 'tool.execute.before' in hooks && 'tool.execute.after' in hooks);
+  const before = hooks['tool.execute.before'];
+  const after = hooks['tool.execute.after'];
+  await before({ tool: 'bash' }, { args: { command: 'true' } });
+  assert('ignores-unrelated-tools', true);
+
+  const plannerArgs = { subagent_type: 'expskill-planner' };
+  await before({ tool: 'task', sessionID: 'real-shape', callID: 'call-1' }, { args: plannerArgs });
+  await after({ tool: 'task', sessionID: 'real-shape', callID: 'call-1', args: plannerArgs }, {});
+  assert('allows-output-args-agent', true);
+  let blocked = false;
+  try {
+    await before(
+      { tool: 'task', sessionID: 'rejects-agent', callID: 'call-2' },
+      { args: { subagent_type: 'general' } },
+    );
+  } catch { blocked = true; }
+  assert('rejects-unlisted-agent', blocked);
+  blocked = false;
+  try {
+    await before({ tool: 'task', sessionID: 'rejects-agent', callID: 'missing-agent' }, { args: {} });
+  } catch { blocked = true; }
+  assert('rejects-missing-agent', blocked);
+
+  await before({ tool: 'task', sessionID: 'call-limit', callID: 'call-3' }, { args: plannerArgs });
+  await after({ tool: 'task', sessionID: 'call-limit', callID: 'call-3', args: plannerArgs }, {});
+  await before({ tool: 'task', sessionID: 'call-limit', callID: 'call-4' }, { args: plannerArgs });
+  await after({ tool: 'task', sessionID: 'call-limit', callID: 'call-4', args: plannerArgs }, {});
+  blocked = false;
+  try {
+    await before({ tool: 'task', sessionID: 'call-limit', callID: 'call-5' }, { args: plannerArgs });
+  } catch { blocked = true; }
+  assert('hook-blocks-configured-call-limit', blocked);
+
+  const implementerArgs = { subagent_type: 'expskill-implementer' };
+  for (let index = 0; index < 30; index++) {
+    const input = { tool: 'task', sessionID: 'implement-call-limit', callID: `implement-${index}` };
+    await before(input, { args: implementerArgs });
+    await after({ ...input, args: implementerArgs }, {});
+  }
+  blocked = false;
+  try {
+    await before(
+      { tool: 'task', sessionID: 'implement-call-limit', callID: 'implement-blocked' },
+      { args: implementerArgs },
+    );
+  } catch { blocked = true; }
+  assert('hook-blocks-thirty-first-call', blocked);
+
+  for (let index = 0; index < 6; index++) {
+    await before(
+      { tool: 'task', sessionID: 'hook-concurrency', callID: `parallel-${index}` },
+      { args: implementerArgs },
+    );
+  }
+  blocked = false;
+  try {
+    await before(
+      { tool: 'task', sessionID: 'hook-concurrency', callID: 'parallel-blocked' },
+      { args: implementerArgs },
+    );
+  } catch { blocked = true; }
+  assert('hook-blocks-configured-concurrency', blocked);
+  await after(
+    { tool: 'task', sessionID: 'hook-concurrency', callID: 'parallel-0', args: implementerArgs },
+    {},
+  );
+  await before(
+    { tool: 'task', sessionID: 'hook-concurrency', callID: 'parallel-after' },
+    { args: implementerArgs },
+  );
+  assert('after-hook-releases-concurrency', true);
+
+  const originalNow = Date.now;
+  let now = 1000;
+  Date.now = () => now;
+  try {
+    const elapsedHooks = await module.ExecutionPolicyPlugin({});
+    const elapsedBefore = elapsedHooks['tool.execute.before'];
+    const elapsedAfter = elapsedHooks['tool.execute.after'];
+    const first = { tool: 'task', sessionID: 'elapsed', callID: 'elapsed-1' };
+    await elapsedBefore(first, { args: implementerArgs });
+    await elapsedAfter({ ...first, args: implementerArgs }, {});
+    now += implementPolicy.max_elapsed_ms + 1;
+    blocked = false;
+    try {
+      await elapsedBefore(
+        { tool: 'task', sessionID: 'elapsed', callID: 'elapsed-2' },
+        { args: implementerArgs },
+      );
+    } catch { blocked = true; }
+    assert('hook-blocks-elapsed-budget', blocked);
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const freshHooks = await module.ExecutionPolicyPlugin({});
+  await freshHooks['tool.execute.before'](
+    { tool: 'task', sessionID: 'call-limit', callID: 'fresh-call' },
+    { args: plannerArgs },
+  );
+  assert('fresh-instance-has-fresh-budget', true);
+
+  const packedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'packed-opencode-plugin-'));
+  try {
+    const packedPlugins = path.join(packedRoot, 'plugins');
+    const packedAssets = path.join(packedRoot, 'assets');
+    await fs.mkdir(packedPlugins, { recursive: true });
+    await fs.mkdir(packedAssets, { recursive: true });
+    const packedPlugin = path.join(packedPlugins, 'execution-policy.mjs');
+    await fs.copyFile('packages/opencode/plugins/execution-policy.js', packedPlugin);
+    await fs.copyFile(
+      'packages/codex/assets/execution-policy.json',
+      path.join(packedAssets, 'execution-policy.json'),
+    );
+    delete process.env.EXPSKILL_HOME;
+    const packedModule = await import(url.pathToFileURL(packedPlugin).href);
+    const packedHooks = await packedModule.ExecutionPolicyPlugin({});
+    assert(
+      'packed-policy-constructor',
+      'tool.execute.before' in packedHooks && 'tool.execute.after' in packedHooks,
+    );
+  } finally {
+    process.env.EXPSKILL_HOME = process.cwd();
+    await fs.rm(packedRoot, { recursive: true, force: true });
+  }
+
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'expskill-policy-'));
+  try {
+    process.env.EXPSKILL_HOME = temporary;
+    blocked = false;
+    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
+    assert('missing-policy-fails-closed', blocked);
+    const assets = path.join(temporary, 'packages', 'codex', 'assets');
+    await fs.mkdir(assets, { recursive: true });
+    await fs.writeFile(path.join(assets, 'execution-policy.json'), '{invalid', 'utf8');
+    blocked = false;
+    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
+    assert('malformed-policy-fails-closed', blocked);
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify({ policy_version: 'execution-budget-policy.v1', routes: {} }),
+      'utf8',
+    );
+    blocked = false;
+    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
+    assert('invalid-policy-shape-fails-closed', blocked);
+    const unsupported = JSON.parse(JSON.stringify(policy));
+    unsupported.routes.implement.standard.max_depth = 1;
+    await fs.writeFile(
+      path.join(assets, 'execution-policy.json'),
+      JSON.stringify(unsupported),
+      'utf8',
+    );
+    blocked = false;
+    try { await module.ExecutionPolicyPlugin({}); } catch { blocked = true; }
+    assert('unsupported-policy-field-fails-closed', blocked);
+  } finally {
+    process.env.EXPSKILL_HOME = process.cwd();
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
@@ -128,16 +279,25 @@ class OpencodeRuntimeTests(unittest.TestCase):
         result = run_node_case(POLICY_PLUGIN, POLICY_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
+            "ok:single-plugin-export",
             "ok:route-values",
-            "ok:plan-design-route",
-            "ok:route-table",
-            "ok:thirty-calls",
-            "ok:blocks-31st-call",
-            "ok:blocks-7th-concurrent",
-            "ok:blocks-foreign-agent",
-            "ok:blocks-elapsed",
-            "ok:blocks-fourth-retry",
+            "ok:honest-policy-surface",
             "ok:hooks",
+            "ok:ignores-unrelated-tools",
+            "ok:allows-output-args-agent",
+            "ok:rejects-unlisted-agent",
+            "ok:rejects-missing-agent",
+            "ok:hook-blocks-configured-call-limit",
+            "ok:hook-blocks-thirty-first-call",
+            "ok:hook-blocks-configured-concurrency",
+            "ok:after-hook-releases-concurrency",
+            "ok:hook-blocks-elapsed-budget",
+            "ok:fresh-instance-has-fresh-budget",
+            "ok:packed-policy-constructor",
+            "ok:missing-policy-fails-closed",
+            "ok:malformed-policy-fails-closed",
+            "ok:invalid-policy-shape-fails-closed",
+            "ok:unsupported-policy-field-fails-closed",
         ):
             self.assertIn(token, result.stdout)
 
