@@ -2683,31 +2683,41 @@ OPENCODE_READ_ONLY_GIT_AGENTS = (
     "expskill-review",
     "expskill-spec",
 )
-OPENCODE_READ_ONLY_GIT_RULES = {
-    "*": "deny",
-    "git status": "allow",
-    "git status --short": "allow",
-    "git status --short --branch": "allow",
-    "git status --porcelain": "allow",
-    "git status --porcelain=v1": "allow",
-    "git branch": "allow",
-    "git branch --show-current": "allow",
-    "git branch --list": "allow",
-    "git branch --list -- *": "allow",
-    "git --no-pager diff --no-ext-diff --no-textconv --no-renames": "allow",
-    "git --no-pager diff --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
-    "git --no-pager diff --no-ext-diff --no-textconv --no-renames -- *": "allow",
-    "git --no-pager log --no-ext-diff --no-textconv --no-renames": "allow",
-    "git --no-pager log --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
-    "git --no-pager show --no-ext-diff --no-textconv --no-renames": "allow",
-    "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
-    "git * --output*": "deny",
-    "git * -o*": "deny",
-    "git * --ext-diff*": "deny",
-    "git * --textconv*": "deny",
-    "git *>*": "deny",
-    "git *<*": "deny",
-}
+OPENCODE_READ_ONLY_GIT_RULE_ORDER = (
+    ("*", "deny"),
+    ("git status", "allow"),
+    ("git status --short", "allow"),
+    ("git status --short --branch", "allow"),
+    ("git status --porcelain", "allow"),
+    ("git status --porcelain=v1", "allow"),
+    ("git branch", "allow"),
+    ("git branch --show-current", "allow"),
+    ("git branch --list", "allow"),
+    ("git branch --list -- *", "allow"),
+    ("git --no-pager diff --no-ext-diff --no-textconv --no-renames", "allow"),
+    (
+        "git --no-pager diff --no-ext-diff --no-textconv --no-renames --end-of-options *",
+        "allow",
+    ),
+    ("git --no-pager diff --no-ext-diff --no-textconv --no-renames -- *", "allow"),
+    ("git --no-pager log --no-ext-diff --no-textconv --no-renames", "allow"),
+    (
+        "git --no-pager log --no-ext-diff --no-textconv --no-renames --end-of-options *",
+        "allow",
+    ),
+    ("git --no-pager show --no-ext-diff --no-textconv --no-renames", "allow"),
+    (
+        "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options *",
+        "allow",
+    ),
+    ("git * --output*", "deny"),
+    ("git * -o*", "deny"),
+    ("git * --ext-diff*", "deny"),
+    ("git * --textconv*", "deny"),
+    ("git *>*", "deny"),
+    ("git *<*", "deny"),
+)
+OPENCODE_READ_ONLY_GIT_RULES = dict(OPENCODE_READ_ONLY_GIT_RULE_ORDER)
 OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
 OPENCODE_PACKAGE_EXPORTS = {".": "./index.js"}
 OPENCODE_PACKAGE_FILES = (
@@ -3002,6 +3012,11 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
             errors.append(
                 f"opencode agent {name!r} read-only Git permission must use the bounded "
                 "inspection rule set"
+            )
+        elif list(bash.items()) != list(OPENCODE_READ_ONLY_GIT_RULE_ORDER):
+            errors.append(
+                f"opencode agent {name!r} read-only Git permission must preserve the "
+                "canonical rule order because OpenCode uses the last matching rule"
             )
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -42,6 +44,18 @@ SAFE_INSPECTION_RULES = {
     "git --no-pager show --no-ext-diff --no-textconv --no-renames": "allow",
     "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
 }
+
+SAFE_INSPECTION_COMMANDS = (
+    "git status",
+    "git status --short",
+    "git status --porcelain=v1",
+    "git branch --show-current",
+    "git branch --list -- topic",
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames --end-of-options HEAD",
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames -- path/to/file",
+    "git --no-pager log --no-ext-diff --no-textconv --no-renames --end-of-options HEAD",
+    "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options HEAD",
+)
 
 UNSAFE_COMMANDS = (
     "git branch -d topic",
@@ -139,6 +153,37 @@ def _bash_rules(contents: str, label: str) -> dict[str, str]:
     return rules
 
 
+def _opencode_wildcard_match(value: str, pattern: str) -> bool:
+    """Mirror OpenCode 1.18.29 core wildcard matching for these rules.
+
+    Source: ``packages/opencode/src/permission/index.ts`` uses ``findLast``
+    over rules, and ``packages/core/src/util/wildcard.ts`` converts ``*`` and
+    ``?`` into an anchored full-string regular expression.  The tests keep the
+    host's trailing-space wildcard exception as well.
+    """
+    normalized_value = value.replace("\\", "/")
+    normalized_pattern = pattern.replace("\\", "/")
+    regex = "".join(
+        (f"\\{character}" if character in ".+^${}()|[]" else character)
+        for character in normalized_pattern
+    )
+    regex = regex.replace("*", ".*").replace("?", ".")
+    if regex.endswith(" .*"):
+        regex = regex[:-3] + "( .*)?"
+    flags = re.DOTALL | (re.IGNORECASE if os.name == "nt" else 0)
+    return re.fullmatch(regex, normalized_value, flags=flags) is not None
+
+
+def _opencode_resolve_bash_action(rules: dict[str, str], command: str) -> str:
+    """Resolve a command as OpenCode's full-match, last-rule-wins evaluator."""
+    matches = [
+        action
+        for pattern, action in rules.items()
+        if _opencode_wildcard_match(command, pattern)
+    ]
+    return matches[-1] if matches else "ask"
+
+
 class OpencodePermissionContractTests(unittest.TestCase):
     def copy_repository(self) -> Path:
         temporary_directory = tempfile.TemporaryDirectory()
@@ -162,7 +207,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
             with self.subTest(agent=name):
                 source_rules = spec["agents"][name]["permission"]["bash"]
                 generated_rules = _bash_rules(rendered[name], f"generated {name}")
-                self.assertEqual(source_rules, generated_rules)
+                self.assertEqual(list(source_rules.items()), list(generated_rules.items()))
                 self.assertEqual(source_rules.get("*"), "deny")
                 self.assertEqual(
                     {key: source_rules.get(key) for key in SAFE_INSPECTION_RULES},
@@ -193,12 +238,60 @@ class OpencodePermissionContractTests(unittest.TestCase):
             with self.subTest(agent=name):
                 rules = _bash_rules(rendered[name], f"generated {name}")
                 self.assertEqual(rules["*"], "deny")
-                for command in UNSAFE_COMMANDS:
-                    self.assertNotEqual(
-                        rules.get(command),
+                for command in SAFE_INSPECTION_COMMANDS:
+                    self.assertEqual(
+                        _opencode_resolve_bash_action(rules, command),
                         "allow",
+                        f"{name} must allow {command!r}",
+                    )
+                for command in UNSAFE_COMMANDS:
+                    self.assertEqual(
+                        _opencode_resolve_bash_action(rules, command),
+                        "deny",
                         f"{name} must not allow {command!r}",
                     )
+
+    def test_open_code_last_matching_rule_makes_guard_order_security_critical(self) -> None:
+        rendered = render_opencode_agents(ROOT)
+        rules = _bash_rules(rendered[READ_ONLY_AGENTS[0]], "generated read-only agent")
+        guarded_command = (
+            "git --no-pager diff --no-ext-diff --no-textconv --no-renames "
+            "--end-of-options --output=/tmp/changes.patch"
+        )
+        self.assertEqual(_opencode_resolve_bash_action(rules, guarded_command), "deny")
+
+        guard_first = dict(
+            [
+                (key, value)
+                for key, value in rules.items()
+                if key.startswith("git * --")
+            ]
+            + [
+                (key, value)
+                for key, value in rules.items()
+                if not key.startswith("git * --")
+            ]
+        )
+        self.assertEqual(_opencode_resolve_bash_action(guard_first, guarded_command), "allow")
+
+    def test_validation_rejects_reordered_read_only_permission_rules(self) -> None:
+        root = self.copy_repository()
+        spec_path = root / "packages" / "opencode" / "agents.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        for name in READ_ONLY_AGENTS:
+            rules = spec["agents"][name]["permission"]["bash"]
+            reordered = {
+                key: value
+                for key, value in reversed(list(rules.items()))
+            }
+            spec["agents"][name]["permission"]["bash"] = reordered
+        spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+        sync_opencode_agents(root)
+        errors = validate_repository(root)
+        self.assertTrue(
+            any("read-only Git permission" in error and "order" in error for error in errors),
+            errors,
+        )
 
     def test_required_git_inspection_forms_still_execute_successfully(self) -> None:
         commands = (
