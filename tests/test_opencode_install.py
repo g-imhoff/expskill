@@ -12,6 +12,7 @@ from unittest import mock
 
 from scripts.install import (
     InstallError,
+    _default_opencode_config_dir,
     install_opencode,
     preflight_opencode_links,
     uninstall_opencode,
@@ -158,13 +159,103 @@ class OpencodeInstallerTests(unittest.TestCase):
             links = preflight_opencode_links(repo, config_dir)
             self.assertEqual(len(links), EXPECTED_LINK_COUNT)
 
-    def test_config_dir_env_override_is_respected(self) -> None:
-        from scripts.install import _default_opencode_config_dir
-
+    def test_explicit_config_override_precedes_xdg_and_expands_user(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            custom = Path(temporary) / "custom"
-            with mock.patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(custom)}, clear=False):
-                self.assertEqual(_default_opencode_config_dir(), custom)
+            root = Path(temporary)
+            home = root / "home"
+            xdg = root / "xdg"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HOME": str(home),
+                    "OPENCODE_CONFIG_DIR": "~/custom",
+                    "XDG_CONFIG_HOME": str(xdg),
+                },
+                clear=True,
+            ), mock.patch.object(Path, "home", return_value=home):
+                self.assertEqual(_default_opencode_config_dir(), home / "custom")
+
+    def test_absolute_xdg_config_home_is_used_when_explicit_override_is_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            xdg = root / "xdg"
+            with mock.patch.dict(
+                os.environ,
+                {"XDG_CONFIG_HOME": str(xdg)},
+                clear=True,
+            ), mock.patch.object(Path, "home", return_value=home):
+                self.assertEqual(_default_opencode_config_dir(), xdg / "opencode")
+            self.assertFalse(home.exists())
+
+    def test_unset_empty_and_relative_xdg_config_home_use_home_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            for value in (None, "", "relative"):
+                with self.subTest(xdg_config_home=value):
+                    environment = {} if value is None else {"XDG_CONFIG_HOME": value}
+                    with mock.patch.dict(
+                        os.environ,
+                        environment,
+                        clear=True,
+                    ), mock.patch.object(Path, "home", return_value=home):
+                        self.assertEqual(
+                            _default_opencode_config_dir(),
+                            home / ".config" / "opencode",
+                        )
+                    self.assertFalse(home.exists())
+
+    def test_empty_explicit_config_override_is_treated_as_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            xdg = root / "xdg"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "OPENCODE_CONFIG_DIR": "",
+                    "XDG_CONFIG_HOME": str(xdg),
+                },
+                clear=True,
+            ), mock.patch.object(Path, "home", return_value=home):
+                self.assertEqual(_default_opencode_config_dir(), xdg / "opencode")
+            self.assertFalse(home.exists())
+
+    def test_resolved_xdg_install_uninstall_preserves_owned_and_foreign_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            home = root / "home"
+            xdg = root / "xdg"
+            old_config = home / ".config" / "opencode"
+            old_config.mkdir(parents=True)
+            legacy_file = old_config / "legacy-user-file"
+            legacy_file.write_text("legacy\n", encoding="utf-8")
+            state_home = root / "state"
+            with mock.patch.dict(
+                os.environ,
+                {"XDG_CONFIG_HOME": str(xdg)},
+                clear=True,
+            ), mock.patch.object(Path, "home", return_value=home):
+                config_dir = _default_opencode_config_dir()
+                self.assertEqual(config_dir, xdg / "opencode")
+                result = install_opencode(repo, config_dir, state_home)
+                self.assertEqual(len(result.created_links), EXPECTED_LINK_COUNT)
+
+                foreign = config_dir / "commands" / "user-command.md"
+                foreign.write_text("user-owned\n", encoding="utf-8")
+                retargeted = config_dir / "agents" / "expskill-review.md"
+                retargeted.unlink()
+                retargeted.write_text("user-owned\n", encoding="utf-8")
+
+                uninstall_result = uninstall_opencode(repo, config_dir, state_home)
+
+            self.assertEqual(len(uninstall_result.removed_links), EXPECTED_LINK_COUNT - 1)
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertTrue(foreign.is_file())
+            self.assertEqual(retargeted.read_text(encoding="utf-8"), "user-owned\n")
+            self.assertEqual(legacy_file.read_text(encoding="utf-8"), "legacy\n")
 
     def test_dry_run_lists_links_and_receipt(self) -> None:
         from scripts.install import _print_opencode_dry_run
