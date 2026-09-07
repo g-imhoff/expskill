@@ -42,7 +42,7 @@ SKILL_NAMES = (
 )
 PLUGIN_SELECTOR = "expskill@expskill"
 MANIFEST_VERSION = json.loads(
-    (ROOT / "plugins" / "expskill" / ".codex-plugin" / "plugin.json").read_text(
+    (ROOT / "packages" / "codex" / ".codex-plugin" / "plugin.json").read_text(
         encoding="utf-8"
     )
 )["version"]
@@ -74,8 +74,8 @@ class FakeRunner:
 
 
 def seed_repository(path: Path) -> Path:
-    source_plugin = ROOT / "plugins" / "expskill"
-    destination_plugin = path / "plugins" / "expskill"
+    source_plugin = ROOT / "packages" / "codex"
+    destination_plugin = path / "packages" / "codex"
     source_scripts = source_plugin / "scripts"
     source_helper = source_scripts / "worktrees.py"
     source_plan_helper = source_scripts / "plan_graph.py"
@@ -99,6 +99,7 @@ def seed_repository(path: Path) -> Path:
     # Seed the same route-neutral plugin inputs that a real marketplace
     # registration receives, including the centralized worktree helper.
     shutil.copytree(source_scripts, destination_plugin / "scripts")
+    shutil.copytree(ROOT / "packages" / "opencode", path / "packages" / "opencode")
     shutil.copytree(ROOT / "scripts", path / "scripts")
     shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
@@ -154,7 +155,7 @@ def plugin_entry(repository: Path, source: Path | None = None) -> dict[str, obje
         "enabled": True,
         "source": {
             "source": "local",
-            "path": str(plugin_source / "plugins" / "expskill"),
+            "path": str(plugin_source / "packages" / "codex"),
         },
         "marketplaceSource": {
             "sourceType": "local",
@@ -261,7 +262,7 @@ class InstallerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            skills_root = repository / "plugins" / "expskill" / "skills"
+            skills_root = repository / "packages" / "codex" / "skills"
             self.assertEqual({entry.name for entry in skills_root.iterdir()}, set(SKILL_NAMES))
             for name in SKILL_NAMES:
                 self.assertTrue((skills_root / name / "SKILL.md").is_file(), name)
@@ -272,8 +273,8 @@ class InstallerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            source = ROOT / "plugins" / "expskill" / "scripts"
-            destination = repository / "plugins" / "expskill" / "scripts"
+            source = ROOT / "packages" / "codex" / "scripts"
+            destination = repository / "packages" / "codex" / "scripts"
             self.assertTrue(destination.is_dir(), destination)
             source_files = {
                 path.relative_to(source).as_posix(): path.read_bytes()
@@ -298,8 +299,8 @@ class InstallerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            source = ROOT / "plugins" / "expskill"
-            destination = repository / "plugins" / "expskill"
+            source = ROOT / "packages" / "codex"
+            destination = repository / "packages" / "codex"
             for relative in ("hooks", "third-party"):
                 source_files = {
                     path.relative_to(source / relative).as_posix(): path.read_bytes()
@@ -322,9 +323,9 @@ class InstallerTests(unittest.TestCase):
             def source_fixture(name: str, helper_name: str) -> tuple[Path, Path]:
                 source_root = root / name / "source"
                 shutil.copytree(ROOT / ".agents", source_root / ".agents")
-                shutil.copytree(ROOT / "plugins" / "expskill", source_root / "plugins" / "expskill")
+                shutil.copytree(ROOT / "packages" / "codex", source_root / "packages" / "codex")
                 shutil.copytree(ROOT / "scripts", source_root / "scripts")
-                return source_root, source_root / "plugins" / "expskill" / "scripts" / helper_name
+                return source_root, source_root / "packages" / "codex" / "scripts" / helper_name
 
             for helper_name in ("worktrees.py", "plan_graph.py"):
                 for mutation in ("missing", "symlink", "empty"):
@@ -466,7 +467,7 @@ class InstallerTests(unittest.TestCase):
             )
             for name, destination in destinations.items():
                 self.assertTrue(destination.is_symlink(), name)
-                expected = repo.resolve() / "plugins" / "expskill" / "assets" / "agents" / f"{name}.toml"
+                expected = repo.resolve() / "packages" / "codex" / "assets" / "agents" / f"{name}.toml"
                 self.assertEqual(destination.resolve(), expected)
 
             receipt = load_receipt(state_home)
@@ -538,8 +539,8 @@ class InstallerTests(unittest.TestCase):
             for name in RETIRED_PROFILE_NAMES:
                 source = (
                     repo.resolve()
-                    / "plugins"
-                    / "expskill"
+                    / "packages"
+                    / "codex"
                     / "assets"
                     / "agents"
                     / f"{name}.toml"
@@ -828,8 +829,8 @@ class InstallerTests(unittest.TestCase):
             outside_alias.symlink_to(outside_file)
             damaged_source = (
                 repo
-                / "plugins"
-                / "expskill"
+                / "packages"
+                / "codex"
                 / "assets"
                 / "agents"
                 / "expskill-review.toml"
@@ -881,8 +882,8 @@ class InstallerTests(unittest.TestCase):
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             escaped = root / "escaped-assets"
-            shutil.copytree(repo / "plugins" / "expskill" / "assets", escaped)
-            assets = repo / "plugins" / "expskill" / "assets"
+            shutil.copytree(repo / "packages" / "codex" / "assets", escaped)
+            assets = repo / "packages" / "codex" / "assets"
             shutil.rmtree(assets)
             assets.symlink_to(escaped, target_is_directory=True)
             codex_home = root / "codex"
@@ -899,7 +900,7 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            reviewer = repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            reviewer = repo / "packages" / "codex" / "assets" / "agents" / "expskill-review.toml"
             reviewer.write_text(
                 reviewer.read_text(encoding="utf-8").replace(
                     'model = "gpt-5.6-terra"', 'model = "gpt-5.6-luna"'
@@ -929,7 +930,7 @@ class InstallerTests(unittest.TestCase):
             outside_home.mkdir()
             outside_target = outside_home / "owned.toml"
             outside_target.symlink_to(
-                repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-explorer.toml"
+                repo / "packages" / "codex" / "assets" / "agents" / "expskill-explorer.toml"
             )
             state_home = root / "state"
             receipt_directory = state_home / "expskill"
@@ -1160,8 +1161,8 @@ class InstallerTests(unittest.TestCase):
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
             deleted_source = (
                 repo
-                / "plugins"
-                / "expskill"
+                / "packages"
+                / "codex"
                 / "assets"
                 / "agents"
                 / "expskill-review.toml"
@@ -1196,8 +1197,8 @@ class InstallerTests(unittest.TestCase):
             outside_alias.symlink_to(outside_file)
             damaged_source = (
                 repo
-                / "plugins"
-                / "expskill"
+                / "packages"
+                / "codex"
                 / "assets"
                 / "agents"
                 / "expskill-review.toml"
@@ -1207,8 +1208,8 @@ class InstallerTests(unittest.TestCase):
             untouched_destination = destination_paths(codex_home)["expskill-implementer"]
             untouched_source = (
                 repo
-                / "plugins"
-                / "expskill"
+                / "packages"
+                / "codex"
                 / "assets"
                 / "agents"
                 / "expskill-implementer.toml"

@@ -14,8 +14,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 APPENDER = (
     ROOT
-    / "plugins"
-    / "expskill"
+    / "packages"
+    / "codex"
     / "skills"
     / "test"
     / "scripts"

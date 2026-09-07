@@ -12,7 +12,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = ROOT / "plugins" / "expskill" / "scripts" / "worktrees.py"
+HELPER_PATH = ROOT / "packages" / "codex" / "scripts" / "worktrees.py"
 
 
 def load_helper() -> object:

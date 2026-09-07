@@ -16,7 +16,7 @@ from tests import test_test_evidence_finalizer as finalizer_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_SKILL = ROOT / "plugins" / "expskill" / "skills" / "test"
+TEST_SKILL = ROOT / "packages" / "codex" / "skills" / "test"
 QUALITY_CATALOG = TEST_SKILL / "references" / "quality-rules.json"
 EVIDENCE_CONTRACT = TEST_SKILL / "references" / "evidence-contract.json"
 FINALIZER = TEST_SKILL / "scripts" / "finalize_evidence.py"
@@ -928,7 +928,7 @@ class TestSkillContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        for name in (".agents", "plugins", "scripts"):
+        for name in (".agents", "packages", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
@@ -958,8 +958,8 @@ class TestSkillContractTests(unittest.TestCase):
     def catalog_path(self, root: Path) -> Path:
         return (
             root
-            / "plugins"
-            / "expskill"
+            / "packages"
+            / "codex"
             / "skills"
             / "test"
             / "references"
@@ -982,8 +982,8 @@ class TestSkillContractTests(unittest.TestCase):
     def evidence_contract_path(self, root: Path) -> Path:
         return (
             root
-            / "plugins"
-            / "expskill"
+            / "packages"
+            / "codex"
             / "skills"
             / "test"
             / "references"
@@ -3821,7 +3821,12 @@ class TestSkillContractTests(unittest.TestCase):
         """Regression: the public judgment guide must not become a hidden runtime engine."""
 
         contents = (TEST_SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertLess(len(contents.splitlines()), 500)
+        lines = contents.splitlines()
+        try:
+            body_start = lines.index("---", 1) + 1
+        except ValueError:
+            body_start = 0
+        self.assertLess(len(lines[body_start:]), 500)
         self.assertIsNone(
             re.search(r"\b(?:todo|tbd|placeholder|coming soon)\b", contents, re.I)
         )
@@ -3834,7 +3839,12 @@ class TestSkillContractTests(unittest.TestCase):
         """Regression: vague triggering copy can misroute planning or implementation work."""
 
         frontmatter = _frontmatter(TEST_SKILL / "SKILL.md")
-        self.assertEqual(set(frontmatter), {"name", "description"})
+        self.assertEqual(
+            set(frontmatter) - {"metadata", "opencode/slash", "opencode/autoinvoke"},
+            {"name", "description"},
+        )
+        self.assertEqual(frontmatter.get("opencode/slash"), "true")
+        self.assertEqual(frontmatter.get("opencode/autoinvoke"), "false")
         self.assertEqual(frontmatter["name"], "test")
         description = " ".join(frontmatter["description"].lower().split())
         for marker in ("direct", "already-implemented", "realistic", "composed", "evidence"):
@@ -3865,7 +3875,7 @@ class TestSkillContractTests(unittest.TestCase):
         """Regression: preserved words must not hide a directive to repair and reroute."""
 
         root = self.copy_repository()
-        skill_path = root / "plugins" / "expskill" / "skills" / "test" / "SKILL.md"
+        skill_path = root / "packages" / "codex" / "skills" / "test" / "SKILL.md"
         original = skill_path.read_text(encoding="utf-8")
         mutated = original.replace(
             "Do not edit production code.",

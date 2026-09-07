@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any
 
 
+try:
+    from scripts.sync_opencode_agents import SyncError
+    from scripts.sync_opencode_agents import render_all as _render_opencode_agents
+except ModuleNotFoundError:
+    from sync_opencode_agents import SyncError
+    from sync_opencode_agents import render_all as _render_opencode_agents
+
+
 MARKETPLACE_NAME = "expskill"
 PLUGIN_NAME = "expskill"
 PLUGIN_VERSION = "0.1.0"
@@ -903,7 +911,7 @@ def validate_repository(root: Path) -> tuple[str, ...]:
     if marketplace is not None:
         _validate_marketplace(marketplace, repository_root, errors)
 
-    plugin_root = repository_root / "plugins" / PLUGIN_NAME
+    plugin_root = repository_root / "packages" / "codex"
     if _validate_plugin_root(plugin_root, errors):
         manifest_path = _required_package_path(
             plugin_root,
@@ -930,6 +938,7 @@ def validate_repository(root: Path) -> tuple[str, ...]:
     _validate_removed_repository_local_skill(repository_root, errors)
     _validate_skill_punctuation(repository_root, errors)
     _validate_no_legacy_project_identity(repository_root, errors)
+    _validate_opencode_package(repository_root, errors)
     return tuple(errors)
 
 
@@ -1118,11 +1127,11 @@ def _validate_marketplace(
             if source.get("source") != "local":
                 errors.append(f"{label}.source.source must be 'local'")
             source_path = source.get("path")
-            if source_path != "./plugins/expskill":
+            if source_path != "./packages/codex":
                 errors.append(
-                    f"{label}.source.path must be './plugins/expskill', got {source_path!r}"
+                    f"{label}.source.path must be './packages/codex', got {source_path!r}"
                 )
-            elif not (repository_root / "plugins" / PLUGIN_NAME).is_dir():
+            elif not (repository_root / "packages" / "codex").is_dir():
                 errors.append(f"{label}.source.path does not resolve to the plugin directory")
         policy = entry.get("policy")
         if not isinstance(policy, dict):
@@ -1367,10 +1376,11 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         frontmatter = _parse_frontmatter(contents, skill_root.name, errors)
         if frontmatter is None:
             continue
-        if set(frontmatter) != {"name", "description"}:
+        if set(frontmatter) not in ({"name", "description"}, {"name", "description", "metadata"}):
             errors.append(
                 f"skill {skill_root.name!r} frontmatter keys must be exactly name and description"
             )
+        _validate_shared_skill_metadata(skill_root, frontmatter, errors)
         name = frontmatter.get("name", "")
         description = frontmatter.get("description", "")
         if not isinstance(name, str) or not name.strip():
@@ -1394,7 +1404,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 )
         if isinstance(description, str) and any(character in description for character in "<>\r\n"):
             errors.append(f"skill {skill_root.name!r} description contains forbidden characters")
-        if len(contents.splitlines()) >= 500:
+        body_lines = contents.splitlines()[_frontmatter_line_count(contents):]
+        if len(body_lines) >= 500:
             errors.append(f"skill {skill_root.name!r} SKILL.md body is overlong")
         normalized_contents = contents.lower()
         if any(retired in normalized_contents for retired in RETIRED_SKILLS):
@@ -1989,7 +2000,7 @@ def _validate_public_third_party_derivations(
             b"",
             1,
         )
-        if public_unslop != expected_unslop:
+        if _without_shared_metadata_block(public_unslop) != expected_unslop:
             errors.append("public skill 'unslop' does not match its declared derived upstream copy")
 
     try:
@@ -2016,7 +2027,7 @@ def _validate_public_third_party_derivations(
             b"report. Ask",
         )
         expected_grill = frontmatter + b"\n" + body
-        if public_grill != expected_grill:
+        if _without_shared_metadata_block(public_grill) != expected_grill:
             errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
 
 
@@ -2071,7 +2082,7 @@ def _validate_removed_repository_local_skill(
 
 def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
     roots = (
-        repository_root / "plugins" / PLUGIN_NAME / "skills",
+        repository_root / "packages" / "codex" / "skills",
         repository_root / ".agents" / "skills",
     )
     for root in roots:
@@ -2089,13 +2100,29 @@ def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> Non
                 errors.append(f"skill text {relative} contains an em dash")
             if ";" in contents:
                 errors.append(f"skill text {relative} contains a semicolon")
+    opencode_root = repository_root / "packages" / "opencode"
+    if opencode_root.is_dir():
+        for path in sorted(opencode_root.rglob("*")):
+            if "skills" in path.relative_to(opencode_root).parts:
+                continue
+            if path.suffix.lower() != ".md" or not path.is_file() or path.is_symlink():
+                continue
+            try:
+                contents = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            relative = path.relative_to(repository_root)
+            if "\N{EM DASH}" in contents:
+                errors.append(f"skill text {relative} contains an em dash")
+            if ";" in contents:
+                errors.append(f"skill text {relative} contains a semicolon")
 
 
 def _validate_no_legacy_project_identity(
     repository_root: Path, errors: list[str]
 ) -> None:
     candidates: list[Path] = [repository_root / "README.md"]
-    for relative_root in (".agents", "docs", "plugins", "scripts", "tests"):
+    for relative_root in (".agents", "docs", "packages", "scripts", "tests"):
         root = repository_root / relative_root
         if root.is_dir():
             candidates.extend(path for path in root.rglob("*") if path.is_file())
@@ -2123,7 +2150,7 @@ def _validate_no_legacy_project_identity(
 
 def _parse_frontmatter(
     contents: str, skill_directory: str, errors: list[str]
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     lines = contents.splitlines()
     if not lines or lines[0].strip() != "---":
         errors.append(f"skill {skill_directory!r} must start with frontmatter")
@@ -2133,36 +2160,129 @@ def _parse_frontmatter(
     except ValueError:
         errors.append(f"skill {skill_directory!r} frontmatter is not closed")
         return None
-    values: dict[str, str] = {}
+    values: dict[str, object] = {}
+    nested_parent: str | None = None
     for line in lines[1:end]:
-        key, separator, raw_value = line.partition(":")
+        if not line.strip():
+            nested_parent = None
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        if "\t" in line[:indentation]:
+            errors.append(f"skill {skill_directory!r} frontmatter contains a tab")
+            continue
+        key, separator, raw_value = line.strip().partition(":")
         if not separator:
             if line.strip():
                 errors.append(f"skill {skill_directory!r} frontmatter contains an invalid line")
+            nested_parent = None
             continue
         key = key.strip()
         value = raw_value.strip()
         if not key:
             errors.append(f"skill {skill_directory!r} frontmatter contains an empty key")
+            nested_parent = None
             continue
-        if key in values:
+        if indentation == 0:
+            nested_parent = None
+            if key in values:
+                errors.append(f"skill {skill_directory!r} frontmatter key {key!r} is duplicated")
+                continue
+            if not value:
+                if key != "metadata":
+                    errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
+                    continue
+                values[key] = {}
+                nested_parent = key
+                continue
+            if value.startswith(("[", "{")):
+                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
+                continue
+            values[key] = _parse_frontmatter_scalar(value, skill_directory, key, errors)
+            continue
+        if nested_parent != "metadata" or indentation != 2:
+            errors.append(f"skill {skill_directory!r} frontmatter contains an invalid line")
+            continue
+        nested = values["metadata"]
+        assert isinstance(nested, dict)
+        if key in nested:
             errors.append(f"skill {skill_directory!r} frontmatter key {key!r} is duplicated")
             continue
-        if value.startswith(("[", "{")):
+        if not value:
             errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
             continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            try:
-                parsed = ast.literal_eval(value)
-            except (SyntaxError, ValueError):
-                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is invalid")
-                continue
-            if not isinstance(parsed, str):
-                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a string")
-                continue
-            value = parsed
-        values[key] = value
+        parsed = _parse_frontmatter_scalar(value, skill_directory, key, errors)
+        if parsed is None:
+            continue
+        nested[key] = parsed
     return values
+
+
+def _parse_frontmatter_scalar(
+    value: str, skill_directory: str, key: str, errors: list[str]
+) -> str | None:
+    if value.startswith(("[", "{")):
+        errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is invalid")
+            return None
+        if not isinstance(parsed, str):
+            errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a string")
+            return None
+        return parsed
+    return value
+
+
+SHARED_SKILL_METADATA_KEYS = ("opencode/slash", "opencode/autoinvoke")
+SHARED_METADATA_BLOCK_EXPLICIT_ONLY = (
+    'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "false"\n'
+)
+SHARED_METADATA_BLOCK_ROUTER = (
+    'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "true"\n'
+)
+
+
+def _frontmatter_line_count(contents: str) -> int:
+    lines = contents.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return 0
+    try:
+        return lines.index("---", 1) + 1
+    except ValueError:
+        return 0
+
+
+def _without_shared_metadata_block(contents: bytes) -> bytes:
+    for block in (SHARED_METADATA_BLOCK_EXPLICIT_ONLY, SHARED_METADATA_BLOCK_ROUTER):
+        marker = block.encode("utf-8")
+        if marker in contents:
+            return contents.replace(marker, b"", 1)
+    return contents
+
+
+def _validate_shared_skill_metadata(
+    skill_root: Path, frontmatter: dict[str, object], errors: list[str]
+) -> None:
+    metadata = frontmatter.get("metadata")
+    if metadata is None:
+        return
+    if not isinstance(metadata, dict):
+        errors.append(f"skill {skill_root.name!r} frontmatter metadata must be a mapping")
+        return
+    for key in sorted(str(item) for item in metadata):
+        if key not in SHARED_SKILL_METADATA_KEYS:
+            errors.append(f"skill {skill_root.name!r} frontmatter metadata key {key!r} is unexpected")
+    for key in SHARED_SKILL_METADATA_KEYS:
+        if key not in metadata:
+            continue
+        value = metadata[key]
+        if value not in ("true", "false"):
+            errors.append(
+                f"skill {skill_root.name!r} frontmatter metadata {key!r} must be 'true' or 'false'"
+            )
 
 
 def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
@@ -2474,6 +2594,494 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
                     f"agent profile {expected_name!r} instructions differ from their "
                     "validated normalized content"
                 )
+
+
+OPENCODE_PACKAGE_NAME = "opencode-expskill"
+OPENCODE_SKILLS = (
+    "brainstorm",
+    "design",
+    "grill-me",
+    "implement",
+    "plan",
+    "setup-ui-testing",
+    "skill-builder",
+    "test",
+    "unslop",
+    "use-expskill",
+)
+OPENCODE_AGENTS = (
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
+OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
+    "description",
+    "mode",
+    "model",
+    "reasoningEffort",
+    "temperature",
+    "permission",
+}
+OPENCODE_AGENT_BOUNDARIES = {
+    "expskill-explorer": ("read-only mode", "no delegation", "no scope expansion"),
+    "expskill-test-engineer": ("no product implementation", "no delegation"),
+    "expskill-implementer": (
+        "red-green-refactor",
+        "no delegation",
+        "no scope expansion",
+        "never push",
+    ),
+    "expskill-review": (
+        "read-only mode",
+        "invalid handoff",
+        "do not treat another agent's conclusion as evidence",
+    ),
+    "expskill-spec": (
+        "no tracked-source edits",
+        "invalid handoff",
+        "pass or fail",
+    ),
+}
+OPENCODE_READ_ONLY_AGENTS = (
+    "expskill-explorer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+
+
+def _validate_opencode_root(package_root: Path, errors: list[str]) -> bool:
+    if package_root.is_symlink():
+        errors.append(f"opencode package root must not be a symlink: {package_root}")
+        return False
+    metadata = _lstat(package_root)
+    if metadata is None:
+        errors.append(f"opencode package directory is missing: {package_root}")
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"opencode package root must be a directory: {package_root}")
+        return False
+    try:
+        resolved = package_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        errors.append(f"opencode package root cannot be resolved: {package_root}: {error}")
+        return False
+    if resolved != package_root:
+        errors.append(f"opencode package root resolves outside its lexical path: {package_root}")
+        return False
+    return True
+
+
+def _parse_overlay_frontmatter(
+    contents: str, label: str, errors: list[str]
+) -> tuple[dict[str, str], set[str], str] | None:
+    lines = contents.splitlines()
+    if not lines or lines[0].strip() != "---":
+        errors.append(f"{label} must start with frontmatter")
+        return None
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        errors.append(f"{label} frontmatter is not closed")
+        return None
+    scalars: dict[str, str] = {}
+    mappings: set[str] = set()
+    for line in lines[1:end]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation != 0:
+            continue
+        key, separator, raw_value = line.strip().partition(":")
+        if not separator or not key:
+            errors.append(f"{label} frontmatter contains an invalid line")
+            continue
+        if key in scalars or key in mappings:
+            errors.append(f"{label} frontmatter key {key!r} is duplicated")
+            continue
+        value = raw_value.strip()
+        if not value:
+            mappings.add(key)
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                errors.append(f"{label} frontmatter value {key!r} is invalid")
+                continue
+            if not isinstance(parsed, str):
+                errors.append(f"{label} frontmatter value {key!r} is not a string")
+                continue
+            value = parsed
+        scalars[key] = value
+    return scalars, mappings, "\n".join(lines[1:end])
+
+
+def _read_overlay_text(path: Path, label: str, errors: list[str]) -> str | None:
+    if path.is_symlink():
+        errors.append(f"{label} must not be a symlink: {path}")
+        return None
+    try:
+        metadata = _lstat(path)
+    except OSError:
+        metadata = None
+    if metadata is None or not stat.S_ISREG(metadata.st_mode):
+        errors.append(f"{label} is missing: {path}")
+        return None
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"{label} could not be read: {error}")
+        return None
+    if not contents.strip():
+        errors.append(f"{label} must be non-empty: {path}")
+        return None
+    if PLACEHOLDER in contents:
+        errors.append(f"{label} contains a placeholder")
+        return None
+    return contents
+
+
+def _active_opencode_model(package_root: Path) -> tuple[str | None, str | None]:
+    try:
+        spec = json.loads((package_root / "agents.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(spec, dict):
+        return None, None
+    profiles = spec.get("model_profiles")
+    default_name = spec.get("default_model_profile")
+    if not isinstance(profiles, dict) or not isinstance(default_name, str):
+        return None, None
+    active = profiles.get(default_name)
+    if not isinstance(active, dict):
+        return None, None
+    model = active.get("model")
+    effort = active.get("reasoningEffort")
+    return (
+        model if isinstance(model, str) and model.strip() else None,
+        effort if isinstance(effort, str) and effort.strip() else None,
+    )
+
+
+def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None:
+    package_root = repository_root / "packages" / "opencode"
+    if not _validate_opencode_root(package_root, errors):
+        return
+    codex_root = repository_root / "packages" / "codex"
+    _validate_opencode_manifest(package_root, errors)
+    _validate_opencode_agent_spec(package_root, errors)
+    _validate_opencode_shared_skills(codex_root, package_root, errors)
+    _validate_opencode_commands(package_root, errors)
+    _validate_opencode_agents(repository_root, codex_root, package_root, errors)
+    _validate_opencode_plugins(package_root, errors)
+
+
+def _validate_opencode_manifest(package_root: Path, errors: list[str]) -> None:
+    manifest_path = package_root / "package.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        errors.append(f"opencode package manifest could not be read: {error}")
+        return
+    except json.JSONDecodeError as error:
+        errors.append(f"opencode package manifest is not valid JSON: {error.msg}")
+        return
+    if not isinstance(manifest, dict):
+        errors.append("opencode package manifest must contain a JSON object")
+        return
+    _reject_placeholders(manifest, "opencode package.json", errors)
+    if manifest.get("name") != OPENCODE_PACKAGE_NAME:
+        errors.append(
+            f"opencode package name must be {OPENCODE_PACKAGE_NAME!r}, "
+            f"got {manifest.get('name')!r}"
+        )
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        errors.append("opencode package version must be a non-empty string")
+    elif version != PLUGIN_VERSION:
+        errors.append(
+            f"opencode package version must match the Codex base version "
+            f"{PLUGIN_VERSION!r}, got {version!r}"
+        )
+
+
+def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None:
+    spec_path = package_root / "agents.json"
+    spec = _load_json_object(spec_path, "opencode agent spec", errors)
+    if spec is None:
+        return
+    if spec.get("schema_version") != "opencode-agents.v1":
+        errors.append("opencode agent spec schema_version must be 'opencode-agents.v1'")
+    profiles = spec.get("model_profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        errors.append("opencode agent spec must declare model_profiles")
+        return
+    default_name = spec.get("default_model_profile")
+    if not isinstance(default_name, str) or default_name not in profiles:
+        errors.append("opencode agent spec default_model_profile must name a declared profile")
+    for profile_name, profile in profiles.items():
+        if not isinstance(profile, dict):
+            errors.append(f"opencode model profile {profile_name!r} must be a mapping")
+            continue
+        model = profile.get("model")
+        effort = profile.get("reasoningEffort")
+        if not isinstance(model, str) or not model.strip() or "/" not in model:
+            errors.append(
+                f"opencode model profile {profile_name!r} model must be a provider/model string"
+            )
+        if not isinstance(effort, str) or not effort.strip():
+            errors.append(
+                f"opencode model profile {profile_name!r} must declare reasoningEffort"
+            )
+    if not isinstance(spec.get("runtime_paragraph"), str) or not str(
+        spec.get("runtime_paragraph")
+    ).strip():
+        errors.append("opencode agent spec must declare a non-empty runtime_paragraph")
+    entries = spec.get("agents")
+    if not isinstance(entries, dict) or set(entries) != set(OPENCODE_AGENTS):
+        errors.append("opencode agent spec agents must cover the exact agent roster")
+
+
+def _validate_opencode_shared_skills(
+    codex_root: Path, package_root: Path, errors: list[str]
+) -> None:
+    skills_entry = package_root / "skills"
+    if not skills_entry.exists():
+        errors.append(f"opencode shared skills entry is missing: {skills_entry}")
+        return
+    for name in OPENCODE_SKILLS:
+        label = f"opencode shared skill {name!r}"
+        try:
+            shared = (codex_root / "skills" / name / "SKILL.md").read_bytes()
+        except OSError as error:
+            errors.append(f"{label} canonical skill could not be read: {error}")
+            continue
+        try:
+            exposed = (skills_entry / name / "SKILL.md").read_bytes()
+        except OSError:
+            errors.append(f"{label} is missing: {skills_entry / name / 'SKILL.md'}")
+            continue
+        if exposed != shared:
+            errors.append(f"{label} is not the exact shared base")
+            continue
+        try:
+            contents = shared.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"{label} canonical skill is not UTF-8 text")
+            continue
+        probe: list[str] = []
+        frontmatter = _parse_frontmatter(contents, name, probe)
+        if probe or frontmatter is None:
+            continue
+        metadata = frontmatter.get("metadata")
+        if not isinstance(metadata, dict) or set(metadata) != set(SHARED_SKILL_METADATA_KEYS):
+            errors.append(f"{label} frontmatter metadata must declare the exact opencode keys")
+            continue
+        if metadata.get("opencode/slash") != "true":
+            errors.append(f"{label} frontmatter metadata opencode/slash must be 'true'")
+        expected_autoinvoke = "true" if name == "use-expskill" else "false"
+        if metadata.get("opencode/autoinvoke") != expected_autoinvoke:
+            errors.append(
+                f"{label} frontmatter metadata opencode/autoinvoke must be "
+                f"{expected_autoinvoke!r}"
+            )
+        description = frontmatter.get("description")
+        if isinstance(description, str) and len(description) > 1024:
+            errors.append(f"{label} description exceeds the opencode discovery limit")
+
+
+def _validate_opencode_commands(package_root: Path, errors: list[str]) -> None:
+    commands_root = package_root / "commands"
+    if not commands_root.is_dir() or commands_root.is_symlink():
+        errors.append(f"opencode commands directory is missing: {commands_root}")
+        return
+    actual = {
+        path.name
+        for path in commands_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    expected = {f"{name}.md" for name in OPENCODE_SKILLS}
+    for name in sorted(expected - actual):
+        errors.append(f"opencode command {name!r} is missing")
+    for name in sorted(actual - expected):
+        errors.append(f"opencode unexpected command entry {name!r}")
+    for skill in OPENCODE_SKILLS:
+        path = commands_root / f"{skill}.md"
+        contents = _read_overlay_text(path, f"opencode command {skill!r}", errors)
+        if contents is None:
+            continue
+        parsed = _parse_overlay_frontmatter(contents, f"opencode command {skill!r}", errors)
+        if parsed is None:
+            continue
+        scalars, _mappings, _block = parsed
+        if set(scalars) != {"description"}:
+            errors.append(f"opencode command {skill!r} frontmatter keys must be exactly description")
+            continue
+        description = scalars["description"]
+        if not description.strip() or len(description) > 160:
+            errors.append(f"opencode command {skill!r} description must be 1-160 characters")
+        if any(character in description for character in "<>\r\n"):
+            errors.append(f"opencode command {skill!r} description contains forbidden characters")
+        body = contents.splitlines()
+        try:
+            end = body.index("---", 1)
+            text = "\n".join(body[end + 1 :])
+        except ValueError:
+            continue
+        for marker in (f"`{skill}`", "skill tool", "$ARGUMENTS"):
+            if marker not in text:
+                errors.append(f"opencode command {skill!r} body must reference {marker}")
+
+
+def _validate_opencode_agents(
+    repository_root: Path, codex_root: Path, package_root: Path, errors: list[str]
+) -> None:
+    agents_root = package_root / "agents"
+    if not agents_root.is_dir() or agents_root.is_symlink():
+        errors.append(f"opencode agents directory is missing: {agents_root}")
+        return
+    actual = {
+        path.name
+        for path in agents_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    expected = {f"{name}.md" for name in OPENCODE_AGENTS}
+    for name in sorted(expected - actual):
+        errors.append(f"opencode agent {name!r} is missing")
+    for name in sorted(actual - expected):
+        errors.append(f"opencode unexpected agent entry {name!r}")
+    try:
+        rendered = _render_opencode_agents(repository_root)
+    except SyncError as error:
+        errors.append(f"opencode agents cannot be rendered from shared sources: {error}")
+        return
+    stale: list[str] = []
+    for name in OPENCODE_AGENTS:
+        path = agents_root / f"{name}.md"
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if current != rendered[name]:
+            stale.append(name)
+    if stale:
+        errors.append(
+            "opencode agents differ from their shared sources "
+            f"({', '.join(stale)}); run python3 scripts/sync_opencode_agents.py"
+        )
+        return
+    profile_model, profile_effort = _active_opencode_model(package_root)
+    for name in OPENCODE_AGENTS:
+        path = agents_root / f"{name}.md"
+        contents = _read_overlay_text(path, f"opencode agent {name!r}", errors)
+        if contents is None:
+            continue
+        parsed = _parse_overlay_frontmatter(contents, f"opencode agent {name!r}", errors)
+        if parsed is None:
+            continue
+        scalars, mappings, block = parsed
+        keys = set(scalars) | mappings
+        required = {"description", "mode", "model", "reasoningEffort", "permission"}
+        if not required <= keys <= OPENCODE_AGENT_ALLOWED_FRONTMATTER:
+            errors.append(
+                f"opencode agent {name!r} frontmatter keys must be exactly "
+                "description, mode, model, reasoningEffort, temperature, and permission"
+            )
+            continue
+        if name in ("expskill-review", "expskill-spec") and "temperature" not in scalars:
+            errors.append(f"opencode agent {name!r} frontmatter must declare temperature")
+        if "permission" not in mappings:
+            errors.append(f"opencode agent {name!r} permission must be a mapping")
+        if scalars.get("mode") != "subagent":
+            errors.append(f"opencode agent {name!r} mode must be subagent")
+        if profile_model is not None and scalars.get("model") != profile_model:
+            errors.append(
+                f"opencode agent {name!r} model must match the active model profile"
+            )
+        if profile_effort is not None and scalars.get("reasoningEffort") != profile_effort:
+            errors.append(
+                f"opencode agent {name!r} reasoningEffort must match the active model profile"
+            )
+        try:
+            profile = tomllib.loads(
+                (codex_root / "assets" / "agents" / f"{name}.toml").read_text(encoding="utf-8")
+            )
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            errors.append(f"opencode agent {name!r} canonical profile could not be read: {error}")
+            continue
+        if scalars.get("description") != profile.get("description"):
+            errors.append(f"opencode agent {name!r} description must match the canonical profile")
+        for marker in ("task: deny", "question: deny"):
+            if marker not in block:
+                errors.append(f"opencode agent {name!r} permission must declare {marker}")
+        if name in OPENCODE_READ_ONLY_AGENTS:
+            if "edit: deny" not in block:
+                errors.append(f"opencode agent {name!r} must be read-only")
+        else:
+            if "edit: allow" not in block:
+                errors.append(f"opencode agent {name!r} must allow workspace edits")
+            for marker in ('git push *": deny', 'git merge *": deny', 'gh *": deny'):
+                if marker not in block:
+                    errors.append(f"opencode agent {name!r} permission must declare {marker}")
+        instructions = profile.get("developer_instructions", "")
+        normalized = " ".join(contents.lower().split())
+        if isinstance(instructions, str) and instructions.strip():
+            first_sentence = instructions.strip().split("\n")[0].strip().lower()
+            if first_sentence and first_sentence not in normalized:
+                errors.append(
+                    f"opencode agent {name!r} body must carry the canonical instructions"
+                )
+        for phrase in OPENCODE_AGENT_BOUNDARIES[name]:
+            if phrase not in normalized:
+                errors.append(f"opencode agent {name!r} body must include {phrase!r}")
+
+
+def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
+    plugins_root = package_root / "plugins"
+    if not plugins_root.is_dir() or plugins_root.is_symlink():
+        errors.append(f"opencode plugins directory is missing: {plugins_root}")
+        return
+    actual = {
+        path.name
+        for path in plugins_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    if actual != set(OPENCODE_PLUGINS):
+        errors.append(
+            f"opencode plugins must be exactly {sorted(OPENCODE_PLUGINS)!r}, "
+            f"found {sorted(actual)!r}"
+        )
+    unslop = _read_overlay_text(plugins_root / "unslop.js", "opencode unslop plugin", errors)
+    if unslop is not None:
+        for marker in (
+            "experimental.chat.system.transform",
+            "experimental.session.compacting",
+            "5000",
+            "unslop-scope",
+            "SKILL.md",
+        ):
+            if marker not in unslop:
+                errors.append(f"opencode unslop plugin is missing required marker {marker!r}")
+    policy = _read_overlay_text(
+        plugins_root / "execution-policy.js", "opencode execution-policy plugin", errors
+    )
+    if policy is not None:
+        for marker in (
+            "tool.execute.before",
+            "execution-policy.json",
+            "max_agent_calls",
+            "maxAgentCalls",
+            "implement",
+            "standard",
+        ):
+            if marker not in policy:
+                errors.append(f"opencode execution-policy plugin is missing required marker {marker!r}")
 
 
 def main(argv: list[str] | None = None) -> int:

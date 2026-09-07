@@ -1,7 +1,8 @@
 # ExpSkill
 
 ExpSkill is a private Codex plugin with nine independent skills and one
-optional lifecycle router.
+optional lifecycle router. The same skill base also ships as the
+`opencode-expskill` npm package for opencode.
 
 ## Install and validate
 
@@ -10,12 +11,15 @@ From the repository root:
 ```bash
 python3 scripts/validate.py
 python3 scripts/install.py
+python3 scripts/install.py --target opencode
 ```
 
 Start a new Codex session after installation so the skills and linked agent
 profiles are rediscovered. Use `python3 scripts/install.py --dry-run` to inspect
 the planned changes and `python3 scripts/install.py --uninstall` to remove only
-repository-owned installation state.
+repository-owned installation state. The Codex and opencode installers keep
+separate receipts and separate destinations, so both targets can be installed
+at once.
 
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
@@ -92,7 +96,21 @@ inconsistent evidence.
 python3 scripts/validate.py
 python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
+python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_install.py tests/test_opencode_runtime.py
 ```
+
+## opencode package
+
+`packages/opencode` distributes the same ten skills to opencode as
+`opencode-expskill`. `packages/opencode/skills` is a symlink to the shared
+`packages/codex/skills` base, so one exact `SKILL.md` file serves both
+runtimes. The package adds ten thin `/name` commands, five permission-scoped
+subagents, the Unslop session injector, and budget counters driven by the
+shared execution policy. Agent descriptions and instructions render from the
+canonical Codex profiles through `packages/opencode/agents.json`, which also
+pins the model and reasoning effort behind one switchable provider profile.
+See `packages/opencode/README.md` for the install
+commands and the hook trust divergence.
 
 The focused contract and runtime suites cover the currently implemented skill,
 installation, security, concurrency, recovery, and lifecycle boundaries.

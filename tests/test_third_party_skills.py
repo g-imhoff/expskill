@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "plugins" / "expskill"
+PLUGIN_ROOT = ROOT / "packages" / "codex"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 HOOKS_PATH = PLUGIN_ROOT / "hooks" / "hooks.json"
 HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "inject_unslop.py"
@@ -72,6 +72,14 @@ def _frontmatter(path: Path) -> dict[str, str]:
             raise AssertionError(f"invalid frontmatter line: {line!r}")
         result[key.strip()] = value.strip().strip('"')
     return result
+
+
+def _without_shared_metadata_block(contents: str) -> str:
+    for autoinvoke in ("false", "true"):
+        marker = f'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "{autoinvoke}"\n'
+        if marker in contents:
+            return contents.replace(marker, "", 1)
+    return contents
 
 
 class ThirdPartySkillContractTests(unittest.TestCase):
@@ -238,7 +246,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         expected = source.replace("disable-model-invocation: true\n", "", 1)
         actual = (SKILLS_ROOT / "unslop" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(actual, expected)
+        self.assertEqual(_without_shared_metadata_block(actual), expected)
 
     def test_public_grill_me_mechanically_merges_the_upstream_wrapper_and_engine(self) -> None:
         third_party = PLUGIN_ROOT / "third-party" / "sources" / "mattpocock"
@@ -258,7 +266,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         )
         expected = frontmatter + "\n" + body
         actual = (SKILLS_ROOT / "grill-me" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(actual, expected)
+        self.assertEqual(_without_shared_metadata_block(actual), expected)
 
     def test_every_skill_owned_text_file_avoids_banned_punctuation(self) -> None:
         roots = (SKILLS_ROOT, ROOT / ".agents" / "skills")

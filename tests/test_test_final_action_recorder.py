@@ -17,8 +17,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 RECORDER = (
     ROOT
-    / "plugins"
-    / "expskill"
+    / "packages"
+    / "codex"
     / "skills"
     / "test"
     / "scripts"
