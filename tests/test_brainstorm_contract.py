@@ -335,7 +335,13 @@ class BrainstormContractTests(unittest.TestCase):
     def test_research_controls_are_independent_and_complete(self) -> None:
         section = _markdown_section(self.contents, "## Research the landscape").lower()
         clauses = (
-            "spawn three independent `gpt-5.6-luna` research subagents at max reasoning as one logical burst",
+            "launch exactly three independent high-reasoning research lanes as one logical burst",
+            "use an executable route exposed by the current host",
+            "on codex, request `gpt-5.6-luna` at max reasoning",
+            "when the dispatch mechanism supports choosing the engine and reasoning effort",
+            "on opencode, select the named `expskill-explorer` subagent in each task call",
+            "never invent unsupported engine or reasoning fields",
+            "if the host exposes no high-reasoning route, stop",
             "initiate all three before awaiting any result when three slots are available",
             "use immediate capacity-limited waves when fewer slots are available",
             "do no synthesis, technique work, or unrelated work between capacity-limited waves",
