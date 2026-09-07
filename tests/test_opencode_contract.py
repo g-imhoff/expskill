@@ -183,6 +183,34 @@ class OpencodeContractTests(unittest.TestCase):
                 with self.subTest(agent=name):
                     self.assertIn(f"model: {expected}", contents.splitlines())
 
+    def test_explorer_is_the_named_high_reasoning_external_research_route(self) -> None:
+        spec = json.loads((OPENCODE_ROOT / "agents.json").read_text(encoding="utf-8"))
+        for profile_name, profile in spec["model_profiles"].items():
+            with self.subTest(profile=profile_name):
+                self.assertEqual(profile["reasoningEffort"], "xhigh")
+
+        explorer = (OPENCODE_ROOT / "agents" / "expskill-explorer.md").read_text(
+            encoding="utf-8"
+        ).lower()
+        for phrase in (
+            "explicitly assigned external-research lane",
+            "available web tools",
+            "direct primary or authoritative sources",
+            "never inspect sibling output",
+            "return evidence only",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, explorer)
+
+        for skill_name in ("brainstorm", "plan", "skill-builder"):
+            contents = (
+                CODEX_ROOT / "skills" / skill_name / "SKILL.md"
+            ).read_text(encoding="utf-8").lower()
+            with self.subTest(skill=skill_name):
+                self.assertIn("on opencode", contents)
+                self.assertIn("named `expskill-explorer` subagent", contents)
+                self.assertIn("task call", contents)
+
     def test_package_version_matches_codex_base_version(self) -> None:
         package = json.loads((OPENCODE_ROOT / "package.json").read_text(encoding="utf-8"))
         manifest = json.loads(

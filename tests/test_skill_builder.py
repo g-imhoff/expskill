@@ -10472,6 +10472,33 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
                 "Evaluation methods, adversarial cases, and failure modes.",
             ),
         )
+        normalized_research = " ".join(research_section.lower().split())
+        for phrase in (
+            "exactly three bounded, blind, independent high-reasoning research lanes",
+            "executable route exposed by the current host",
+            "on codex, request `gpt-5.6-luna` at max reasoning",
+            "on opencode, select the named `expskill-explorer` subagent in each task call",
+            "never invent unsupported engine or reasoning fields",
+            "if the host exposes no high-reasoning route, stop",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, normalized_research)
+
+        artifact_contract = (
+            SKILL_ROOT / "references" / "artifact-contracts.md"
+        ).read_text(encoding="utf-8").lower()
+        research_pack = artifact_contract.split("### research pack", 1)[1].split(
+            "### evidence sieve", 1
+        )[0]
+        for phrase in (
+            "actual host-selected model",
+            "actual reasoning effort",
+            "`gpt-5.6-luna` with `max` reasoning",
+            "named `expskill-explorer` route",
+            "`xhigh` reasoning",
+        ):
+            with self.subTest(artifact_phrase=phrase):
+                self.assertIn(phrase, research_pack)
 
         rubric_text = (SKILL_ROOT / "references" / "evaluation-rubric.md").read_text(
             encoding="utf-8"

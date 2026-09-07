@@ -134,7 +134,7 @@ For create mode, record the absent-target proof, overlap map, host conventions, 
 
 ### Research pack
 
-Record exactly three lane identities, each lane's bounded question, GPT-5.6-Luna with max reasoning, source scope, evidence budget, start and end state, and limitations. Each evidence card contains:
+Record exactly three lane identities, each lane's bounded question, the actual host-selected model, the actual reasoning effort, source scope, evidence budget, start and end state, and limitations. When model-selectable Codex dispatch is available, record `gpt-5.6-luna` with `max` reasoning. On OpenCode, record the active model behind the named `expskill-explorer` route with `xhigh` reasoning. Never record a requested identity or effort that the host did not actually dispatch. Each evidence card contains:
 
 - claim
 - technique or practice
