@@ -154,23 +154,35 @@ def _ensure_binary(kind: str) -> Path:
 
 
 def _run(
-    command: list[str], extra_env: dict[str, str] | None = None
+    command: list[str],
+    extra_env: dict[str, str] | None = None,
+    *,
+    cwd: Path | None = None,
+    unset_env: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
+    for name in unset_env:
+        env.pop(name, None)
     return subprocess.run(
         command,
         capture_output=True,
         text=True,
         timeout=COMMAND_TIMEOUT,
-        cwd=ROOT,
+        cwd=ROOT if cwd is None else cwd,
         env=env,
     )
 
 
-def _run_json(command: list[str], extra_env: dict[str, str] | None = None) -> object:
-    result = _run(command, extra_env)
+def _run_json(
+    command: list[str],
+    extra_env: dict[str, str] | None = None,
+    *,
+    cwd: Path | None = None,
+    unset_env: tuple[str, ...] = (),
+) -> object:
+    result = _run(command, extra_env, cwd=cwd, unset_env=unset_env)
     if result.returncode != 0:
         raise AssertionError(
             f"command failed: {' '.join(command)}\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -185,7 +197,12 @@ def _run_json(command: list[str], extra_env: dict[str, str] | None = None) -> ob
 
 
 def _await_agent_list(
-    opencode: list[str], env: dict[str, str], names: tuple[str, ...]
+    opencode: list[str],
+    env: dict[str, str],
+    names: tuple[str, ...],
+    *,
+    cwd: Path | None = None,
+    unset_env: tuple[str, ...] = (),
 ) -> str:
     """Poll agent list until every expected agent is detected.
 
@@ -198,7 +215,7 @@ def _await_agent_list(
     last_stdout = ""
     last_stderr = ""
     while True:
-        result = _run(opencode + ["agent", "list"], env)
+        result = _run(opencode + ["agent", "list"], env, cwd=cwd, unset_env=unset_env)
         last_stdout = result.stdout
         last_stderr = result.stderr
         if result.returncode == 0 and all(name in result.stdout for name in names):
@@ -298,18 +315,31 @@ class CliInstallIntegrationTests(unittest.TestCase):
     def test_opencode_cli_detects_installed_skills_commands_agents_and_plugins(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            project_dir = root / "project"
             config_dir = root / "opencode-config"
+            test_home = root / "opencode-test-home"
+            xdg_config_home = root / "xdg-config"
+            xdg_data_home = root / "xdg-data"
             state_home = root / "state-home"
             cache_home = root / "cache-home"
-            env = {
+            project_dir.mkdir()
+            env = {key: value for key, value in os.environ.items() if key != "EXPSKILL_HOME"}
+            env.update({
+                "OPENCODE_TEST_HOME": str(test_home),
                 "OPENCODE_CONFIG_DIR": str(config_dir),
+                "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+                "XDG_CONFIG_HOME": str(xdg_config_home),
+                "XDG_DATA_HOME": str(xdg_data_home),
                 "XDG_STATE_HOME": str(state_home),
                 "XDG_CACHE_HOME": str(cache_home),
-            }
+            })
             opencode = [str(self.opencode_bin)]
 
             installer = _run(
-                [sys.executable, str(INSTALL_SCRIPT), "--target", "opencode"], env
+                [sys.executable, str(INSTALL_SCRIPT), "--target", "opencode"],
+                env,
+                cwd=project_dir,
+                unset_env=("EXPSKILL_HOME",),
             )
             self.assertEqual(installer.returncode, 0, installer.stderr)
 
@@ -326,27 +356,56 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 with self.subTest(plugin=name):
                     self.assertTrue((config_dir / "plugins" / name).is_symlink())
 
-            agents_stdout = _await_agent_list(opencode, env, AGENTS)
+            # OpenCode reports plugin startup failures only in logs and still exits 0.
+            startup = _run(
+                opencode + ["debug", "config", "--print-logs", "--log-level", "DEBUG"],
+                env,
+                cwd=project_dir,
+                unset_env=("EXPSKILL_HOME",),
+            )
+            self.assertEqual(
+                startup.returncode,
+                0,
+                f"OpenCode startup failed:\nstdout:\n{startup.stdout}\nstderr:\n{startup.stderr}",
+            )
+            self.assertNotIn("failed to load plugin", startup.stderr.lower())
+            try:
+                startup_config = json.loads(startup.stdout)
+            except json.JSONDecodeError as error:
+                self.fail(
+                    f"OpenCode startup returned invalid config JSON: {error}\n"
+                    f"stdout:\n{startup.stdout}\nstderr:\n{startup.stderr}"
+                )
+            assert isinstance(startup_config, dict)
+            startup_plugins = startup_config.get("plugin", [])
+            assert isinstance(startup_plugins, list)
+            startup_specs = " ".join(str(entry) for entry in startup_plugins)
+            for name in ("unslop.js", "execution-policy.js"):
+                with self.subTest(loaded_plugin=name):
+                    self.assertIn(name, startup_specs)
+
+            agents_stdout = _await_agent_list(
+                opencode,
+                env,
+                AGENTS,
+                cwd=project_dir,
+                unset_env=("EXPSKILL_HOME",),
+            )
             for name in AGENTS:
                 with self.subTest(agent=name):
                     self.assertIn(name, agents_stdout)
 
-            config = _run_json(opencode + ["debug", "config"], env)
-            assert isinstance(config, dict)
-            commands = config.get("command", {})
+            commands = startup_config.get("command", {})
             assert isinstance(commands, dict)
             for name in SKILLS:
                 with self.subTest(command=name):
                     self.assertIn(name, commands)
-            plugins = config.get("plugin", [])
-            assert isinstance(plugins, list)
-            specs = " ".join(str(entry) for entry in plugins)
-            self.assertIn("unslop.js", specs)
-            self.assertIn("execution-policy.js", specs)
 
             uninstaller = _run(
                 [sys.executable, str(INSTALL_SCRIPT), "--target", "opencode", "--uninstall"],
                 env,
+                cwd=project_dir,
+                unset_env=("EXPSKILL_HOME",),
             )
             self.assertEqual(uninstaller.returncode, 0, uninstaller.stderr)
             leftovers = [
