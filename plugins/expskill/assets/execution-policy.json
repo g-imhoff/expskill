@@ -25,6 +25,22 @@
       "sandbox_mode": "workspace-write",
       "escalation": null
     },
+    "expskill-planner": {
+      "agent_type": "expskill-planner",
+      "role": "planner",
+      "model": "gpt-5.6-luna",
+      "effort": "max",
+      "sandbox_mode": "workspace-write",
+      "escalation": null
+    },
+    "expskill-designer": {
+      "agent_type": "expskill-designer",
+      "role": "designer",
+      "model": "gpt-5.6-luna",
+      "effort": "max",
+      "sandbox_mode": "workspace-write",
+      "escalation": null
+    },
     "expskill-review": {
       "agent_type": "expskill-review",
       "role": "review",
@@ -43,6 +59,31 @@
     }
   },
   "routes": {
+    "use-expskill": {
+      "parallel-plan-design": {
+        "allowed_profiles": [
+          "expskill-planner",
+          "expskill-designer"
+        ],
+        "selected": [
+          {
+            "role": "planner",
+            "profile": "expskill-planner",
+            "agent_type": "expskill-planner"
+          },
+          {
+            "role": "designer",
+            "profile": "expskill-designer",
+            "agent_type": "expskill-designer"
+          }
+        ],
+        "max_agent_calls": 2,
+        "max_concurrency": 2,
+        "max_depth": 1,
+        "max_retries": 0,
+        "max_elapsed_ms": 7200000
+      }
+    },
     "implement": {
       "standard": {
         "allowed_profiles": [

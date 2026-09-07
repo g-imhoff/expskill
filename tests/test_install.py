@@ -16,6 +16,8 @@ from scripts.install import InstallError, install, main, uninstall
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_NAMES = (
     "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
     "expskill-implementer",
     "expskill-test-engineer",
     "expskill-review",

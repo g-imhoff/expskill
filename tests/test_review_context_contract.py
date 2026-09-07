@@ -103,6 +103,8 @@ class ReviewContextContractTests(unittest.TestCase):
         expected = {
             "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
             "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+            "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
+            "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
             "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
             "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
             "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),

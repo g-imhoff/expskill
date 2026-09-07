@@ -1,13 +1,29 @@
 ---
 name: design
-description: Explicitly invoked design phase for grounded, production-intended UI components and approval-ready responsive work.
+description: Explicitly invoked or router-selected design phase for grounded, production-intended UI components and approval-ready responsive work.
 ---
 
 # Design
 
 ## Ground
 
-Use this phase only when the user explicitly invokes `$design` or asks to use the Design skill. It applies to UI work of any size and stops at a route-neutral completed bundle. It does not integrate a feature or select another phase. Inspect the repository, branch/worktree, baseline, dirty state, framework, target seam, adjacent active components, primitives/tokens, content and localization patterns, tests, tool commands, and available isolated specimen capability before writing. Preserve unrelated work. Bind the UI contract, scope ledger, exclusions, baseline, and dirty fingerprint with `scripts/design_state.py`. Project convention and confirmed intent outrank heuristics. Activated normative obligations outrank both, and genuine conflicts are surfaced. Derive production components, temporary specimen files, allowed dependencies, relevant rules, content/state pressure, and compact, intermediate, and wide conditions from actual project breakpoints and actual pressure points.
+Use this phase when the user explicitly invokes `$design` or when the ExpSkill
+router assigns one `expskill-designer` with an exact baseline and isolated
+helper-owned worktree. It applies to UI work of any size and stops at a
+route-neutral completed bundle. It does not integrate a feature or select
+another phase. Inspect the repository, branch/worktree, baseline, dirty state,
+framework, target seam, adjacent active components, primitives/tokens, content
+and localization patterns, tests, tool commands, and available isolated
+specimen capability before writing. Preserve unrelated work. Bind the UI
+contract, scope ledger, exclusions, baseline, and dirty fingerprint with
+`scripts/design_state.py`. Confirm and record a concise Design brief before
+writing. The brief names the objective, requirements, compact, intermediate,
+and wide expectations, non-goals, and its digest-bound Plan Graph or existing
+specification source. Project convention and confirmed intent outrank
+heuristics. Activated normative obligations outrank both, and genuine conflicts
+are surfaced. Derive production components, temporary specimen files, allowed
+dependencies, relevant rules, and actual pressure from content, state, and
+responsive conditions in the project.
 
 ## Choose
 
@@ -16,6 +32,12 @@ When evidence implies one structure, build it directly. If consequential structu
 ## Build
 
 Create production-intended components, interfaces, variants, states, styles, component-owned accessibility behavior, and relevant component tests within the scope ledger. Reuse active primitives/tokens. Record justified local values. Shared token or scope change requires explicit confirmation. Keep `specimen/scenario -> production component -> project primitives`: production code never imports gallery, fixture, mock, or scenario modules. Use deterministic synthetic schema-shaped content. No external network, no customer data, credentials, external assets, silent installs, backend, application state, navigation, live side effects, or external side effects. A smallest temporary specimen adapter may be used when project capabilities permit. If no specimen can render, stop blocked.
+
+In routed mode, use only the copied `.ui-harness/README.md` and
+`.ui-harness/agent` support. Keep new specimens and evidence inside that
+worktree. Return questions to the router and do not ask the user directly. The
+router serializes Plan and Design questions. A stale baseline or invalid copied
+setup blocks the session.
 
 ## Review
 
@@ -27,10 +49,10 @@ Any failed gate is correction input. Do not present a technically failed candida
 
 ## Deliver
 
-Deliver only when every retained component is current, eligible, technically passing, user-approved, dependency-coherent, and free of unresolved decisions. Bind three layers: candidate payload (components, exports, tests, assets), temporary preview and review evidence (specimens, fixtures, renders, results, approvals), and a route-neutral manifest (revisions/digests, classifications, contracts, assumptions, non-goals, rule decisions, exceptions, and integration obligations). Keep temporary evidence private and do not retain workflow documentation merely because Design ran. Direct invocation returns the delivered summary and stable review entry point, then stops.
+Deliver only when every retained component is current, eligible, technically passing, user-approved, dependency-coherent, and free of unresolved decisions. Bind three layers: candidate payload (components, exports, tests, assets), temporary preview and review evidence (specimens, fixtures, renders, results, approvals), and a route-neutral manifest (revisions/digests, classifications, contracts, assumptions, non-goals, rule decisions, exceptions, and integration obligations). Evidence, approval, and delivery bind the confirmed Design brief digest. Keep temporary evidence private and do not retain workflow documentation merely because Design ran. Direct invocation preserves unrelated work, returns the delivered summary and stable review entry point without creating a candidate commit, then stops. In routed mode only, create one coherent local commit directly above the frozen baseline after approval and checkpoint it through `design_state.py`. Corrections amend that one commit and invalidate affected evidence and approval. Routed invocation returns the candidate-bearing delivery receipt and manifest to the router, then stops without integration.
 
 ## Rules and recovery
 
 Read `references/rules-index.md` first. For a narrow component with a small, bounded concern set, selectively load the applicable category references. For a complex composite with interacting regions, state families, density, breakpoint composition, or several behavior modes, load the complete category catalog before shaping it. When classification is uncertain, choose the broader relevant load and revisit it after the first isolated render. This is an evidence-loading strategy, not a fixed ruleset, viewport system, or state matrix. Project convention and activated obligations still decide which loaded rules apply.
 
-Resolve workflow state through the packaged `scripts/design_state.py`. Its normal root is `$XDG_STATE_HOME/expskill/design` (or the platform XDG default), while an explicit state home is test/API-only. It is the only state writer and uses expected-revision compare-and-swap. On missing direction return `not-ready`. On missing specimen capability return `blocked`. On unsafe workspace or contract conflict stop and present the smallest decision. Never infer approval, silently broaden scope, or route downstream.
+Resolve workflow state through the packaged `scripts/design_state.py`. Its normal root is `$XDG_STATE_HOME/expskill/design` (or the platform XDG default), while an explicit state home is test/API-only. It is the only state writer and uses expected-revision compare-and-swap. Initialize direct use with the default `direct` invocation mode. Initialize a router-created isolated session with `invocation_mode` set to `routed`. The helper refuses candidate checkpoints in direct mode and requires one before routed delivery. On missing direction return `not-ready`. On missing specimen capability return `blocked`. On unsafe workspace or contract conflict stop and present the smallest decision. Never infer approval, silently broaden scope, or route downstream.

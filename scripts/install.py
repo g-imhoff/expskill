@@ -22,6 +22,8 @@ PLUGIN_NAME = "expskill"
 PLUGIN_SELECTOR = "expskill@expskill"
 PROFILE_NAMES = (
     "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
     "expskill-implementer",
     "expskill-test-engineer",
     "expskill-review",
