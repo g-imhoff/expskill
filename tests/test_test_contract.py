@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.sync_opencode_package import sync as sync_opencode_package_assets
 from scripts.validate import validate_repository
 from tests import test_test_evidence_finalizer as finalizer_fixtures
 
@@ -1009,6 +1010,7 @@ class TestSkillContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = self.write_catalog(root, copy.deepcopy(VALID_CATALOG))
         self.write_evidence_contract(root, copy.deepcopy(VALID_EVIDENCE_CONTRACT))
+        sync_opencode_package_assets(root)
         self.assertEqual(validate_repository(root), ())
         return root, path
 
@@ -1017,6 +1019,7 @@ class TestSkillContractTests(unittest.TestCase):
         path = self.write_evidence_contract(
             root, copy.deepcopy(VALID_EVIDENCE_CONTRACT)
         )
+        sync_opencode_package_assets(root)
         self.assertEqual(validate_repository(root), ())
         return root, path
 
