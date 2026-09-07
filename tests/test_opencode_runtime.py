@@ -17,14 +17,14 @@ needs_node = unittest.skipUnless(NODE, "node is required for opencode plugin run
 
 UNSLP_CASE = r"""
 import(%s).then(async (module) => {
-  const callableExports = Object.entries(module).filter(([, value]) => typeof value === 'function');
   const assert = (name, condition) => {
     console.log((condition ? 'ok:' : 'FAIL:') + name);
     if (!condition) process.exitCode = 1;
   };
   assert(
-    'single-callable-export',
-    callableExports.length === 1 && callableExports[0][0] === 'UnslopPlugin'
+    'exact-module-export-keys',
+    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['UnslopPlugin']) &&
+      typeof module.UnslopPlugin === 'function'
   );
   const hooks = await module.UnslopPlugin({});
   const transform = hooks['experimental.chat.system.transform'];
@@ -107,8 +107,9 @@ import(%s).then(async (module) => {
   process.env.EXPSKILL_HOME = process.cwd();
   const policy = JSON.parse(await fs.readFile('packages/codex/assets/execution-policy.json', 'utf8'));
   assert(
-    'single-plugin-export',
-    Object.keys(module).length === 1 && typeof module.ExecutionPolicyPlugin === 'function',
+    'exact-module-export-keys',
+    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin']) &&
+      typeof module.ExecutionPolicyPlugin === 'function',
   );
   const implementPolicy = policy.routes.implement.standard;
   const planDesignPolicy = policy.routes['use-expskill']['parallel-plan-design'];
@@ -450,6 +451,16 @@ import(%s).then(async (module) => {
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
+EXTRA_EXPORTS_CASE = r"""
+import(%s).then((module) => {
+  const expected = ['UnslopPlugin'];
+  const actual = Object.keys(module).sort();
+  const rejected = JSON.stringify(actual) !== JSON.stringify(expected);
+  console.log((rejected ? 'ok:' : 'FAIL:') + 'rejects-non-function-exports');
+  if (!rejected) process.exitCode = 1;
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
 
 def run_node_case(
     plugin: Path,
@@ -488,7 +499,7 @@ class OpencodeRuntimeTests(unittest.TestCase):
         result = run_node_case(UNSLP_PLUGIN, UNSLP_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
-            "ok:single-callable-export",
+            "ok:exact-module-export-keys",
             "ok:well-formed-marker",
             "ok:under-limit",
             "ok:all-numbered-rules",
@@ -511,11 +522,24 @@ class OpencodeRuntimeTests(unittest.TestCase):
         self.assertIn("ok:missing-skill-noop", result.stdout)
 
     @needs_node
+    def test_plugin_export_contract_rejects_non_function_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "extra-exports.mjs"
+            fixture.write_text(
+                "export const UnslopPlugin = async () => ({});\n"
+                "export const metadata = 'unexpected';\n",
+                encoding="utf-8",
+            )
+            result = run_node_case(fixture, EXTRA_EXPORTS_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ok:rejects-non-function-exports", result.stdout)
+
+    @needs_node
     def test_execution_policy_plugin_enforces_shared_budgets(self) -> None:
         result = run_node_case(POLICY_PLUGIN, POLICY_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
-            "ok:single-plugin-export",
+            "ok:exact-module-export-keys",
             "ok:route-values",
             "ok:honest-policy-surface",
             "ok:hooks",
