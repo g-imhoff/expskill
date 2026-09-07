@@ -758,8 +758,6 @@ EXPECTED_POLICY_ROUTES = {
             ],
             "max_agent_calls": 2,
             "max_concurrency": 2,
-            "max_depth": 1,
-            "max_retries": 0,
             "max_elapsed_ms": 7200000,
         },
     },
@@ -789,8 +787,6 @@ EXPECTED_POLICY_ROUTES = {
             ],
             "max_agent_calls": 30,
             "max_concurrency": 6,
-            "max_depth": 1,
-            "max_retries": 3,
             "max_elapsed_ms": 7200000,
         },
     },
@@ -2851,6 +2847,7 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
     _validate_opencode_shared_skills(codex_root, package_root, errors)
     _validate_opencode_commands(package_root, errors)
     _validate_opencode_agents(repository_root, codex_root, package_root, errors)
+    _validate_opencode_policy_asset(codex_root, package_root, errors)
     _validate_opencode_plugins(package_root, errors)
 
 
@@ -3116,6 +3113,31 @@ def _validate_opencode_agents(
                 errors.append(f"opencode agent {name!r} body must include {phrase!r}")
 
 
+def _validate_opencode_policy_asset(
+    codex_root: Path,
+    package_root: Path,
+    errors: list[str],
+) -> None:
+    canonical = codex_root / POLICY_PATH
+    mirror = _required_package_path(
+        package_root,
+        POLICY_PATH,
+        "opencode execution policy asset",
+        "file",
+        errors,
+    )
+    if mirror is None:
+        return
+    try:
+        canonical_bytes = canonical.read_bytes()
+        mirror_bytes = mirror.read_bytes()
+    except OSError as error:
+        errors.append(f"opencode execution policy asset could not be read: {error}")
+        return
+    if mirror_bytes != canonical_bytes:
+        errors.append("opencode execution policy asset must mirror the canonical Codex asset")
+
+
 def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
     plugins_root = package_root / "plugins"
     if not plugins_root.is_dir() or plugins_root.is_symlink():
@@ -3151,10 +3173,13 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
             "execution-policy.json",
             "max_agent_calls",
             "maxAgentCalls",
-            "implement",
-            "standard",
+            "allowed_profiles",
+            "selected",
+            "expskill-",
+            "implement.standard",
+            "use-expskill.parallel-plan-design",
             "routeBudgets",
-            "parallel-plan-design",
+            "failed to load",
         ):
             if marker not in policy:
                 errors.append(f"opencode execution-policy plugin is missing required marker {marker!r}")
