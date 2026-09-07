@@ -13,8 +13,17 @@ The ten skills are not copied here. `skills` is a symlink to `../codex/skills`, 
 - `agents/` seven subagent ports of the Codex agent profiles with permission frontmatter
 - `agents.json` single source of truth for the opencode agent layer: model
   profiles, temperature, permission matrices, and runtime paragraphs
+- `assets/execution-policy.json` byte-identical package-local mirror used by the
+  execution-policy plugin when `EXPSKILL_HOME` is unset
 - `plugins/unslop.js` model-request injector, ported from the Codex SessionStart hook
-- `plugins/execution-policy.js` budget counters driven by the shared execution policy JSON
+- `plugins/execution-policy.js` agent allowlists plus call, concurrency, and
+  elapsed-time counters driven by the shared execution policy JSON
+
+The plugin enforces only limits observable through opencode's task hook. Nested
+subagent depth is outside the plugin and governed by opencode's agent
+permissions and `subagent_depth` setting. Workflow correction retries remain
+bounded by the coordinating skill. Neither limit is advertised as a
+plugin-enforced policy field.
 
 ## Agent sources
 
