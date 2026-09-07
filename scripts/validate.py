@@ -2673,6 +2673,41 @@ OPENCODE_AGENTS = (
     "expskill-review",
     "expskill-spec",
 )
+# These four profiles are intentionally stricter than the planner: their
+# Bash permission is an allow-list of bounded Git inspection forms.  The
+# revision/path tails are safe only after Git's option terminators; arbitrary
+# subcommands and arbitrary option-bearing Git invocations remain denied.
+OPENCODE_READ_ONLY_GIT_AGENTS = (
+    "expskill-explorer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+OPENCODE_READ_ONLY_GIT_RULES = {
+    "*": "deny",
+    "git status": "allow",
+    "git status --short": "allow",
+    "git status --short --branch": "allow",
+    "git status --porcelain": "allow",
+    "git status --porcelain=v1": "allow",
+    "git branch": "allow",
+    "git branch --show-current": "allow",
+    "git branch --list": "allow",
+    "git branch --list -- *": "allow",
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames": "allow",
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
+    "git --no-pager diff --no-ext-diff --no-textconv --no-renames -- *": "allow",
+    "git --no-pager log --no-ext-diff --no-textconv --no-renames": "allow",
+    "git --no-pager log --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
+    "git --no-pager show --no-ext-diff --no-textconv --no-renames": "allow",
+    "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options *": "allow",
+    "git * --output*": "deny",
+    "git * -o*": "deny",
+    "git * --ext-diff*": "deny",
+    "git * --textconv*": "deny",
+    "git *>*": "deny",
+    "git *<*": "deny",
+}
 OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
 OPENCODE_PACKAGE_EXPORTS = {".": "./index.js"}
 OPENCODE_PACKAGE_FILES = (
@@ -2954,6 +2989,20 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
     entries = spec.get("agents")
     if not isinstance(entries, dict) or set(entries) != set(OPENCODE_AGENTS):
         errors.append("opencode agent spec agents must cover the exact agent roster")
+        return
+    for name in OPENCODE_READ_ONLY_GIT_AGENTS:
+        entry = entries.get(name)
+        if not isinstance(entry, dict):
+            continue
+        permission = entry.get("permission")
+        if not isinstance(permission, dict):
+            continue
+        bash = permission.get("bash")
+        if bash != OPENCODE_READ_ONLY_GIT_RULES:
+            errors.append(
+                f"opencode agent {name!r} read-only Git permission must use the bounded "
+                "inspection rule set"
+            )
 
 
 def _validate_opencode_shared_skills(
