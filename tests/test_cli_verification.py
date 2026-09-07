@@ -17,7 +17,9 @@ from tests.cli_verification import (
     CLI_MODE_ENV,
     CLI_RELEASE_MANIFEST,
     CliVerificationError,
+    _asset_for,
     ensure_binary,
+    platform_key,
 )
 
 
@@ -81,6 +83,57 @@ class CliVerificationTests(unittest.TestCase):
                     platform_key=("haiku", "riscv64"),
                     mode="optional",
                 )
+
+    def test_platform_alias_matrix_selects_linux_and_macos_assets_for_each_cli(self) -> None:
+        hosts = {
+            ("Linux", "x86_64"): ("linux", "x86_64"),
+            ("Linux", "amd64"): ("linux", "x86_64"),
+            ("Linux", "aarch64"): ("linux", "aarch64"),
+            ("Linux", "arm64"): ("linux", "aarch64"),
+            ("Darwin", "x86_64"): ("darwin", "x86_64"),
+            ("Darwin", "amd64"): ("darwin", "x86_64"),
+            ("Darwin", "aarch64"): ("darwin", "arm64"),
+            ("Darwin", "arm64"): ("darwin", "arm64"),
+        }
+        for kind in ("codex", "opencode"):
+            for host, expected_key in hosts.items():
+                with self.subTest(kind=kind, host=host):
+                    key = platform_key(*host)
+                    self.assertEqual(key, expected_key)
+                    asset = _asset_for(kind, key, "required")
+                    self.assertEqual(asset.kind, kind)
+
+    def test_malformed_platform_configuration_fails_in_both_modes(self) -> None:
+        for mode in ("required", "optional"):
+            with self.subTest(mode=mode):
+                for malformed_platforms in (["linux-x86_64"], {}):
+                    with self.subTest(platforms=malformed_platforms):
+                        manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
+                        manifest["clis"]["codex"]["platforms"] = malformed_platforms
+                        with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                            with tempfile.TemporaryDirectory() as temporary:
+                                with self.assertRaises(CliVerificationError):
+                                    ensure_binary(
+                                        "codex",
+                                        Path(temporary),
+                                        platform_key=PLATFORM,
+                                        mode=mode,
+                                    )
+
+    def test_malformed_platform_entry_fails_in_both_modes(self) -> None:
+        for mode in ("required", "optional"):
+            with self.subTest(mode=mode):
+                manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
+                manifest["clis"]["codex"]["platforms"]["linux-x86_64"] = "not-an-asset"
+                with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        with self.assertRaises(CliVerificationError):
+                            ensure_binary(
+                                "codex",
+                                Path(temporary),
+                                platform_key=PLATFORM,
+                                mode=mode,
+                            )
 
     def test_required_mode_fails_download_and_leaves_no_partial_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -219,7 +272,7 @@ class CliVerificationTests(unittest.TestCase):
                 with self.assertRaises(CliVerificationError):
                     ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="required")
 
-    def test_verified_cache_can_be_reused_without_retaining_archive(self) -> None:
+    def test_cache_without_archive_is_not_authorized_by_its_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             cache_root = Path(temporary)
             archive_name = "fixture-codex.tar.gz"
@@ -229,16 +282,100 @@ class CliVerificationTests(unittest.TestCase):
             with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
                 binary = ensure_binary("codex", cache_root, platform_key=PLATFORM, mode="required")
                 (cache_root / archive_name).unlink()
-                reused = ensure_binary(
-                    "codex",
-                    cache_root,
-                    platform_key=PLATFORM,
-                    mode="required",
-                    downloader=lambda _url, _destination: (_ for _ in ()).throw(
-                        AssertionError("verified cache should not download")
+                with self.assertRaises(CliVerificationError):
+                    ensure_binary(
+                        "codex",
+                        cache_root,
+                        platform_key=PLATFORM,
+                        mode="required",
+                        downloader=lambda _url, _destination: (_ for _ in ()).throw(
+                            OSError("archive unavailable")
+                        ),
+                    )
+            self.assertEqual(binary.read_bytes(), b"trusted binary")
+
+    def test_self_consistent_forged_cache_never_passes_without_archive(self) -> None:
+        forged = b"forged executable"
+        for mode in ("required", "optional"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                cache_root = Path(temporary)
+                archive_name = "fixture-codex.tar.gz"
+                archive_bytes = _archive("fixture-codex", b"trusted binary")
+                manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
+                cache_dir = cache_root / "codex-0.153.4"
+                cache_dir.mkdir()
+                binary = cache_dir / "bin"
+                binary.write_bytes(forged)
+                binary.chmod(0o755)
+                (cache_dir / ".ready").write_text("0.153.4\n", encoding="utf-8")
+                (cache_dir / ".integrity.json").write_text(
+                    json.dumps(
+                        {
+                            "archive": archive_name,
+                            "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                            "binary_name": "fixture-codex",
+                            "binary_sha256": hashlib.sha256(forged).hexdigest(),
+                            "kind": "codex",
+                            "schema": 1,
+                            "url": "https://example.invalid/pinned-cli.tar.gz",
+                            "version": "0.153.4",
+                        }
                     ),
+                    encoding="utf-8",
                 )
-            self.assertEqual(reused, binary)
+                with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                    expected_error = unittest.SkipTest if mode == "optional" else CliVerificationError
+                    with self.assertRaises(expected_error):
+                        ensure_binary(
+                            "codex",
+                            cache_root,
+                            platform_key=PLATFORM,
+                            mode=mode,
+                            downloader=lambda _url, _destination: (_ for _ in ()).throw(
+                                OSError("archive unavailable")
+                            ),
+                        )
+                self.assertEqual(binary.read_bytes(), forged)
+
+    def test_self_consistent_forged_cache_never_passes_with_valid_archive(self) -> None:
+        forged = b"forged executable"
+        for mode in ("required", "optional"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                cache_root = Path(temporary)
+                archive_name = "fixture-codex.tar.gz"
+                archive_bytes = _archive("fixture-codex", b"trusted binary")
+                manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
+                (cache_root / archive_name).write_bytes(archive_bytes)
+                cache_dir = cache_root / "codex-0.153.4"
+                cache_dir.mkdir()
+                binary = cache_dir / "bin"
+                binary.write_bytes(forged)
+                binary.chmod(0o755)
+                (cache_dir / ".ready").write_text("0.153.4\n", encoding="utf-8")
+                (cache_dir / ".integrity.json").write_text(
+                    json.dumps(
+                        {
+                            "archive": archive_name,
+                            "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                            "binary_name": "fixture-codex",
+                            "binary_sha256": hashlib.sha256(forged).hexdigest(),
+                            "kind": "codex",
+                            "schema": 1,
+                            "url": "https://example.invalid/pinned-cli.tar.gz",
+                            "version": "0.153.4",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                    with self.assertRaises(CliVerificationError):
+                        ensure_binary(
+                            "codex",
+                            cache_root,
+                            platform_key=PLATFORM,
+                            mode=mode,
+                        )
+                self.assertEqual(binary.read_bytes(), forged)
 
     def test_override_requires_matching_digest_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

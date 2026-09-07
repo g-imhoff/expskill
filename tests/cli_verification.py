@@ -70,10 +70,14 @@ def platform_key(system: str | None = None, machine: str | None = None) -> tuple
 
     normalized_system = (host_platform.system() if system is None else system).lower()
     normalized_machine = (host_platform.machine() if machine is None else machine).lower()
+    if normalized_system in {"mac", "macos", "osx"}:
+        normalized_system = "darwin"
+    elif normalized_system == "gnu/linux":
+        normalized_system = "linux"
     if normalized_machine in {"x86_64", "amd64"}:
         normalized_machine = "x86_64"
     elif normalized_machine in {"aarch64", "arm64"}:
-        normalized_machine = "aarch64"
+        normalized_machine = "arm64" if normalized_system == "darwin" else "aarch64"
     return normalized_system, normalized_machine
 
 
@@ -132,13 +136,17 @@ def _asset_for(kind: str, key: tuple[str, str], selected_mode: str) -> CliAsset:
         _failure(selected_mode, f"CLI release manifest has no {kind!r} entry")
     platforms = entry.get("platforms")
     platform_name = f"{key[0]}-{key[1]}"
-    if not isinstance(platforms, dict) or not isinstance(platforms.get(platform_name), dict):
+    if not isinstance(platforms, dict) or not platforms:
+        _failure(selected_mode, f"malformed {kind} platform manifest")
+    if platform_name not in platforms:
         _failure(
             selected_mode,
             f"no pinned {kind} asset supports platform {platform_name}",
             skippable=True,
         )
     raw_asset = platforms[platform_name]
+    if not isinstance(raw_asset, dict):
+        _failure(selected_mode, f"malformed {kind} asset manifest entry for {platform_name}")
     version = entry.get("version")
     archive = raw_asset.get("archive")
     binary_name = raw_asset.get("binary_name")
@@ -269,6 +277,66 @@ def _safe_member_name(name: str, expected: str) -> bool:
     )
 
 
+def _archive_member_sha256(archive: Path, asset: CliAsset, selected_mode: str) -> str:
+    try:
+        archive_digest = _sha256(archive)
+    except OSError as error:
+        _failure(selected_mode, f"verified archive cannot be hashed: {archive}", cause=error)
+    if archive_digest != asset.sha256:
+        _failure(selected_mode, f"refusing to inspect archive whose hash is not pinned: {archive}")
+
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        if asset.archive.endswith(".zip"):
+            with zipfile.ZipFile(archive) as bundle:
+                entries = bundle.infolist()
+                if len(entries) != 1 or not _safe_member_name(entries[0].filename, asset.binary_name):
+                    raise ValueError(
+                        f"expected one top-level member named {asset.binary_name!r}, "
+                        f"found {[entry.filename for entry in entries]!r}"
+                    )
+                entry = entries[0]
+                mode = (entry.external_attr >> 16) & 0o170000
+                if mode == stat.S_IFLNK:
+                    raise ValueError("archive member is a symbolic link")
+                if entry.is_dir():
+                    raise ValueError("archive member is a directory")
+                with bundle.open(entry, "r") as source:
+                    while True:
+                        chunk = source.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        size += len(chunk)
+        else:
+            with tarfile.open(archive, "r:gz") as bundle:
+                entries = bundle.getmembers()
+                if len(entries) != 1 or not _safe_member_name(entries[0].name, asset.binary_name):
+                    raise ValueError(
+                        f"expected one top-level member named {asset.binary_name!r}, "
+                        f"found {[entry.name for entry in entries]!r}"
+                    )
+                member = entries[0]
+                if not member.isfile() or member.issym() or member.islnk():
+                    raise ValueError("archive member is not a regular file")
+                source = bundle.extractfile(member)
+                if source is None:
+                    raise ValueError("archive member could not be read")
+                with source:
+                    while True:
+                        chunk = source.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        size += len(chunk)
+    except (OSError, tarfile.TarError, ValueError, zipfile.BadZipFile) as error:
+        _failure(selected_mode, f"unexpected {asset.kind} archive layout in {archive.name}: {error}", cause=error)
+    if size == 0:
+        _failure(selected_mode, f"archived {asset.kind} binary is missing or empty: {archive}")
+    return digest.hexdigest()
+
+
 def _extract_verified_archive(archive: Path, asset: CliAsset, destination: Path, selected_mode: str) -> Path:
     try:
         archive_digest = _sha256(archive)
@@ -343,7 +411,7 @@ def _recover_cache(cache_dir: Path) -> None:
             return
 
 
-def _cache_is_valid(cache_dir: Path, asset: CliAsset, selected_mode: str) -> Path | None:
+def _cache_is_valid(cache_dir: Path, asset: CliAsset, archive: Path, selected_mode: str) -> Path | None:
     if not os.path.lexists(cache_dir):
         return None
     if cache_dir.is_symlink() or not cache_dir.is_dir():
@@ -376,15 +444,21 @@ def _cache_is_valid(cache_dir: Path, asset: CliAsset, selected_mode: str) -> Pat
             or not isinstance(metadata.get("binary_sha256"), str)
         ):
             _failure(selected_mode, f"cached {asset.kind} integrity receipt is inconsistent: {metadata_path}")
+        expected_binary_sha256 = _archive_member_sha256(archive, asset, selected_mode)
+        if metadata["binary_sha256"] != expected_binary_sha256:
+            _failure(
+                selected_mode,
+                f"cached {asset.kind} receipt does not match the pinned archive member: {metadata_path}",
+            )
         try:
             actual = _sha256(binary)
         except OSError as error:
             _failure(selected_mode, f"cached {asset.kind} executable cannot be hashed: {binary}", cause=error)
-        if actual != metadata["binary_sha256"]:
+        if actual != expected_binary_sha256:
             _failure(
                 selected_mode,
                 f"cached {asset.kind} executable hash mismatch for {binary}: "
-                f"expected {metadata['binary_sha256']}, got {actual}",
+                f"expected {expected_binary_sha256}, got {actual}",
             )
         if not _is_regular_file(marker):
             _failure(selected_mode, f"cached {asset.kind} ready marker is missing: {marker}")
@@ -523,13 +597,8 @@ def ensure_binary(
     root = _ensure_cache_root(Path(cache_root), selected_mode)
     cache_dir = root / f"{kind}-{asset.version}"
     _recover_cache(cache_dir)
-    archive_path = root / asset.archive
-    if not os.path.lexists(archive_path):
-        cached = _cache_is_valid(cache_dir, asset, selected_mode)
-        if cached is not None:
-            return cached
     archive = _download_archive(asset, root, selected_mode, downloader or _default_downloader)
-    cached = _cache_is_valid(cache_dir, asset, selected_mode)
+    cached = _cache_is_valid(cache_dir, asset, archive, selected_mode)
     if cached is not None:
         return cached
     return _install_verified_cache(archive, asset, root, cache_dir, selected_mode)
