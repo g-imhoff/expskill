@@ -1462,6 +1462,138 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(len(result.removed_links), len(PROFILE_NAMES))
             self.assertFalse(receipt_path(state_home).exists())
 
+    def test_full_install_agents_only_uninstall_retains_cli_ownership_for_full_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+
+            partial_runner = FakeRunner([])
+            partial_result = uninstall(
+                repo,
+                codex_home,
+                state_home,
+                partial_runner,
+                agents_only=True,
+            )
+
+            self.assertEqual(partial_runner.calls, [])
+            self.assertEqual(len(partial_result.removed_links), len(PROFILE_NAMES))
+            receipt = load_receipt(state_home)
+            self.assertEqual(receipt["links"], [])
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+
+            full_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+            uninstall(repo, codex_home, state_home, full_runner)
+
+            self.assertEqual(
+                full_runner.calls,
+                [
+                    ("codex", "plugin", "list", "--json"),
+                    ("codex", "plugin", "marketplace", "list", "--json"),
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                    ("codex", "plugin", "marketplace", "remove", "expskill", "--json"),
+                ],
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_repeated_agents_only_uninstall_keeps_owned_cli_receipt_without_cli_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+
+            first_runner = FakeRunner([])
+            uninstall(repo, codex_home, state_home, first_runner, agents_only=True)
+            second_runner = FakeRunner([])
+            second_result = uninstall(
+                repo,
+                codex_home,
+                state_home,
+                second_runner,
+                agents_only=True,
+            )
+
+            self.assertEqual(first_runner.calls, [])
+            self.assertEqual(second_runner.calls, [])
+            self.assertEqual(second_result.removed_links, ())
+            self.assertTrue(receipt_path(state_home).exists())
+            receipt = load_receipt(state_home)
+            self.assertEqual(receipt["links"], [])
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+
+    def test_agents_only_uninstall_preserves_cli_ownership_across_link_failure_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            target = destination_paths(codex_home)["expskill-review"]
+            original_unlink = Path.unlink
+            failed = {"value": True}
+
+            def fail_once(path: Path, *args: object, **kwargs: object) -> None:
+                if path == target and failed["value"]:
+                    failed["value"] = False
+                    raise OSError("link busy")
+                original_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", fail_once):
+                with self.assertRaisesRegex(InstallError, "link busy"):
+                    uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+
+            receipt = load_receipt(state_home)
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+            self.assertEqual(
+                {Path(entry["destination"]).name for entry in receipt["links"]},
+                {target.name},
+            )
+            self.assertTrue(target.is_symlink())
+
+            retry_runner = FakeRunner([])
+            uninstall(repo, codex_home, state_home, retry_runner, agents_only=True)
+
+            self.assertEqual(retry_runner.calls, [])
+            self.assertTrue(receipt_path(state_home).exists())
+            self.assertEqual(load_receipt(state_home)["links"], [])
+
+    def test_agents_only_uninstall_discards_receipt_for_preexisting_cli_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner(install_results(repo, marketplace_present=True, plugin_present=True)),
+            )
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["marketplace_added"])
+            self.assertFalse(receipt["plugin_installed"])
+
+            runner = FakeRunner([])
+            uninstall(repo, codex_home, state_home, runner, agents_only=True)
+
+            self.assertEqual(runner.calls, [])
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_agents_only_dry_run_lists_links_without_cli_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
