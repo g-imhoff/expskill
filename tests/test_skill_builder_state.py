@@ -1160,6 +1160,44 @@ def stage_payload(
     raise AssertionError(f"no valid stage payload fixture for {artifact_type}")
 
 
+def test_research_pack_accepts_actual_opencode_high_reasoning_model() -> None:
+    """The shared state contract must not require a Codex-only model identity."""
+    helper = load_helper()
+    agent_spec = json.loads(
+        (ROOT / "packages" / "opencode" / "agents.json").read_text(encoding="utf-8")
+    )
+    active_profile = agent_spec["model_profiles"][
+        agent_spec["default_model_profile"]
+    ]
+    payload = {
+        "schema_version": "skill-builder-research-pack.v1",
+        "target_snapshot_digest": "a" * 64,
+        "baseline_digest": "b" * 64,
+        "lanes": [
+            {
+                "lane_id": f"lane-{index}",
+                "question": f"bounded question {index}",
+                "model": active_profile["model"],
+                "reasoning": active_profile["reasoningEffort"],
+                "source_scope": ["authoritative sources"],
+                "evidence_budget": 1,
+                "start_state": "fresh",
+                "end_state": "complete",
+                "limitations": [],
+                "evidence_cards": [],
+            }
+            for index in range(1, 4)
+        ],
+        "limitations": [],
+    }
+
+    helper._validate_artifact_payload("research-pack", payload)
+
+    payload["lanes"][0]["reasoning"] = "medium"
+    with pytest.raises(helper.RunStateError, match="high reasoning"):
+        helper._validate_artifact_payload("research-pack", payload)
+
+
 def current_bindings(
     helper: ModuleType, state_root: Path, workflow_id: str
 ) -> list[dict[str, str]]:
