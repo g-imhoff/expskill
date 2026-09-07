@@ -908,9 +908,15 @@ def _print_dry_run(repo_root: Path, codex_home: Path, agents_only: bool = False)
 
 
 def _default_opencode_config_dir() -> Path:
-    return Path(
-        os.environ.get("OPENCODE_CONFIG_DIR", str(Path.home() / ".config" / "opencode"))
-    ).expanduser()
+    explicit = os.environ.get("OPENCODE_CONFIG_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        xdg_path = Path(xdg_config_home)
+        if xdg_path.is_absolute():
+            return xdg_path / "opencode"
+    return Path.home() / ".config" / "opencode"
 
 
 def _opencode_receipt_path(state_home: Path) -> Path:

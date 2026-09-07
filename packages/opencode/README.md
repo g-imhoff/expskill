@@ -93,6 +93,20 @@ python3 scripts/install.py --target opencode --uninstall
 
 The installer symlinks skills, commands, agents, and plugins into the opencode config directory and records ownership in a receipt. It never merges `opencode.json`. Agent permissions already live in the rendered agent frontmatter.
 
+The config destination is resolved for each invocation in this order:
+
+1. A non-empty `OPENCODE_CONFIG_DIR`, with the existing `~` expansion behavior.
+2. A non-empty, absolute `XDG_CONFIG_HOME`, followed by `/opencode`.
+3. `Path.home()/.config/opencode` when the XDG value is unset, empty, or relative, as specified by the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/).
+
+An empty `OPENCODE_CONFIG_DIR` is treated as unset. The installer does not migrate or delete an installation in a different config directory. If an earlier receipt points at the previous default, uninstall it by selecting that old directory explicitly, then install again with the desired environment:
+
+```bash
+OPENCODE_CONFIG_DIR="$HOME/.config/opencode" \
+  python3 scripts/install.py --target opencode --uninstall
+python3 scripts/install.py --target opencode
+```
+
 The repository installer continues to link skills directly from the canonical
 `packages/codex/skills` tree. The package mirror exists only so a published npm
 tarball is self-contained.
