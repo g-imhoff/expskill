@@ -22,6 +22,8 @@ from typing import Any
 
 AGENT_NAMES = (
     "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
     "expskill-implementer",
     "expskill-test-engineer",
     "expskill-review",

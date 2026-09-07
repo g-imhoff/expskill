@@ -28,6 +28,19 @@ export function routePolicy(policy, route, lane) {
   };
 }
 
+export function routeBudgets(policy) {
+  const table = {};
+  const add = (route, lane) => {
+    const budget = routePolicy(policy, route, lane);
+    for (const agent of budget.allowedProfiles) {
+      table[agent] = { route: `${route}.${lane}`, budget };
+    }
+  };
+  add("implement", "standard");
+  add("use-expskill", "parallel-plan-design");
+  return table;
+}
+
 export function createBudgetTracker(budget) {
   const sessions = new Map();
   const stateFor = (sessionID) => {
@@ -107,14 +120,24 @@ function requestedAgent(input) {
 
 export const ExecutionPolicyPlugin = async (ctx) => {
   const policyPath = resolvePolicyPath(process.env, import.meta.url);
-  let budget;
+  let table;
   try {
     const policy = JSON.parse(await readFile(policyPath, "utf8"));
-    budget = routePolicy(policy, "implement", "standard");
+    table = routeBudgets(policy);
   } catch {
     return {};
   }
-  const tracker = createBudgetTracker(budget);
+  const trackers = new Map();
+  const trackerFor = (agent) => {
+    const entry = table[agent];
+    if (!entry) {
+      return null;
+    }
+    if (!trackers.has(entry.route)) {
+      trackers.set(entry.route, createBudgetTracker(entry.budget));
+    }
+    return trackers.get(entry.route);
+  };
   const sessionOf = (input) => input?.sessionID ?? input?.sessionId ?? "default";
   return {
     "tool.execute.before": async (input, _output) => {
@@ -122,13 +145,25 @@ export const ExecutionPolicyPlugin = async (ctx) => {
         return;
       }
       const agent = requestedAgent(input);
-      if (!agent || !budget.allowedProfiles.includes(agent)) {
+      if (!agent) {
+        return;
+      }
+      const tracker = trackerFor(agent);
+      if (!tracker) {
         return;
       }
       tracker.beforeCall(sessionOf(input), agent);
     },
     "tool.execute.after": async (input, _output) => {
       if (!TASK_TOOLS.has(input?.tool)) {
+        return;
+      }
+      const agent = requestedAgent(input);
+      if (!agent) {
+        return;
+      }
+      const tracker = trackerFor(agent);
+      if (!tracker) {
         return;
       }
       tracker.afterCall(sessionOf(input));

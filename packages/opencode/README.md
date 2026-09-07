@@ -10,7 +10,7 @@ The ten skills are not copied here. `skills` is a symlink to `../codex/skills`, 
 
 - `skills/` symlink to the shared skill base with references and Python helpers
 - `commands/` ten thin `/name` wrappers that load a skill through the skill tool
-- `agents/` five subagent ports of the Codex agent profiles with permission frontmatter
+- `agents/` seven subagent ports of the Codex agent profiles with permission frontmatter
 - `agents.json` single source of truth for the opencode agent layer: model
   profiles, temperature, permission matrices, and runtime paragraphs
 - `plugins/unslop.js` session start injector, ported from the Codex SessionStart hook
@@ -28,7 +28,7 @@ python3 scripts/sync_opencode_agents.py
 python3 scripts/sync_opencode_agents.py --check
 ```
 
-All five agents pin the model and reasoning effort of the active model profile
+All seven agents pin the model and reasoning effort of the active model profile
 in `agents.json`. To switch provider, change `default_model_profile` or edit a
 profile, re-render, and reinstall. Validation rejects any agent file that
 differs from its rendered source.

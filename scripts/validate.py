@@ -564,6 +564,8 @@ EXPECTED_UNSLOP_HOOKS = {
 EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
     "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
     "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
     "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
@@ -644,6 +646,18 @@ AGENT_BOUNDARIES = {
         "no delegation",
         "no scope expansion",
     ),
+    "expskill-planner": (
+        "private plan graph",
+        "never edit",
+        "only plan graph writer",
+        "do not delegate",
+    ),
+    "expskill-designer": (
+        "isolated helper-owned worktree",
+        "one coherent local candidate commit",
+        "do not write the plan graph",
+        "do not delegate",
+    ),
     "expskill-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "read-only",
         "severity",
@@ -689,6 +703,22 @@ EXPECTED_POLICY_PROFILES = {
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
+    "expskill-planner": {
+        "agent_type": "expskill-planner",
+        "role": "planner",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
+    "expskill-designer": {
+        "agent_type": "expskill-designer",
+        "role": "designer",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
+        "sandbox_mode": "workspace-write",
+        "escalation": None,
+    },
     "expskill-review": {
         "agent_type": "expskill-review",
         "role": "review",
@@ -708,6 +738,31 @@ EXPECTED_POLICY_PROFILES = {
 }
 
 EXPECTED_POLICY_ROUTES = {
+    "use-expskill": {
+        "parallel-plan-design": {
+            "allowed_profiles": [
+                "expskill-planner",
+                "expskill-designer",
+            ],
+            "selected": [
+                {
+                    "role": "planner",
+                    "profile": "expskill-planner",
+                    "agent_type": "expskill-planner",
+                },
+                {
+                    "role": "designer",
+                    "profile": "expskill-designer",
+                    "agent_type": "expskill-designer",
+                },
+            ],
+            "max_agent_calls": 2,
+            "max_concurrency": 2,
+            "max_depth": 1,
+            "max_retries": 0,
+            "max_elapsed_ms": 7200000,
+        },
+    },
     "implement": {
         "standard": {
             "allowed_profiles": [
@@ -2611,6 +2666,8 @@ OPENCODE_SKILLS = (
 )
 OPENCODE_AGENTS = (
     "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
     "expskill-implementer",
     "expskill-test-engineer",
     "expskill-review",
@@ -2627,6 +2684,18 @@ OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
 }
 OPENCODE_AGENT_BOUNDARIES = {
     "expskill-explorer": ("read-only mode", "no delegation", "no scope expansion"),
+    "expskill-planner": (
+        "private plan graph",
+        "never edit",
+        "only plan graph writer",
+        "do not delegate",
+    ),
+    "expskill-designer": (
+        "isolated helper-owned worktree",
+        "one coherent local candidate commit",
+        "do not write the plan graph",
+        "do not delegate",
+    ),
     "expskill-test-engineer": ("no product implementation", "no delegation"),
     "expskill-implementer": (
         "red-green-refactor",
@@ -2647,9 +2716,14 @@ OPENCODE_AGENT_BOUNDARIES = {
 }
 OPENCODE_READ_ONLY_AGENTS = (
     "expskill-explorer",
+    "expskill-planner",
     "expskill-test-engineer",
     "expskill-review",
     "expskill-spec",
+)
+OPENCODE_WORKSPACE_AGENTS = (
+    "expskill-designer",
+    "expskill-implementer",
 )
 
 
@@ -3079,6 +3153,8 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
             "maxAgentCalls",
             "implement",
             "standard",
+            "routeBudgets",
+            "parallel-plan-design",
         ):
             if marker not in policy:
                 errors.append(f"opencode execution-policy plugin is missing required marker {marker!r}")

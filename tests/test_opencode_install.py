@@ -33,6 +33,8 @@ SKILLS = (
 )
 AGENTS = (
     "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
     "expskill-implementer",
     "expskill-test-engineer",
     "expskill-review",

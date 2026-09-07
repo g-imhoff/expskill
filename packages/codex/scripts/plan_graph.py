@@ -34,6 +34,7 @@ MAX_RECORDS = 10_000
 _SCHEMA = "plan-graph.v1"
 _TERMINAL_SCHEMA = "plan-human-review-handoff.v1"
 _OPERATION_RECEIPT_SCHEMA = "plan-graph-operation.v1"
+_DESIGN_JOIN_SCHEMA = "plan-design-join.v1"
 _PROVENANCE_ROLES = {"implement", "review", "verify", "integrate", "provider-policy"}
 _IMMUTABLE = {"schema_version", "workflow_id", "graph_revision", "identity", "baseline"}
 _TOP_LEVEL = {
@@ -53,9 +54,22 @@ _TOP_LEVEL = {
     "unresolved",
     "lifecycle",
     "audit",
+    "design_join",
 }
 _PROTECTED_BRANCHES = {"main", "master", "develop", "development", "trunk"}
 _HEX_KEY = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _empty_design_join() -> dict[str, Any]:
+    return {
+        "required": False,
+        "record_version": 1,
+        "receipt": None,
+        "fresh": True,
+        "operation_receipt": None,
+    }
+
+
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
@@ -348,6 +362,22 @@ def _is_full_commit(context: _RepoContext, value: object) -> bool:
         env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     )
     return process.returncode == 0
+
+
+def _commit_is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    process = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    if process.returncode == 0:
+        return True
+    if process.returncode == 1:
+        return False
+    raise PlanGraphError(process.stderr.strip() or "cannot validate Design candidate ancestry")
 
 
 def _identity_key(context: _RepoContext) -> str:
@@ -921,6 +951,7 @@ def _semantic_audit_floor(graph: dict[str, Any]) -> tuple[bool, bool, bool, str]
     git = graph.get("git") if isinstance(graph.get("git"), dict) else {}
     lanes = git.get("lanes") if isinstance(git.get("lanes"), dict) else {}
     joins = git.get("joins") if isinstance(git.get("joins"), dict) else {}
+    design_join = graph.get("design_join") if isinstance(graph.get("design_join"), dict) else {}
     evidence = graph.get("evidence") if isinstance(graph.get("evidence"), dict) else {}
 
     # These are meaning-bearing signals: a real alternatives decision or an
@@ -937,7 +968,7 @@ def _semantic_audit_floor(graph: dict[str, Any]) -> tuple[bool, bool, bool, str]
     )
     # Explicit parallel ownership and an integration join create adversarially
     # relevant coordination consequences independent of plan size.
-    complexity = bool(joins) or bool(lanes) or any(
+    complexity = design_join.get("required") is True or bool(joins) or bool(lanes) or any(
         isinstance(record, dict)
         and record.get("concurrency") in {"parallel-safe", "parallel-candidate"}
         for record in work.values()
@@ -1046,6 +1077,7 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
         "fresh": not required,
         "operation_receipt": None,
     }
+    value.setdefault("design_join", _empty_design_join())
     return value
 
 
@@ -1187,6 +1219,7 @@ def issue_operation_receipt(
         "reconfirm-projection",
         "refresh-audit",
         "resolve-finding",
+        "record-design-join",
     }:
         raise PlanGraphError("unsupported typed operation receipt")
     if not isinstance(workflow_id, str) or not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
@@ -1213,6 +1246,224 @@ def issue_operation_receipt(
     return receipt
 
 
+def issue_design_join_receipt(
+    *,
+    workflow_id: str,
+    plan_revision: int,
+    baseline: str,
+    design_workflow_id: str,
+    design_revision: int,
+    design_branch: str,
+    candidate_commit: str,
+    brief_digest: str,
+    approval_digest: str,
+    manifest_digest: str,
+    approved: bool,
+    design_delivery_receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the bounded Design result that Plan may join into its graph."""
+    if not re.fullmatch(r"[0-9a-f]{32}", str(workflow_id)) or not re.fullmatch(r"[0-9a-f]{32}", str(design_workflow_id)):
+        raise PlanGraphError("invalid Design join workflow identity")
+    _integer(plan_revision, "Design join plan revision", minimum=1)
+    _integer(design_revision, "Design workflow revision", minimum=1)
+    _text(design_branch, "Design branch", maximum=244)
+    for label, value in (("baseline", baseline), ("candidate commit", candidate_commit)):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
+            raise PlanGraphError(f"invalid Design join {label}")
+    for label, value in (("brief digest", brief_digest), ("approval digest", approval_digest), ("manifest digest", manifest_digest)):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise PlanGraphError(f"invalid Design join {label}")
+    if approved is not True:
+        raise PlanGraphError("Design join requires confirmed approval")
+    delivery = _validate_design_delivery_receipt(design_delivery_receipt)
+    delivery_identity = delivery["identity"]
+    expected_bindings = {
+        "workflow_id": design_workflow_id,
+        "revision": design_revision,
+        "baseline": baseline,
+        "branch": design_branch,
+        "candidate_commit": candidate_commit,
+        "brief_digest": brief_digest,
+        "approval_digest": approval_digest,
+        "manifest_digest": manifest_digest,
+    }
+    observed_bindings = {
+        "workflow_id": delivery["workflow_id"],
+        "revision": delivery["revision"],
+        "baseline": delivery_identity["baseline"],
+        "branch": delivery_identity["branch"],
+        "candidate_commit": delivery["candidate_commit"],
+        "brief_digest": delivery["brief_digest"],
+        "approval_digest": delivery["approval_digest"],
+        "manifest_digest": delivery["manifest_digest"],
+    }
+    if observed_bindings != expected_bindings or delivery_identity["head"] != candidate_commit:
+        raise PlanGraphError("Design delivery receipt binding mismatch")
+    receipt: dict[str, Any] = {
+        "schema_version": _DESIGN_JOIN_SCHEMA,
+        "receipt_id": secrets.token_hex(16),
+        "workflow_id": workflow_id,
+        "plan_revision": plan_revision,
+        "baseline": baseline,
+        "design_workflow_id": design_workflow_id,
+        "design_revision": design_revision,
+        "design_branch": design_branch,
+        "candidate_commit": candidate_commit,
+        "brief_digest": brief_digest,
+        "approval_digest": approval_digest,
+        "manifest_digest": manifest_digest,
+        "approved": True,
+        "design_delivery_receipt": copy.deepcopy(delivery),
+        "issued_at": _now(),
+    }
+    receipt["digest"] = _canonical_digest(receipt)
+    return receipt
+
+
+def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
+    receipt = _mapping(value, "Design delivery receipt")
+    fields = {
+        "schema_version", "operation", "workflow_id", "revision", "lifecycle",
+        "identity", "state_digest", "candidate_digest", "candidate_inventory_digest",
+        "review_evidence_digest", "manifest_digest", "evidence_digest",
+        "approval_digest", "dependency_digest", "brief_digest", "candidate_commit",
+    }
+    if set(receipt) != fields or receipt.get("schema_version") != 1:
+        raise PlanGraphError("Design delivery receipt schema is incomplete")
+    if receipt.get("operation") != "deliver" or receipt.get("lifecycle") != "delivered":
+        raise PlanGraphError("Design delivery receipt is not delivered")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(receipt.get("workflow_id", ""))):
+        raise PlanGraphError("invalid Design delivery workflow identity")
+    _integer(receipt.get("revision"), "Design delivery revision", minimum=1)
+    identity = _mapping(receipt.get("identity"), "Design delivery identity")
+    identity_fields = {
+        "repository", "branch", "worktree", "baseline", "head",
+        "dirty_fingerprint", "ui_contract_digest",
+    }
+    if set(identity) != identity_fields:
+        raise PlanGraphError("Design delivery identity is incomplete")
+    for field in ("repository", "branch", "worktree"):
+        _text(identity.get(field), f"Design delivery identity {field}")
+    for field in ("baseline", "head", "candidate_commit"):
+        candidate = receipt.get(field) if field == "candidate_commit" else identity.get(field)
+        if not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", candidate):
+            raise PlanGraphError(f"invalid Design delivery {field}")
+    for field in (
+        "dirty_fingerprint", "ui_contract_digest", "state_digest", "candidate_digest",
+        "candidate_inventory_digest", "review_evidence_digest", "manifest_digest",
+        "evidence_digest", "approval_digest", "dependency_digest", "brief_digest",
+    ):
+        candidate = identity.get(field) if field in identity else receipt.get(field)
+        if not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{64}", candidate):
+            raise PlanGraphError(f"invalid Design delivery {field}")
+    if identity["head"] != receipt["candidate_commit"]:
+        raise PlanGraphError("Design delivery candidate identity mismatch")
+    return receipt
+
+
+def _design_join_record(graph: dict[str, Any]) -> dict[str, Any]:
+    value = graph.get("design_join")
+    if value is None:
+        return _empty_design_join()
+    return _mapping(value, "Design join")
+
+
+def _validate_design_join(graph: dict[str, Any], context: _RepoContext | None) -> None:
+    record = _design_join_record(graph)
+    if set(record) != {"required", "record_version", "receipt", "fresh", "operation_receipt"}:
+        raise PlanGraphError("Design join fields are incomplete")
+    required = _boolean(record.get("required"), "Design join requirement")
+    fresh = _boolean(record.get("fresh"), "Design join freshness")
+    record_version = _integer(record.get("record_version"), "Design join record version", minimum=1)
+    receipt = record.get("receipt")
+    operation = record.get("operation_receipt")
+    if not required:
+        if receipt is not None or not fresh or operation is not None:
+            raise PlanGraphError("disabled Design join contains active state")
+        return
+    if receipt is None:
+        if fresh or operation is not None:
+            raise PlanGraphError("unresolved Design join claims freshness")
+        return
+    value = _mapping(receipt, "Design join receipt")
+    fields = {
+        "schema_version", "receipt_id", "workflow_id", "plan_revision", "baseline",
+        "design_workflow_id", "design_revision", "design_branch", "candidate_commit",
+        "brief_digest", "approval_digest", "manifest_digest", "approved",
+        "design_delivery_receipt", "issued_at", "digest",
+    }
+    if set(value) != fields or value.get("schema_version") != _DESIGN_JOIN_SCHEMA:
+        raise PlanGraphError("Design join receipt schema is incomplete")
+    _identifier(value.get("receipt_id"), "Design join receipt id")
+    if value.get("workflow_id") != graph["workflow_id"]:
+        raise PlanGraphError("Design join workflow mismatch")
+    plan_revision = _integer(value.get("plan_revision"), "Design join plan revision", minimum=1)
+    design_revision = _integer(value.get("design_revision"), "Design workflow revision", minimum=1)
+    if not re.fullmatch(r"[0-9a-f]{32}", str(value.get("design_workflow_id", ""))):
+        raise PlanGraphError("invalid Design workflow identity")
+    if value.get("baseline") != graph["baseline"]["repository_revision"]:
+        raise PlanGraphError("Design join baseline mismatch")
+    branch = _text(value.get("design_branch"), "Design branch", maximum=244)
+    if branch == graph["identity"]["target_branch"]:
+        raise PlanGraphError("Design join must come from an isolated branch")
+    if context is not None:
+        _check_branch_name(context.repository, branch)
+    for field in ("brief_digest", "approval_digest", "manifest_digest"):
+        if not isinstance(value.get(field), str) or not re.fullmatch(r"[0-9a-f]{64}", value[field]):
+            raise PlanGraphError(f"invalid Design join {field}")
+    if value.get("approved") is not True:
+        raise PlanGraphError("Design join is not approved")
+    delivery = _validate_design_delivery_receipt(value.get("design_delivery_receipt"))
+    delivery_identity = delivery["identity"]
+    if (
+        delivery["workflow_id"] != value["design_workflow_id"]
+        or delivery["revision"] != design_revision
+        or delivery_identity["baseline"] != value["baseline"]
+        or delivery_identity["branch"] != branch
+        or delivery_identity["head"] != value["candidate_commit"]
+        or delivery["candidate_commit"] != value["candidate_commit"]
+        or delivery["brief_digest"] != value["brief_digest"]
+        or delivery["approval_digest"] != value["approval_digest"]
+        or delivery["manifest_digest"] != value["manifest_digest"]
+    ):
+        raise PlanGraphError("Design delivery receipt binding mismatch")
+    _text(value.get("issued_at"), "Design join timestamp", maximum=256)
+    unsigned = {key: item for key, item in value.items() if key != "digest"}
+    if value.get("digest") != _canonical_digest(unsigned):
+        raise PlanGraphError("Design join receipt digest mismatch")
+    candidate = value.get("candidate_commit")
+    if context is not None:
+        if not _is_full_commit(context, candidate):
+            raise PlanGraphError("Design candidate commit is unavailable")
+        parents = _run_git(context.repository, "rev-list", "--parents", "-n", "1", candidate).split()
+        if len(parents) != 2 or parents[1] != value["baseline"]:
+            raise PlanGraphError("Design candidate is not one commit above baseline")
+        if not _commit_is_ancestor(context.repository, candidate, context.head):
+            branch_tip = _run_git(
+                context.repository,
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                f"refs/heads/{branch}^{{commit}}",
+            )
+            if branch_tip != candidate:
+                raise PlanGraphError("Design candidate is not the isolated branch tip")
+    elif not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", candidate):
+        raise PlanGraphError("invalid Design candidate commit")
+    validated_operation = _validate_operation_receipt(
+        operation,
+        graph=graph,
+        target=("design_join",),
+        record=record,
+        record_version=record_version,
+        allowed_operations={"record-design-join"},
+    )
+    if validated_operation is None or validated_operation["prior_graph_revision"] != plan_revision:
+        raise PlanGraphError("Design join operation binding mismatch")
+    if not fresh:
+        raise PlanGraphError("Design join receipt is stale")
+
+
 def _validate_graph_inner(
     graph: object,
     context: _RepoContext | None,
@@ -1222,7 +1473,7 @@ def _validate_graph_inner(
     provenance_resolver: Any = None,
 ) -> None:
     value = _mapping(graph, "Plan Graph")
-    if set(value) != _TOP_LEVEL:
+    if set(value) not in (_TOP_LEVEL, _TOP_LEVEL - {"design_join"}):
         raise PlanGraphError("Plan Graph has missing or unsupported top-level families")
     if value.get("schema_version") != _SCHEMA:
         raise PlanGraphError("unsupported Plan Graph schema")
@@ -1265,6 +1516,8 @@ def _validate_graph_inner(
         context, baseline["repository_revision"]
     ):
         raise PlanGraphError("baseline is not a full repository commit")
+
+    _validate_design_join(value, context if validate_objects else None)
 
     outcomes = _mapping(value.get("outcomes"), "outcomes", allow_empty=False)
     for outcome_id, raw in outcomes.items():
@@ -1751,6 +2004,9 @@ def _derive_validated(graph: dict[str, Any]) -> str:
         return "not-ready"
     if graph["git"]["target"]["dirty_dependency"]:
         return "not-ready"
+    design_join = _design_join_record(graph)
+    if design_join["required"] and (not design_join["fresh"] or design_join["receipt"] is None):
+        return "not-ready"
     audit = graph["audit"]
     if audit["required"] and (not audit["fresh"] or any(item.get("disposition") == "open" for item in audit["findings"])):
         return "stale"
@@ -1826,6 +2082,7 @@ def _read_current(transaction: _Transaction) -> dict[str, Any]:
     if "previous.yaml" in entries:
         _validate_regular_stat(_entry_stat(transaction.work_fd, "previous.yaml"), "previous.yaml")
     graph = _read_json_entry(transaction.work_fd, "current.yaml")
+    graph.setdefault("design_join", _empty_design_join())
     _validate_graph(
         graph,
         transaction.context,
@@ -1841,6 +2098,7 @@ def _read_previous(transaction: _Transaction) -> dict[str, Any]:
     if transaction.work_fd is None:
         raise PlanGraphError("workflow not found")
     graph = _read_json_entry(transaction.work_fd, "previous.yaml")
+    graph.setdefault("design_join", _empty_design_join())
     _validate_graph(
         graph,
         transaction.context,
@@ -1961,7 +2219,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         update = _mapping(row, "update")
         operation = update.get("op")
         typed = operation in {"refresh-evidence", "reconfirm-decision", "refresh-proof",
-                              "regenerate-projection", "reconfirm-projection", "refresh-audit", "resolve-finding"}
+                              "regenerate-projection", "reconfirm-projection", "refresh-audit", "resolve-finding", "record-design-join"}
         if operation != "set" and not typed:
             raise PlanGraphError("unsupported update operation")
         expected_fields = (
@@ -1985,7 +2243,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
             path.append(component)
         if path[0] in _IMMUTABLE or path[0] not in _TOP_LEVEL:
             raise PlanGraphError("immutable or unsupported update path")
-        if operation == "set" and len(path) == 1 and path[0] in {"evidence", "decisions", "work", "proof", "git", "projections", "audit"}:
+        if operation == "set" and len(path) == 1 and path[0] in {"evidence", "decisions", "work", "proof", "git", "projections", "audit", "design_join"}:
             raise PlanGraphError("broad family replacement is forbidden")
         if operation == "set" and path[0] == "audit":
             raise PlanGraphError("audit updates require a typed operation")
@@ -1999,14 +2257,15 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
                 and update.get("value") is not False
                 and update.get("value") is not None
             )
+            or (path[0] == "design_join" and path[-1] == "fresh" and update.get("value") is True)
         )
         if operation == "set" and controlled_true:
             raise PlanGraphError("readiness-enabling fields require a typed operation")
         if typed:
             expected_family = {"refresh-evidence": "evidence", "reconfirm-decision": "decisions",
                 "refresh-proof": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections",
-                "refresh-audit": "audit", "resolve-finding": "audit"}[operation]
-            expected_length = 1 if expected_family == "audit" else 2
+                "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
+            expected_length = 1 if expected_family in {"audit", "design_join"} else 2
             if path[0] != expected_family or len(path) != expected_length:
                 raise PlanGraphError("typed update targets the wrong record family")
             _integer(
@@ -2086,11 +2345,11 @@ def _validate_typed_repairs(
         if not operation:
             continue
         path = update["path"]
-        record = graph[path[0]][path[1]] if path[0] != "audit" else graph["audit"]
+        record = graph[path[0]][path[1]] if path[0] not in {"audit", "design_join"} else graph[path[0]]
         previous_record = (
             previous_graph[path[0]][path[1]]
-            if path[0] != "audit"
-            else previous_graph["audit"]
+            if path[0] not in {"audit", "design_join"}
+            else previous_graph[path[0]]
         )
         if update.get("_prior_graph_revision") != prior_revision:
             raise PlanGraphError("typed update is stale")
@@ -2128,6 +2387,7 @@ def _validate_typed_repairs(
                 "graph_revision", "evidence", "independent", "findings", "resolutions",
                 "fresh", "operation_receipt",
             },
+            "record-design-join": {"receipt", "fresh", "operation_receipt"},
         }[operation]
         changed_fields = {
             key
@@ -2214,9 +2474,23 @@ def _validate_typed_repairs(
                 if isinstance(item, dict)
             ):
                 raise PlanGraphError("finding resolution is incomplete")
+        elif operation == "record-design-join":
+            if (
+                previous_record.get("required") is not True
+                or previous_record.get("fresh") is not False
+                or previous_record.get("receipt") is not None
+                or record.get("fresh") is not True
+                or not isinstance(record.get("receipt"), dict)
+            ):
+                raise PlanGraphError("Design join recording is not current")
 
 
-def _invalidate_semantic_dependents(graph: dict[str, Any], changed: set[tuple[str, ...]]) -> None:
+def _invalidate_semantic_dependents(
+    graph: dict[str, Any],
+    changed: set[tuple[str, ...]],
+    *,
+    preserve_evidence: set[str] | None = None,
+) -> None:
     """Propagate material meaning changes through the affected plan subgraph."""
     semantic_roots = {
         path
@@ -2232,6 +2506,7 @@ def _invalidate_semantic_dependents(graph: dict[str, Any], changed: set[tuple[st
                 "proof",
                 "projections",
                 "baseline",
+                "design_join",
             }
             or (
                 path[0] == "git"
@@ -2289,9 +2564,12 @@ def _invalidate_semantic_dependents(graph: dict[str, Any], changed: set[tuple[st
                 or set(record["required_by"]) & work_ids
             ):
                 proof_ids.add(proof_id); changed_again = True
+    preserved_evidence = preserve_evidence or set()
     for evidence_id in evidence_ids:
         if evidence_id in graph["evidence"]:
             record = graph["evidence"][evidence_id]
+            if evidence_id in preserved_evidence:
+                continue
             if record["fresh"]:
                 record["record_version"] += 1
             record["fresh"] = False
@@ -2324,6 +2602,26 @@ def _invalidate_semantic_dependents(graph: dict[str, Any], changed: set[tuple[st
         graph["audit"]["fresh"] = False
         graph["audit"]["independent"] = False
         graph["audit"]["operation_receipt"] = None
+    meaning_changed = any(
+        not (
+            path[0] == "proof"
+            and len(path) > 2
+            and path[2] == "evidence"
+        )
+        and not (
+            path[0] == "projections"
+            and len(path) > 2
+            and path[2] == "confirmed"
+        )
+        for path in semantic_roots
+    )
+    design_join = graph.get("design_join")
+    if meaning_changed and isinstance(design_join, dict) and design_join.get("required"):
+        if design_join.get("fresh"):
+            design_join["record_version"] += 1
+        design_join["receipt"] = None
+        design_join["fresh"] = False
+        design_join["operation_receipt"] = None
 
 
 def _apply_updates_locked(
@@ -2365,15 +2663,38 @@ def _apply_updates_locked(
     _apply_to_graph(candidate, normalized)
     if current["audit"]["required"] and not candidate["audit"]["required"]:
         raise PlanGraphError("required audit cannot be downgraded")
+    if current["design_join"]["required"] and not candidate["design_join"]["required"]:
+        raise PlanGraphError("required Design join cannot be downgraded")
     for signal in ("breadth", "complexity", "high_consequence"):
         if current["audit"][signal] and not candidate["audit"][signal]:
             raise PlanGraphError("audit consequence signals cannot be downgraded")
-    typed_families = {
-        tuple(update["path"][:2]) for update in normalized if update.get("_typed")
-    }
-    semantic_changes = {path for path in _changed_paths(current, candidate)
-                        if path[:2] not in typed_families}
-    _invalidate_semantic_dependents(candidate, semantic_changes)
+    typed_families = [
+        (tuple(update["path"]), update["_typed"])
+        for update in normalized
+        if update.get("_typed")
+    ]
+    evidence_meaning = {"fact", "source", "revision", "version", "limitations", "supports"}
+    semantic_changes: set[tuple[str, ...]] = set()
+    preserved_evidence: set[str] = set()
+    for path in _changed_paths(current, candidate):
+        operation = next(
+            (
+                typed_operation
+                for family, typed_operation in typed_families
+                if path[:len(family)] == family
+            ),
+            None,
+        )
+        if operation is None:
+            semantic_changes.add(path)
+        elif operation == "refresh-evidence" and len(path) > 2 and path[2] in evidence_meaning:
+            semantic_changes.add(path)
+            preserved_evidence.add(path[1])
+    _invalidate_semantic_dependents(
+        candidate,
+        semantic_changes,
+        preserve_evidence=preserved_evidence,
+    )
     # Structural semantics impose a floor even when a caller supplies false
     # booleans.  Escalation is retained; lowering is rejected below.
     floor_breadth, floor_complexity, floor_consequence, floor_reason = _semantic_audit_floor(
