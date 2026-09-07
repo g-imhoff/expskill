@@ -138,6 +138,14 @@ python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.
 python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_install.py tests/test_opencode_runtime.py
 ```
 
+The networked integration suite downloads pinned Codex and opencode
+executables into the repository local `.testbin` directory on first run,
+installs both targets through the real CLIs, and verifies detection:
+
+```bash
+python3 -m pytest -q tests/test_cli_install_integration.py
+```
+
 ## opencode package
 
 `packages/opencode` distributes the same ten skills to opencode as
