@@ -1,6 +1,6 @@
 # ExpSkill
 
-ExpSkill is a private Codex plugin with nine independent skills and one
+ExpSkill is a private Codex plugin with ten independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -32,6 +32,8 @@ Invoke a skill directly when you know what you want:
   isolated UI inspection method without redesigning production UI.
 - `$implement` coordinates isolated TDD workers, independent review and spec
   gates, corrections, local integration, and final whole-branch gates.
+- `$review` adversarially inspects a user-defined code scope and saves an
+  evidence-backed Markdown report with ratings, without fixes or fix advice.
 - `$test` exercises already-implemented behavior through realistic composed
   product paths and reports revision-bound evidence without repairing production
   code.
@@ -66,6 +68,7 @@ Use $brainstorm to compare storage approaches for this feature.
 Use $plan to turn the accepted API decision into bounded tasks.
 Use $setup-ui-testing to establish this project's reusable isolated UI inspection method.
 Use $implement to execute this accepted implementation work.
+Use $review to inspect the changes between this branch and main and save a report.
 Use $test to exercise this implemented change through realistic product behavior.
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
 Use $unslop to rewrite this explanation in a natural voice.
@@ -86,12 +89,18 @@ Design works on one isolated candidate commit. The graph cannot become ready
 until Plan validates and records the approved Design receipt from that same
 baseline.
 
-`$brainstorm`, `$setup-ui-testing`, and `$test` remain independently usable
+`$brainstorm`, `$setup-ui-testing`, `$review`, and `$test` remain independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
 Setup UI Testing records the reusable project-specific inspection method, and
 Test returns evidence for the implemented behavior it exercised. `$use-expskill`
 owns optional transition selection; the individual skills do not silently open
 the whole pipeline.
+
+Review runs through the invoking agent and leaves Implement's internal reviewer
+alone. Reports live in the installed Review skill's `tmp/reports/` directory,
+outside every repository. Filenames include the date and time through seconds.
+The user deletes reports manually. Review does not apply corrections or start
+another skill.
 
 The live certification chain is unfinished. Its required boundary must use
 fresh `codex exec --ephemeral --ignore-user-config --json` sessions in

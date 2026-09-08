@@ -19,6 +19,7 @@ EXPECTED_SKILLS = {
     "design",
     "grill-me",
     "implement",
+    "review",
     "setup-ui-testing",
     "skill-builder",
     "test",
