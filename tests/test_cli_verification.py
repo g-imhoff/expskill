@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import socket
 import tarfile
 import tempfile
 import unittest
@@ -29,6 +30,13 @@ from tests.cli_verification import (
 
 
 PLATFORM = ("linux", "x86_64")
+_UNIT_ENVIRONMENT_KEYS = (
+    "EXPSKILL_TEST_CODEX_BIN",
+    "EXPSKILL_TEST_CODEX_BIN_SHA256",
+    "EXPSKILL_TEST_OPENCODE_BIN",
+    "EXPSKILL_TEST_OPENCODE_BIN_SHA256",
+    CLI_MODE_ENV,
+)
 
 
 def _archive(member_name: str, payload: bytes) -> bytes:
@@ -69,6 +77,17 @@ def _assert_cli_failure(test_case: unittest.TestCase):
 
 
 class CliVerificationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._environment_before = dict(os.environ)
+        for name in _UNIT_ENVIRONMENT_KEYS:
+            os.environ.pop(name, None)
+        self.addCleanup(self._restore_environment)
+
+    def _restore_environment(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._environment_before)
+
     def test_manifest_keeps_authoritative_provenance_and_pinned_versions(self) -> None:
         self.assertEqual(
             CLI_RELEASE_MANIFEST["provenance"]["codex"],
@@ -394,6 +413,34 @@ class CliVerificationTests(unittest.TestCase):
                         mode="optional",
                     )
 
+    def test_default_downloader_dns_failure_skips_only_in_optional_mode(self) -> None:
+        dns_failure = urllib.error.URLError(
+            socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+        )
+        for mode in ("optional", "required"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                with mock.patch.object(
+                    cli_verification.urllib.request,
+                    "urlopen",
+                    side_effect=dns_failure,
+                ):
+                    if mode == "optional":
+                        with self.assertRaises(unittest.SkipTest):
+                            ensure_binary(
+                                "codex",
+                                Path(temporary),
+                                platform_key=PLATFORM,
+                                mode=mode,
+                            )
+                    else:
+                        with _assert_cli_failure(self):
+                            ensure_binary(
+                                "codex",
+                                Path(temporary),
+                                platform_key=PLATFORM,
+                                mode=mode,
+                            )
+
     def test_optional_mode_fails_local_staging_and_publication_errors(self) -> None:
         archive_name = "fixture-codex.tar.gz"
         archive_bytes = _archive("fixture-codex", b"trusted binary")
@@ -469,9 +516,42 @@ class CliVerificationTests(unittest.TestCase):
                 metadata_path = binary.parent / ".integrity.json"
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 self.assertEqual(metadata["binary_sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+                self.assertTrue(
+                    binary.is_relative_to(cache_root),
+                    f"destructive fixture escaped disposable cache root: {binary}",
+                )
                 binary.write_bytes(b"tampered binary")
                 with _assert_cli_failure(self):
                     ensure_binary("opencode", cache_root, platform_key=PLATFORM, mode="required")
+
+    def test_cache_fixture_is_contained_when_external_override_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            external_root = Path(temporary) / "external-override"
+            external_root.mkdir()
+            external_binary = external_root / "opencode"
+            original_bytes = b"disposable external override"
+            external_binary.write_bytes(original_bytes)
+            external_binary.chmod(0o755)
+            digest = hashlib.sha256(original_bytes).hexdigest()
+            receipt = external_root / ".integrity.json"
+            original_receipt = json.dumps({"binary_sha256": digest})
+            receipt.write_text(original_receipt, encoding="utf-8")
+
+            surrounding_environment = dict(os.environ)
+            override_environment = {
+                "EXPSKILL_TEST_OPENCODE_BIN": str(external_binary),
+                "EXPSKILL_TEST_OPENCODE_BIN_SHA256": digest,
+                CLI_MODE_ENV: "required",
+            }
+            with mock.patch.dict(os.environ, override_environment, clear=False):
+                result = unittest.TestResult()
+                vulnerable_case = type(self)("test_cache_records_binary_digest_and_fails_when_binary_changes")
+                vulnerable_case.run(result)
+
+            self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+            self.assertEqual(external_binary.read_bytes(), original_bytes)
+            self.assertEqual(receipt.read_text(encoding="utf-8"), original_receipt)
+            self.assertEqual(dict(os.environ), surrounding_environment)
 
     def test_marker_without_integrity_metadata_is_not_reused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
