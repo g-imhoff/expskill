@@ -25,6 +25,8 @@ PHASE_ROOTS = {
         "setup-ui-testing",
         "plan",
         "implement",
+        "correct",
+        "review",
         "test",
         "unslop",
     )
@@ -51,6 +53,8 @@ EXPECTED_SKILLS = {
     "setup-ui-testing",
     "plan",
     "implement",
+    "correct",
+    "review",
     "test",
     "skill-builder",
     "unslop",
@@ -430,7 +434,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("nine", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("eleven", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -545,7 +549,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bnine independent skills and one optional lifecycle router\b"
+            r"\beleven independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -1084,11 +1088,12 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("implement_state.py", body)
         self.assertNotIn("command-attestation", body)
 
-    def test_retired_review_verify_and_integrate_skills_are_absent(self) -> None:
-        """Regression: worker gates must not reappear as duplicate public phases."""
+    def test_public_review_does_not_reintroduce_other_internal_gate_skills(self) -> None:
+        """Regression: the public audit must not recreate lifecycle gate skills."""
 
         skills = PLUGIN_ROOT / "skills"
-        for name in ("review", "verify", "integrate"):
+        self.assertTrue((skills / "review").is_dir())
+        for name in ("verify", "integrate"):
             with self.subTest(skill=name):
                 self.assertFalse((skills / name).exists())
 
@@ -1099,7 +1104,7 @@ class ContractTests(unittest.TestCase):
         for marker in (REMOVED_PUBLIC_TOKEN, "$review", "$verify", "$integrate"):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, body)
-        for phase in ("brainstorm", "plan", "design", "implement"):
+        for phase in ("brainstorm", "plan", "design", "implement", "correct"):
             with self.subTest(phase=phase):
                 self.assertIn(phase, body)
         self.assertIn("no separate review, verification, or integration routes", body)
