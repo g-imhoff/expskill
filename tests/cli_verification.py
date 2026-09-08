@@ -139,6 +139,8 @@ def _is_acquisition_unavailable(error: BaseException) -> bool:
     if isinstance(error, CliAcquisitionUnavailable):
         cause = error.__cause__
         return cause is None or _is_acquisition_unavailable(cause)
+    if isinstance(error, urllib.error.HTTPError):
+        return False
     if isinstance(error, urllib.error.URLError):
         reason = error.reason
         if reason is None or isinstance(reason, str):

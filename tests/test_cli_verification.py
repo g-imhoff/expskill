@@ -441,6 +441,34 @@ class CliVerificationTests(unittest.TestCase):
                                 mode=mode,
                             )
 
+    def test_default_downloader_http_error_responses_are_hard_failures(self) -> None:
+        for status, reason in (
+            (404, "Not Found"),
+            (429, "Too Many Requests"),
+            (500, "Internal Server Error"),
+        ):
+            for mode in ("required", "optional"):
+                with self.subTest(status=status, mode=mode), tempfile.TemporaryDirectory() as temporary:
+                    http_error = urllib.error.HTTPError(
+                        "https://example.invalid/pinned-cli.tar.gz",
+                        status,
+                        reason,
+                        hdrs=None,
+                        fp=None,
+                    )
+                    with mock.patch.object(
+                        cli_verification.urllib.request,
+                        "urlopen",
+                        side_effect=http_error,
+                    ), _assert_cli_failure(self):
+                        ensure_binary(
+                            "codex",
+                            Path(temporary),
+                            platform_key=PLATFORM,
+                            mode=mode,
+                        )
+                    self.assertEqual(list(Path(temporary).glob("*.part")), [])
+
     def test_optional_mode_fails_local_staging_and_publication_errors(self) -> None:
         archive_name = "fixture-codex.tar.gz"
         archive_bytes = _archive("fixture-codex", b"trusted binary")
