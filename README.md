@@ -1,6 +1,6 @@
 # ExpSkill
 
-ExpSkill is a private Codex plugin with nine independent skills and one
+ExpSkill is a private Codex plugin with eleven independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -32,6 +32,10 @@ Invoke a skill directly when you know what you want:
   isolated UI inspection method without redesigning production UI.
 - `$implement` coordinates isolated TDD workers, independent review and spec
   gates, corrections, local integration, and final whole-branch gates.
+- `$correct` repairs concrete bugs within the existing design and asks for a
+  choice before structural or breaking changes.
+- `$review` adversarially inspects a user-defined code scope and saves an
+  evidence-backed Markdown report with ratings, without fixes or fix advice.
 - `$test` exercises already-implemented behavior through realistic composed
   product paths and reports revision-bound evidence without repairing production
   code.
@@ -42,9 +46,18 @@ Invoke a skill directly when you know what you want:
   fact-grounded interview and mandatory final confirmation.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
-skill. It opens one skill per transition, coordinates against the canonical
-Plan Graph when one exists, validates revision-bound receipts, and preserves
-the implementation gates. It is the only skill that may activate implicitly.
+skill. It normally opens one skill per transition. For unresolved UI work with
+a ready project UI testing setup, it may launch one Plan session and one Design
+session concurrently from the same baseline. It coordinates against the
+canonical Plan Graph when one exists, validates revision-bound receipts, and
+preserves the implementation gates. It is the only skill that may activate
+implicitly.
+
+Before routing UI work, the router inspects the constant project-local
+`.ui-harness/README.md` capability record. An absent or invalid record routes
+only to `$setup-ui-testing`. A ready record can be copied with agent-only
+support into the isolated Design worktree. Those temporary copies and their
+evidence disappear when the accepted worktree is integrated and cleaned up.
 
 When a routed phase is blocked by several connected, consequential decisions
 that only the user can make, `$use-expskill` may offer `$grill-me`. It waits for
@@ -57,6 +70,8 @@ Use $brainstorm to compare storage approaches for this feature.
 Use $plan to turn the accepted API decision into bounded tasks.
 Use $setup-ui-testing to establish this project's reusable isolated UI inspection method.
 Use $implement to execute this accepted implementation work.
+Use $correct to repair this bounded regression before the branch is merged.
+Use $review to inspect the changes between this branch and main and save a report.
 Use $test to exercise this implemented change through realistic product behavior.
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
 Use $unslop to rewrite this explanation in a natural voice.
@@ -72,12 +87,27 @@ the coordinator validates and applies them. Direct `$plan` use stops when the
 plan is ready and never emits a next-skill route. Findings, blocked work, stale
 evidence, and unresolved user decisions do not advance.
 
-`$brainstorm`, `$setup-ui-testing`, and `$test` remain independently usable
+During bounded parallel UI preparation, Plan remains the sole graph writer and
+Design works on one isolated candidate commit. The graph cannot become ready
+until Plan validates and records the approved Design receipt from that same
+baseline.
+
+`$brainstorm`, `$setup-ui-testing`, `$correct`, `$review`, and `$test` remain
+independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
 Setup UI Testing records the reusable project-specific inspection method, and
 Test returns evidence for the implemented behavior it exercised. `$use-expskill`
 owns optional transition selection; the individual skills do not silently open
 the whole pipeline.
+
+Correct checks its own repairs. When a repair needs a consequential choice,
+it explains a sound limited fix and its limitations, or offers Brainstorm.
+
+Review runs through the invoking agent and leaves Implement's internal reviewer
+alone. Reports live in the installed Review skill's `tmp/reports/` directory,
+outside every repository. Filenames include the date and time through seconds.
+The user deletes reports manually. Review does not apply corrections or start
+another skill.
 
 The live certification chain is unfinished. Its required boundary must use
 fresh `codex exec --ephemeral --ignore-user-config --json` sessions in

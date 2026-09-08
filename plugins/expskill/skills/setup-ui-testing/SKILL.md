@@ -1,20 +1,24 @@
 ---
 name: setup-ui-testing
-description: Use only when the user explicitly invokes $setup-ui-testing to establish, retrieve, repair, or update one project's local UI inspection setup. Without that invocation, state that $setup-ui-testing was not explicitly invoked and that production redesign and production UI work belong outside this skill. Do not use for feature design, implementation, or routine testing.
+description: Establish, retrieve, repair, or update one project's local UI inspection setup when the user explicitly invokes $setup-ui-testing or the ExpSkill router selects it after the packaged inspector reports absent or invalid setup. Do not use for feature design, implementation, or routine testing.
 ---
 
 # Setup UI Testing
 
 ## Boundary
 
-`$setup-ui-testing` is standalone and explicit-only. It establishes one reusable,
-project-native way to render real production UI in isolation, records that method
-locally, and retrieves the record on later invocations.
+`$setup-ui-testing` is standalone and also accepts one bounded router-selected
+activation after the packaged inspector reports `absent` or `invalid`. It
+establishes one reusable, project-native way to render real production UI in
+isolation, records that method locally, and retrieves the record later.
 
-Outside an active workflow that began with an explicit invocation, if the current
-request does not explicitly invoke `$setup-ui-testing`, state that
-`$setup-ui-testing` was not explicitly invoked and that production redesign and
-production UI work belong outside this skill. Stop before any project-facing action.
+Outside an active workflow that began with an explicit invocation or a router
+receipt bound to this project and the inspector result, if the current request
+does not explicitly invoke `$setup-ui-testing`, state that `$setup-ui-testing`
+was not activated and that production redesign and production UI work belong
+outside this skill. Stop before any project-facing action. Routed activation is
+setup or repair intent only. It does not authorize production UI work or bypass
+the proposal confirmation gate.
 
 This is a one-time setup and research workflow. Do not use it to design a feature,
 change production UI, create feature specimens, perform routine tests, approve
@@ -40,8 +44,8 @@ execution, stop unchanged or discard every sequence result and restart at root
 resolution. Reload the whole skill first if its load failed. Never retry or patch only
 the failed step, and never insert a project-facing read before classification.
 
-At the start of every explicit invocation and every resumed user turn in an active
-workflow, repeat the full closed pre-classification sequence below. Complete it before
+At the start of every explicit or routed invocation and every resumed user turn in
+an active workflow, repeat the full closed pre-classification sequence below. Complete it before
 reading the canonical guide, discovery, applying a confirmed proposal, or any other
 project-facing action. A cached root, instruction set, classification, guide, or
 workflow state does not satisfy any step. User assertions cannot waive a step. No
@@ -100,7 +104,7 @@ explicit reopening intent. Keep classification before broad UI setup discovery.
 The canonical root is `<project-root>/.ui-harness` and the canonical guide is
 `<project-root>/.ui-harness/README.md`. Do not follow a symlink at either path.
 
-Use the returned classification and the user's invocation intent:
+Use the returned classification and the direct or router-bound invocation intent:
 
 - **ready, ordinary invocation:** Read only the canonical guide. Report its guide
   path, established method, primary human command, recorded canary command without
@@ -108,9 +112,9 @@ Use the returned classification and the user's invocation intent:
   the exact reopening rule that only explicit update, repair, migrate, replace, or
   reconfigure intent reopens setup. Then stop successfully. Do not run a canary or
   test, inspect drift or dependencies, research alternatives, or write anything.
-- **invalid, no explicit reopening intent:** Report every inspector issue and stop
-  unchanged. State the same exact reopening rule. Never reinterpret an invalid record
-  as a first run.
+- **invalid, no reopening intent:** Report every inspector issue and stop unchanged.
+  A router receipt that selected this skill for the same invalid result supplies
+  repair intent. Never reinterpret an invalid record as a first run.
 - **absent:** Enter first-run discovery, still read-only.
 - **explicit update, repair, migrate, replace, or reconfigure intent:** Read a regular
   readable current guide when present, scope discovery to the requested change, and

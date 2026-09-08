@@ -25,6 +25,8 @@ PHASE_ROOTS = {
         "setup-ui-testing",
         "plan",
         "implement",
+        "correct",
+        "review",
         "test",
         "unslop",
     )
@@ -37,6 +39,8 @@ PUBLIC_SKILL_ROOTS = {
 EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
     "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
     "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
     "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
@@ -49,6 +53,8 @@ EXPECTED_SKILLS = {
     "setup-ui-testing",
     "plan",
     "implement",
+    "correct",
+    "review",
     "test",
     "skill-builder",
     "unslop",
@@ -423,7 +429,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("nine", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("eleven", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -538,7 +544,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bnine independent skills and one optional lifecycle router\b"
+            r"\beleven independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -608,7 +614,7 @@ class ContractTests(unittest.TestCase):
         )
 
     def test_setup_ui_testing_is_a_bounded_independent_setup_skill(self) -> None:
-        """Regression: one-time UI setup stays reusable, local, and outside routing."""
+        """Regression: one-time UI setup stays reusable and independently callable."""
 
         root = PHASE_ROOTS["setup-ui-testing"]
         files = {
@@ -640,7 +646,9 @@ class ContractTests(unittest.TestCase):
             self.assertIn(phrase, skill)
         self.assertIn("<!-- expskill:setup-ui-testing:v1 -->", capability)
         self.assertIn("Non-interactive components", capability)
-        self.assertNotIn("$setup-ui-testing", router)
+        self.assertIn("$setup-ui-testing", router)
+        self.assertIn("inspect_setup.py", router)
+        self.assertIn("parallel-plan-design", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
         for version in ("0.1.0", "0.1.0+codex.cache-1", "0.1.0+codex.a.b-2"):
@@ -710,6 +718,18 @@ class ContractTests(unittest.TestCase):
                 "one owned branch",
                 "no delegation",
                 "no scope expansion",
+            ),
+            "expskill-planner": (
+                "private plan graph",
+                "never edit",
+                "only plan graph writer",
+                "do not delegate",
+            ),
+            "expskill-designer": (
+                "isolated helper-owned worktree",
+                "one coherent local candidate commit",
+                "do not write the plan graph",
+                "do not delegate",
             ),
             "expskill-review": (
                 "read-only",
@@ -1058,11 +1078,12 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("implement_state.py", body)
         self.assertNotIn("command-attestation", body)
 
-    def test_retired_review_verify_and_integrate_skills_are_absent(self) -> None:
-        """Regression: worker gates must not reappear as duplicate public phases."""
+    def test_public_review_does_not_reintroduce_other_internal_gate_skills(self) -> None:
+        """Regression: the public audit must not recreate lifecycle gate skills."""
 
         skills = PLUGIN_ROOT / "skills"
-        for name in ("review", "verify", "integrate"):
+        self.assertTrue((skills / "review").is_dir())
+        for name in ("verify", "integrate"):
             with self.subTest(skill=name):
                 self.assertFalse((skills / name).exists())
 
@@ -1073,7 +1094,7 @@ class ContractTests(unittest.TestCase):
         for marker in (REMOVED_PUBLIC_TOKEN, "$review", "$verify", "$integrate"):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, body)
-        for phase in ("brainstorm", "plan", "design", "implement"):
+        for phase in ("brainstorm", "plan", "design", "implement", "correct"):
             with self.subTest(phase=phase):
                 self.assertIn(phase, body)
         self.assertIn("no separate review, verification, or integration routes", body)
