@@ -186,6 +186,84 @@ class FoundationCorrectionTests(unittest.TestCase):
                         build_opencode_package(repo, output)
             self.assertFalse(output.exists())
 
+    def test_exclusive_publish_unavailable_fails_closed_without_output(self) -> None:
+        """The builder must not expose a child-by-child partial artifact."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            output = root / "artifact"
+            with mock.patch.object(build_module, "_renameat2_noreplace", return_value=False):
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, output)
+            self.assertFalse(output.exists())
+
+    def test_builder_does_not_require_procfs_for_staging_or_cleanup(self) -> None:
+        """Descriptor-relative publication remains usable when /proc is absent."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            output = root / "artifact"
+            real_exists = Path.exists
+
+            def hide_proc(path: Path) -> bool:
+                if str(path).startswith("/proc/self/fd"):
+                    return False
+                return real_exists(path)
+
+            with mock.patch.object(Path, "exists", autospec=True, side_effect=hide_proc):
+                artifact = build_opencode_package(repo, output)
+            self.assertTrue(artifact.is_dir())
+
+    def test_validator_rejects_non_mapping_provenance_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            for value in ([], None):
+                real_build = validate_module.build_opencode_package
+
+                def mutate(source: Path, artifact: Path, value: object = value) -> Path:
+                    result = real_build(source, artifact)
+                    (result / "provenance.json").write_text(
+                        json.dumps(value), encoding="utf-8"
+                    )
+                    return result
+
+                with mock.patch.object(validate_module, "build_opencode_package", side_effect=mutate):
+                    errors = validate_module.validate_repository(repo)
+                self.assertTrue(any("provenance" in error.lower() for error in errors), errors)
+
+    def test_forged_transaction_record_cannot_authorize_foreign_backup_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            parent = state / "expskill"
+            foreign = parent / ".opencode-artifact.old-forged"
+            foreign.mkdir()
+            (foreign / "foreign.txt").write_text("must survive\n", encoding="utf-8")
+            forged = parent / ".opencode-artifact.txn-forged.json"
+            forged.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "opencode-artifact-transaction.v1",
+                        "phase": "published",
+                        "artifact": str(parent / "opencode-artifact"),
+                        "backup": str(foreign),
+                        "backup_dev": foreign.stat().st_dev,
+                        "backup_ino": foreign.stat().st_ino,
+                        "artifact_dev": (parent / "opencode-artifact").stat().st_dev,
+                        "artifact_ino": (parent / "opencode-artifact").stat().st_ino,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            install_opencode(repo, config, state)
+            self.assertTrue((foreign / "foreign.txt").exists())
+
     def test_validate_rejects_mutated_provenance_and_unexpected_artifact_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -294,12 +372,11 @@ class FoundationCorrectionTests(unittest.TestCase):
             with self.assertRaises(InstallError):
                 uninstall_opencode(repo, root / "config", state)
 
-    def test_builder_uses_one_private_snapshot_when_live_source_changes_during_render(self) -> None:
+    def test_builder_rejects_live_source_changes_during_render(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             skill = repo / "packages/expskill/skills/unslop/SKILL.md"
-            original_bytes = skill.read_bytes()
             real_render = build_module.render_all
 
             def mutate_then_render(snapshot: Path) -> dict[str, str]:
@@ -307,11 +384,9 @@ class FoundationCorrectionTests(unittest.TestCase):
                 return real_render(snapshot)
 
             with mock.patch.object(build_module, "render_all", side_effect=mutate_then_render):
-                artifact = build_opencode_package(repo, root / "artifact")
-            self.assertNotIn("RACE", (artifact / "commands/unslop.md").read_text(encoding="utf-8"))
-            provenance = json.loads((artifact / "provenance.json").read_text(encoding="utf-8"))
-            digest = next(item["sha256"] for item in provenance["inputs"] if item["path"] == "packages/expskill/skills/unslop/SKILL.md")
-            self.assertEqual(digest, __import__("hashlib").sha256(original_bytes).hexdigest())
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, root / "artifact")
+            self.assertFalse((root / "artifact").exists())
 
     def test_backup_cleanup_fault_is_post_commit_success_and_retried(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
