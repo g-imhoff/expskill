@@ -21,6 +21,13 @@ repository-owned installation state. The Codex and opencode installers keep
 separate receipts and separate destinations, so both targets can be installed
 at once.
 
+The OpenCode target builds generated agents, commands, the catalog, and copied
+assets into receipt-owned state under the configured state home, then links
+those regular files into the OpenCode config directory. It does not require or
+create generated mirrors in the repository. Inspect that plan with
+`python3 scripts/install.py --target opencode --dry-run`; remove it with
+`python3 scripts/install.py --target opencode --uninstall`.
+
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.

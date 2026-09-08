@@ -7,10 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.build_opencode_package import build_opencode_package
 
 ROOT = Path(__file__).resolve().parents[1]
-UNSLP_PLUGIN = ROOT / "packages" / "expskill" / "opencode" / "plugins" / "unslop.js"
-POLICY_PLUGIN = ROOT / "packages" / "expskill" / "opencode" / "plugins" / "execution-policy.js"
 
 NODE = shutil.which("node")
 needs_node = unittest.skipUnless(NODE, "node is required for opencode plugin runtime tests")
@@ -104,8 +103,9 @@ import(%s).then(async (module) => {
   await repositoryHooks['tool.execute.before'](fallbackInput, { args: fallbackArgs });
   await repositoryHooks['tool.execute.after']({ ...fallbackInput, args: fallbackArgs }, {});
   assert('repository-fallback-policy-enforces-valid-agent', true);
-  process.env.EXPSKILL_HOME = process.cwd();
-  const policy = JSON.parse(await fs.readFile('packages/expskill/assets/execution-policy.json', 'utf8'));
+  delete process.env.EXPSKILL_HOME;
+  const artifactRoot = process.env.EXPSKILL_ARTIFACT_ROOT;
+  const policy = JSON.parse(await fs.readFile(path.join(artifactRoot, 'assets', 'execution-policy.json'), 'utf8'));
   assert(
     'exact-module-export-keys',
     JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin']) &&
@@ -251,9 +251,9 @@ import(%s).then(async (module) => {
     await fs.mkdir(packedPlugins, { recursive: true });
     await fs.mkdir(packedAssets, { recursive: true });
     const packedPlugin = path.join(packedPlugins, 'execution-policy.mjs');
-    await fs.copyFile('packages/expskill/opencode/plugins/execution-policy.js', packedPlugin);
+    await fs.copyFile(path.join(artifactRoot, 'plugins', 'execution-policy.js'), packedPlugin);
     await fs.copyFile(
-      'packages/expskill/assets/execution-policy.json',
+      path.join(artifactRoot, 'assets', 'execution-policy.json'),
       path.join(packedAssets, 'execution-policy.json'),
     );
     delete process.env.EXPSKILL_HOME;
@@ -470,21 +470,31 @@ def run_node_case(
 ) -> subprocess.CompletedProcess[str]:
     assert NODE is not None
     script = case % repr(plugin.as_uri())
+    case_env = dict(os.environ) if env is None else dict(env)
+    case_env.setdefault("EXPSKILL_ARTIFACT_ROOT", str(plugin.parent.parent))
     return subprocess.run(
         [NODE, "-e", script],
         capture_output=True,
         text=True,
         cwd=ROOT,
-        env=env,
+        env=case_env,
         timeout=60,
     )
 
 
 class OpencodeRuntimeTests(unittest.TestCase):
+    def artifact(self) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        artifact = Path(temporary.name) / "artifact"
+        build_opencode_package(ROOT, artifact)
+        return artifact
+
     @needs_node
     def test_plugins_pass_syntax_check(self) -> None:
         assert NODE is not None
-        for plugin in (UNSLP_PLUGIN, POLICY_PLUGIN):
+        artifact = self.artifact()
+        for plugin in (artifact / "plugins" / "unslop.js", artifact / "plugins" / "execution-policy.js"):
             with self.subTest(plugin=plugin.name):
                 result = subprocess.run(
                     [NODE, "--check", str(plugin)],
@@ -496,7 +506,7 @@ class OpencodeRuntimeTests(unittest.TestCase):
 
     @needs_node
     def test_unslop_plugin_injects_complete_scope_once_per_request(self) -> None:
-        result = run_node_case(UNSLP_PLUGIN, UNSLP_CASE)
+        result = run_node_case(self.artifact() / "plugins" / "unslop.js", UNSLP_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
             "ok:exact-module-export-keys",
@@ -514,10 +524,11 @@ class OpencodeRuntimeTests(unittest.TestCase):
 
     @needs_node
     def test_unslop_plugin_ignores_a_missing_shared_skill(self) -> None:
+        plugin = self.artifact() / "plugins" / "unslop.js"
         with tempfile.TemporaryDirectory() as temporary:
             env = os.environ.copy()
             env["EXPSKILL_HOME"] = temporary
-            result = run_node_case(UNSLP_PLUGIN, UNSLP_MISSING_SKILL_CASE, env=env)
+            result = run_node_case(plugin, UNSLP_MISSING_SKILL_CASE, env=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ok:missing-skill-noop", result.stdout)
 
@@ -536,7 +547,7 @@ class OpencodeRuntimeTests(unittest.TestCase):
 
     @needs_node
     def test_execution_policy_plugin_enforces_shared_budgets(self) -> None:
-        result = run_node_case(POLICY_PLUGIN, POLICY_CASE)
+        result = run_node_case(self.artifact() / "plugins" / "execution-policy.js", POLICY_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
             "ok:exact-module-export-keys",

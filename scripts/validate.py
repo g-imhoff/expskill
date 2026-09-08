@@ -8,17 +8,37 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
 
+# Validation is a read-only contract check; do not leave import caches in the
+# checkout while exercising the temporary renderer/builder artifact.
+sys.dont_write_bytecode = True
 
 try:
+    from scripts.build_opencode_package import BuildError as OpencodeBuildError
+    from scripts.build_opencode_package import build_opencode_package
     from scripts.render_opencode import RenderError as AgentSyncError
-    from scripts.render_opencode import render_agents as _render_opencode_agents
+    from scripts.render_opencode import (
+        OPENCODE_DESCRIPTION_MAX_LENGTH,
+        _bounded_description,
+        render_agents as _render_opencode_agents,
+        render_all as _render_opencode_all,
+        skill_inventory as _skill_inventory,
+    )
 except ModuleNotFoundError:
+    from build_opencode_package import BuildError as OpencodeBuildError
+    from build_opencode_package import build_opencode_package
     from render_opencode import RenderError as AgentSyncError
-    from render_opencode import render_agents as _render_opencode_agents
+    from render_opencode import (
+        OPENCODE_DESCRIPTION_MAX_LENGTH,
+        _bounded_description,
+        render_agents as _render_opencode_agents,
+        render_all as _render_opencode_all,
+        skill_inventory as _skill_inventory,
+    )
 
 
 MARKETPLACE_NAME = "expskill"
@@ -2648,18 +2668,6 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
 
 
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
-OPENCODE_SKILLS = (
-    "brainstorm",
-    "design",
-    "grill-me",
-    "implement",
-    "plan",
-    "setup-ui-testing",
-    "skill-builder",
-    "test",
-    "unslop",
-    "use-expskill",
-)
 OPENCODE_AGENTS = (
     "expskill-explorer",
     "expskill-planner",
@@ -2905,9 +2913,32 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
     package_root = repository_root / "packages" / "expskill" / "opencode"
     if not _validate_opencode_root(package_root, errors):
         return
+    try:
+        skill_names = _skill_inventory(repository_root)
+        rendered = _render_opencode_all(repository_root)
+    except AgentSyncError as error:
+        errors.append(f"opencode sources cannot be rendered: {error}")
+        return
+
+    # Platform-owned files are checked in, while commands, agents, shared
+    # trees, and the runtime catalog are deliberately validated from a fresh
+    # temporary artifact.  Validation therefore exercises the same pure
+    # renderer and builder used by releases without mutating this checkout.
     _validate_opencode_manifest(package_root, errors)
     _validate_opencode_agent_spec(package_root, errors)
     _validate_opencode_plugins(package_root, errors)
+    with tempfile.TemporaryDirectory(prefix="expskill-opencode-validate-") as temporary:
+        artifact = Path(temporary) / "artifact"
+        try:
+            build_opencode_package(repository_root, artifact)
+        except (OpencodeBuildError, OSError) as error:
+            errors.append(f"opencode artifact could not be built: {error}")
+            return
+        _validate_opencode_shared_skills(repository_root / "packages" / "expskill", artifact, errors, skill_names)
+        _validate_opencode_commands(artifact, errors, skill_names)
+        _validate_opencode_agents(repository_root, repository_root / "packages" / "expskill", artifact, errors)
+        _validate_opencode_policy_asset(repository_root / "packages" / "expskill", artifact, errors)
+        _validate_opencode_catalog(artifact, rendered, errors)
 
 
 def _validate_opencode_manifest(package_root: Path, errors: list[str]) -> None:
@@ -3008,13 +3039,16 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
 
 
 def _validate_opencode_shared_skills(
-    codex_root: Path, package_root: Path, errors: list[str]
+    codex_root: Path,
+    package_root: Path,
+    errors: list[str],
+    skill_names: tuple[str, ...],
 ) -> None:
     skills_entry = package_root / "skills"
     if not skills_entry.exists():
         errors.append(f"opencode shared skills entry is missing: {skills_entry}")
         return
-    for name in OPENCODE_SKILLS:
+    for name in skill_names:
         label = f"opencode shared skill {name!r}"
         try:
             shared = (codex_root / "skills" / name / "SKILL.md").read_bytes()
@@ -3055,7 +3089,9 @@ def _validate_opencode_shared_skills(
             errors.append(f"{label} description exceeds the opencode discovery limit")
 
 
-def _validate_opencode_commands(package_root: Path, errors: list[str]) -> None:
+def _validate_opencode_commands(
+    package_root: Path, errors: list[str], skill_names: tuple[str, ...]
+) -> None:
     commands_root = package_root / "commands"
     if not commands_root.is_dir() or commands_root.is_symlink():
         errors.append(f"opencode commands directory is missing: {commands_root}")
@@ -3065,12 +3101,12 @@ def _validate_opencode_commands(package_root: Path, errors: list[str]) -> None:
         for path in commands_root.iterdir()
         if not path.is_symlink() and path.is_file()
     }
-    expected = {f"{name}.md" for name in OPENCODE_SKILLS}
+    expected = {f"{name}.md" for name in skill_names}
     for name in sorted(expected - actual):
         errors.append(f"opencode command {name!r} is missing")
     for name in sorted(actual - expected):
         errors.append(f"opencode unexpected command entry {name!r}")
-    for skill in OPENCODE_SKILLS:
+    for skill in skill_names:
         path = commands_root / f"{skill}.md"
         contents = _read_overlay_text(path, f"opencode command {skill!r}", errors)
         if contents is None:
@@ -3176,8 +3212,17 @@ def _validate_opencode_agents(
         except (OSError, tomllib.TOMLDecodeError) as error:
             errors.append(f"opencode agent {name!r} canonical profile could not be read: {error}")
             continue
-        if scalars.get("description") != profile.get("description"):
-            errors.append(f"opencode agent {name!r} description must match the canonical profile")
+        try:
+            expected_description = _bounded_description(
+                profile.get("description"), f"canonical agent profile {name!r} description"
+            )
+        except AgentSyncError as error:
+            errors.append(str(error))
+            expected_description = None
+        if expected_description is not None and scalars.get("description") != expected_description:
+            errors.append(
+                f"opencode agent {name!r} description must match the bounded canonical profile"
+            )
         for marker in ("task: deny", "question: deny"):
             if marker not in block:
                 errors.append(f"opencode agent {name!r} permission must declare {marker}")
@@ -3226,6 +3271,35 @@ def _validate_opencode_policy_asset(
         return
     if mirror_bytes != canonical_bytes:
         errors.append("opencode execution policy asset must mirror the canonical Codex asset")
+
+
+def _validate_opencode_catalog(
+    package_root: Path, rendered: dict[str, str], errors: list[str]
+) -> None:
+    catalog_path = package_root / "catalog.json"
+    catalog = _load_json_object(catalog_path, "opencode runtime catalog", errors)
+    if catalog is None:
+        return
+    try:
+        expected = json.loads(rendered["catalog.json"])
+    except (KeyError, json.JSONDecodeError) as error:
+        errors.append(f"opencode runtime catalog renderer output is invalid: {error}")
+        return
+    if catalog != expected:
+        errors.append("opencode runtime catalog differs from the pure renderer output")
+    commands = catalog.get("commands")
+    if not isinstance(commands, dict):
+        errors.append("opencode runtime catalog commands must be an object")
+        return
+    for name, entry in commands.items():
+        if not isinstance(entry, dict):
+            errors.append(f"opencode runtime catalog command {name!r} must be an object")
+            continue
+        description = entry.get("description")
+        if not isinstance(description, str) or not 1 <= len(description) <= OPENCODE_DESCRIPTION_MAX_LENGTH:
+            errors.append(
+                f"opencode runtime catalog command {name!r} description must be 1-160 characters"
+            )
 
 
 def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:

@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.build_opencode_package import build_opencode_package
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = ROOT / "packages" / "expskill" / "opencode"
 CODEX_ROOT = ROOT / "packages" / "expskill"
 
 NODE = shutil.which("node")
@@ -50,9 +50,11 @@ class OpencodePackageTests(unittest.TestCase):
         assert NPM is not None
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
+            package_root = temporary_root / "package"
+            build_opencode_package(ROOT, package_root)
             pack_result = run(
                 [NPM, "pack", "--json", "--pack-destination", str(temporary_root)],
-                PACKAGE_ROOT,
+                package_root,
             )
             self.assertEqual(
                 pack_result.returncode,
@@ -253,7 +255,7 @@ console.log(JSON.stringify(names));
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             package = temporary_root / "package"
-            shutil.copytree(PACKAGE_ROOT, package)
+            build_opencode_package(ROOT, package)
             helper_env = dict(os.environ)
             helper_env.pop("PYTHONDONTWRITEBYTECODE", None)
             helper_result = run(
