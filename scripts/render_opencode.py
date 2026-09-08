@@ -13,10 +13,14 @@ import ast
 import copy
 import json
 import re
+import os
+import stat
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any, Mapping
+
+sys.dont_write_bytecode = True
 
 
 SCHEMA_VERSION = "opencode-agents.v1"
@@ -38,12 +42,30 @@ class RenderError(RuntimeError):
     """Raised when canonical or OpenCode overlay input cannot be rendered."""
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            break
+        except OSError as error:
+            raise RenderError(f"{label} cannot be inspected: {current}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise RenderError(f"{label} path component must not be a symlink: {current}")
+
+
 def repository_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).absolute().parents[1]
 
 
 def _root(value: Path | str | None) -> Path:
     candidate = Path(value).expanduser() if value is not None else repository_root()
+    _reject_symlink_components(candidate, "repository root")
     try:
         return candidate.resolve(strict=True)
     except (OSError, RuntimeError) as error:
@@ -51,6 +73,7 @@ def _root(value: Path | str | None) -> Path:
 
 
 def _regular_file(path: Path, label: str) -> Path:
+    _reject_symlink_components(path, label)
     if path.is_symlink():
         raise RenderError(f"{label} must not be a symlink: {path}")
     if not path.is_file():
@@ -59,6 +82,7 @@ def _regular_file(path: Path, label: str) -> Path:
 
 
 def _regular_directory(path: Path, label: str) -> Path:
+    _reject_symlink_components(path, label)
     if path.is_symlink():
         raise RenderError(f"{label} must not be a symlink: {path}")
     if not path.is_dir():

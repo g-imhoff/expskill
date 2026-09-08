@@ -2668,6 +2668,7 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
 
 
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
+OPENCODE_PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
 OPENCODE_AGENTS = (
     "expskill-explorer",
     "expskill-planner",
@@ -2817,6 +2818,49 @@ def _validate_opencode_root(package_root: Path, errors: list[str]) -> bool:
     return True
 
 
+def _validate_opencode_platform_source(package_root: Path, errors: list[str]) -> None:
+    """Reject any checked-in platform entry outside the exact source roster."""
+
+    expected = set(OPENCODE_PLATFORM_FILES) | {"plugins"}
+    try:
+        entries = {path.name: path for path in package_root.iterdir()}
+    except OSError as error:
+        errors.append(f"opencode platform source could not be listed: {error}")
+        return
+    unexpected = sorted(set(entries) - expected)
+    missing = sorted(expected - set(entries))
+    if unexpected:
+        errors.append(f"opencode platform source has unexpected entries: {unexpected!r}")
+    if missing:
+        errors.append(f"opencode platform source is missing entries: {missing!r}")
+    for name in OPENCODE_PLATFORM_FILES:
+        path = package_root / name
+        metadata = _lstat(path)
+        if metadata is None or not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            errors.append(f"opencode platform source file is not regular: {path}")
+    plugins = package_root / "plugins"
+    metadata = _lstat(plugins)
+    if metadata is None or not stat.S_ISDIR(metadata.st_mode) or plugins.is_symlink():
+        errors.append(f"opencode plugin source directory is not regular: {plugins}")
+        return
+    expected_plugins = set(OPENCODE_PLUGINS)
+    try:
+        plugin_entries = {path.name: path for path in plugins.iterdir()}
+    except OSError as error:
+        errors.append(f"opencode plugin source could not be listed: {error}")
+        return
+    if set(plugin_entries) != expected_plugins:
+        errors.append(
+            "opencode plugin source roster must be exactly "
+            f"{sorted(expected_plugins)!r}, found {sorted(plugin_entries)!r}"
+        )
+    for name in expected_plugins:
+        path = plugins / name
+        metadata = _lstat(path)
+        if metadata is None or not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            errors.append(f"opencode plugin source file is not regular: {path}")
+
+
 def _parse_overlay_frontmatter(
     contents: str, label: str, errors: list[str]
 ) -> tuple[dict[str, str], set[str], str] | None:
@@ -2913,6 +2957,7 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
     package_root = repository_root / "packages" / "expskill" / "opencode"
     if not _validate_opencode_root(package_root, errors):
         return
+    _validate_opencode_platform_source(package_root, errors)
     try:
         skill_names = _skill_inventory(repository_root)
         rendered = _render_opencode_all(repository_root)
