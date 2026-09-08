@@ -13,7 +13,7 @@ from tests.design_state_test_support import passing_technical
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "packages" / "codex" / "scripts" / "design_state.py"
+CLI = ROOT / "packages" / "expskill" / "scripts" / "design_state.py"
 DIGEST = "a" * 64
 BASE_RECEIPT_KEYS = {"schema_version", "operation", "workflow_id", "revision", "lifecycle", "identity", "state_digest"}
 DELIVERY_RECEIPT_KEYS = BASE_RECEIPT_KEYS | {"candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest"}

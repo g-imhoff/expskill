@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-UNSLP_PLUGIN = ROOT / "packages" / "opencode" / "plugins" / "unslop.js"
-POLICY_PLUGIN = ROOT / "packages" / "opencode" / "plugins" / "execution-policy.js"
+UNSLP_PLUGIN = ROOT / "packages" / "expskill" / "opencode" / "plugins" / "unslop.js"
+POLICY_PLUGIN = ROOT / "packages" / "expskill" / "opencode" / "plugins" / "execution-policy.js"
 
 NODE = shutil.which("node")
 needs_node = unittest.skipUnless(NODE, "node is required for opencode plugin runtime tests")
@@ -105,7 +105,7 @@ import(%s).then(async (module) => {
   await repositoryHooks['tool.execute.after']({ ...fallbackInput, args: fallbackArgs }, {});
   assert('repository-fallback-policy-enforces-valid-agent', true);
   process.env.EXPSKILL_HOME = process.cwd();
-  const policy = JSON.parse(await fs.readFile('packages/codex/assets/execution-policy.json', 'utf8'));
+  const policy = JSON.parse(await fs.readFile('packages/expskill/assets/execution-policy.json', 'utf8'));
   assert(
     'exact-module-export-keys',
     JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin']) &&
@@ -251,9 +251,9 @@ import(%s).then(async (module) => {
     await fs.mkdir(packedPlugins, { recursive: true });
     await fs.mkdir(packedAssets, { recursive: true });
     const packedPlugin = path.join(packedPlugins, 'execution-policy.mjs');
-    await fs.copyFile('packages/opencode/plugins/execution-policy.js', packedPlugin);
+    await fs.copyFile('packages/expskill/opencode/plugins/execution-policy.js', packedPlugin);
     await fs.copyFile(
-      'packages/codex/assets/execution-policy.json',
+      'packages/expskill/assets/execution-policy.json',
       path.join(packedAssets, 'execution-policy.json'),
     );
     delete process.env.EXPSKILL_HOME;
@@ -293,7 +293,7 @@ import(%s).then(async (module) => {
       { args: { subagent_type: 'general' } },
     );
     await loadHooks['tool.execute.before']({ tool: 'bash' }, { args: { command: 'true' } });
-    const assets = path.join(temporary, 'packages', 'codex', 'assets');
+    const assets = path.join(temporary, 'packages', 'expskill', 'assets');
     await fs.mkdir(assets, { recursive: true });
     await fs.writeFile(path.join(assets, 'execution-policy.json'), '{invalid', 'utf8');
     loadHooks = await module.ExecutionPolicyPlugin({});

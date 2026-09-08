@@ -9,13 +9,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.sync_opencode_agents import sync as sync_opencode_agents
-from scripts.sync_opencode_agents import render_all as render_opencode_agents
+from scripts.render_opencode import render_agents as render_opencode_agents
 from scripts.validate import _parse_overlay_frontmatter, validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OPENCODE_ROOT = ROOT / "packages" / "opencode"
+PLUGIN_ROOT = ROOT / "packages" / "expskill"
+OPENCODE_ROOT = PLUGIN_ROOT / "opencode"
 READ_ONLY_AGENTS = (
     "expskill-explorer",
     "expskill-test-engineer",
@@ -156,10 +156,9 @@ def _bash_rules(contents: str, label: str) -> dict[str, str]:
 def _opencode_wildcard_match(value: str, pattern: str) -> bool:
     """Mirror OpenCode 1.18.29 core wildcard matching for these rules.
 
-    Source: ``packages/opencode/src/permission/index.ts`` uses ``findLast``
-    over rules, and ``packages/core/src/util/wildcard.ts`` converts ``*`` and
-    ``?`` into an anchored full-string regular expression.  The tests keep the
-    host's trailing-space wildcard exception as well.
+    OpenCode 1.18.29 uses ``findLast`` over permission rules and converts ``*``
+    and ``?`` into an anchored full-string regular expression. The tests keep
+    the host's trailing-space wildcard exception as well.
     """
     normalized_value = value.replace("\\", "/")
     normalized_pattern = pattern.replace("\\", "/")
@@ -195,7 +194,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         # A sibling lane may have a local npm install in the shared checkout;
         # generated dependency documentation is outside this contract.
-        node_modules = temporary / "packages" / "opencode" / "node_modules"
+        node_modules = temporary / "packages" / "expskill" / "opencode" / "node_modules"
         if node_modules.exists():
             shutil.rmtree(node_modules)
         return temporary
@@ -276,7 +275,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
 
     def test_validation_rejects_reordered_read_only_permission_rules(self) -> None:
         root = self.copy_repository()
-        spec_path = root / "packages" / "opencode" / "agents.json"
+        spec_path = root / "packages" / "expskill" / "opencode" / "agents.json"
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         for name in READ_ONLY_AGENTS:
             rules = spec["agents"][name]["permission"]["bash"]
@@ -286,7 +285,6 @@ class OpencodePermissionContractTests(unittest.TestCase):
             }
             spec["agents"][name]["permission"]["bash"] = reordered
         spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
-        sync_opencode_agents(root)
         errors = validate_repository(root)
         self.assertTrue(
             any("read-only Git permission" in error and "order" in error for error in errors),
@@ -345,13 +343,12 @@ class OpencodePermissionContractTests(unittest.TestCase):
 
     def test_validation_rejects_unsafe_read_only_policy_after_regeneration(self) -> None:
         root = self.copy_repository()
-        spec_path = root / "packages" / "opencode" / "agents.json"
+        spec_path = root / "packages" / "expskill" / "opencode" / "agents.json"
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         for name in READ_ONLY_AGENTS:
             for rule in UNSAFE_WILDCARD_RULES:
                 spec["agents"][name]["permission"]["bash"][rule] = "allow"
         spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
-        sync_opencode_agents(root)
         errors = validate_repository(root)
         self.assertTrue(
             any("read-only Git permission" in error for error in errors),

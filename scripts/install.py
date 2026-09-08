@@ -138,9 +138,9 @@ def _assert_no_symlink_components(root: Path, relative: Sequence[str]) -> None:
 def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
     _assert_no_symlink_components(
         repository_root,
-        ("packages", "codex", "assets", "agents"),
+        ("packages", "expskill", "assets", "agents"),
     )
-    agents_root = repository_root / "packages" / "codex" / "assets" / "agents"
+    agents_root = repository_root / "packages" / "expskill" / "assets" / "agents"
     if not agents_root.is_dir():
         raise InstallError(f"agent source directory is missing: {agents_root}")
     try:
@@ -231,7 +231,7 @@ def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, 
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
-    source_directory = canonical_root / "packages" / "codex" / "assets" / "agents"
+    source_directory = canonical_root / "packages" / "expskill" / "assets" / "agents"
     return tuple(
         ProfileLink(
             source=_lexical_absolute(source_directory / f"{name}.toml"),
@@ -531,7 +531,7 @@ def _plugin_state(payload: Mapping[str, Any], repository_root: Path) -> str:
 
 
 def _validated_manifest_version(repository_root: Path) -> str:
-    manifest_path = repository_root / "packages" / "codex" / ".codex-plugin" / "plugin.json"
+    manifest_path = repository_root / "packages" / "expskill" / ".codex-plugin" / "plugin.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -947,11 +947,11 @@ def _opencode_expected_links(repo_root: Path, config_dir: Path) -> tuple[Profile
     canonical_root = _canonical_repository_root(repo_root)
     _validate_repository(canonical_root)
     canonical_config = Path(config_dir).expanduser().resolve(strict=False)
-    codex_skills = canonical_root / "packages" / "codex" / "skills"
-    package_root = canonical_root / "packages" / "opencode"
+    canonical_skills = canonical_root / "packages" / "expskill" / "skills"
+    package_root = canonical_root / "packages" / "expskill" / "opencode"
     links: list[ProfileLink] = []
     for name in OPENCODE_SKILLS:
-        source = _require_opencode_source(codex_skills / name, f"shared skill {name!r}")
+        source = _require_opencode_source(canonical_skills / name, f"shared skill {name!r}")
         if not source.is_dir():
             raise InstallError(f"shared skill source is not a directory: {source}")
         links.append(ProfileLink(source=source, destination=canonical_config / "skills" / name))

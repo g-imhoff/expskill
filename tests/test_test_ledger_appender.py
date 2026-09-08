@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APPENDER = (
     ROOT
     / "packages"
-    / "codex"
+    / "expskill"
     / "skills"
     / "test"
     / "scripts"

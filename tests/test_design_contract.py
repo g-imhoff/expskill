@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "packages" / "codex"
+PLUGIN = ROOT / "packages" / "expskill"
 SKILLS = PLUGIN / "skills"
 DESIGN = SKILLS / "design"
 ACCEPTANCE = "accept" + "ance"

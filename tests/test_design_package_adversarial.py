@@ -12,7 +12,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "packages" / "codex"
+PLUGIN = ROOT / "packages" / "expskill"
 HELPER = PLUGIN / "scripts" / "design_state.py"
 
 
@@ -57,7 +57,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         """Regression: the joined state helper is allowed without becoming required in this lane."""
 
         root = self._copy_repository()
-        scripts = root / "packages" / "codex" / "skills" / "skill-builder" / "scripts"
+        scripts = root / "packages" / "expskill" / "skills" / "skill-builder" / "scripts"
         scripts.mkdir(exist_ok=True)
         state_helper = scripts / "run_state.py"
         if not state_helper.exists():
@@ -91,7 +91,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for mutation, fragments in expected_fragments.items():
             with self.subTest(mutation=mutation):
                 root = self._copy_repository()
-                plugin = root / "packages" / "codex"
+                plugin = root / "packages" / "expskill"
                 builder = plugin / "skills" / "skill-builder"
                 if mutation == "missing-builder":
                     shutil.rmtree(builder)
@@ -188,7 +188,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 contract = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / "skills"
                     / "skill-builder"
                     / "SKILL.md"
@@ -223,7 +223,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 router = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / "skills"
                     / "use-expskill"
                     / "SKILL.md"
@@ -267,7 +267,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 contract = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / "skills"
                     / "skill-builder"
                     / "SKILL.md"
@@ -305,7 +305,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 manifest_path = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / ".codex-plugin"
                     / "plugin.json"
                 )
@@ -344,7 +344,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 metadata_path = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / "skills"
                     / skill
                     / "agents"
@@ -379,7 +379,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 manifest_path = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / ".codex-plugin"
                     / "plugin.json"
                 )
@@ -470,11 +470,11 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 root = self._copy_repository()
-                helper = root / "packages" / "codex" / "scripts" / "design_state.py"
+                helper = root / "packages" / "expskill" / "scripts" / "design_state.py"
                 if mutation == "missing":
                     helper.unlink()
                 elif mutation == "duplicate":
-                    shadow = root / "packages" / "codex" / "assets" / "design_state.py"
+                    shadow = root / "packages" / "expskill" / "assets" / "design_state.py"
                     shadow.write_bytes(helper.read_bytes())
                 elif mutation == "empty":
                     helper.write_bytes(b"")
@@ -495,7 +495,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
     def test_installer_does_not_mutate_on_design_helper_preflight_failure(self) -> None:
         """Regression: invalid Design package state must fail before links, receipts, or external commands change."""
         root = self._copy_repository()
-        helper = root / "packages" / "codex" / "scripts" / "design_state.py"
+        helper = root / "packages" / "expskill" / "scripts" / "design_state.py"
         helper.unlink()
         codex_home = root / "codex-home"
         state_home = root / "state-home"

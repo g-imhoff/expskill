@@ -11,13 +11,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.sync_opencode_package import sync as sync_opencode_package_assets
 from scripts.validate import validate_repository
 from tests import test_test_evidence_finalizer as finalizer_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_SKILL = ROOT / "packages" / "codex" / "skills" / "test"
+TEST_SKILL = ROOT / "packages" / "expskill" / "skills" / "test"
 QUALITY_CATALOG = TEST_SKILL / "references" / "quality-rules.json"
 EVIDENCE_CONTRACT = TEST_SKILL / "references" / "evidence-contract.json"
 FINALIZER = TEST_SKILL / "scripts" / "finalize_evidence.py"
@@ -960,7 +959,7 @@ class TestSkillContractTests(unittest.TestCase):
         return (
             root
             / "packages"
-            / "codex"
+            / "expskill"
             / "skills"
             / "test"
             / "references"
@@ -984,7 +983,7 @@ class TestSkillContractTests(unittest.TestCase):
         return (
             root
             / "packages"
-            / "codex"
+            / "expskill"
             / "skills"
             / "test"
             / "references"
@@ -1010,7 +1009,6 @@ class TestSkillContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = self.write_catalog(root, copy.deepcopy(VALID_CATALOG))
         self.write_evidence_contract(root, copy.deepcopy(VALID_EVIDENCE_CONTRACT))
-        sync_opencode_package_assets(root)
         self.assertEqual(validate_repository(root), ())
         return root, path
 
@@ -1019,7 +1017,6 @@ class TestSkillContractTests(unittest.TestCase):
         path = self.write_evidence_contract(
             root, copy.deepcopy(VALID_EVIDENCE_CONTRACT)
         )
-        sync_opencode_package_assets(root)
         self.assertEqual(validate_repository(root), ())
         return root, path
 
@@ -3878,7 +3875,7 @@ class TestSkillContractTests(unittest.TestCase):
         """Regression: preserved words must not hide a directive to repair and reroute."""
 
         root = self.copy_repository()
-        skill_path = root / "packages" / "codex" / "skills" / "test" / "SKILL.md"
+        skill_path = root / "packages" / "expskill" / "skills" / "test" / "SKILL.md"
         original = skill_path.read_text(encoding="utf-8")
         mutated = original.replace(
             "Do not edit production code.",

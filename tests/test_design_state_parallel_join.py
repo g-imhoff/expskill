@@ -12,7 +12,7 @@ from tests.design_state_test_support import passing_technical
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "packages" / "codex" / "scripts" / "design_state.py"
+HELPER = ROOT / "packages" / "expskill" / "scripts" / "design_state.py"
 DIGEST = hashlib.sha256(b"source plan").hexdigest()
 
 

@@ -2,7 +2,7 @@
 
 The checked-in OpenCode directory contains only platform-owned source.  This
 builder stages the publishable package in an explicit output directory and
-materializes the shared Codex assets as regular files.  It never follows
+materializes the universal source assets as regular files.  It never follows
 symlink inputs and never emits generated output inside the tracked source
 package.
 """
@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -61,10 +62,30 @@ def _output_path(value: Path | str) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
+    try:
+        final_mode = os.lstat(candidate).st_mode
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise BuildError(f"output directory cannot be inspected: {candidate}: {error}") from error
+    else:
+        if stat.S_ISLNK(final_mode):
+            raise BuildError(f"output directory must not be a symlink: {candidate}")
     candidate = candidate.resolve(strict=False)
-    if candidate.exists() and candidate.is_symlink():
-        raise BuildError(f"output directory must not be a symlink: {candidate}")
     return candidate
+
+
+def _validate_output_target(root: Path, canonical_root: Path, output: Path) -> None:
+    if output == root:
+        raise BuildError("generated output must not be the repository root")
+    if output in root.parents:
+        raise BuildError("generated output must not be an ancestor of the repository root")
+    if root in output.parents:
+        raise BuildError("generated output must be outside the repository source tree")
+    if output == canonical_root or canonical_root in output.parents:
+        raise BuildError("generated output must be outside packages/expskill")
+    if output.exists() or output.is_symlink():
+        raise BuildError(f"output target must not already exist: {output}")
 
 
 def _ensure_regular_file(path: Path, label: str) -> Path:
@@ -185,6 +206,8 @@ def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
         canonical_root / "assets" / "agents", "canonical agent profiles"
     ):
         add_file(path)
+    for relative in (Path("scripts/build_opencode_package.py"), Path("scripts/render_opencode.py")):
+        add_file(root / relative)
     return sorted(sources, key=lambda item: item[0])
 
 
@@ -220,11 +243,28 @@ def _write_provenance(root: Path, output_root: Path) -> Path:
 
 def _replace_output(staging: Path, output: Path) -> None:
     if output.exists() or output.is_symlink():
-        if output.is_symlink() or not output.is_dir():
-            raise BuildError(f"output target is not a regular directory: {output}")
-        shutil.rmtree(output)
+        raise BuildError(f"output target must not already exist: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     staging.replace(output)
+
+
+def _cleanup_staging(staging: Path, staging_parent: Path, prefix: str) -> None:
+    """Remove only the builder-owned staging directory after a failed build."""
+
+    if staging.parent != staging_parent or not staging.name.startswith(prefix):
+        return
+    try:
+        mode = os.lstat(staging).st_mode
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        return
+    try:
+        shutil.rmtree(staging)
+    except OSError:
+        return
 
 
 def build_opencode_package(
@@ -247,16 +287,12 @@ def build_opencode_package(
     list(
         _iter_regular_files(canonical_root / "assets" / "agents", "canonical agent profiles")
     )
-    try:
-        output.relative_to(canonical_root)
-    except ValueError:
-        pass
-    else:
-        raise BuildError("generated output must be outside packages/expskill")
+    _validate_output_target(root, canonical_root, output)
 
     staging_parent = output.parent
     staging_parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=staging_parent))
+    staging_prefix = f".{output.name}."
+    staging = Path(tempfile.mkdtemp(prefix=staging_prefix, dir=staging_parent))
     try:
         _copy_platform_source(platform_root, staging)
         _copy_canonical_source(canonical_root, staging)
@@ -268,8 +304,7 @@ def build_opencode_package(
         _write_provenance(root, staging)
         _replace_output(staging, output)
     except (OSError, BuildError):
-        if staging.exists():
-            shutil.rmtree(staging)
+        _cleanup_staging(staging, staging_parent, staging_prefix)
         raise
     return output
 

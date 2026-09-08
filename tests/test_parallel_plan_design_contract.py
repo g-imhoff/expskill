@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "packages" / "codex"
+PLUGIN = ROOT / "packages" / "expskill"
 
 PRESERVED_PROFILES = {
     "expskill-explorer.toml": "5a84e1baf021979ceec721efb60a0fc41aa3fddb4301a2d77586c72400b9bdd4",

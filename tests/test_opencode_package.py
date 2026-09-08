@@ -12,8 +12,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = ROOT / "packages" / "opencode"
-CODEX_ROOT = ROOT / "packages" / "codex"
+PACKAGE_ROOT = ROOT / "packages" / "expskill" / "opencode"
+CODEX_ROOT = ROOT / "packages" / "expskill"
 
 NODE = shutil.which("node")
 NPM = shutil.which("npm")
