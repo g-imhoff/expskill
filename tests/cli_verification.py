@@ -198,6 +198,8 @@ def _safe_https_url(value: object) -> bool:
         return False
     if "@" in parsed.netloc:
         return False
+    if "%" in hostname:
+        return False
     if ":" in hostname:
         try:
             ipaddress.ip_address(hostname)
