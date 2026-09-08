@@ -20,6 +20,11 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+# This module is also a documented command-line entry point.  Set the flag
+# before importing any local modules so direct invocations cannot populate a
+# checkout with Python bytecode caches.
+sys.dont_write_bytecode = True
+
 try:
     from scripts.render_opencode import RenderError, render_all
 except ModuleNotFoundError:
@@ -29,6 +34,7 @@ except ModuleNotFoundError:
 PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v1"
 PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
 PLATFORM_PLUGIN_DIRECTORY = "plugins"
+PLATFORM_PLUGIN_FILES = ("execution-policy.js", "unslop.js")
 COPY_TREES = ("skills", "scripts")
 COPY_FILES = (
     Path("assets/execution-policy.json"),
@@ -64,7 +70,7 @@ def _reject_symlink_components(path: Path, label: str) -> None:
 
 
 def repository_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).absolute().parents[1]
 
 
 def _resolve_root(value: Path | str | None) -> Path:
@@ -85,6 +91,7 @@ def _output_path(value: Path | str) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
+    _reject_symlink_components(candidate, "output directory")
     try:
         final_mode = os.lstat(candidate).st_mode
     except FileNotFoundError:
@@ -187,6 +194,47 @@ def _copy_platform_source(source_root: Path, output_root: Path) -> list[Path]:
     return files
 
 
+def _validate_platform_source(source_root: Path) -> None:
+    """Require the exact checked-in platform source roster.
+
+    Generated OpenCode documents belong in the private build artifact.  An
+    extra top-level directory (for example a checked-in ``agents`` or
+    ``catalog.json``) is therefore an input defect rather than something the
+    builder may silently ignore.
+    """
+
+    _ensure_regular_directory(source_root, "OpenCode platform source")
+    expected = set(PLATFORM_FILES) | {PLATFORM_PLUGIN_DIRECTORY}
+    try:
+        entries = {entry.name: entry for entry in source_root.iterdir()}
+    except OSError as error:
+        raise BuildError(f"OpenCode platform source could not be listed: {error}") from error
+    unexpected = sorted(set(entries) - expected)
+    missing = sorted(expected - set(entries))
+    if unexpected or missing:
+        details: list[str] = []
+        if unexpected:
+            details.append(f"unexpected entries {unexpected!r}")
+        if missing:
+            details.append(f"missing entries {missing!r}")
+        raise BuildError("OpenCode platform source roster is invalid: " + "; ".join(details))
+    for name in PLATFORM_FILES:
+        _ensure_regular_file(entries[name], f"OpenCode platform source {name!r}")
+    plugins = entries[PLATFORM_PLUGIN_DIRECTORY]
+    _ensure_regular_directory(plugins, "OpenCode plugin source")
+    try:
+        plugin_entries = {entry.name: entry for entry in plugins.iterdir()}
+    except OSError as error:
+        raise BuildError(f"OpenCode plugin source could not be listed: {error}") from error
+    if set(plugin_entries) != set(PLATFORM_PLUGIN_FILES):
+        raise BuildError(
+            "OpenCode plugin source roster is invalid: "
+            f"expected {sorted(PLATFORM_PLUGIN_FILES)!r}, found {sorted(plugin_entries)!r}"
+        )
+    for name in PLATFORM_PLUGIN_FILES:
+        _ensure_regular_file(plugin_entries[name], f"OpenCode plugin source {name!r}")
+
+
 def _copy_canonical_source(canonical_root: Path, output_root: Path) -> list[Path]:
     files: list[Path] = []
     for tree in COPY_TREES:
@@ -206,6 +254,7 @@ def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
     sources: list[tuple[str, Path]] = []
 
     def add_file(path: Path) -> None:
+        _reject_symlink_components(path, "provenance input")
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError as error:
@@ -232,6 +281,39 @@ def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
     for relative in (Path("scripts/build_opencode_package.py"), Path("scripts/render_opencode.py")):
         add_file(root / relative)
     return sorted(sources, key=lambda item: item[0])
+
+
+def _snapshot_sources(root: Path) -> tuple[Path, Path]:
+    """Copy all build inputs into one private, verified source snapshot.
+
+    Rendering, copying, and provenance hashing all consume this snapshot.  A
+    second inventory/digest pass over the live checkout detects edits during
+    snapshot creation and aborts before publishing an inconsistent artifact.
+    """
+
+    initial = _provenance_sources(root)
+    snapshot_parent = Path(tempfile.mkdtemp(prefix=".opencode-source-snapshot-"))
+    snapshot_root = snapshot_parent / "root"
+    try:
+        for relative, source in initial:
+            target = snapshot_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        final = _provenance_sources(root)
+        initial_digest = [
+            (relative, hashlib.sha256(path.read_bytes()).hexdigest())
+            for relative, path in initial
+        ]
+        final_digest = [
+            (relative, hashlib.sha256(path.read_bytes()).hexdigest())
+            for relative, path in final
+        ]
+        if initial_digest != final_digest:
+            raise BuildError("repository sources changed while creating a private OpenCode snapshot")
+    except (OSError, BuildError):
+        shutil.rmtree(snapshot_parent, ignore_errors=True)
+        raise
+    return snapshot_root, snapshot_parent
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -290,27 +372,74 @@ def _normalize_artifact_modes(output_root: Path) -> None:
 
 
 def _replace_output(staging: Path, output: Path) -> None:
-    if output.exists() or output.is_symlink():
-        raise BuildError(f"output target must not already exist: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Use rename rather than replace so callers can independently test receipt
-    # replacement failures without intercepting this builder's atomic move.
-    staging.rename(output)
+    # Reserve the final path with mkdir.  Unlike rename/replace, mkdir is an
+    # atomic no-replace operation: a target created after preflight can never
+    # be clobbered.  Move the already-complete children into that reservation.
+    try:
+        output.mkdir(mode=ARTIFACT_DIRECTORY_MODE)
+    except FileExistsError as error:
+        raise BuildError(f"output target must not already exist: {output}") from error
+    except OSError as error:
+        raise BuildError(f"output target cannot be reserved: {output}: {error}") from error
+    try:
+        output_identity = os.lstat(output)
+    except OSError as error:
+        raise BuildError(f"reserved output cannot be inspected: {output}: {error}") from error
+    try:
+        for child in sorted(staging.iterdir(), key=lambda item: item.name):
+            destination = output / child.name
+            if os.path.lexists(destination):
+                raise BuildError(f"output target was populated during publish: {destination}")
+            child.rename(destination)
+        staging.rmdir()
+        os.chmod(output, ARTIFACT_DIRECTORY_MODE)
+        os.utime(output, (ARTIFACT_MTIME, ARTIFACT_MTIME))
+    except (OSError, BuildError):
+        # The reservation is ours, but never remove it if an unexpected child
+        # appeared after reservation; that child may be foreign state.
+        try:
+            current_identity = os.lstat(output)
+        except OSError:
+            current_identity = None
+        if (
+            current_identity is not None
+            and current_identity.st_dev == output_identity.st_dev
+            and current_identity.st_ino == output_identity.st_ino
+        ):
+            try:
+                children = list(output.iterdir())
+            except OSError:
+                children = []
+            if not children:
+                try:
+                    output.rmdir()
+                except OSError:
+                    pass
+        raise
 
 
-def _cleanup_staging(staging: Path, staging_parent: Path, prefix: str) -> None:
+def _cleanup_staging(
+    staging: Path,
+    staging_parent: Path,
+    prefix: str,
+    identity: os.stat_result | None = None,
+) -> None:
     """Remove only the builder-owned staging directory after a failed build."""
 
     if staging.parent != staging_parent or not staging.name.startswith(prefix):
         return
     try:
-        mode = os.lstat(staging).st_mode
+        metadata = os.lstat(staging)
     except FileNotFoundError:
         return
     except OSError:
         return
-    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         return
+    if identity is not None:
+        if metadata.st_dev != identity.st_dev or metadata.st_ino != identity.st_ino:
+            return
     try:
         shutil.rmtree(staging)
     except OSError:
@@ -342,6 +471,7 @@ def build_opencode_package(
         _reject_symlink_components(source, f"canonical input {relative}")
     _ensure_regular_directory(canonical_root, "canonical package")
     _ensure_regular_directory(platform_root, "OpenCode platform source")
+    _validate_platform_source(platform_root)
     # Validate the complete set of source trees before staging so a stray
     # symlink cannot hide in an un-copied input directory.
     list(_iter_regular_files(platform_root, "OpenCode platform source"))
@@ -358,20 +488,29 @@ def build_opencode_package(
     staging_parent.mkdir(parents=True, exist_ok=True)
     staging_prefix = f".{output.name}."
     staging = Path(tempfile.mkdtemp(prefix=staging_prefix, dir=staging_parent))
+    staging_identity = os.lstat(staging)
+    snapshot_root: Path | None = None
+    snapshot_parent: Path | None = None
     try:
-        _copy_platform_source(platform_root, staging)
-        _copy_canonical_source(canonical_root, staging)
+        snapshot_root, snapshot_parent = _snapshot_sources(root)
+        snapshot_canonical = snapshot_root / "packages" / "expskill"
+        snapshot_platform = snapshot_canonical / "opencode"
+        _copy_platform_source(snapshot_platform, staging)
+        _copy_canonical_source(snapshot_canonical, staging)
         try:
-            rendered = render_all(root)
+            rendered = render_all(snapshot_root)
         except RenderError as error:
             raise BuildError(str(error)) from error
         _write_rendered(staging, rendered)
-        _write_provenance(root, staging)
+        _write_provenance(snapshot_root, staging)
         _normalize_artifact_modes(staging)
         _replace_output(staging, output)
     except (OSError, BuildError):
-        _cleanup_staging(staging, staging_parent, staging_prefix)
+        _cleanup_staging(staging, staging_parent, staging_prefix, staging_identity)
         raise
+    finally:
+        if snapshot_parent is not None:
+            shutil.rmtree(snapshot_parent, ignore_errors=True)
     return output
 
 
