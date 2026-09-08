@@ -2,7 +2,7 @@
 
 ## Purpose
 
-ExpSkill is a private Codex plugin with ten independently usable skills and
+ExpSkill is a private Codex plugin with eleven independently usable skills and
 one optional lifecycle router. Users can invoke a skill
 directly without loading a pipeline, or invoke `use-expskill` when they want the
 plugin to select the next lifecycle step.
@@ -20,6 +20,7 @@ skills/
 ├── design/
 ├── setup-ui-testing/
 ├── implement/
+├── correct/
 ├── review/
 ├── test/
 ├── skill-builder/
@@ -34,6 +35,7 @@ skills/
 | `design` | Produce and approve isolated production-intended UI components | Implement the broader feature |
 | `setup-ui-testing` | Establish or record one reusable project-native UI inspection capability | Redesign or implement production UI |
 | `implement` | Coordinate TDD workers, independent review/spec gates, corrections, local joins, and final branch gates | Route the lifecycle, own a second state engine, push, or merge remotely |
+| `correct` | Diagnose and repair concrete defects within the existing design | Make consequential structural or compatibility choices without the user, launch repair agents, or run the lifecycle |
 | `review` | Inspect a user-defined pinned code scope and save evidence-backed issues and ratings | Fix code, prescribe corrections, use Implement's reviewer, or start another skill |
 | `test` | Exercise already-implemented behavior through realistic composed product paths and report revision-bound evidence | Plan or implement work, repair production code, review source, route the lifecycle, or deliver remotely |
 | `skill-builder` | Create or improve one exact agent skill | Implement unrelated product work |
@@ -41,8 +43,8 @@ skills/
 | `grill-me` | Stress-test connected user-owned decisions after explicit consent | Select answers for the user |
 
 Direct invocation runs only the named skill and stops at its boundary.
-Setup UI Testing, Review, Test, Skill Builder, Unslop, and Grill Me remain independently
-invokable. Router selection of Setup UI Testing is limited to an absent or
+Setup UI Testing, Correct, Review, Test, Skill Builder, Unslop, and Grill Me
+remain independently invokable. Router selection of Setup UI Testing is limited to an absent or
 invalid project capability record and still requires its normal user
 confirmation before writing setup.
 
@@ -51,10 +53,16 @@ confirmation before writing setup.
 `use-expskill` selects by the next unresolved decision:
 
 - ambiguous outcome or experience maps to `brainstorm`
+- a concrete defect with settled expected behavior maps to `correct`, which
+  diagnoses whether a bounded repair is appropriate
 - an absent or invalid `.ui-harness/README.md` maps only to `setup-ui-testing`
 - concrete direction without an accepted technical execution maps to `plan`
 - accepted UI work without approved components maps to `design`
 - accepted implementation facts and required Design deliverables map to `implement`
+
+Correct runs in the invoking agent without a profile or Plan Graph and checks
+its own repair. At a structural or breaking boundary, it offers a sound
+limited fix or Brainstorm and waits for the user to choose.
 
 The router normally opens one skill per transition. When project UI testing is
 ready and both Plan and Design remain unresolved, it may launch exactly one

@@ -37,6 +37,7 @@ SKILL_NAMES = (
     "grill-me",
     "plan",
     "implement",
+    "correct",
     "review",
     "test",
     "setup-ui-testing",

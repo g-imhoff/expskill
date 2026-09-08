@@ -25,6 +25,7 @@ PHASE_ROOTS = {
         "setup-ui-testing",
         "plan",
         "implement",
+        "correct",
         "review",
         "test",
         "unslop",
@@ -52,6 +53,7 @@ EXPECTED_SKILLS = {
     "setup-ui-testing",
     "plan",
     "implement",
+    "correct",
     "review",
     "test",
     "skill-builder",
@@ -427,7 +429,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("ten", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("eleven", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -542,7 +544,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bten independent skills and one optional lifecycle router\b"
+            r"\beleven independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -1092,7 +1094,7 @@ class ContractTests(unittest.TestCase):
         for marker in (REMOVED_PUBLIC_TOKEN, "$review", "$verify", "$integrate"):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, body)
-        for phase in ("brainstorm", "plan", "design", "implement"):
+        for phase in ("brainstorm", "plan", "design", "implement", "correct"):
             with self.subTest(phase=phase):
                 self.assertIn(phase, body)
         self.assertIn("no separate review, verification, or integration routes", body)
