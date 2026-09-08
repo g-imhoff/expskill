@@ -70,6 +70,8 @@ def _assert_cli_failure(test_case: unittest.TestCase):
 
     try:
         yield
+    except unittest.SkipTest as error:
+        test_case.fail(f"unexpected optional CLI skip: {error}")
     except Exception as error:
         test_case.assertIsInstance(error, CliVerificationError)
     else:
@@ -138,6 +140,233 @@ class CliVerificationTests(unittest.TestCase):
                     self.assertEqual(key, expected_key)
                     asset = _asset_for(kind, key, "required")
                     self.assertEqual(asset.kind, kind)
+
+    def test_all_pinned_platform_entries_and_fixture_components_are_accepted(self) -> None:
+        for kind, entry in CLI_RELEASE_MANIFEST["clis"].items():
+            with self.subTest(kind=kind):
+                self.assertIsInstance(entry["version"], str)
+                for platform_name in entry["platforms"]:
+                    system, machine = platform_name.split("-", 1)
+                    asset = _asset_for(kind, (system, machine), "required")
+                    self.assertEqual(asset.version, entry["version"])
+
+        manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
+        manifest["clis"]["codex"]["version"] = "release-2026.09_rc1"
+        manifest["clis"]["codex"]["platforms"]["linux-x86_64"].update(
+            {
+                "archive": "fixture-codex-2026.09.tar.gz",
+                "binary_name": "fixture-codex_2026.09",
+            }
+        )
+        with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+            asset = _asset_for("codex", PLATFORM, "required")
+        self.assertEqual(asset.version, "release-2026.09_rc1")
+        self.assertEqual(asset.archive, "fixture-codex-2026.09.tar.gz")
+        self.assertEqual(asset.binary_name, "fixture-codex_2026.09")
+
+    def test_manifest_scalar_components_fail_closed_before_download_in_both_modes(self) -> None:
+        invalid_components = (
+            None,
+            0,
+            "",
+            ".",
+            "..",
+            "old/../../victim",
+            r"old\..\victim",
+            "/absolute",
+            r"C:\victim",
+            "wild*card",
+            "bad name",
+            "bad\tname",
+            "bad\x00name",
+        )
+        for mode in ("required", "optional"):
+            for field in ("version", "archive", "binary_name"):
+                for value in invalid_components:
+                    with self.subTest(mode=mode, field=field, value=repr(value)):
+                        manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
+                        if field == "version":
+                            manifest["clis"]["codex"][field] = value
+                        else:
+                            manifest["clis"]["codex"]["platforms"]["linux-x86_64"][field] = value
+                        with tempfile.TemporaryDirectory() as temporary:
+                            cache_root = Path(temporary)
+                            sentinel = cache_root / "sentinel"
+                            sentinel.write_bytes(b"preserve me")
+                            before = sorted(path.name for path in cache_root.iterdir())
+                            called = False
+
+                            def downloader(_url: str, _destination: Path) -> None:
+                                nonlocal called
+                                called = True
+
+                            with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                                with _assert_cli_failure(self):
+                                    ensure_binary(
+                                        "codex",
+                                        cache_root,
+                                        platform_key=PLATFORM,
+                                        mode=mode,
+                                        downloader=downloader,
+                                    )
+                            self.assertFalse(called)
+                            self.assertEqual(sorted(path.name for path in cache_root.iterdir()), before)
+                            self.assertEqual(sentinel.read_bytes(), b"preserve me")
+
+    def test_malformed_https_urls_fail_closed_before_download_in_both_modes(self) -> None:
+        invalid_urls = (
+            None,
+            0,
+            "",
+            "https://",
+            "https:///path",
+            "https://:443/path",
+            "https://example.invalid:",
+            "https://example.invalid:bad/path",
+            "https://example.invalid:99999/path",
+            "https://[::1/path",
+            "http://example.invalid/path",
+            "https://example.invalid/path with space",
+            r"https://bad\host.invalid/asset",
+            'https://bad"host.invalid/asset',
+            "https://bad{host}.invalid/asset",
+            "https://[::1]garbage/asset",
+            "https://example.invalid../asset",
+            "https://-bad.invalid/asset",
+            "https://bad-.invalid/asset",
+            "https://bad..host.invalid/asset",
+            "https://" + ("a" * 64) + ".invalid/asset",
+        )
+        for mode in ("required", "optional"):
+            for url in invalid_urls:
+                with self.subTest(mode=mode, url=url):
+                    manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
+                    manifest["clis"]["codex"]["platforms"]["linux-x86_64"]["url"] = url
+                    with tempfile.TemporaryDirectory() as temporary:
+                        cache_root = Path(temporary)
+                        sentinel = cache_root / "sentinel"
+                        sentinel.write_bytes(b"preserve me")
+                        before = sorted(path.name for path in cache_root.iterdir())
+                        called = False
+
+                        def downloader(_url: str, _destination: Path) -> None:
+                            nonlocal called
+                            called = True
+
+                        with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                            with _assert_cli_failure(self):
+                                ensure_binary(
+                                    "codex",
+                                    cache_root,
+                                    platform_key=PLATFORM,
+                                    mode=mode,
+                                    downloader=downloader,
+                                )
+                        self.assertFalse(called)
+                        self.assertEqual(sorted(path.name for path in cache_root.iterdir()), before)
+                        self.assertEqual(sentinel.read_bytes(), b"preserve me")
+
+    def test_malformed_version_fails_before_unsupported_optional_platform_skip(self) -> None:
+        manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
+        manifest["clis"]["codex"]["version"] = "old/../../victim"
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary)
+            sentinel = cache_root / "sentinel"
+            sentinel.write_bytes(b"preserve me")
+            called = False
+
+            def downloader(_url: str, _destination: Path) -> None:
+                nonlocal called
+                called = True
+
+            with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                with _assert_cli_failure(self):
+                    ensure_binary(
+                        "codex",
+                        cache_root,
+                        platform_key=("haiku", "riscv64"),
+                        mode="optional",
+                        downloader=downloader,
+                    )
+            self.assertFalse(called)
+            self.assertEqual(sentinel.read_bytes(), b"preserve me")
+
+    def test_version_traversal_never_replaces_outside_sentinel_in_both_modes(self) -> None:
+        archive_name = "fixture-codex.tar.gz"
+        archive_bytes = _archive("fixture-codex", b"trusted binary")
+        manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
+        manifest["clis"]["codex"]["version"] = "old/../../victim"
+        for mode in ("required", "optional"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                sandbox = Path(temporary)
+                cache_root = sandbox / "cache"
+                cache_root.mkdir()
+                (cache_root / "codex-old").mkdir()
+                victim = sandbox / "victim"
+                victim.mkdir()
+                sentinel = victim / "sentinel"
+                sentinel.write_bytes(b"outside sentinel")
+                (cache_root / archive_name).write_bytes(archive_bytes)
+                called = False
+
+                def downloader(_url: str, _destination: Path) -> None:
+                    nonlocal called
+                    called = True
+
+                with mock.patch.object(cli_verification, "CLI_RELEASE_MANIFEST", manifest):
+                    with _assert_cli_failure(self):
+                        ensure_binary(
+                            "codex",
+                            cache_root,
+                            platform_key=PLATFORM,
+                            mode=mode,
+                            downloader=downloader,
+                        )
+                self.assertFalse(called)
+                self.assertTrue(victim.is_dir())
+                self.assertEqual(sentinel.read_bytes(), b"outside sentinel")
+                self.assertTrue((cache_root / "codex-old").is_dir())
+                self.assertEqual((cache_root / archive_name).read_bytes(), archive_bytes)
+
+    def test_computed_cache_directory_must_be_contained_even_if_asset_validation_is_bypassed(self) -> None:
+        archive_name = "fixture-codex.tar.gz"
+        archive_bytes = _archive("fixture-codex", b"trusted binary")
+        malicious_asset = cli_verification.CliAsset(
+            kind="codex",
+            version="old/../../victim",
+            archive=archive_name,
+            binary_name="fixture-codex",
+            sha256=hashlib.sha256(archive_bytes).hexdigest(),
+            url="https://example.invalid/pinned-cli.tar.gz",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            sandbox = Path(temporary)
+            cache_root = sandbox / "cache"
+            cache_root.mkdir()
+            (cache_root / "codex-old").mkdir()
+            victim = sandbox / "victim"
+            victim.mkdir()
+            sentinel = victim / "sentinel"
+            sentinel.write_bytes(b"outside sentinel")
+            (cache_root / archive_name).write_bytes(archive_bytes)
+            called = False
+
+            def downloader(_url: str, _destination: Path) -> None:
+                nonlocal called
+                called = True
+
+            with mock.patch.object(cli_verification, "_asset_for", return_value=malicious_asset):
+                with _assert_cli_failure(self):
+                    ensure_binary(
+                        "codex",
+                        cache_root,
+                        platform_key=PLATFORM,
+                        mode="required",
+                        downloader=downloader,
+                    )
+            self.assertFalse(called)
+            self.assertEqual(sentinel.read_bytes(), b"outside sentinel")
+            self.assertTrue((cache_root / "codex-old").is_dir())
 
     def test_malformed_platform_configuration_fails_in_both_modes(self) -> None:
         for mode in ("required", "optional"):
