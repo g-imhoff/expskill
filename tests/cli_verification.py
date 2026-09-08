@@ -13,6 +13,7 @@ import os
 import platform as host_platform
 import secrets
 import shutil
+import socket
 import stat
 import tarfile
 import tempfile
@@ -143,6 +144,8 @@ def _is_acquisition_unavailable(error: BaseException) -> bool:
         if reason is None or isinstance(reason, str):
             return True
         return _is_acquisition_unavailable(reason)
+    if isinstance(error, socket.gaierror):
+        return True
     if isinstance(error, (ConnectionError, TimeoutError)):
         return True
     return isinstance(error, OSError) and error.errno in _NETWORK_ERRNOS
