@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "packages" / "codex"
+PLUGIN_ROOT = ROOT / "packages" / "expskill"
 PLAN_ROOT = PLUGIN_ROOT / "skills" / "plan"
 HELPER_PATH = PLUGIN_ROOT / "scripts" / "plan_graph.py"
 PHASE_ROOTS = {

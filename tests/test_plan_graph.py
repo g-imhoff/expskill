@@ -17,7 +17,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = ROOT / "packages" / "codex" / "scripts" / "plan_graph.py"
+HELPER_PATH = ROOT / "packages" / "expskill" / "scripts" / "plan_graph.py"
 
 
 def _skip_exception(error: BaseException) -> bool:

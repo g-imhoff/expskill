@@ -175,19 +175,26 @@ For a deliberately local/offline check, opt in explicitly with
 `EXPSKILL_CLI_MODE=optional`; only unavailable acquisition is skippable there.
 It must not be used as a substitute for required verification.
 
-## opencode package
+## OpenCode package
 
-`packages/opencode` distributes the same ten skills to opencode as
-`opencode-expskill`. The canonical skill source remains
-`packages/codex/skills`, and `packages/opencode/skills` is a generated,
-byte-identical regular-file mirror for npm packaging. The package adds ten thin
-`/name` commands, seven permission-scoped
-subagents, the Unslop session injector, and budget counters driven by the
-shared execution policy. Agent descriptions and instructions render from the
-canonical Codex profiles through `packages/opencode/agents.json`, which also
-pins the model and reasoning effort behind one switchable provider profile.
-See `packages/opencode/README.md` for the install
-commands and the hook trust divergence.
+`packages/expskill` is the universal source for every supported surface.
+`packages/expskill/opencode` contains the native OpenCode package source:
+platform metadata, the agent overlay, and the plugins. The pure renderer in
+`scripts/render_opencode.py` derives agent Markdown, command Markdown, and the
+native runtime catalog. The explicit-output builder in
+`scripts/build_opencode_package.py` materializes a self-contained npm artifact
+with regular files and sorted SHA-256 provenance.
+
+Build into a new directory, then pack that artifact:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+npm pack --dry-run --json "$artifact_root"
+```
+
+See `packages/expskill/opencode/README.md` for the source, renderer, builder,
+and plugin details.
 
 The focused contract and runtime suites cover the currently implemented skill,
 installation, security, concurrency, recovery, and lifecycle boundaries.

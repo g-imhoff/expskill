@@ -14,7 +14,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "packages" / "codex" / "skills" / "brainstorm"
+SKILL_ROOT = ROOT / "packages" / "expskill" / "skills" / "brainstorm"
 ENTRYPOINT = SKILL_ROOT / "SKILL.md"
 METADATA = SKILL_ROOT / "agents" / "openai.yaml"
 CATALOG = SKILL_ROOT / "references" / "brainstorm-techniques.csv"
@@ -231,7 +231,7 @@ class BrainstormContractTests(unittest.TestCase):
         missing_catalog = (
             missing_root
             / "packages"
-            / "codex"
+            / "expskill"
             / "skills"
             / "brainstorm"
             / "references"
@@ -253,7 +253,7 @@ class BrainstormContractTests(unittest.TestCase):
                 changed_catalog = (
                     changed_root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / "skills"
                     / "brainstorm"
                     / "references"

@@ -12,18 +12,12 @@ from scripts.validate import (
     _parse_overlay_frontmatter,
     validate_repository,
 )
-from scripts.sync_opencode_package import check_generated_assets, sync as sync_package_assets
-
-
-try:
-    from scripts.sync_opencode_agents import render_all as _render_opencode_agents
-except ModuleNotFoundError:
-    from sync_opencode_agents import render_all as _render_opencode_agents
+from scripts.render_opencode import render_agents as _render_opencode_agents
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CODEX_ROOT = ROOT / "packages" / "codex"
-OPENCODE_ROOT = ROOT / "packages" / "opencode"
+CODEX_ROOT = ROOT / "packages" / "expskill"
+OPENCODE_ROOT = CODEX_ROOT / "opencode"
 SKILLS = (
     "brainstorm",
     "design",
@@ -85,6 +79,7 @@ class OpencodeContractTests(unittest.TestCase):
         reference = (
             root
             / "packages"
+            / "expskill"
             / "opencode"
             / "skills"
             / "design"
@@ -103,7 +98,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_unexpected_generated_package_entry_is_rejected(self) -> None:
         root = self.copy_repository()
-        extra = root / "packages" / "opencode" / "scripts" / "stale.py"
+        extra = root / "packages" / "expskill" / "opencode" / "scripts" / "stale.py"
         extra.write_text("stale = True\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(
@@ -117,7 +112,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_package_asset_generator_repairs_drift_and_extra_entries(self) -> None:
         root = self.copy_repository()
-        helper = root / "packages" / "opencode" / "scripts" / "plan_graph.py"
+        helper = root / "packages" / "expskill" / "opencode" / "scripts" / "plan_graph.py"
         helper.write_text("drift\n", encoding="utf-8")
         (helper.parent / "stale.py").write_text("stale\n", encoding="utf-8")
         sync_package_assets(root)
@@ -125,23 +120,23 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_generated_asset_check_ignores_canonical_python_caches(self) -> None:
         root = self.copy_repository()
-        cache = root / "packages" / "codex" / "scripts" / "__pycache__"
+        cache = root / "packages" / "expskill" / "scripts" / "__pycache__"
         cache.mkdir()
         (cache / "plan_graph.cpython-313.pyc").write_bytes(b"ignored cache")
         self.assertEqual(check_generated_assets(root), [])
 
     def test_package_asset_sync_and_check_ignore_python_caches_on_both_surfaces(self) -> None:
         root = self.copy_repository()
-        canonical_skills = root / "packages" / "codex" / "skills" / "design"
-        canonical_scripts = root / "packages" / "codex" / "scripts"
+        canonical_skills = root / "packages" / "expskill" / "skills" / "design"
+        canonical_scripts = root / "packages" / "expskill" / "scripts"
         (canonical_skills / "__pycache__").mkdir()
         (canonical_skills / "__pycache__" / "skill.cpython-313.pyc").write_bytes(
             b"canonical skill cache"
         )
         (canonical_scripts / "plan_graph.pyo").write_bytes(b"canonical script cache")
 
-        package_skills = root / "packages" / "opencode" / "skills" / "design"
-        package_scripts = root / "packages" / "opencode" / "scripts"
+        package_skills = root / "packages" / "expskill" / "opencode" / "skills" / "design"
+        package_scripts = root / "packages" / "expskill" / "opencode" / "scripts"
         (package_skills / "__pycache__").mkdir()
         (package_skills / "__pycache__" / "stale.pyc").write_bytes(b"stale mirror cache")
         (package_scripts / "stale.pyo").write_bytes(b"stale script cache")
@@ -149,7 +144,7 @@ class OpencodeContractTests(unittest.TestCase):
         self.assertEqual(check_generated_assets(root), [])
         sync_package_assets(root)
         self.assertEqual(check_generated_assets(root), [])
-        package_root = root / "packages" / "opencode"
+        package_root = root / "packages" / "expskill" / "opencode"
         caches = [
             path
             for tree in (package_root / "skills", package_root / "scripts")
@@ -248,14 +243,14 @@ class OpencodeContractTests(unittest.TestCase):
         with _tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             agents_source = CODEX_ROOT / "assets" / "agents"
-            agents_target = root / "packages" / "codex" / "assets" / "agents"
+            agents_target = root / "packages" / "expskill" / "assets" / "agents"
             agents_target.mkdir(parents=True)
             for profile in agents_source.glob("*.toml"):
                 _shutil.copy2(profile, agents_target / profile.name)
             spec = _json.loads((OPENCODE_ROOT / "agents.json").read_text(encoding="utf-8"))
             spec["default_model_profile"] = "opencode-free"
-            (root / "packages" / "opencode").mkdir(parents=True)
-            (root / "packages" / "opencode" / "agents.json").write_text(
+            (root / "packages" / "expskill" / "opencode").mkdir(parents=True)
+            (root / "packages" / "expskill" / "opencode" / "agents.json").write_text(
                 _json.dumps(spec), encoding="utf-8"
             )
             rendered = _render_opencode_agents(root)
@@ -330,7 +325,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_missing_opencode_execution_policy_mirror_is_rejected(self) -> None:
         root = self.copy_repository()
-        (root / "packages" / "opencode" / "assets" / "execution-policy.json").unlink()
+        (root / "packages" / "expskill" / "opencode" / "assets" / "execution-policy.json").unlink()
         errors = validate_repository(root)
         self.assertTrue(
             any("opencode execution policy asset" in error and "missing" in error for error in errors),
@@ -339,7 +334,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_diverged_opencode_execution_policy_mirror_is_rejected(self) -> None:
         root = self.copy_repository()
-        mirror = root / "packages" / "opencode" / "assets" / "execution-policy.json"
+        mirror = root / "packages" / "expskill" / "opencode" / "assets" / "execution-policy.json"
         mirror.write_text(mirror.read_text(encoding="utf-8") + "\n", encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(
@@ -349,7 +344,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_diverged_shared_skill_is_rejected(self) -> None:
         root = self.copy_repository()
-        diverged = root / "packages" / "opencode" / "skills" / "plan" / "SKILL.md"
+        diverged = root / "packages" / "expskill" / "opencode" / "skills" / "plan" / "SKILL.md"
         diverged.write_text(
             diverged.read_text(encoding="utf-8") + "\nExtra drift.\n",
             encoding="utf-8",
@@ -362,7 +357,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_missing_command_is_rejected(self) -> None:
         root = self.copy_repository()
-        (root / "packages" / "opencode" / "commands" / "plan.md").unlink()
+        (root / "packages" / "expskill" / "opencode" / "commands" / "plan.md").unlink()
         errors = validate_repository(root)
         self.assertTrue(
             any("opencode command" in error and "missing" in error for error in errors),

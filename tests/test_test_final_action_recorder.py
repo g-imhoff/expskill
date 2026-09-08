@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RECORDER = (
     ROOT
     / "packages"
-    / "codex"
+    / "expskill"
     / "skills"
     / "test"
     / "scripts"

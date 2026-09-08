@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DESIGN = ROOT / "packages" / "codex" / "skills" / "design"
+DESIGN = ROOT / "packages" / "expskill" / "skills" / "design"
 FRESH_CONTEXT_COMMAND = ("codex", "exec", "--ephemeral", "--ignore-user-config", "--json")
 CONFIGURATIONS = ("A", "B", "C", "D")
 CALIBRATION_BRIEFS = (

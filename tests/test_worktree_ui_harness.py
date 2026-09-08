@@ -8,7 +8,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "packages" / "codex" / "scripts" / "worktrees.py"
+HELPER = ROOT / "packages" / "expskill" / "scripts" / "worktrees.py"
 HEADINGS = (
     "Status", "Established Method", "Prerequisites", "Commands",
     "Specimens and Scenarios", "Project Context", "Responsive Inspection",

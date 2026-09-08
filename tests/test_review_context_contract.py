@@ -12,7 +12,7 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "packages" / "codex"
+PLUGIN = ROOT / "packages" / "expskill"
 IMPLEMENT = PLUGIN / "skills" / "implement" / "SKILL.md"
 SKILL_BUILDER = PLUGIN / "skills" / "skill-builder" / "SKILL.md"
 EVALUATION_RUBRIC = (
@@ -215,7 +215,7 @@ class ReviewContextContractTests(unittest.TestCase):
                 path = (
                     root
                     / "packages"
-                    / "codex"
+                    / "expskill"
                     / "assets"
                     / "agents"
                     / f"{name}.toml"
@@ -308,7 +308,7 @@ class ReviewContextContractTests(unittest.TestCase):
             path = (
                 root
                 / "packages"
-                / "codex"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -330,7 +330,7 @@ class ReviewContextContractTests(unittest.TestCase):
             path = (
                 root
                 / "packages"
-                / "codex"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -380,7 +380,7 @@ class ReviewContextContractTests(unittest.TestCase):
             path = (
                 root
                 / "packages"
-                / "codex"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -511,7 +511,7 @@ class ReviewContextContractTests(unittest.TestCase):
             path = (
                 root
                 / "packages"
-                / "codex"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"

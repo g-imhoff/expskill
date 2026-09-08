@@ -14,15 +14,11 @@ from typing import Any
 
 
 try:
-    from scripts.sync_opencode_agents import SyncError as AgentSyncError
-    from scripts.sync_opencode_agents import render_all as _render_opencode_agents
-    from scripts.sync_opencode_package import SyncError as PackageSyncError
-    from scripts.sync_opencode_package import check_generated_assets
+    from scripts.render_opencode import RenderError as AgentSyncError
+    from scripts.render_opencode import render_agents as _render_opencode_agents
 except ModuleNotFoundError:
-    from sync_opencode_agents import SyncError as AgentSyncError
-    from sync_opencode_agents import render_all as _render_opencode_agents
-    from sync_opencode_package import SyncError as PackageSyncError
-    from sync_opencode_package import check_generated_assets
+    from render_opencode import RenderError as AgentSyncError
+    from render_opencode import render_agents as _render_opencode_agents
 
 
 MARKETPLACE_NAME = "expskill"
@@ -966,7 +962,7 @@ def validate_repository(root: Path) -> tuple[str, ...]:
     if marketplace is not None:
         _validate_marketplace(marketplace, repository_root, errors)
 
-    plugin_root = repository_root / "packages" / "codex"
+    plugin_root = repository_root / "packages" / "expskill"
     if _validate_plugin_root(plugin_root, errors):
         manifest_path = _required_package_path(
             plugin_root,
@@ -1182,11 +1178,11 @@ def _validate_marketplace(
             if source.get("source") != "local":
                 errors.append(f"{label}.source.source must be 'local'")
             source_path = source.get("path")
-            if source_path != "./packages/codex":
+            if source_path != "./packages/expskill":
                 errors.append(
-                    f"{label}.source.path must be './packages/codex', got {source_path!r}"
+                    f"{label}.source.path must be './packages/expskill', got {source_path!r}"
                 )
-            elif not (repository_root / "packages" / "codex").is_dir():
+            elif not (repository_root / "packages" / "expskill").is_dir():
                 errors.append(f"{label}.source.path does not resolve to the plugin directory")
         policy = entry.get("policy")
         if not isinstance(policy, dict):
@@ -2137,7 +2133,7 @@ def _validate_removed_repository_local_skill(
 
 def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> None:
     roots = (
-        repository_root / "packages" / "codex" / "skills",
+        repository_root / "packages" / "expskill" / "skills",
         repository_root / ".agents" / "skills",
     )
     for root in roots:
@@ -2155,7 +2151,7 @@ def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> Non
                 errors.append(f"skill text {relative} contains an em dash")
             if ";" in contents:
                 errors.append(f"skill text {relative} contains a semicolon")
-    opencode_root = repository_root / "packages" / "opencode"
+    opencode_root = repository_root / "packages" / "expskill" / "opencode"
     if opencode_root.is_dir():
         for path in sorted(opencode_root.rglob("*")):
             if "skills" in path.relative_to(opencode_root).parts:
@@ -2725,6 +2721,8 @@ OPENCODE_PACKAGE_FILES = (
     "README.md",
     "index.js",
     "agents.json",
+    "catalog.json",
+    "provenance.json",
     "agents/",
     "assets/",
     "commands/",
@@ -2904,22 +2902,11 @@ def _active_opencode_model(package_root: Path) -> tuple[str | None, str | None]:
 
 
 def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None:
-    package_root = repository_root / "packages" / "opencode"
+    package_root = repository_root / "packages" / "expskill" / "opencode"
     if not _validate_opencode_root(package_root, errors):
         return
-    codex_root = repository_root / "packages" / "codex"
     _validate_opencode_manifest(package_root, errors)
-    try:
-        generated_problems = check_generated_assets(repository_root)
-    except PackageSyncError as error:
-        errors.append(f"opencode package assets cannot be generated: {error}")
-    else:
-        errors.extend(generated_problems)
     _validate_opencode_agent_spec(package_root, errors)
-    _validate_opencode_shared_skills(codex_root, package_root, errors)
-    _validate_opencode_commands(package_root, errors)
-    _validate_opencode_agents(repository_root, codex_root, package_root, errors)
-    _validate_opencode_policy_asset(codex_root, package_root, errors)
     _validate_opencode_plugins(package_root, errors)
 
 
@@ -3147,7 +3134,7 @@ def _validate_opencode_agents(
     if stale:
         errors.append(
             "opencode agents differ from their shared sources "
-            f"({', '.join(stale)}); run python3 scripts/sync_opencode_agents.py"
+            f"({', '.join(stale)}); rebuild the explicit OpenCode output"
         )
         return
     profile_model, profile_effort = _active_opencode_model(package_root)

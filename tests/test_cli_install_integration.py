@@ -175,7 +175,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
                     self.assertTrue(link.is_symlink(), f"missing agent link: {link}")
                     self.assertEqual(
                         link.resolve().parent.parent.parent,
-                        (ROOT / "packages" / "codex").resolve(),
+                        (ROOT / "packages" / "expskill").resolve(),
                     )
 
             listed = _run_json(codex + ["plugin", "list", "--json"], env)

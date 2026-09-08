@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "packages" / "codex"
+PLUGIN_ROOT = ROOT / "packages" / "expskill"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 HOOKS_PATH = PLUGIN_ROOT / "hooks" / "hooks.json"
 HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "inject_unslop.py"

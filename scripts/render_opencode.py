@@ -22,6 +22,15 @@ from typing import Any, Mapping
 SCHEMA_VERSION = "opencode-agents.v1"
 CATALOG_SCHEMA_VERSION = "opencode-runtime.v1"
 AGENT_FRONTMATTER_FIELDS = ("description", "mode", "model", "reasoningEffort")
+EXPECTED_AGENT_NAMES = (
+    "expskill-designer",
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-planner",
+    "expskill-review",
+    "expskill-spec",
+    "expskill-test-engineer",
+)
 
 
 class RenderError(RuntimeError):
@@ -215,6 +224,55 @@ def _load_profile(canonical_root: Path, name: str) -> dict[str, Any]:
     return profile
 
 
+def _canonical_agent_names(canonical_root: Path) -> tuple[str, ...]:
+    agents_root = _regular_directory(
+        canonical_root / "assets" / "agents", "canonical agent profiles directory"
+    )
+    names: list[str] = []
+    for path in sorted(agents_root.iterdir(), key=lambda item: item.name):
+        if path.is_symlink():
+            raise RenderError(f"canonical agent profile entry must not be a symlink: {path}")
+        if path.is_file() and path.name.startswith("expskill-") and path.suffix == ".toml":
+            names.append(path.stem)
+    observed = set(names)
+    expected = set(EXPECTED_AGENT_NAMES)
+    if observed != expected:
+        missing = sorted(expected - observed)
+        extra = sorted(observed - expected)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing {missing!r}")
+        if extra:
+            details.append(f"extra {extra!r}")
+        raise RenderError(
+            "canonical agent profile roster must contain exactly seven profiles ("
+            + "; ".join(details)
+            + ")"
+        )
+    return EXPECTED_AGENT_NAMES
+
+
+def _validate_agent_roster(canonical_root: Path, spec: Mapping[str, Any]) -> tuple[str, ...]:
+    canonical_names = _canonical_agent_names(canonical_root)
+    entries = spec.get("agents")
+    if not isinstance(entries, Mapping):
+        raise RenderError("OpenCode agent overlay must declare agents")
+    if set(entries) != set(canonical_names):
+        missing = sorted(set(canonical_names) - set(entries))
+        extra = sorted(set(entries) - set(canonical_names))
+        details: list[str] = []
+        if missing:
+            details.append(f"missing {missing!r}")
+        if extra:
+            details.append(f"extra {extra!r}")
+        raise RenderError(
+            "OpenCode agent overlay entries must exactly match canonical profiles ("
+            + "; ".join(details)
+            + ")"
+        )
+    return canonical_names
+
+
 def _quote_key(key: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_-]+", key):
         return key
@@ -259,13 +317,10 @@ def render_agent(
     """Render one OpenCode agent markdown document."""
 
     description = profile.get("description")
-    instructions = profile.get("developer_instructions")
     closing = overlay_entry.get("closing")
     permission = overlay_entry.get("permission")
     if not isinstance(description, str) or not description.strip():
         raise RenderError(f"canonical agent profile {name!r} has no description")
-    if not isinstance(instructions, str) or not instructions.strip():
-        raise RenderError(f"canonical agent profile {name!r} has no developer instructions")
     if not isinstance(closing, str) or not closing.strip():
         raise RenderError(f"OpenCode agent overlay entry {name!r} has no closing")
     if not isinstance(permission, Mapping) or not permission:
@@ -281,8 +336,25 @@ def render_agent(
         lines.append(f"temperature: {_yaml_scalar(overlay_entry['temperature'])}")
     lines.append("permission:")
     lines.extend(_render_mapping(permission, 2))
-    lines.extend(("---", "", instructions.strip(), "", f"{runtime_paragraph.strip()} {closing.strip()}"))
+    lines.extend(("---", "", _agent_prompt(profile, overlay_entry, runtime_paragraph, name)))
     return "\n".join(lines) + "\n"
+
+
+def _agent_prompt(
+    profile: Mapping[str, Any],
+    overlay_entry: Mapping[str, Any],
+    runtime_paragraph: str,
+    name: str,
+) -> str:
+    instructions = profile.get("developer_instructions")
+    closing = overlay_entry.get("closing")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise RenderError(f"canonical agent profile {name!r} has no developer instructions")
+    if not isinstance(closing, str) or not closing.strip():
+        raise RenderError(f"OpenCode agent overlay entry {name!r} has no closing")
+    if not isinstance(runtime_paragraph, str) or not runtime_paragraph.strip():
+        raise RenderError("OpenCode agent overlay has no runtime_paragraph")
+    return "\n\n".join((instructions.strip(), f"{runtime_paragraph.strip()} {closing.strip()}"))
 
 
 def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
@@ -296,7 +368,7 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
     active = profiles[spec["default_model_profile"]]
     entries = spec["agents"]
     result: dict[str, str] = {}
-    for name in sorted(entries):
+    for name in _validate_agent_roster(canonical_root, spec):
         entry = entries[name]
         if not isinstance(entry, Mapping):
             raise RenderError(f"OpenCode agent overlay entry {name!r} must be an object")
@@ -322,6 +394,16 @@ def render_command(name: str, frontmatter: Mapping[str, Any]) -> str:
     """Render one thin command wrapper from a canonical skill frontmatter."""
 
     description = _command_description(frontmatter)
+    return (
+        "---\n"
+        f"description: {_yaml_scalar(description)}\n"
+        "---\n"
+        f"{_command_template(name, frontmatter)}"
+    )
+
+
+def _command_template(name: str, frontmatter: Mapping[str, Any]) -> str:
+    _command_description(frontmatter)
     metadata = frontmatter.get("metadata")
     autoinvoke = isinstance(metadata, Mapping) and metadata.get("opencode/autoinvoke") == "true"
     activation = (
@@ -330,9 +412,6 @@ def render_command(name: str, frontmatter: Mapping[str, Any]) -> str:
         else "This command is explicit-only."
     )
     return (
-        "---\n"
-        f"description: {_yaml_scalar(description)}\n"
-        "---\n"
         f"Load the `{name}` skill through the skill tool and follow that skill exactly. "
         "Apply it to the following request.\n\n"
         "$ARGUMENTS\n\n"
@@ -364,33 +443,31 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
     profiles = spec["model_profiles"]
     active = profiles[spec["default_model_profile"]]
     agents: dict[str, Any] = {}
-    for name in sorted(spec["agents"]):
+    for name in _validate_agent_roster(canonical_root, spec):
         entry = spec["agents"][name]
         if not isinstance(entry, Mapping):
             raise RenderError(f"OpenCode agent overlay entry {name!r} must be an object")
         profile = _load_profile(canonical_root, name)
+        permission = entry.get("permission")
+        if not isinstance(permission, Mapping) or not permission:
+            raise RenderError(f"OpenCode agent overlay entry {name!r} has no permission mapping")
         config: dict[str, Any] = {
             "description": profile["description"],
             "mode": "subagent",
             "model": active["model"],
             "reasoningEffort": active["reasoningEffort"],
+            "permission": copy.deepcopy(permission),
         }
-        if "temperature" in entry:
+        if entry.get("temperature") is not None:
             config["temperature"] = entry["temperature"]
-        if "permission" in entry:
-            config["permission"] = copy.deepcopy(entry["permission"])
-        if "closing" in entry:
-            config["closing"] = entry["closing"]
+        config["prompt"] = _agent_prompt(profile, entry, str(spec["runtime_paragraph"]), name)
         agents[name] = config
 
     commands: dict[str, Any] = {}
     for name, _path, frontmatter, _contents in _skill_inputs(canonical_root):
-        metadata = frontmatter.get("metadata")
-        metadata_values = dict(metadata) if isinstance(metadata, Mapping) else {}
         commands[name] = {
             "description": _command_description(frontmatter),
-            "skill": name,
-            "metadata": metadata_values,
+            "template": _command_template(name, frontmatter),
         }
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,

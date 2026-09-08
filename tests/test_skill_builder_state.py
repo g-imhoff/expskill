@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = (
     ROOT
     / "packages"
-    / "codex"
+    / "expskill"
     / "skills"
     / "skill-builder"
     / "scripts"
@@ -1164,7 +1164,7 @@ def test_research_pack_accepts_actual_opencode_high_reasoning_model() -> None:
     """The shared state contract must not require a Codex-only model identity."""
     helper = load_helper()
     agent_spec = json.loads(
-        (ROOT / "packages" / "opencode" / "agents.json").read_text(encoding="utf-8")
+        (ROOT / "packages" / "expskill" / "opencode" / "agents.json").read_text(encoding="utf-8")
     )
     active_profile = agent_spec["model_profiles"][
         agent_spec["default_model_profile"]

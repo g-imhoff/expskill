@@ -76,7 +76,7 @@ class OpencodeInstallerTests(unittest.TestCase):
                 self.assertTrue(skill.is_symlink())
                 self.assertEqual(
                     (skill / "SKILL.md").read_bytes(),
-                    (repo / "packages" / "codex" / "skills" / name / "SKILL.md").read_bytes(),
+                    (repo / "packages" / "expskill" / "skills" / name / "SKILL.md").read_bytes(),
                 )
                 self.assertTrue((config_dir / "commands" / f"{name}.md").is_symlink())
             for name in AGENTS:
