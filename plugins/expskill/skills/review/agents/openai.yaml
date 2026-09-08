@@ -1,0 +1,6 @@
+interface:
+  display_name: "Review"
+  short_description: "Save evidence-backed code review and ratings"
+  default_prompt: "Use $review to inspect the scope I provide and save every supported issue and its ratings in a Markdown report, without fix advice."
+policy:
+  allow_implicit_invocation: false
