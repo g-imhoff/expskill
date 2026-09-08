@@ -71,6 +71,8 @@ RECEIPT_FILENAME = "install.json"
 OPENCODE_RECEIPT_FILENAME = "install-opencode.json"
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
 OPENCODE_ARTIFACT_DIRECTORY = "opencode-artifact"
+OPENCODE_ARTIFACT_TRANSACTION_PREFIX = ".opencode-artifact.txn-"
+OPENCODE_ARTIFACT_TRANSACTION_SCHEMA = "opencode-artifact-transaction.v1"
 # Exact source/destination roster emitted by the parent-repository installer
 # before receipt-owned artifacts were introduced.  These names are deliberately
 # frozen: receipt migration must not turn arbitrary receipt text into deletion
@@ -130,6 +132,18 @@ class _Receipt:
     marketplace_added: bool
     plugin_installed: bool
     artifact_root: Path | None = None
+
+
+@dataclass(frozen=True)
+class _ArtifactTransaction:
+    metadata_path: Path
+    artifact: Path
+    backup: Path
+    backup_dev: int
+    backup_ino: int
+    phase: str
+    artifact_dev: int | None = None
+    artifact_ino: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1124,18 +1138,224 @@ def _remove_opencode_artifact(path: Path) -> None:
         raise InstallError(f"cannot remove opencode artifact: {path}: {error}") from error
 
 
+def _write_artifact_transaction(path: Path, payload: Mapping[str, object]) -> None:
+    """Durably record an artifact swap before changing the live path."""
+
+    parent = path.parent
+    _assert_no_symlink_components(parent, "opencode state")
+    if _lexists(path) and (path.is_symlink() or not path.is_file()):
+        raise InstallError(f"artifact transaction is not a regular file: {path}")
+    temporary: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=parent
+        )
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(dict(payload), stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        try:
+            directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            # The file itself is durable on platforms without directory fsync.
+            pass
+    except OSError as error:
+        raise InstallError(f"cannot write artifact transaction: {path}: {error}") from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def _remove_artifact_transaction(path: Path) -> None:
+    if not _lexists(path):
+        return
+    if path.is_symlink() or not path.is_file():
+        raise InstallError(f"artifact transaction is not a regular file: {path}")
+    try:
+        path.unlink()
+    except OSError as error:
+        raise InstallError(f"cannot remove artifact transaction: {path}: {error}") from error
+
+
+def _read_artifact_transactions(state_home: Path) -> tuple[_ArtifactTransaction, ...]:
+    """Read only self-describing swap records; foreign old directories are ignored."""
+
+    parent = _opencode_receipt_path(state_home).parent
+    _assert_no_symlink_components(parent, "opencode state")
+    if not parent.is_dir():
+        return ()
+    expected_artifact = _lexical_absolute(parent / OPENCODE_ARTIFACT_DIRECTORY)
+    records: list[_ArtifactTransaction] = []
+    try:
+        entries = sorted(parent.iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        raise InstallError(f"cannot list artifact transactions: {parent}: {error}") from error
+    for metadata_path in entries:
+        if not metadata_path.name.startswith(OPENCODE_ARTIFACT_TRANSACTION_PREFIX):
+            continue
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            continue
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            # An unknown or torn transaction record cannot grant deletion
+            # authority over a matching backup.  Preserve it for inspection.
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("schema_version") != OPENCODE_ARTIFACT_TRANSACTION_SCHEMA:
+            continue
+        phase = payload.get("phase")
+        artifact_value = payload.get("artifact")
+        backup_value = payload.get("backup")
+        backup_dev = payload.get("backup_dev")
+        backup_ino = payload.get("backup_ino")
+        artifact_dev = payload.get("artifact_dev")
+        artifact_ino = payload.get("artifact_ino")
+        if (
+            phase not in {"prepared", "backup-created", "published"}
+            or not isinstance(artifact_value, str)
+            or not isinstance(backup_value, str)
+            or not isinstance(backup_dev, int)
+            or not isinstance(backup_ino, int)
+            or (phase == "published" and not isinstance(artifact_dev, int))
+            or (phase == "published" and not isinstance(artifact_ino, int))
+        ):
+            continue
+        artifact = _lexical_absolute(Path(artifact_value).expanduser())
+        backup = _lexical_absolute(Path(backup_value).expanduser())
+        if artifact != expected_artifact:
+            continue
+        try:
+            backup.relative_to(parent)
+        except ValueError:
+            continue
+        if (
+            backup.parent != parent
+            or not backup.name.startswith(f".{OPENCODE_ARTIFACT_DIRECTORY}.old-")
+            or _has_dot_components(backup)
+            or backup_dev <= 0
+            or backup_ino <= 0
+        ):
+            continue
+        records.append(
+            _ArtifactTransaction(
+                metadata_path=metadata_path,
+                artifact=artifact,
+                backup=backup,
+                backup_dev=backup_dev,
+                backup_ino=backup_ino,
+                phase=phase,
+                artifact_dev=artifact_dev if isinstance(artifact_dev, int) else None,
+                artifact_ino=artifact_ino if isinstance(artifact_ino, int) else None,
+            )
+        )
+    return tuple(records)
+
+
+def _owned_transaction_backup(transaction: _ArtifactTransaction) -> bool:
+    try:
+        metadata = os.lstat(transaction.backup)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_dev == transaction.backup_dev
+        and metadata.st_ino == transaction.backup_ino
+    )
+
+
+def _owned_transaction_artifact(transaction: _ArtifactTransaction) -> bool:
+    if transaction.artifact_dev is None or transaction.artifact_ino is None:
+        return False
+    try:
+        metadata = os.lstat(transaction.artifact)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_dev == transaction.artifact_dev
+        and metadata.st_ino == transaction.artifact_ino
+    )
+
+
+def _recover_opencode_transactions(state_home: Path) -> None:
+    """Recover a live artifact moved to a durable, owned backup before rebuild."""
+
+    for transaction in _read_artifact_transactions(state_home):
+        backup_exists = _lexists(transaction.backup)
+        artifact_exists = _lexists(transaction.artifact)
+        if backup_exists and not _owned_transaction_backup(transaction):
+            # Identity changed or the path was replaced.  Never delete or adopt
+            # it; retain the record and let the normal ownership checks stop.
+            continue
+        if not backup_exists:
+            if artifact_exists and transaction.phase == "published":
+                # The backup was already cleaned; only its bookkeeping remains.
+                try:
+                    _remove_artifact_transaction(transaction.metadata_path)
+                except InstallError:
+                    pass
+            continue
+        if artifact_exists:
+            # A published candidate is already live.  Keep the prior artifact
+            # until the next receipt commit has succeeded, then post-commit GC
+            # may remove this exact identity.
+            if transaction.phase != "published" or not _owned_transaction_artifact(transaction):
+                raise InstallError(
+                    "OpenCode artifact swap has an unproven live occupant; preserving state"
+                )
+            continue
+        try:
+            transaction.backup.replace(transaction.artifact)
+        except OSError as error:
+            raise InstallError(
+                f"cannot recover OpenCode artifact from owned backup: {error}"
+            ) from error
+        try:
+            _remove_artifact_transaction(transaction.metadata_path)
+        except InstallError:
+            # Recovery itself succeeded; retaining metadata is safe and makes
+            # cleanup retryable on the next invocation.
+            pass
+
+
 def _garbage_collect_opencode_backups(state_home: Path) -> None:
-    """Best-effort cleanup of builder-owned post-commit backup directories."""
+    """Best-effort cleanup of only transaction-proven, receipt-owned backups."""
 
     parent = _opencode_receipt_path(state_home).parent
     _assert_no_symlink_components(parent, "opencode state")
     if not parent.is_dir():
         return
-    for backup in sorted(parent.glob(f".{OPENCODE_ARTIFACT_DIRECTORY}.old-*")):
-        if backup.is_symlink() or not backup.is_dir():
+    artifact = _fixed_opencode_artifact(state_home)
+    if not _receipt_owns_artifact(_opencode_receipt_path(state_home), artifact):
+        return
+    for transaction in _read_artifact_transactions(state_home):
+        if not _lexists(transaction.backup):
+            if transaction.phase == "published":
+                try:
+                    _remove_artifact_transaction(transaction.metadata_path)
+                except InstallError:
+                    pass
+            continue
+        if not _owned_transaction_backup(transaction) or not _lexists(artifact):
             continue
         try:
-            _remove_opencode_artifact(backup)
+            _remove_opencode_artifact(transaction.backup)
+            _remove_artifact_transaction(transaction.metadata_path)
         except (InstallError, OSError):
             # Cleanup is deliberately post-commit and retryable.  A failed
             # garbage collection must never turn a live install into a
@@ -1274,7 +1494,11 @@ def _ensure_opencode_artifact(
 
     artifact = _fixed_opencode_artifact(state_home)
     receipt_path = _opencode_receipt_path(state_home)
-    _garbage_collect_opencode_backups(state_home)
+    # A process may have terminated after moving the live artifact to its
+    # backup and before replacing it with the candidate.  Recover that exact
+    # identity before any cleanup or build attempt; a name-based glob is never
+    # a recovery authority.
+    _recover_opencode_transactions(state_home)
     existing = _lexists(artifact)
     if existing and not _receipt_owns_artifact(receipt_path, artifact):
         raise InstallError(f"opencode artifact is stale and not receipt-owned: {artifact}")
@@ -1285,6 +1509,8 @@ def _ensure_opencode_artifact(
         raise InstallError(f"cannot create OpenCode artifact directory: {error}") from error
     candidate = artifact.parent / f".{artifact.name}.next-{uuid.uuid4().hex}"
     backup: Path | None = None
+    transaction_path: Path | None = None
+    published_artifact_identity: tuple[int, int] | None = None
     if _lexists(artifact):
         if artifact.is_symlink() or not artifact.is_dir():
             raise InstallError(f"opencode artifact is not a regular directory: {artifact}")
@@ -1297,13 +1523,59 @@ def _ensure_opencode_artifact(
             if not _receipt_owns_artifact(receipt_path, artifact):
                 raise InstallError(f"opencode artifact ownership changed: {artifact}")
             backup = artifact.parent / f".{artifact.name}.old-{uuid.uuid4().hex}"
+            live_metadata = os.lstat(artifact)
+            transaction_path = artifact.parent / (
+                f"{OPENCODE_ARTIFACT_TRANSACTION_PREFIX}{uuid.uuid4().hex}.json"
+            )
+            _write_artifact_transaction(
+                transaction_path,
+                {
+                    "artifact": str(artifact),
+                    "backup": str(backup),
+                    "backup_dev": live_metadata.st_dev,
+                    "backup_ino": live_metadata.st_ino,
+                    "phase": "prepared",
+                    "schema_version": OPENCODE_ARTIFACT_TRANSACTION_SCHEMA,
+                },
+            )
             artifact.replace(backup)
+            _write_artifact_transaction(
+                transaction_path,
+                {
+                    "artifact": str(artifact),
+                    "backup": str(backup),
+                    "backup_dev": live_metadata.st_dev,
+                    "backup_ino": live_metadata.st_ino,
+                    "phase": "backup-created",
+                    "schema_version": OPENCODE_ARTIFACT_TRANSACTION_SCHEMA,
+                },
+            )
             try:
                 candidate.replace(artifact)
             except OSError:
                 if _lexists(backup) and not _lexists(artifact):
                     backup.replace(artifact)
+                if transaction_path is not None and _lexists(transaction_path):
+                    try:
+                        _remove_artifact_transaction(transaction_path)
+                    except InstallError:
+                        pass
                 raise
+            artifact_metadata = os.lstat(artifact)
+            published_artifact_identity = (artifact_metadata.st_dev, artifact_metadata.st_ino)
+            _write_artifact_transaction(
+                transaction_path,
+                {
+                    "artifact": str(artifact),
+                    "artifact_dev": artifact_metadata.st_dev,
+                    "artifact_ino": artifact_metadata.st_ino,
+                    "backup": str(backup),
+                    "backup_dev": live_metadata.st_dev,
+                    "backup_ino": live_metadata.st_ino,
+                    "phase": "published",
+                    "schema_version": OPENCODE_ARTIFACT_TRANSACTION_SCHEMA,
+                },
+            )
             return artifact, False, backup
         candidate.replace(artifact)
         return artifact, True, None
@@ -1313,11 +1585,43 @@ def _ensure_opencode_artifact(
                 _remove_opencode_artifact(candidate)
             except InstallError:
                 pass
-        if backup is not None and _lexists(backup) and not _lexists(artifact):
+        restored = False
+        if backup is not None and _lexists(backup):
+            if not _lexists(artifact):
+                try:
+                    backup.replace(artifact)
+                    restored = True
+                except OSError as restore_error:
+                    raise InstallError(f"cannot restore OpenCode artifact: {restore_error}") from error
+            elif published_artifact_identity is not None:
+                try:
+                    current_metadata = os.lstat(artifact)
+                except OSError:
+                    current_metadata = None
+                if (
+                    current_metadata is not None
+                    and (current_metadata.st_dev, current_metadata.st_ino)
+                    == published_artifact_identity
+                ):
+                    try:
+                        _remove_opencode_artifact(artifact)
+                        backup.replace(artifact)
+                        restored = True
+                    except OSError as restore_error:
+                        raise InstallError(f"cannot restore OpenCode artifact: {restore_error}") from error
+                else:
+                    raise InstallError(
+                        "cannot restore OpenCode artifact without proving live ownership"
+                    ) from error
+        if (
+            transaction_path is not None
+            and _lexists(transaction_path)
+            and (restored or not _lexists(backup))
+        ):
             try:
-                backup.replace(artifact)
-            except OSError as restore_error:
-                raise InstallError(f"cannot restore OpenCode artifact: {restore_error}") from error
+                _remove_artifact_transaction(transaction_path)
+            except InstallError:
+                pass
         if not parent_existed:
             try:
                 artifact.parent.rmdir()
@@ -1599,6 +1903,10 @@ def install_opencode(
             _remove_opencode_artifact(artifact_backup)
         except (InstallError, OSError):
             pass
+    # The receipt now names the successfully committed artifact.  Retry any
+    # older transaction records, but only when their metadata proves the exact
+    # backup identity; foreign ``.old-*`` directories are untouched.
+    _garbage_collect_opencode_backups(state_home)
     return InstallResult(
         links=links,
         created_links=tuple(created_links),

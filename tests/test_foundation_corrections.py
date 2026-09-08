@@ -12,6 +12,7 @@ from unittest import mock
 
 import scripts.build_opencode_package as build_module
 import scripts.install as install_module
+import scripts.validate as validate_module
 from scripts.build_opencode_package import BuildError, build_opencode_package
 from scripts.install import InstallError, install_opencode, uninstall_opencode
 
@@ -55,6 +56,160 @@ def receipt_path(state: Path) -> Path:
 
 
 class FoundationCorrectionTests(unittest.TestCase):
+    def test_foreign_matching_backup_survives_reinstall(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            foreign = state / "expskill" / ".opencode-artifact.old-foreign"
+            foreign.mkdir()
+            (foreign / "foreign.txt").write_text("must survive\n", encoding="utf-8")
+            install_opencode(repo, config, state)
+            self.assertEqual((foreign / "foreign.txt").read_text(encoding="utf-8"), "must survive\n")
+
+    def test_interrupted_swap_backup_survives_failed_next_build_and_recovers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            artifact = state / "expskill" / "opencode-artifact"
+            original_replace = Path.replace
+
+            def crash_after_live_backup(source: Path, target: Path) -> Path:
+                if source.name.startswith(".opencode-artifact.next-") and target.name == "opencode-artifact":
+                    raise SystemExit("simulated process crash")
+                return original_replace(source, target)
+
+            with mock.patch.object(Path, "replace", autospec=True, side_effect=crash_after_live_backup):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+            backups = tuple((state / "expskill").glob(".opencode-artifact.old-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertFalse(artifact.exists())
+            with mock.patch.object(install_module, "build_opencode_package", side_effect=BuildError("failed")):
+                with self.assertRaises(InstallError):
+                    install_opencode(repo, config, state)
+            self.assertTrue(artifact.is_dir())
+            self.assertFalse(backups[0].exists())
+            install_opencode(repo, config, state)
+            self.assertTrue(artifact.is_dir())
+
+    def test_output_parent_move_and_symlink_after_staging_fails_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            parent = root / "output-parent"
+            parent.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            output = parent / "artifact"
+            real_publish = build_module._replace_output
+
+            def move_parent_then_publish(staging: Path, target: Path) -> None:
+                moved = root / "moved-parent"
+                target.parent.rename(moved)
+                target.parent.symlink_to(outside, target_is_directory=True)
+                real_publish(staging, target)
+
+            with mock.patch.object(build_module, "_replace_output", side_effect=move_parent_then_publish):
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, output)
+            self.assertTrue(output.parent.is_symlink())
+            self.assertEqual(list(outside.iterdir()), [])
+            self.assertFalse((outside / "artifact").exists())
+            self.assertFalse(any(path.name.startswith(".artifact.") for path in (root / "moved-parent").iterdir()))
+
+    def test_snapshot_mutation_after_read_aborts_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            real_read_bytes = Path.read_bytes
+            mutated = False
+
+            def read_then_mutate(path: Path) -> bytes:
+                nonlocal mutated
+                data = real_read_bytes(path)
+                if path == skill and not mutated:
+                    mutated = True
+                    skill.write_bytes(data + b"\nmutated after snapshot read\n")
+                return data
+
+            with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read_then_mutate):
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, root / "artifact")
+
+    def test_snapshot_two_file_old_new_mixture_aborts_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            first = repo / "packages/expskill/skills/brainstorm/SKILL.md"
+            second = repo / "packages/expskill/skills/design/SKILL.md"
+            real_read_bytes = Path.read_bytes
+            mutated = False
+
+            def read_then_mutate(path: Path) -> bytes:
+                nonlocal mutated
+                data = real_read_bytes(path)
+                if path == second and not mutated:
+                    mutated = True
+                    first.write_bytes(real_read_bytes(first) + b"\nmutated between source reads\n")
+                return data
+
+            with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read_then_mutate):
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, root / "artifact")
+
+    def test_publish_failure_on_second_operation_leaves_no_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            output = root / "artifact"
+            moved = 0
+            real_rename = os.rename
+
+            def fail_second(source: str, target: str, **kwargs: object) -> None:
+                nonlocal moved
+                if kwargs.get("src_dir_fd") is not None and kwargs.get("dst_dir_fd") is not None:
+                    moved += 1
+                    if moved == 2:
+                        raise OSError("injected second publish failure")
+                real_rename(source, target, **kwargs)
+
+            with mock.patch.object(build_module, "_renameat2_noreplace", return_value=False):
+                with mock.patch.object(build_module.os, "rename", side_effect=fail_second):
+                    with self.assertRaises(BuildError):
+                        build_opencode_package(repo, output)
+            self.assertFalse(output.exists())
+
+    def test_validate_rejects_mutated_provenance_and_unexpected_artifact_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            real_build = validate_module.build_opencode_package
+
+            def mutate_provenance(source: Path, artifact: Path) -> Path:
+                result = real_build(source, artifact)
+                (result / "provenance.json").write_text("{}\n", encoding="utf-8")
+                return result
+
+            with mock.patch.object(validate_module, "build_opencode_package", side_effect=mutate_provenance):
+                errors = validate_module.validate_repository(repo)
+            self.assertTrue(any("provenance" in error.lower() for error in errors), errors)
+
+            def inject_unexpected(source: Path, artifact: Path) -> Path:
+                result = real_build(source, artifact)
+                (result / "unexpected.txt").write_text("foreign\n", encoding="utf-8")
+                return result
+
+            with mock.patch.object(validate_module, "build_opencode_package", side_effect=inject_unexpected):
+                errors = validate_module.validate_repository(repo)
+            self.assertTrue(any("unexpected" in error.lower() for error in errors), errors)
+
     def test_reinstall_repairs_deleted_modified_and_unexpected_artifact_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

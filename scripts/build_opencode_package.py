@@ -10,6 +10,8 @@ package.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -17,6 +19,7 @@ import shutil
 import stat
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -48,6 +51,23 @@ ARTIFACT_MTIME = 0
 
 class BuildError(RuntimeError):
     """Raised when package inputs or the explicit output target are unsafe."""
+
+
+@dataclass(frozen=True)
+class _OutputBinding:
+    """An output parent bound to an open directory descriptor."""
+
+    parent: Path
+    parent_fd: int
+    parent_identity: tuple[int, int]
+    staging_name: str
+
+
+# ``_replace_output`` deliberately keeps a two-argument public seam for callers
+# and tests.  The builder registers the descriptor-bound context immediately
+# before calling it, so a caller cannot swap the lexical parent between staging
+# and publication and redirect the commit through a symlink.
+_OUTPUT_BINDINGS: dict[str, _OutputBinding] = {}
 
 
 def _reject_symlink_components(path: Path, label: str) -> None:
@@ -298,17 +318,21 @@ def _snapshot_sources(root: Path) -> tuple[Path, Path]:
         for relative, source in initial:
             target = snapshot_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(source.read_bytes())
-        final = _provenance_sources(root)
-        initial_digest = [
+            # Read once and derive the digest from the exact bytes written to
+            # the private snapshot.  A second read of the live path here could
+            # describe a different byte set than the one rendered below.
+            contents = source.read_bytes()
+            target.write_bytes(contents)
+        snapshot_digest = [
             (relative, hashlib.sha256(path.read_bytes()).hexdigest())
-            for relative, path in initial
+            for relative, path in _provenance_sources(snapshot_root)
         ]
+        final_sources = _provenance_sources(root)
         final_digest = [
             (relative, hashlib.sha256(path.read_bytes()).hexdigest())
-            for relative, path in final
+            for relative, path in final_sources
         ]
-        if initial_digest != final_digest:
+        if snapshot_digest != final_digest:
             raise BuildError("repository sources changed while creating a private OpenCode snapshot")
     except (OSError, BuildError):
         shutil.rmtree(snapshot_parent, ignore_errors=True)
@@ -346,6 +370,22 @@ def _write_provenance(root: Path, output_root: Path) -> Path:
     return target
 
 
+def _snapshot_digest_manifest(root: Path) -> list[tuple[str, str]]:
+    """Return the digest inventory for an already-created private snapshot."""
+
+    return [
+        (relative, hashlib.sha256(path.read_bytes()).hexdigest())
+        for relative, path in _provenance_sources(root)
+    ]
+
+
+def _verify_live_sources_against_snapshot(root: Path, snapshot_root: Path) -> None:
+    """Reject any live source edit observed after the snapshot was accepted."""
+
+    if _snapshot_digest_manifest(root) != _snapshot_digest_manifest(snapshot_root):
+        raise BuildError("repository sources changed before OpenCode publication")
+
+
 def _normalize_artifact_modes(output_root: Path) -> None:
     """Make artifact permissions and timestamps independent of umask and clock."""
 
@@ -371,52 +411,183 @@ def _normalize_artifact_modes(output_root: Path) -> None:
             raise BuildError(f"artifact metadata cannot be normalized: {path}: {error}") from error
 
 
-def _replace_output(staging: Path, output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # Reserve the final path with mkdir.  Unlike rename/replace, mkdir is an
-    # atomic no-replace operation: a target created after preflight can never
-    # be clobbered.  Move the already-complete children into that reservation.
+def _same_directory_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _open_output_parent(parent: Path) -> tuple[int, tuple[int, int]]:
+    """Open and identity-check the already validated output parent."""
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        output.mkdir(mode=ARTIFACT_DIRECTORY_MODE)
+        descriptor = os.open(parent, flags)
+    except OSError as error:
+        raise BuildError(f"output parent cannot be opened safely: {parent}: {error}") from error
+    try:
+        bound = os.fstat(descriptor)
+        observed = os.stat(parent, follow_symlinks=False)
+        if not stat.S_ISDIR(bound.st_mode) or not _same_directory_identity(bound, observed):
+            raise BuildError(f"output parent changed during validation: {parent}")
+        return descriptor, (bound.st_dev, bound.st_ino)
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _binding_is_current(binding: _OutputBinding) -> bool:
+    try:
+        bound = os.fstat(binding.parent_fd)
+        observed = os.stat(binding.parent, follow_symlinks=False)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(bound.st_mode)
+        and _same_directory_identity(bound, observed)
+        and (bound.st_dev, bound.st_ino) == binding.parent_identity
+    )
+
+
+def _renameat2_noreplace(
+    parent_fd: int, source_name: str, destination_name: str
+) -> bool:
+    """Atomically rename without replacing a target where Linux supports it."""
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        function = libc.renameat2
+    except (AttributeError, OSError):
+        return False
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    result = function(
+        parent_fd,
+        os.fsencode(source_name),
+        parent_fd,
+        os.fsencode(destination_name),
+        1,  # RENAME_NOREPLACE
+    )
+    if result == 0:
+        return True
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise BuildError(f"output target must not already exist: {destination_name}")
+    if error_number in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        return False
+    raise OSError(error_number, os.strerror(error_number))
+
+
+def _fallback_publish_no_replace(binding: _OutputBinding, output_name: str) -> None:
+    """Portable complete-or-absent fallback when renameat2 is unavailable."""
+
+    parent_fd = binding.parent_fd
+    staging_name = binding.staging_name
+    try:
+        os.mkdir(output_name, mode=ARTIFACT_DIRECTORY_MODE, dir_fd=parent_fd)
     except FileExistsError as error:
-        raise BuildError(f"output target must not already exist: {output}") from error
+        raise BuildError(f"output target must not already exist: {binding.parent / output_name}") from error
     except OSError as error:
-        raise BuildError(f"output target cannot be reserved: {output}: {error}") from error
+        raise BuildError(f"output target cannot be reserved: {binding.parent / output_name}: {error}") from error
+    output_fd: int | None = None
+    staging_fd: int | None = None
+    moved: list[str] = []
     try:
-        output_identity = os.lstat(output)
-    except OSError as error:
-        raise BuildError(f"reserved output cannot be inspected: {output}: {error}") from error
-    try:
-        for child in sorted(staging.iterdir(), key=lambda item: item.name):
-            destination = output / child.name
-            if os.path.lexists(destination):
-                raise BuildError(f"output target was populated during publish: {destination}")
-            child.rename(destination)
-        staging.rmdir()
-        os.chmod(output, ARTIFACT_DIRECTORY_MODE)
-        os.utime(output, (ARTIFACT_MTIME, ARTIFACT_MTIME))
-    except (OSError, BuildError):
-        # The reservation is ours, but never remove it if an unexpected child
-        # appeared after reservation; that child may be foreign state.
-        try:
-            current_identity = os.lstat(output)
-        except OSError:
-            current_identity = None
-        if (
-            current_identity is not None
-            and current_identity.st_dev == output_identity.st_dev
-            and current_identity.st_ino == output_identity.st_ino
-        ):
+        output_fd = os.open(
+            output_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        staging_fd = os.open(
+            staging_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        staging_path = Path(f"/proc/self/fd/{staging_fd}")
+        for child in sorted(staging_path.iterdir(), key=lambda item: item.name):
             try:
-                children = list(output.iterdir())
-            except OSError:
-                children = []
-            if not children:
+                os.stat(child.name, dir_fd=output_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise BuildError(
+                    f"output target was populated during publish: {binding.parent / output_name / child.name}"
+                )
+            os.rename(
+                child.name,
+                child.name,
+                src_dir_fd=staging_fd,
+                dst_dir_fd=output_fd,
+            )
+            moved.append(child.name)
+        os.rmdir(staging_name, dir_fd=parent_fd)
+    except (OSError, BuildError):
+        # The output reservation is ours only while it remains empty or contains
+        # exactly the children moved by this operation.  Roll every moved entry
+        # back before removing it; a foreign child is never deleted.
+        if output_fd is not None:
+            for name in reversed(moved):
                 try:
-                    output.rmdir()
+                    os.rename(name, name, src_dir_fd=output_fd, dst_dir_fd=staging_fd)
                 except OSError:
                     pass
+        try:
+            if staging_fd is not None:
+                os.close(staging_fd)
+                staging_fd = None
+            if output_fd is not None:
+                os.close(output_fd)
+                output_fd = None
+            if not os.listdir(Path(f"/proc/self/fd/{parent_fd}") / output_name):
+                os.rmdir(output_name, dir_fd=parent_fd)
+        except OSError:
+            pass
         raise
+    finally:
+        if staging_fd is not None:
+            os.close(staging_fd)
+        if output_fd is not None:
+            os.close(output_fd)
+
+
+def _replace_output(staging: Path, output: Path) -> None:
+    """Publish one complete artifact with no target replacement."""
+
+    key = os.path.abspath(os.fspath(staging))
+    binding = _OUTPUT_BINDINGS.get(key)
+    temporary_binding = False
+    if binding is None:
+        parent_fd, identity = _open_output_parent(output.parent)
+        binding = _OutputBinding(output.parent, parent_fd, identity, staging.name)
+        temporary_binding = True
+    try:
+        if not _binding_is_current(binding):
+            raise BuildError(f"output parent changed during publication: {output.parent}")
+        output_name = output.name
+        # ``renameat2`` is the preferred one-operation complete publication.
+        # Its fallback reserves the name and rolls back every moved child on any
+        # error, preserving the same no-clobber and complete-or-absent result.
+        try:
+            published = _renameat2_noreplace(binding.parent_fd, binding.staging_name, output_name)
+        except OSError as error:
+            raise BuildError(f"cannot publish OpenCode artifact: {error}") from error
+        if not published:
+            try:
+                _fallback_publish_no_replace(binding, output_name)
+            except OSError as error:
+                raise BuildError(f"cannot publish OpenCode artifact: {error}") from error
+        if not _binding_is_current(binding):
+            # The path moved after the commit.  Undo through the still-open
+            # descriptor, never through the potentially replaced lexical path.
+            try:
+                os.rename(output_name, binding.staging_name, src_dir_fd=binding.parent_fd, dst_dir_fd=binding.parent_fd)
+            except OSError:
+                pass
+            raise BuildError(f"output parent changed during publication: {output.parent}")
+    finally:
+        if temporary_binding:
+            os.close(binding.parent_fd)
 
 
 def _cleanup_staging(
@@ -426,6 +597,27 @@ def _cleanup_staging(
     identity: os.stat_result | None = None,
 ) -> None:
     """Remove only the builder-owned staging directory after a failed build."""
+
+    binding = _OUTPUT_BINDINGS.get(os.path.abspath(os.fspath(staging)))
+    if binding is not None:
+        try:
+            metadata = os.stat(
+                binding.staging_name,
+                dir_fd=binding.parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError:
+            return
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            return
+        if identity is not None:
+            if metadata.st_dev != identity.st_dev or metadata.st_ino != identity.st_ino:
+                return
+        try:
+            shutil.rmtree(Path(f"/proc/self/fd/{binding.parent_fd}") / binding.staging_name)
+        except OSError:
+            pass
+        return
 
     if staging.parent != staging_parent or not staging.name.startswith(prefix):
         return
@@ -486,13 +678,24 @@ def build_opencode_package(
 
     staging_parent = output.parent
     staging_parent.mkdir(parents=True, exist_ok=True)
+    parent_fd, parent_identity = _open_output_parent(staging_parent)
     staging_prefix = f".{output.name}."
-    staging = Path(tempfile.mkdtemp(prefix=staging_prefix, dir=staging_parent))
+    descriptor_parent = Path(f"/proc/self/fd/{parent_fd}")
+    staging_name = Path(tempfile.mkdtemp(prefix=staging_prefix, dir=descriptor_parent)).name
+    staging = descriptor_parent / staging_name
     staging_identity = os.lstat(staging)
+    binding = _OutputBinding(staging_parent, parent_fd, parent_identity, staging_name)
+    binding_key = os.path.abspath(os.fspath(staging))
+    _OUTPUT_BINDINGS[binding_key] = binding
     snapshot_root: Path | None = None
     snapshot_parent: Path | None = None
     try:
         snapshot_root, snapshot_parent = _snapshot_sources(root)
+        # Revalidate the live inventory at the handoff from snapshot capture to
+        # rendering.  Later edits during rendering are intentionally harmless:
+        # every copied/rendered byte and provenance digest still comes solely
+        # from the accepted private snapshot.
+        _verify_live_sources_against_snapshot(root, snapshot_root)
         snapshot_canonical = snapshot_root / "packages" / "expskill"
         snapshot_platform = snapshot_canonical / "opencode"
         _copy_platform_source(snapshot_platform, staging)
@@ -511,6 +714,8 @@ def build_opencode_package(
     finally:
         if snapshot_parent is not None:
             shutil.rmtree(snapshot_parent, ignore_errors=True)
+        _OUTPUT_BINDINGS.pop(binding_key, None)
+        os.close(parent_fd)
     return output
 
 

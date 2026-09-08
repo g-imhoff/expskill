@@ -19,7 +19,20 @@ sys.dont_write_bytecode = True
 
 try:
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
-    from scripts.build_opencode_package import build_opencode_package
+    from scripts.build_opencode_package import (
+        ARTIFACT_DIRECTORY_MODE,
+        ARTIFACT_FILE_MODE,
+        ARTIFACT_MTIME,
+        COPY_FILES,
+        COPY_LICENSES,
+        COPY_TREES,
+        PLATFORM_FILES,
+        PLATFORM_PLUGIN_DIRECTORY,
+        PLATFORM_PLUGIN_FILES,
+        PROVENANCE_SCHEMA_VERSION,
+        _provenance_sources,
+        build_opencode_package,
+    )
     from scripts.render_opencode import RenderError as AgentSyncError
     from scripts.render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -30,7 +43,20 @@ try:
     )
 except ModuleNotFoundError:
     from build_opencode_package import BuildError as OpencodeBuildError
-    from build_opencode_package import build_opencode_package
+    from build_opencode_package import (
+        ARTIFACT_DIRECTORY_MODE,
+        ARTIFACT_FILE_MODE,
+        ARTIFACT_MTIME,
+        COPY_FILES,
+        COPY_LICENSES,
+        COPY_TREES,
+        PLATFORM_FILES,
+        PLATFORM_PLUGIN_DIRECTORY,
+        PLATFORM_PLUGIN_FILES,
+        PROVENANCE_SCHEMA_VERSION,
+        _provenance_sources,
+        build_opencode_package,
+    )
     from render_opencode import RenderError as AgentSyncError
     from render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -2953,6 +2979,190 @@ def _active_opencode_model(package_root: Path) -> tuple[str | None, str | None]:
     )
 
 
+def _artifact_output_relative(source_relative: str) -> str | None:
+    """Map one provenance input to its published artifact path."""
+
+    relative = Path(source_relative)
+    package_marker = Path("packages") / "expskill"
+    if relative.parts[:2] != package_marker.parts:
+        return None
+    within = Path(*relative.parts[2:])
+    if within.parts and within.parts[0] in COPY_TREES:
+        return within.as_posix()
+    if within in COPY_FILES:
+        return within.as_posix()
+    if within.parts[:2] == COPY_LICENSES.parts:
+        return within.as_posix()
+    if within.parts[:2] == ("opencode", PLATFORM_PLUGIN_DIRECTORY):
+        return Path(*within.parts[1:]).as_posix()
+    if within.as_posix() in PLATFORM_FILES:
+        return within.as_posix()
+    return None
+
+
+def _artifact_inventory(
+    artifact: Path,
+) -> tuple[dict[str, os.stat_result], list[str]]:
+    """Enumerate every artifact entry without following symlinks."""
+
+    entries: dict[str, os.stat_result] = {}
+    errors: list[str] = []
+    try:
+        root_metadata = os.lstat(artifact)
+    except OSError as error:
+        return {}, [f"opencode artifact root cannot be inspected: {error}"]
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        return {}, [f"opencode artifact root must be a regular directory: {artifact}"]
+    pending = [artifact]
+    while pending:
+        current = pending.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError as error:
+            errors.append(f"opencode artifact directory cannot be listed: {current}: {error}")
+            continue
+        for child in children:
+            relative = child.relative_to(artifact).as_posix()
+            try:
+                metadata = os.lstat(child)
+            except OSError as error:
+                errors.append(f"opencode artifact entry cannot be inspected: {child}: {error}")
+                continue
+            entries[relative] = metadata
+            if stat.S_ISLNK(metadata.st_mode):
+                errors.append(f"opencode artifact entry must not be a symlink: {child}")
+            elif stat.S_ISDIR(metadata.st_mode):
+                pending.append(child)
+            elif not stat.S_ISREG(metadata.st_mode):
+                errors.append(f"opencode artifact entry must be regular: {child}")
+    return entries, errors
+
+
+def _validate_built_opencode_artifact(
+    repository_root: Path,
+    artifact: Path,
+    rendered: dict[str, str],
+    errors: list[str],
+) -> None:
+    """Validate the exact built bytes, provenance, inventory, and metadata."""
+
+    expected_files: dict[str, bytes] = {}
+    package_root = repository_root / "packages" / "expskill"
+    platform_root = package_root / "opencode"
+    try:
+        for name in PLATFORM_FILES:
+            expected_files[name] = (platform_root / name).read_bytes()
+        for name in PLATFORM_PLUGIN_FILES:
+            expected_files[f"{PLATFORM_PLUGIN_DIRECTORY}/{name}"] = (
+                platform_root / PLATFORM_PLUGIN_DIRECTORY / name
+            ).read_bytes()
+        for relative, source in _provenance_sources(repository_root):
+            output_relative = _artifact_output_relative(relative)
+            if output_relative is not None:
+                expected_files[output_relative] = source.read_bytes()
+        expected_files.update(
+            {relative: contents.encode("utf-8") for relative, contents in rendered.items()}
+        )
+        expected_inputs = [
+            {"path": relative, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+            for relative, source in _provenance_sources(repository_root)
+        ]
+    except (OSError, OpencodeBuildError, RuntimeError) as error:
+        errors.append(f"opencode artifact inputs could not be inventoried: {error}")
+        return
+
+    provenance_path = artifact / "provenance.json"
+    provenance: object | None = None
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(f"opencode artifact provenance is invalid: {error}")
+    if isinstance(provenance, dict):
+        if set(provenance) != {"schema_version", "inputs"}:
+            errors.append("opencode artifact provenance must contain exactly schema_version and inputs")
+        if provenance.get("schema_version") != PROVENANCE_SCHEMA_VERSION:
+            errors.append(
+                f"opencode artifact provenance schema_version must be {PROVENANCE_SCHEMA_VERSION!r}"
+            )
+        inputs = provenance.get("inputs")
+        if not isinstance(inputs, list):
+            errors.append("opencode artifact provenance inputs must be a list")
+        else:
+            normalized_inputs: list[dict[str, str]] = []
+            for index, entry in enumerate(inputs):
+                if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                    errors.append(f"opencode artifact provenance input {index} is malformed")
+                    continue
+                path = entry.get("path")
+                digest = entry.get("sha256")
+                if not isinstance(path, str) or not isinstance(digest, str):
+                    errors.append(f"opencode artifact provenance input {index} has invalid fields")
+                    continue
+                normalized_inputs.append({"path": path, "sha256": digest})
+            if [item["path"] for item in normalized_inputs] != sorted(
+                item["path"] for item in normalized_inputs
+            ):
+                errors.append("opencode artifact provenance paths must be sorted")
+            if len({item["path"] for item in normalized_inputs}) != len(normalized_inputs):
+                errors.append("opencode artifact provenance paths must be unique")
+            if normalized_inputs != expected_inputs:
+                errors.append("opencode artifact provenance digests do not match every expected input")
+            expected_files["provenance.json"] = (
+                json.dumps(
+                    {"schema_version": PROVENANCE_SCHEMA_VERSION, "inputs": expected_inputs},
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+    expected_paths: set[str] = set(expected_files)
+    expected_paths.add("provenance.json")
+    expected_entries = set(expected_paths)
+    for relative in expected_paths:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_entries.add(parent.as_posix())
+            parent = parent.parent
+    actual_entries, inventory_errors = _artifact_inventory(artifact)
+    errors.extend(inventory_errors)
+    try:
+        artifact_metadata = os.lstat(artifact)
+    except OSError as error:
+        artifact_metadata = None
+        errors.append(f"opencode artifact root cannot be read for metadata: {error}")
+    if artifact_metadata is not None:
+        if stat.S_IMODE(artifact_metadata.st_mode) != ARTIFACT_DIRECTORY_MODE:
+            errors.append("opencode artifact root has non-normalized mode")
+        if artifact_metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append("opencode artifact root has non-normalized mtime")
+    actual_paths = set(actual_entries)
+    for relative in sorted(actual_paths - expected_entries):
+        errors.append(f"opencode artifact contains unexpected entry: {relative}")
+    for relative in sorted(expected_entries - actual_paths):
+        errors.append(f"opencode artifact is missing entry: {relative}")
+    for relative, metadata in actual_entries.items():
+        if stat.S_ISDIR(metadata.st_mode):
+            expected_mode = ARTIFACT_DIRECTORY_MODE
+        elif stat.S_ISREG(metadata.st_mode):
+            expected_mode = ARTIFACT_FILE_MODE
+        else:
+            continue
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            errors.append(f"opencode artifact entry {relative} has non-normalized mode")
+        if metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append(f"opencode artifact entry {relative} has non-normalized mtime")
+    for relative, expected in expected_files.items():
+        path = artifact / relative
+        try:
+            actual = path.read_bytes()
+        except OSError as error:
+            errors.append(f"opencode artifact file {relative} could not be read: {error}")
+            continue
+        if actual != expected:
+            errors.append(f"opencode artifact file {relative} does not match its accepted bytes")
+
+
 def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None:
     package_root = repository_root / "packages" / "expskill" / "opencode"
     if not _validate_opencode_root(package_root, errors):
@@ -2979,6 +3189,7 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
         except (OpencodeBuildError, OSError) as error:
             errors.append(f"opencode artifact could not be built: {error}")
             return
+        _validate_built_opencode_artifact(repository_root, artifact, rendered, errors)
         _validate_opencode_shared_skills(repository_root / "packages" / "expskill", artifact, errors, skill_names)
         _validate_opencode_commands(artifact, errors, skill_names)
         _validate_opencode_agents(repository_root, repository_root / "packages" / "expskill", artifact, errors)
