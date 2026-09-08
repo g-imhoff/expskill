@@ -19,7 +19,8 @@ sys.dont_write_bytecode = True
 
 try:
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
-    from scripts.build_opencode_package import (
+    from scripts.build_opencode_package import build_opencode_package
+    from scripts.artifact_contract import (
         ARTIFACT_DIRECTORY_MODE,
         ARTIFACT_FILE_MODE,
         ARTIFACT_MTIME,
@@ -30,20 +31,20 @@ try:
         PLATFORM_PLUGIN_DIRECTORY,
         PLATFORM_PLUGIN_FILES,
         PROVENANCE_SCHEMA_VERSION,
-        _provenance_sources,
-        build_opencode_package,
+        artifact_output_relative,
+        canonical_provenance,
     )
     from scripts.render_opencode import RenderError as AgentSyncError
     from scripts.render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
-        _bounded_description,
-        render_agents as _render_opencode_agents,
-        render_all as _render_opencode_all,
-        skill_inventory as _skill_inventory,
+        render_agents,
+        render_all,
+        skill_inventory,
     )
 except ModuleNotFoundError:
     from build_opencode_package import BuildError as OpencodeBuildError
-    from build_opencode_package import (
+    from build_opencode_package import build_opencode_package
+    from artifact_contract import (
         ARTIFACT_DIRECTORY_MODE,
         ARTIFACT_FILE_MODE,
         ARTIFACT_MTIME,
@@ -54,16 +55,15 @@ except ModuleNotFoundError:
         PLATFORM_PLUGIN_DIRECTORY,
         PLATFORM_PLUGIN_FILES,
         PROVENANCE_SCHEMA_VERSION,
-        _provenance_sources,
-        build_opencode_package,
+        artifact_output_relative,
+        canonical_provenance,
     )
     from render_opencode import RenderError as AgentSyncError
     from render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
-        _bounded_description,
-        render_agents as _render_opencode_agents,
-        render_all as _render_opencode_all,
-        skill_inventory as _skill_inventory,
+        render_agents,
+        render_all,
+        skill_inventory,
     )
 
 
@@ -105,6 +105,17 @@ PROJECT_IDENTITY_TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+
+
+def _bounded_description(value: Any, label: str) -> str:
+    """Independently enforce OpenCode's bounded description contract."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise AgentSyncError(f"{label} must be non-empty")
+    normalized = " ".join(value.split())
+    if len(normalized) <= OPENCODE_DESCRIPTION_MAX_LENGTH:
+        return normalized
+    return normalized[: OPENCODE_DESCRIPTION_MAX_LENGTH - 3].rstrip() + "..."
 PLUGIN_INTERFACE_FIELDS = {
     "displayName",
     "shortDescription",
@@ -2979,25 +2990,56 @@ def _active_opencode_model(package_root: Path) -> tuple[str | None, str | None]:
     )
 
 
+def _validator_source_inventory(root: Path) -> list[tuple[str, Path]]:
+    """Walk the contract roster independently of the package builder."""
+
+    package_root = root / "packages" / "expskill"
+    paths: list[tuple[str, Path]] = []
+
+    def add(path: Path) -> None:
+        relative = path.relative_to(root).as_posix()
+        metadata = os.lstat(path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"source is not a regular file: {path}")
+        paths.append((relative, path))
+
+    def walk(directory: Path) -> None:
+        metadata = os.lstat(directory)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise OSError(f"source directory is not regular: {directory}")
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            child_metadata = os.lstat(child)
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise OSError(f"source entry must not be a symlink: {child}")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                walk(child)
+            elif stat.S_ISREG(child_metadata.st_mode):
+                relative = child.relative_to(directory)
+                if "__pycache__" not in relative.parts and child.suffix not in {".pyc", ".pyo"}:
+                    add(child)
+            else:
+                raise OSError(f"source entry is not regular: {child}")
+
+    for tree in COPY_TREES:
+        walk(package_root / tree)
+    for relative in COPY_FILES:
+        add(package_root / relative)
+    walk(package_root / COPY_LICENSES)
+    platform_root = package_root / "opencode"
+    for name in PLATFORM_FILES:
+        add(platform_root / name)
+    walk(platform_root / PLATFORM_PLUGIN_DIRECTORY)
+    walk(package_root / "assets" / "agents")
+    add(root / "scripts/artifact_contract.py")
+    add(root / "scripts/build_opencode_package.py")
+    add(root / "scripts/render_opencode.py")
+    return sorted(paths, key=lambda item: item[0])
+
+
 def _artifact_output_relative(source_relative: str) -> str | None:
     """Map one provenance input to its published artifact path."""
 
-    relative = Path(source_relative)
-    package_marker = Path("packages") / "expskill"
-    if relative.parts[:2] != package_marker.parts:
-        return None
-    within = Path(*relative.parts[2:])
-    if within.parts and within.parts[0] in COPY_TREES:
-        return within.as_posix()
-    if within in COPY_FILES:
-        return within.as_posix()
-    if within.parts[:2] == COPY_LICENSES.parts:
-        return within.as_posix()
-    if within.parts[:2] == ("opencode", PLATFORM_PLUGIN_DIRECTORY):
-        return Path(*within.parts[1:]).as_posix()
-    if within.as_posix() in PLATFORM_FILES:
-        return within.as_posix()
-    return None
+    return artifact_output_relative(source_relative)
 
 
 def _artifact_inventory(
@@ -3056,7 +3098,7 @@ def _validate_built_opencode_artifact(
             expected_files[f"{PLATFORM_PLUGIN_DIRECTORY}/{name}"] = (
                 platform_root / PLATFORM_PLUGIN_DIRECTORY / name
             ).read_bytes()
-        for relative, source in _provenance_sources(repository_root):
+        for relative, source in _validator_source_inventory(repository_root):
             output_relative = _artifact_output_relative(relative)
             if output_relative is not None:
                 expected_files[output_relative] = source.read_bytes()
@@ -3065,7 +3107,7 @@ def _validate_built_opencode_artifact(
         )
         expected_inputs = [
             {"path": relative, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
-            for relative, source in _provenance_sources(repository_root)
+            for relative, source in _validator_source_inventory(repository_root)
         ]
     except (OSError, OpencodeBuildError, RuntimeError) as error:
         errors.append(f"opencode artifact inputs could not be inventoried: {error}")
@@ -3073,11 +3115,14 @@ def _validate_built_opencode_artifact(
 
     provenance_path = artifact / "provenance.json"
     provenance: object | None = None
+    expected_files["provenance.json"] = canonical_provenance(expected_inputs)
     try:
-        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        provenance = json.loads(provenance_path.read_bytes().decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         errors.append(f"opencode artifact provenance is invalid: {error}")
-    if isinstance(provenance, dict):
+    if not isinstance(provenance, dict):
+        errors.append("opencode artifact provenance must be a JSON object")
+    else:
         if set(provenance) != {"schema_version", "inputs"}:
             errors.append("opencode artifact provenance must contain exactly schema_version and inputs")
         if provenance.get("schema_version") != PROVENANCE_SCHEMA_VERSION:
@@ -3107,15 +3152,6 @@ def _validate_built_opencode_artifact(
                 errors.append("opencode artifact provenance paths must be unique")
             if normalized_inputs != expected_inputs:
                 errors.append("opencode artifact provenance digests do not match every expected input")
-            expected_files["provenance.json"] = (
-                json.dumps(
-                    {"schema_version": PROVENANCE_SCHEMA_VERSION, "inputs": expected_inputs},
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n"
-            ).encode("utf-8")
     expected_paths: set[str] = set(expected_files)
     expected_paths.add("provenance.json")
     expected_entries = set(expected_paths)
@@ -3169,8 +3205,8 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
         return
     _validate_opencode_platform_source(package_root, errors)
     try:
-        skill_names = _skill_inventory(repository_root)
-        rendered = _render_opencode_all(repository_root)
+        skill_names = skill_inventory(repository_root)
+        rendered = render_all(repository_root)
     except AgentSyncError as error:
         errors.append(f"opencode sources cannot be rendered: {error}")
         return
@@ -3408,7 +3444,7 @@ def _validate_opencode_agents(
     for name in sorted(actual - expected):
         errors.append(f"opencode unexpected agent entry {name!r}")
     try:
-        rendered = _render_opencode_agents(repository_root)
+        rendered = render_agents(repository_root)
     except AgentSyncError as error:
         errors.append(f"opencode agents cannot be rendered from shared sources: {error}")
         return
