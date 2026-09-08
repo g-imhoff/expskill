@@ -16,6 +16,9 @@ for non-code work. Let that direct request proceed.
 
 ## Route by missing decision
 
+- Choose `correct` when the request identifies a concrete defect, regression,
+  failing test, or accepted review finding whose expected behavior is already
+  settled. Correct diagnoses whether its bounded repair gate passes.
 - Choose `brainstorm` when the intended outcome or user experience is still
   ambiguous.
 - Choose `plan` when the direction is concrete but the technical execution is
@@ -30,10 +33,17 @@ skill for the current transition. Explain the choice in plain language. A
 direct skill remains independently usable and never needs to return through
 this router.
 
+A selected `$correct` runs in the invoking coordinator without an agent
+profile or Plan Graph. If diagnosis reveals a consequential decision, stop the
+repair before production edits and let Correct present the decision to the
+user. Never turn that stop into an automatic Brainstorm or Plan transition.
+
 ## Prepare routed UI work
 
 Before routing production UI work, run the packaged
 `../setup-ui-testing/scripts/inspect_setup.py` against the current project root.
+Do not apply this setup gate to an eligible `$correct` repair that restores
+accepted UI behavior without redesign.
 Treat its exact `ready` result as reusable setup. If it returns `absent`,
 `invalid`, malformed output, or an error, select only `$setup-ui-testing` in
 routed mode. Do not start Plan, Design, or feature implementation in that

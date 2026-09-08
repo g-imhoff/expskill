@@ -21,6 +21,7 @@ EXPECTED_PUBLIC_SKILLS = {
     "design",
     "grill-me",
     "implement",
+    "correct",
     "review",
     "plan",
     "setup-ui-testing",
