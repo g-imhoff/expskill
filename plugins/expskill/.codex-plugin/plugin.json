@@ -1,7 +1,7 @@
 {
   "name": "expskill",
   "version": "0.1.0+codex.20260907150834",
-  "description": "Ten independent skills and one optional lifecycle router.",
+  "description": "Eleven independent skills and one optional lifecycle router.",
   "repository": "https://github.com/g-imhoff/expskill",
   "author": {
     "name": "g-imhoff"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "ExpSkill",
     "shortDescription": "Standalone development skills with optional routing",
-    "longDescription": "Use $brainstorm, $plan, $design, $setup-ui-testing, $implement, $review, $test, $skill-builder, $unslop, or $grill-me directly. $skill-builder creates or improves one exact agent skill. Use $use-expskill to select the next lifecycle step while preserving implementation review and specification gates.",
+    "longDescription": "Use $brainstorm, $plan, $design, $setup-ui-testing, $implement, $correct, $review, $test, $skill-builder, $unslop, or $grill-me directly. $skill-builder creates or improves one exact agent skill. Use $use-expskill for the next lifecycle step with implementation review and specification gates.",
     "developerName": "g-imhoff",
     "category": "Developer Tools",
     "capabilities": [],
