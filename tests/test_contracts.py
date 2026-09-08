@@ -420,7 +420,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(manifest["interface"]["category"], "Developer Tools")
         self.assertEqual(marketplace["name"], "expskill")
         self.assertEqual(marketplace["plugins"][0]["name"], "expskill")
-        self.assertEqual(marketplace["plugins"][0]["source"]["path"], "./packages/codex")
+        self.assertEqual(marketplace["plugins"][0]["source"]["path"], "./packages/expskill")
         self.assertEqual(marketplace["plugins"][0]["category"], "Developer Tools")
 
     def test_plugin_metadata_describes_the_actual_standalone_skill_surface(self) -> None:

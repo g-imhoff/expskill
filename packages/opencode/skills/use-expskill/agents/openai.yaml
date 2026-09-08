@@ -1,7 +1,0 @@
-interface:
-  display_name: "Use ExpSkill"
-  short_description: "Route one phase or an isolated Plan and Design pair"
-  default_prompt: "Use $use-expskill to select and coordinate the next lifecycle transition."
-
-policy:
-  allow_implicit_invocation: true

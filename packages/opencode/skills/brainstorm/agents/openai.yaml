@@ -1,7 +1,0 @@
-interface:
-  display_name: "Brainstorm"
-  short_description: "Explore a vague idea into a stress-tested concept"
-  default_prompt: "Use $brainstorm to turn a vague idea into a stress-tested concept."
-
-policy:
-  allow_implicit_invocation: false

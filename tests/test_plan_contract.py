@@ -406,7 +406,7 @@ class PlanContractTests(unittest.TestCase):
         }
         for name, phrases in required.items():
             body = " ".join((PHASE_ROOTS[name] / "SKILL.md").read_text(encoding="utf-8").lower().split())
-            self.assertIn("packages/codex/scripts/plan_graph.py", body)
+            self.assertIn("packages/expskill/scripts/plan_graph.py", body)
             self.assertIn("../../scripts/plan_graph.py", body)
             self.assertIn("source-package locator", body)
             self.assertIn("branch", body)

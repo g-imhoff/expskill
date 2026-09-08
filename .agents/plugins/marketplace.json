@@ -8,7 +8,7 @@
       "name": "expskill",
       "source": {
         "source": "local",
-        "path": "./packages/codex"
+        "path": "./packages/expskill"
       },
       "policy": {
         "installation": "AVAILABLE",

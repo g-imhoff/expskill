@@ -135,10 +135,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_a_removed_handoff_limit(self) -> None:
         guarded_paths = (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -175,10 +175,10 @@ class ReviewContextContractTests(unittest.TestCase):
             ),
         )
         guarded_paths = (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -232,10 +232,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_appended_policy_contradictions(self) -> None:
         producer_paths = (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -259,7 +259,7 @@ class ReviewContextContractTests(unittest.TestCase):
             path = (
                 root
                 / "packages"
-                / "codex"
+                / "expskill"
                 / "assets"
                 / "agents"
                 / f"{name}.toml"
@@ -282,10 +282,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_removed_inherited_context_guards(self) -> None:
         producer_paths = (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -354,10 +354,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_canonical_validation_preserves_review_markdown_structure(self) -> None:
         for relative_path in (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         ):
@@ -401,18 +401,18 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_unrelated_producer_edits_do_not_invalidate_review_policy(self) -> None:
         mutations = (
             (
-                Path("packages/codex/skills/skill-builder/SKILL.md"),
+                Path("packages/expskill/skills/skill-builder/SKILL.md"),
                 "references/artifact-contracts.md",
                 "references/Artifact-Contracts.md",
             ),
             (
-                Path("packages/codex/skills/implement/SKILL.md"),
+                Path("packages/expskill/skills/implement/SKILL.md"),
                 "source-package locator",
                 "source package locator",
             ),
             (
                 Path(
-                    "packages/codex/skills/skill-builder/"
+                    "packages/expskill/skills/skill-builder/"
                     "references/evaluation-rubric.md"
                 ),
                 "outputs, consumers, handoffs",
@@ -434,10 +434,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_heading_must_be_live_top_level_markdown(self) -> None:
         guarded_paths = (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -461,10 +461,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_heading_requires_an_exact_column_zero_line(self) -> None:
         guarded_paths = (
-            Path("packages/codex/skills/implement/SKILL.md"),
-            Path("packages/codex/skills/skill-builder/SKILL.md"),
+            Path("packages/expskill/skills/implement/SKILL.md"),
+            Path("packages/expskill/skills/skill-builder/SKILL.md"),
             Path(
-                "packages/codex/skills/skill-builder/"
+                "packages/expskill/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -493,7 +493,7 @@ class ReviewContextContractTests(unittest.TestCase):
                     )
 
     def test_canonical_validation_preserves_markdown_hard_breaks(self) -> None:
-        producer_path = Path("packages/codex/skills/implement/SKILL.md")
+        producer_path = Path("packages/expskill/skills/implement/SKILL.md")
         root = self.copy_repository()
         path = root / producer_path
         contents = path.read_text(encoding="utf-8")
