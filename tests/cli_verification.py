@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import ipaddress
 import json
 import os
 import platform as host_platform
+import re
 import secrets
 import shutil
 import socket
@@ -19,6 +21,7 @@ import tarfile
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -35,6 +38,8 @@ _CHUNK_SIZE = 1024 * 1024
 _NETWORK_TIMEOUT = 300
 _INTEGRITY_FILENAME = ".integrity.json"
 _READY_FILENAME = ".ready"
+_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_SAFE_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\Z")
 _NETWORK_ERRNOS = frozenset(
     getattr(errno, name)
     for name in (
@@ -174,6 +179,58 @@ def _sha256(path: Path) -> str:
             digest.update(chunk)
 
 
+def _safe_manifest_component(value: object) -> bool:
+    return isinstance(value, str) and bool(_SAFE_COMPONENT.fullmatch(value)) and value not in {".", ".."}
+
+
+def _safe_https_url(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if any(character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not parsed.netloc or not hostname:
+        return False
+    if "@" in parsed.netloc:
+        return False
+    if ":" in hostname:
+        try:
+            ipaddress.ip_address(hostname)
+        except ValueError:
+            return False
+        if not parsed.netloc.startswith("["):
+            return False
+        closing_bracket = parsed.netloc.find("]")
+        if closing_bracket < 0:
+            return False
+        suffix = parsed.netloc[closing_bracket + 1 :]
+        if suffix and (not suffix.startswith(":") or suffix == ":"):
+            return False
+    else:
+        if "[" in parsed.netloc or "]" in parsed.netloc:
+            return False
+        if hostname.endswith(".."):
+            return False
+        hostname_without_trailing_dot = hostname[:-1] if hostname.endswith(".") else hostname
+        labels = hostname_without_trailing_dot.split(".")
+        if (
+            not labels
+            or len(hostname_without_trailing_dot) > 253
+            or any(
+                len(label) > 63 or not _SAFE_HOST_LABEL.fullmatch(label)
+                for label in labels
+            )
+        ):
+            return False
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    return not authority.endswith(":") and (port is None or 0 <= port <= 65535)
+
+
 def _asset_for(kind: str, key: tuple[str, str], selected_mode: str) -> CliAsset:
     clis = CLI_RELEASE_MANIFEST.get("clis")
     if not isinstance(clis, dict):
@@ -181,6 +238,11 @@ def _asset_for(kind: str, key: tuple[str, str], selected_mode: str) -> CliAsset:
     entry = clis.get(kind)
     if not isinstance(entry, dict):
         _failure(selected_mode, f"CLI release manifest has no {kind!r} entry")
+    version = entry.get("version")
+    if not isinstance(version, str) or not version:
+        _failure(selected_mode, f"malformed {kind} version in CLI release manifest")
+    if not _safe_manifest_component(version):
+        _failure(selected_mode, f"unsafe {kind} version in CLI release manifest")
     platforms = entry.get("platforms")
     platform_name = f"{key[0]}-{key[1]}"
     if not isinstance(platforms, dict) or not platforms:
@@ -194,7 +256,6 @@ def _asset_for(kind: str, key: tuple[str, str], selected_mode: str) -> CliAsset:
     raw_asset = platforms[platform_name]
     if not isinstance(raw_asset, dict):
         _failure(selected_mode, f"malformed {kind} asset manifest entry for {platform_name}")
-    version = entry.get("version")
     archive = raw_asset.get("archive")
     binary_name = raw_asset.get("binary_name")
     expected = raw_asset.get("sha256")
@@ -202,11 +263,9 @@ def _asset_for(kind: str, key: tuple[str, str], selected_mode: str) -> CliAsset:
     if not all(isinstance(value, str) and value for value in (version, archive, binary_name, expected, url)):
         _failure(selected_mode, f"malformed {kind} asset manifest entry for {platform_name}")
     if (
-        Path(archive).is_absolute()
-        or len(Path(archive).parts) != 1
-        or Path(binary_name).is_absolute()
-        or len(Path(binary_name).parts) != 1
-        or not url.startswith("https://")
+        not _safe_manifest_component(archive)
+        or not _safe_manifest_component(binary_name)
+        or not _safe_https_url(url)
     ):
         _failure(selected_mode, f"unsafe {kind} asset manifest entry for {platform_name}")
     if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
@@ -258,7 +317,32 @@ def _ensure_cache_root(cache_root: Path, selected_mode: str) -> Path:
         cache_root.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         _failure(selected_mode, f"cannot create CLI cache root: {cache_root}: {error}", cause=error)
-    return cache_root
+    try:
+        resolved = cache_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        _failure(selected_mode, f"cannot resolve CLI cache root: {cache_root}: {error}", cause=error)
+    if not resolved.is_dir() or resolved.is_symlink():
+        _failure(selected_mode, f"CLI cache root is not a directory: {cache_root}")
+    return resolved
+
+
+def _computed_cache_dir(cache_root: Path, kind: str, version: str, selected_mode: str) -> Path:
+    name = f"{kind}-{version}"
+    cache_dir = cache_root / name
+    try:
+        resolved_root = cache_root.resolve(strict=True)
+        resolved_cache = cache_dir.resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        _failure(selected_mode, f"cannot resolve CLI cache directory: {cache_dir}: {error}", cause=error)
+    if (
+        not _safe_manifest_component(name)
+        or cache_dir.parent != cache_root
+        or resolved_cache.parent != resolved_root
+        or resolved_cache.name != name
+        or cache_dir.is_symlink()
+    ):
+        _failure(selected_mode, f"unsafe computed CLI cache directory: {cache_dir}")
+    return cache_dir
 
 
 def _download_archive(
@@ -725,7 +809,7 @@ def ensure_binary(
     selected_platform = platform_key if platform_key is not None else globals()["platform_key"]()
     asset = _asset_for(kind, selected_platform, selected_mode)
     root = _ensure_cache_root(Path(cache_root), selected_mode)
-    cache_dir = root / f"{kind}-{asset.version}"
+    cache_dir = _computed_cache_dir(root, kind, asset.version, selected_mode)
     _recover_cache(cache_dir)
     _cache_is_valid(cache_dir, asset, None, selected_mode)
     archive = _download_archive(asset, root, selected_mode, downloader or _default_downloader)
