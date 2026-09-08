@@ -44,6 +44,12 @@ build contains `catalog.json`, `provenance.json`, generated `agents/` and
 The output is the directory passed to `npm pack`. The checked-in source
 directory is not the generated artifact.
 
+For a repository checkout, `python3 scripts/install.py --target opencode`
+builds the same artifact into receipt-owned state outside the repository and
+links its complete dynamic skill, command, agent, and plugin inventory into the
+OpenCode config directory. Use `--dry-run` to inspect the links and
+`--uninstall` to remove only receipt-owned links and state.
+
 ## OpenCode plugin
 
 Install the published package in an OpenCode project:

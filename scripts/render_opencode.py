@@ -21,6 +21,7 @@ from typing import Any, Mapping
 
 SCHEMA_VERSION = "opencode-agents.v1"
 CATALOG_SCHEMA_VERSION = "opencode-runtime.v1"
+OPENCODE_DESCRIPTION_MAX_LENGTH = 160
 AGENT_FRONTMATTER_FIELDS = ("description", "mode", "model", "reasoningEffort")
 EXPECTED_AGENT_NAMES = (
     "expskill-designer",
@@ -319,15 +320,16 @@ def render_agent(
     description = profile.get("description")
     closing = overlay_entry.get("closing")
     permission = overlay_entry.get("permission")
-    if not isinstance(description, str) or not description.strip():
-        raise RenderError(f"canonical agent profile {name!r} has no description")
+    bounded_description = _bounded_description(
+        description, f"canonical agent profile {name!r} description"
+    )
     if not isinstance(closing, str) or not closing.strip():
         raise RenderError(f"OpenCode agent overlay entry {name!r} has no closing")
     if not isinstance(permission, Mapping) or not permission:
         raise RenderError(f"OpenCode agent overlay entry {name!r} has no permission mapping")
     lines = [
         "---",
-        f"description: {_yaml_scalar(description.strip())}",
+        f"description: {_yaml_scalar(bounded_description)}",
         "mode: subagent",
         f"model: {_yaml_scalar(model.strip())}",
         f"reasoningEffort: {_yaml_scalar(effort.strip())}",
@@ -387,7 +389,18 @@ def _command_description(frontmatter: Mapping[str, Any]) -> str:
     description = frontmatter.get("description")
     if not isinstance(description, str) or not description.strip():
         raise RenderError("canonical skill description must be non-empty")
-    return description.strip()
+    return _bounded_description(description, "canonical skill description")
+
+
+def _bounded_description(value: Any, label: str) -> str:
+    """Normalize canonical prose to OpenCode's 1-160 character contract."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise RenderError(f"{label} must be non-empty")
+    normalized = " ".join(value.split())
+    if len(normalized) <= OPENCODE_DESCRIPTION_MAX_LENGTH:
+        return normalized
+    return normalized[: OPENCODE_DESCRIPTION_MAX_LENGTH - 3].rstrip() + "..."
 
 
 def render_command(name: str, frontmatter: Mapping[str, Any]) -> str:
@@ -452,7 +465,9 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
         if not isinstance(permission, Mapping) or not permission:
             raise RenderError(f"OpenCode agent overlay entry {name!r} has no permission mapping")
         config: dict[str, Any] = {
-            "description": profile["description"],
+            "description": _bounded_description(
+                profile["description"], f"canonical agent profile {name!r} description"
+            ),
             "mode": "subagent",
             "model": active["model"],
             "reasoningEffort": active["reasoningEffort"],

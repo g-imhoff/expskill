@@ -35,10 +35,32 @@ COPY_FILES = (
 )
 COPY_LICENSES = Path("third-party/licenses")
 PYTHON_CACHE_SUFFIXES = {".pyc", ".pyo"}
+ARTIFACT_DIRECTORY_MODE = 0o755
+ARTIFACT_FILE_MODE = 0o644
+ARTIFACT_MTIME = 0
 
 
 class BuildError(RuntimeError):
     """Raised when package inputs or the explicit output target are unsafe."""
+
+
+def _reject_symlink_components(path: Path, label: str) -> None:
+    """Reject a symlink anywhere in an input path, including its parents."""
+
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            break
+        except OSError as error:
+            raise BuildError(f"{label} cannot be inspected: {current}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BuildError(f"{label} path component must not be a symlink: {current}")
 
 
 def repository_root() -> Path:
@@ -47,6 +69,7 @@ def repository_root() -> Path:
 
 def _resolve_root(value: Path | str | None) -> Path:
     candidate = Path(value).expanduser() if value is not None else repository_root()
+    _reject_symlink_components(candidate, "repository root")
     try:
         root = candidate.resolve(strict=True)
     except (OSError, RuntimeError) as error:
@@ -76,14 +99,14 @@ def _output_path(value: Path | str) -> Path:
 
 
 def _validate_output_target(root: Path, canonical_root: Path, output: Path) -> None:
-    if output == root:
-        raise BuildError("generated output must not be the repository root")
-    if output in root.parents:
-        raise BuildError("generated output must not be an ancestor of the repository root")
-    if root in output.parents:
-        raise BuildError("generated output must be outside the repository source tree")
-    if output == canonical_root or canonical_root in output.parents:
-        raise BuildError("generated output must be outside packages/expskill")
+    source_roots = (root.resolve(strict=True), canonical_root.resolve(strict=True))
+    for source_root in source_roots:
+        if output == source_root:
+            raise BuildError("generated output must not be a source root")
+        if output in source_root.parents:
+            raise BuildError("generated output must not be an ancestor of a source root")
+        if source_root in output.parents:
+            raise BuildError("generated output must be outside the repository source tree")
     if output.exists() or output.is_symlink():
         raise BuildError(f"output target must not already exist: {output}")
 
@@ -241,11 +264,38 @@ def _write_provenance(root: Path, output_root: Path) -> Path:
     return target
 
 
+def _normalize_artifact_modes(output_root: Path) -> None:
+    """Make artifact permissions and timestamps independent of umask and clock."""
+
+    paths = sorted(output_root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+    paths.append(output_root)
+    for path in paths:
+        try:
+            metadata = os.lstat(path)
+        except OSError as error:
+            raise BuildError(f"artifact entry cannot be inspected: {path}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BuildError(f"artifact entry must not be a symlink: {path}")
+        if stat.S_ISDIR(metadata.st_mode):
+            mode = ARTIFACT_DIRECTORY_MODE
+        elif stat.S_ISREG(metadata.st_mode):
+            mode = ARTIFACT_FILE_MODE
+        else:
+            raise BuildError(f"artifact entry is not a regular file or directory: {path}")
+        try:
+            os.chmod(path, mode)
+            os.utime(path, (ARTIFACT_MTIME, ARTIFACT_MTIME))
+        except OSError as error:
+            raise BuildError(f"artifact metadata cannot be normalized: {path}: {error}") from error
+
+
 def _replace_output(staging: Path, output: Path) -> None:
     if output.exists() or output.is_symlink():
         raise BuildError(f"output target must not already exist: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging.replace(output)
+    # Use rename rather than replace so callers can independently test receipt
+    # replacement failures without intercepting this builder's atomic move.
+    staging.rename(output)
 
 
 def _cleanup_staging(staging: Path, staging_parent: Path, prefix: str) -> None:
@@ -279,6 +329,17 @@ def build_opencode_package(
     output = _output_path(output_dir)
     canonical_root = root / "packages" / "expskill"
     platform_root = canonical_root / "opencode"
+    _reject_symlink_components(canonical_root, "canonical package")
+    _reject_symlink_components(platform_root, "OpenCode platform source")
+    for relative in (
+        *COPY_TREES,
+        *COPY_FILES,
+        COPY_LICENSES,
+        Path("assets") / "agents",
+        Path("opencode") / PLATFORM_PLUGIN_DIRECTORY,
+    ):
+        source = canonical_root / relative
+        _reject_symlink_components(source, f"canonical input {relative}")
     _ensure_regular_directory(canonical_root, "canonical package")
     _ensure_regular_directory(platform_root, "OpenCode platform source")
     # Validate the complete set of source trees before staging so a stray
@@ -287,7 +348,11 @@ def build_opencode_package(
     list(
         _iter_regular_files(canonical_root / "assets" / "agents", "canonical agent profiles")
     )
-    _validate_output_target(root, canonical_root, output)
+    try:
+        canonical_root_resolved = canonical_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise BuildError(f"canonical package cannot be resolved: {canonical_root}: {error}") from error
+    _validate_output_target(root, canonical_root_resolved, output)
 
     staging_parent = output.parent
     staging_parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +367,7 @@ def build_opencode_package(
             raise BuildError(str(error)) from error
         _write_rendered(staging, rendered)
         _write_provenance(root, staging)
+        _normalize_artifact_modes(staging)
         _replace_output(staging, output)
     except (OSError, BuildError):
         _cleanup_staging(staging, staging_parent, staging_prefix)

@@ -1,19 +1,35 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 try:
+    from scripts.build_opencode_package import BuildError as OpencodeBuildError
+    from scripts.build_opencode_package import (
+        _provenance_sources,
+        _reject_symlink_components,
+        build_opencode_package,
+    )
     from scripts.validate import validate_repository
 except ModuleNotFoundError:
+    from build_opencode_package import BuildError as OpencodeBuildError
+    from build_opencode_package import (
+        _provenance_sources,
+        _reject_symlink_components,
+        build_opencode_package,
+    )
     from validate import validate_repository
 
 
@@ -40,31 +56,7 @@ RECEIPT_DIRECTORY = "expskill"
 RECEIPT_FILENAME = "install.json"
 OPENCODE_RECEIPT_FILENAME = "install-opencode.json"
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
-OPENCODE_SKILLS = (
-    "brainstorm",
-    "design",
-    "grill-me",
-    "implement",
-    "plan",
-    "setup-ui-testing",
-    "skill-builder",
-    "test",
-    "unslop",
-    "use-expskill",
-)
-OPENCODE_AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-designer",
-    "expskill-implementer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
-)
-OPENCODE_PLUGINS = (
-    "unslop.js",
-    "execution-policy.js",
-)
+OPENCODE_ARTIFACT_DIRECTORY = "opencode-artifact"
 
 
 class InstallError(RuntimeError):
@@ -97,6 +89,7 @@ class _Receipt:
     links: tuple[ProfileLink, ...]
     marketplace_added: bool
     plugin_installed: bool
+    artifact_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -323,12 +316,22 @@ def _read_receipt(
     plugin_installed = payload.get("plugin_installed")
     if not isinstance(marketplace_added, bool) or not isinstance(plugin_installed, bool):
         raise InstallError(f"receipt ownership flags are malformed: {receipt_path}")
+    artifact_value = payload.get("artifact_root")
+    artifact_root: Path | None = None
+    if artifact_value is not None:
+        if not isinstance(artifact_value, str):
+            raise InstallError(f"receipt artifact root is malformed: {receipt_path}")
+        artifact_root = Path(artifact_value).expanduser()
+        if not artifact_root.is_absolute() or _has_dot_components(artifact_root):
+            raise InstallError(f"receipt artifact root must be an absolute path: {receipt_path}")
+        artifact_root = _lexical_absolute(artifact_root)
     links = _receipt_links(payload.get("links"), receipt_path, expected_links)
     return _Receipt(
         repository_root=recorded_root,
         links=links,
         marketplace_added=marketplace_added,
         plugin_installed=plugin_installed,
+        artifact_root=artifact_root,
     )
 
 
@@ -349,6 +352,8 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
         "plugin_installed": receipt.plugin_installed,
         "repository_root": str(receipt.repository_root),
     }
+    if receipt.artifact_root is not None:
+        payload["artifact_root"] = str(receipt.artifact_root)
     temporary_path: Path | None = None
     write_error: InstallError | None = None
     write_cause: OSError | None = None
@@ -785,6 +790,7 @@ def _persist_receipt(
         links=tuple(receipt.links if links is None else links),
         marketplace_added=receipt.marketplace_added if marketplace_added is None else marketplace_added,
         plugin_installed=receipt.plugin_installed if plugin_installed is None else plugin_installed,
+        artifact_root=receipt.artifact_root,
     )
     _write_receipt(receipt_path, updated)
     return updated
@@ -927,8 +933,193 @@ def _default_opencode_config_dir() -> Path:
 
 
 def _opencode_receipt_path(state_home: Path) -> Path:
-    canonical_state_home = Path(state_home).expanduser().resolve(strict=False)
-    return canonical_state_home / RECEIPT_DIRECTORY / OPENCODE_RECEIPT_FILENAME
+    try:
+        canonical_state_home = Path(state_home).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise InstallError(f"opencode state home cannot be resolved: {state_home}: {error}") from error
+    receipt_directory = canonical_state_home / RECEIPT_DIRECTORY
+    _assert_no_symlink_components(receipt_directory, "opencode state")
+    if _lexists(receipt_directory) and not receipt_directory.is_dir():
+        raise InstallError(f"opencode state directory is not a directory: {receipt_directory}")
+    return receipt_directory / OPENCODE_RECEIPT_FILENAME
+
+
+def _opencode_artifact_path(state_home: Path) -> Path:
+    return _opencode_receipt_path(state_home).parent / OPENCODE_ARTIFACT_DIRECTORY
+
+
+def _assert_no_symlink_components(path: Path, label: str) -> None:
+    """Reject symlinked ancestors before reading or removing owned state."""
+
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            break
+        except OSError as error:
+            raise InstallError(f"{label} cannot be inspected: {current}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise InstallError(f"{label} path component must not be a symlink: {current}")
+
+
+def _canonical_opencode_config(config_dir: Path) -> Path:
+    try:
+        canonical = Path(config_dir).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise InstallError(f"OpenCode config directory cannot be resolved: {config_dir}: {error}") from error
+    if _lexists(canonical) and not canonical.is_dir():
+        raise InstallError(f"OpenCode config path is not a directory: {canonical}")
+    return canonical
+
+
+def _validate_opencode_destination(destination: Path, config_dir: Path) -> None:
+    """Ensure a destination's existing ancestors cannot redirect cleanup."""
+
+    canonical_config = _canonical_opencode_config(config_dir)
+    candidate = _lexical_absolute(destination)
+    try:
+        relative = candidate.relative_to(canonical_config)
+    except ValueError as error:
+        raise InstallError(f"opencode destination is outside the config directory: {candidate}") from error
+    current = canonical_config
+    for component in relative.parts[:-1]:
+        current /= component
+        if current.is_symlink():
+            raise InstallError(f"opencode destination parent must not be a symlink: {current}")
+        if _lexists(current) and not current.is_dir():
+            raise InstallError(f"opencode destination parent is not a directory: {current}")
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    return path == parent or parent in path.parents
+
+
+def _fixed_opencode_artifact(state_home: Path, candidate: Path | None = None) -> Path:
+    """Return the sole artifact path permitted for this state home."""
+
+    expected = _lexical_absolute(_opencode_artifact_path(state_home))
+    _assert_no_symlink_components(expected, "opencode artifact")
+    if candidate is not None:
+        observed = _lexical_absolute(Path(candidate).expanduser())
+        if observed != expected:
+            raise InstallError(
+                f"receipt artifact is outside the fixed OpenCode state: {observed}"
+            )
+    if _lexists(expected):
+        if expected.is_symlink() or not expected.is_dir():
+            raise InstallError(f"opencode artifact is not a regular directory: {expected}")
+    return expected
+
+
+def _remove_opencode_artifact(path: Path) -> None:
+    if not _lexists(path):
+        return
+    _assert_no_symlink_components(path, "opencode artifact")
+    if path.is_symlink() or not path.is_dir():
+        raise InstallError(f"opencode artifact is not a regular directory: {path}")
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        raise InstallError(f"cannot remove opencode artifact: {path}: {error}") from error
+
+
+def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
+    try:
+        _reject_symlink_components(
+            repo_root / "packages" / "expskill", "canonical package"
+        )
+        payload = json.loads((artifact / "provenance.json").read_text(encoding="utf-8"))
+        inputs = payload.get("inputs")
+        if payload.get("schema_version") != "opencode-provenance.v1" or not isinstance(inputs, list):
+            return False
+        expected = [
+            {"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for relative, path in _provenance_sources(repo_root)
+        ]
+        return inputs == expected
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def _receipt_owns_artifact(receipt_path: Path, artifact: Path) -> bool:
+    if not _lexists(receipt_path) or receipt_path.is_symlink() or not receipt_path.is_file():
+        return False
+    try:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        recorded = payload.get("artifact_root")
+        if not isinstance(recorded, str):
+            return False
+        return _lexical_absolute(Path(recorded).expanduser()) == _lexical_absolute(artifact)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return False
+
+
+def _validate_receipt_artifact(receipt: _Receipt, state_home: Path) -> None:
+    if receipt.artifact_root is not None:
+        _fixed_opencode_artifact(state_home, receipt.artifact_root)
+
+
+def _restore_opencode_artifact(artifact: Path, backup: Path | None) -> None:
+    if backup is None:
+        return
+    if _lexists(artifact):
+        _remove_opencode_artifact(artifact)
+    try:
+        backup.replace(artifact)
+    except OSError as error:
+        raise InstallError(f"cannot restore opencode artifact: {artifact}: {error}") from error
+
+
+def _ensure_opencode_artifact(
+    repo_root: Path, state_home: Path
+) -> tuple[Path, bool, Path | None]:
+    """Materialize generated OpenCode files in receipt-owned state."""
+
+    artifact = _fixed_opencode_artifact(state_home)
+    if _lexists(artifact):
+        if artifact.is_symlink() or not artifact.is_dir():
+            raise InstallError(f"opencode artifact is not a regular directory: {artifact}")
+        if _artifact_matches_sources(repo_root, artifact):
+            receipt_path = _opencode_receipt_path(state_home)
+            if not _receipt_owns_artifact(receipt_path, artifact):
+                raise InstallError(
+                    f"opencode artifact is not receipt-owned: {artifact}"
+                )
+            return artifact, False, None
+        receipt_path = _opencode_receipt_path(state_home)
+        if not _receipt_owns_artifact(receipt_path, artifact):
+            raise InstallError(
+                f"opencode artifact is stale and not receipt-owned: {artifact}"
+            )
+        replacement = artifact.parent / f".{artifact.name}.next-{uuid.uuid4().hex}"
+        backup = artifact.parent / f".{artifact.name}.old-{uuid.uuid4().hex}"
+        try:
+            build_opencode_package(repo_root, replacement)
+            artifact.replace(backup)
+            replacement.replace(artifact)
+        except (OpencodeBuildError, OSError) as error:
+            if _lexists(replacement):
+                _remove_opencode_artifact(replacement)
+            if _lexists(backup) and not _lexists(artifact):
+                try:
+                    backup.replace(artifact)
+                except OSError as restore_error:
+                    raise InstallError(
+                        f"cannot restore stale OpenCode artifact: {restore_error}"
+                    ) from error
+            raise InstallError(f"cannot rebuild OpenCode artifact: {error}") from error
+        return artifact, False, backup
+    try:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        build_opencode_package(repo_root, artifact)
+    except (OpencodeBuildError, OSError) as error:
+        raise InstallError(f"cannot build OpenCode artifact: {error}") from error
+    return artifact, True, None
 
 
 def _require_opencode_source(path: Path, label: str) -> Path:
@@ -943,42 +1134,94 @@ def _require_opencode_source(path: Path, label: str) -> Path:
     return resolved
 
 
-def _opencode_expected_links(repo_root: Path, config_dir: Path) -> tuple[ProfileLink, ...]:
+def _artifact_entries(artifact_root: Path, relative: str, label: str) -> tuple[Path, ...]:
+    directory = artifact_root / relative
+    if directory.is_symlink() or not directory.is_dir():
+        raise InstallError(f"opencode artifact {label} directory is missing: {directory}")
+    entries: list[Path] = []
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if path.is_symlink() or not path.is_file() and not path.is_dir():
+            raise InstallError(f"opencode artifact {label} entry is unsafe: {path}")
+        entries.append(path)
+    if not entries:
+        raise InstallError(f"opencode artifact {label} inventory is empty: {directory}")
+    return tuple(entries)
+
+
+def _opencode_expected_links(
+    repo_root: Path,
+    config_dir: Path,
+    artifact_root: Path,
+) -> tuple[ProfileLink, ...]:
     canonical_root = _canonical_repository_root(repo_root)
-    _validate_repository(canonical_root)
-    canonical_config = Path(config_dir).expanduser().resolve(strict=False)
-    canonical_skills = canonical_root / "packages" / "expskill" / "skills"
-    package_root = canonical_root / "packages" / "expskill" / "opencode"
+    canonical_config = _canonical_opencode_config(config_dir)
+    artifact_path = Path(artifact_root).expanduser()
+    if artifact_path.is_symlink():
+        raise InstallError(f"opencode artifact must not be a symlink: {artifact_path}")
+    artifact_root = artifact_path.resolve(strict=True)
+    if not artifact_root.is_dir():
+        raise InstallError(f"opencode artifact is not a regular directory: {artifact_root}")
     links: list[ProfileLink] = []
-    for name in OPENCODE_SKILLS:
-        source = _require_opencode_source(canonical_skills / name, f"shared skill {name!r}")
+    skills = _artifact_entries(artifact_root, "skills", "shared skills")
+    for skill in skills:
+        name = skill.name
+        source = _require_opencode_source(skill, f"shared skill {name!r}")
         if not source.is_dir():
             raise InstallError(f"shared skill source is not a directory: {source}")
         links.append(ProfileLink(source=source, destination=canonical_config / "skills" / name))
-    for name in OPENCODE_SKILLS:
-        source = _require_opencode_source(
-            package_root / "commands" / f"{name}.md", f"command {name!r}"
-        )
+    commands = _artifact_entries(artifact_root, "commands", "commands")
+    for path in commands:
+        if path.suffix != ".md":
+            raise InstallError(f"opencode command source must be Markdown: {path}")
+        name = path.stem
+        source = _require_opencode_source(path, f"command {name!r}")
         if not source.is_file():
             raise InstallError(f"command source is not a regular file: {source}")
         links.append(ProfileLink(source=source, destination=canonical_config / "commands" / f"{name}.md"))
-    for name in OPENCODE_AGENTS:
-        source = _require_opencode_source(
-            package_root / "agents" / f"{name}.md", f"agent {name!r}"
-        )
+    agents = _artifact_entries(artifact_root, "agents", "agents")
+    for path in agents:
+        if path.suffix != ".md":
+            raise InstallError(f"opencode agent source must be Markdown: {path}")
+        name = path.stem
+        source = _require_opencode_source(path, f"agent {name!r}")
         if not source.is_file():
             raise InstallError(f"agent source is not a regular file: {source}")
         links.append(ProfileLink(source=source, destination=canonical_config / "agents" / f"{name}.md"))
-    for name in OPENCODE_PLUGINS:
-        source = _require_opencode_source(package_root / "plugins" / name, f"plugin {name!r}")
+    plugins = _artifact_entries(artifact_root, "plugins", "plugins")
+    for path in plugins:
+        name = path.name
+        source = _require_opencode_source(path, f"plugin {name!r}")
         if not source.is_file():
             raise InstallError(f"plugin source is not a regular file: {source}")
         links.append(ProfileLink(source=source, destination=canonical_config / "plugins" / name))
+    for link in links:
+        _validate_opencode_destination(link.destination, canonical_config)
     return tuple(links)
 
 
-def preflight_opencode_links(repo_root: Path, config_dir: Path) -> tuple[ProfileLink, ...]:
-    links = _opencode_expected_links(repo_root, config_dir)
+def preflight_opencode_links(
+    repo_root: Path,
+    config_dir: Path,
+    state_home: Path | None = None,
+    *,
+    artifact_root: Path | None = None,
+) -> tuple[ProfileLink, ...]:
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    if artifact_root is None:
+        # Preflight is read-only.  Even when a state home is supplied, build
+        # into a disposable artifact rather than adopting or replacing state.
+        temporary = tempfile.TemporaryDirectory(prefix="expskill-opencode-preflight-")
+        artifact_root = Path(temporary.name) / "artifact"
+        try:
+            build_opencode_package(repo_root, artifact_root)
+        except (OpencodeBuildError, OSError) as error:
+            temporary.cleanup()
+            raise InstallError(f"cannot build OpenCode artifact: {error}") from error
+    try:
+        links = _opencode_expected_links(repo_root, config_dir, artifact_root)
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
     for link in links:
         if not _lexists(link.destination):
             continue
@@ -993,39 +1236,179 @@ def install_opencode(
     state_home: Path,
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
-    links = preflight_opencode_links(canonical_root, config_dir)
     receipt_path_value = _opencode_receipt_path(state_home)
-    receipt = _read_receipt(receipt_path_value, canonical_root, links)
+    receipt: _Receipt | None = None
+    if _lexists(receipt_path_value):
+        receipt_allowlist = _opencode_receipt_links_without_artifact(
+            receipt_path_value, config_dir, state_home
+        )
+        receipt = _read_receipt(receipt_path_value, canonical_root, receipt_allowlist)
+        if receipt is None:
+            raise InstallError(f"receipt disappeared while reading: {receipt_path_value}")
+        _validate_receipt_artifact(receipt, state_home)
+    artifact_root, artifact_created, artifact_backup = _ensure_opencode_artifact(
+        canonical_root, state_home
+    )
+    try:
+        links = preflight_opencode_links(
+            canonical_root, config_dir, artifact_root=artifact_root
+        )
+    except Exception:
+        if artifact_created:
+            _remove_opencode_artifact(artifact_root)
+        elif artifact_backup is not None:
+            _restore_opencode_artifact(artifact_root, artifact_backup)
+        raise
     created_links: list[ProfileLink] = []
+    removed_retired: tuple[ProfileLink, ...] = ()
     try:
         _create_links(links, created_links)
-        previous_links = () if receipt is None else receipt.links
-        merged_links = list(previous_links)
-        known_destinations = {link.destination for link in merged_links}
-        for link in created_links:
-            if link.destination not in known_destinations:
-                merged_links.append(link)
-                known_destinations.add(link.destination)
+        if receipt is not None:
+            _retained, removed_retired = _prune_opencode_retired_links(
+                receipt, links, config_dir
+            )
         merged_receipt = _Receipt(
             repository_root=canonical_root,
-            links=tuple(merged_links),
+            links=tuple(links),
             marketplace_added=False,
             plugin_installed=True,
+            artifact_root=artifact_root,
         )
         _write_receipt(receipt_path_value, merged_receipt)
     except Exception as error:
         for failure in _rollback_links(created_links):
             error = InstallError(f"{error}; residual state or rollback failures: {failure}")
+        for failure in _restore_opencode_links(removed_retired, config_dir):
+            error = InstallError(f"{error}; retired-link rollback: {failure}")
         if isinstance(error, InstallError):
+            if artifact_created:
+                try:
+                    _remove_opencode_artifact(artifact_root)
+                except InstallError as cleanup_error:
+                    error = InstallError(f"{error}; {cleanup_error}")
+            elif artifact_backup is not None:
+                try:
+                    _restore_opencode_artifact(artifact_root, artifact_backup)
+                except InstallError as cleanup_error:
+                    error = InstallError(f"{error}; {cleanup_error}")
             raise error
+        if artifact_created:
+            try:
+                _remove_opencode_artifact(artifact_root)
+            except InstallError as cleanup_error:
+                error = InstallError(f"{error}; {cleanup_error}")
+        elif artifact_backup is not None:
+            try:
+                _restore_opencode_artifact(artifact_root, artifact_backup)
+            except InstallError as cleanup_error:
+                error = InstallError(f"{error}; {cleanup_error}")
         raise InstallError(str(error)) from error
+    if artifact_backup is not None:
+        _remove_opencode_artifact(artifact_backup)
     return InstallResult(
         links=links,
         created_links=tuple(created_links),
-        removed_links=(),
+        removed_links=removed_retired,
         marketplace_added=False,
         plugin_installed=True,
     )
+
+
+def _opencode_receipt_links_without_artifact(
+    receipt_path: Path,
+    config_dir: Path,
+    state_home: Path,
+) -> tuple[ProfileLink, ...]:
+    """Reconstruct a constrained receipt allow-list when state was removed."""
+
+    try:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
+    if not isinstance(payload, dict) or not isinstance(payload.get("links"), list):
+        raise InstallError(f"receipt links are malformed: {receipt_path}")
+    artifact = _fixed_opencode_artifact(state_home)
+    artifact_value = payload.get("artifact_root")
+    if artifact_value is not None:
+        if not isinstance(artifact_value, str):
+            raise InstallError(f"receipt artifact root is malformed: {receipt_path}")
+        recorded_artifact = Path(artifact_value).expanduser()
+        if not recorded_artifact.is_absolute() or _has_dot_components(recorded_artifact):
+            raise InstallError(f"receipt artifact root must be an absolute path: {receipt_path}")
+        _fixed_opencode_artifact(state_home, recorded_artifact)
+    canonical_config = _canonical_opencode_config(config_dir)
+    expected: list[ProfileLink] = []
+    seen_destinations: set[Path] = set()
+    for entry in payload["links"]:
+        if not isinstance(entry, dict):
+            raise InstallError(f"receipt links are malformed: {receipt_path}")
+        source_value = entry.get("source")
+        destination_value = entry.get("destination")
+        if not isinstance(source_value, str) or not isinstance(destination_value, str):
+            raise InstallError(f"receipt links are malformed: {receipt_path}")
+        source = Path(source_value).expanduser()
+        destination = Path(destination_value).expanduser()
+        if not source.is_absolute() or not destination.is_absolute():
+            raise InstallError(f"receipt links must be absolute paths: {receipt_path}")
+        source = _lexical_absolute(source)
+        destination = _lexical_absolute(destination)
+        if not _path_is_within(source, artifact):
+            raise InstallError(f"receipt artifact source is outside owned state: {receipt_path}")
+        if not _path_is_within(destination, canonical_config):
+            raise InstallError(f"receipt destination is outside OpenCode config: {receipt_path}")
+        if destination in seen_destinations:
+            raise InstallError(f"receipt link is duplicated: {receipt_path}")
+        seen_destinations.add(destination)
+        _validate_opencode_destination(destination, canonical_config)
+        expected.append(ProfileLink(source=source, destination=destination))
+    return tuple(expected)
+
+
+def _prune_opencode_retired_links(
+    receipt: _Receipt,
+    current_links: Sequence[ProfileLink],
+    config_dir: Path,
+) -> tuple[tuple[ProfileLink, ...], tuple[ProfileLink, ...]]:
+    """Drop receipt links no longer emitted by the rebuilt artifact."""
+
+    current_destinations = {link.destination for link in current_links}
+    retained: list[ProfileLink] = []
+    removed: list[ProfileLink] = []
+    for link in receipt.links:
+        if link.destination in current_destinations:
+            retained.append(link)
+            continue
+        if not _lexists(link.destination) or not _same_recorded_link(
+            link.destination, link.source
+        ):
+            # Missing and retargeted destinations are not ours to remove.
+            continue
+        try:
+            link.destination.unlink()
+        except OSError as error:
+            for restored in _restore_opencode_links(removed, config_dir):
+                error = InstallError(f"{error}; retired-link rollback: {restored}")
+            raise InstallError(
+                f"cannot remove retired OpenCode link: {link.destination}: {error}"
+            ) from error
+        removed.append(link)
+    return tuple(retained), tuple(removed)
+
+
+def _restore_opencode_links(links: Sequence[ProfileLink], config_dir: Path) -> list[str]:
+    failures: list[str] = []
+    for link in reversed(tuple(links)):
+        if _lexists(link.destination):
+            continue
+        try:
+            _validate_opencode_destination(link.destination, config_dir)
+            link.destination.parent.mkdir(parents=True, exist_ok=True)
+            link.destination.symlink_to(link.source)
+        except OSError as error:
+            failures.append(f"link {link.destination}: {error}")
+        except InstallError as error:
+            failures.append(str(error))
+    return failures
 
 
 def uninstall_opencode(
@@ -1034,11 +1417,25 @@ def uninstall_opencode(
     state_home: Path,
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
-    links = _opencode_expected_links(canonical_root, config_dir)
     receipt_path_value = _opencode_receipt_path(state_home)
+    if not _lexists(receipt_path_value):
+        return InstallResult()
+    artifact_root = _fixed_opencode_artifact(state_home)
+    if _lexists(artifact_root) and not artifact_root.is_symlink() and artifact_root.is_dir():
+        try:
+            links = _opencode_expected_links(canonical_root, config_dir, artifact_root)
+        except InstallError:
+            links = _opencode_receipt_links_without_artifact(
+                receipt_path_value, config_dir, state_home
+            )
+    else:
+        links = _opencode_receipt_links_without_artifact(
+            receipt_path_value, config_dir, state_home
+        )
     receipt = _read_receipt(receipt_path_value, canonical_root, links)
     if receipt is None:
         return InstallResult(links=links)
+    _validate_receipt_artifact(receipt, state_home)
     current = receipt
     removed: list[ProfileLink] = []
     failures: list[str] = []
@@ -1063,6 +1460,9 @@ def uninstall_opencode(
         raise InstallError("owned opencode link cleanup failed: " + "; ".join(failures))
     if current.links:
         raise InstallError("owned opencode link cleanup did not converge")
+    if current.artifact_root is not None:
+        artifact = _fixed_opencode_artifact(state_home, current.artifact_root)
+        _remove_opencode_artifact(artifact)
     if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
@@ -1077,11 +1477,16 @@ def uninstall_opencode(
     )
 
 
-def _print_opencode_dry_run(repo_root: Path, config_dir: Path) -> None:
+def _print_opencode_dry_run(
+    repo_root: Path, config_dir: Path, state_home: Path | None = None
+) -> None:
+    receipt_state_home = _default_state_home() if state_home is None else state_home
+    # A dry run must not adopt or rebuild receipt-owned state.  Build the
+    # planned artifact in the preflight temporary directory instead.
     links = preflight_opencode_links(repo_root, config_dir)
     for link in links:
         print(f"link {link.destination} -> {link.source}")
-    print(f"opencode {OPENCODE_PACKAGE_NAME} receipt {_opencode_receipt_path(_default_state_home())}")
+    print(f"opencode {OPENCODE_PACKAGE_NAME} receipt {_opencode_receipt_path(receipt_state_home)}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1102,7 +1507,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.target == "opencode":
             config_dir = _default_opencode_config_dir()
             if arguments.dry_run:
-                _print_opencode_dry_run(repository_root, config_dir)
+                _print_opencode_dry_run(repository_root, config_dir, state_home)
             elif arguments.uninstall:
                 uninstall_opencode(repository_root, config_dir, state_home)
             else:

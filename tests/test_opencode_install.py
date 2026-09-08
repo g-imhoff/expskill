@@ -17,21 +17,11 @@ from scripts.install import (
     preflight_opencode_links,
     uninstall_opencode,
 )
+from scripts.render_opencode import skill_inventory
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS = (
-    "brainstorm",
-    "design",
-    "grill-me",
-    "implement",
-    "plan",
-    "setup-ui-testing",
-    "skill-builder",
-    "test",
-    "unslop",
-    "use-expskill",
-)
+SKILLS = skill_inventory(ROOT)
 AGENTS = (
     "expskill-explorer",
     "expskill-planner",
@@ -46,9 +36,10 @@ EXPECTED_LINK_COUNT = len(SKILLS) + len(SKILLS) + len(AGENTS) + len(PLUGINS)
 
 
 def seed_repository(path: Path) -> Path:
-    shutil.copytree(ROOT / ".agents", path / ".agents")
-    shutil.copytree(ROOT / "packages", path / "packages")
-    shutil.copytree(ROOT / "scripts", path / "scripts")
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+    shutil.copytree(ROOT / ".agents", path / ".agents", ignore=ignore)
+    shutil.copytree(ROOT / "packages", path / "packages", ignore=ignore)
+    shutil.copytree(ROOT / "scripts", path / "scripts", ignore=ignore)
     shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
 
@@ -86,6 +77,14 @@ class OpencodeInstallerTests(unittest.TestCase):
             receipt = load_receipt(state_home)
             self.assertEqual(len(receipt["links"]), EXPECTED_LINK_COUNT)
             self.assertEqual(receipt["repository_root"], str(repo.resolve()))
+            self.assertTrue(
+                all(
+                    Path(entry["source"]).is_relative_to(state_home.resolve() / "expskill")
+                    for entry in receipt["links"]
+                )
+            )
+            self.assertFalse((repo / "packages" / "expskill" / "opencode" / "agents").exists())
+            self.assertFalse((repo / "packages" / "expskill" / "opencode" / "commands").exists())
 
     def test_install_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -97,6 +96,34 @@ class OpencodeInstallerTests(unittest.TestCase):
             result = install_opencode(repo, config_dir, state_home)
             self.assertEqual(result.created_links, ())
             self.assertEqual(len(result.links), EXPECTED_LINK_COUNT)
+
+    def test_reinstall_rebuilds_receipt_owned_artifact_after_source_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config_dir = root / "config"
+            state_home = root / "state"
+            install_opencode(repo, config_dir, state_home)
+            skill = repo / "packages" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace("Cut AI tells", "Reinstalled marker"),
+                encoding="utf-8",
+            )
+            profile = repo / "packages" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            profile.write_text(
+                profile.read_text(encoding="utf-8").replace(
+                    "Independently review one immutable implementation candidate.",
+                    "Reinstalled profile marker.",
+                ),
+                encoding="utf-8",
+            )
+            install_opencode(repo, config_dir, state_home)
+            command = config_dir / "commands" / "unslop.md"
+            self.assertIn("Reinstalled marker", command.read_text(encoding="utf-8"))
+            agent = config_dir / "agents" / "expskill-review.md"
+            self.assertIn("Reinstalled profile marker.", agent.read_text(encoding="utf-8"))
+            receipt = load_receipt(state_home)
+            self.assertEqual(Path(receipt["artifact_root"]), state_home / "expskill" / "opencode-artifact")
 
     def test_install_refuses_foreign_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
