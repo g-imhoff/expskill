@@ -17,10 +17,13 @@ and localization patterns, tests, tool commands, and available isolated
 specimen capability before writing. Preserve unrelated work. Bind the UI
 contract, scope ledger, exclusions, baseline, and dirty fingerprint with
 `scripts/design_state.py`. Confirm and record a concise Design brief before
-writing. The brief names the objective, requirements, compact, intermediate,
-and wide expectations, non-goals, and its digest-bound Plan Graph or existing
-specification source. Project convention and confirmed intent outrank
-heuristics. Activated normative obligations outrank both, and genuine conflicts
+writing. The brief is the canonical decision record for this phase. It names
+the objective, requirements, compact, intermediate, and wide expectations,
+non-goals, and its digest-bound Plan Graph or existing specification source.
+Every consequential choice, including rejected directions and the reason they
+lost, belongs in the brief or in a bound approval. A later phase works from
+the brief digest plus approvals with no re-asking. Project convention and
+confirmed intent outrank heuristics. Activated normative obligations outrank both, and genuine conflicts
 are surfaced. Derive production components, temporary specimen files, allowed
 dependencies, relevant rules, and actual pressure from content, state, and
 responsive conditions in the project.
@@ -49,7 +52,7 @@ Any failed gate is correction input. Do not present a technically failed candida
 
 ## Deliver
 
-Deliver only when every retained component is current, eligible, technically passing, user-approved, dependency-coherent, and free of unresolved decisions. Bind three layers: candidate payload (components, exports, tests, assets), temporary preview and review evidence (specimens, fixtures, renders, results, approvals), and a route-neutral manifest (revisions/digests, classifications, contracts, assumptions, non-goals, rule decisions, exceptions, and integration obligations). Evidence, approval, and delivery bind the confirmed Design brief digest. Keep temporary evidence private and do not retain workflow documentation merely because Design ran. Direct invocation preserves unrelated work, returns the delivered summary and stable review entry point without creating a candidate commit, then stops. In routed mode only, create one coherent local commit directly above the frozen baseline after approval and checkpoint it through `design_state.py`. Corrections amend that one commit and invalidate affected evidence and approval. Routed invocation returns the candidate-bearing delivery receipt and manifest to the router, then stops without integration.
+Deliver only when every retained component is current, eligible, technically passing, user-approved, dependency-coherent, and free of unresolved decisions. Bind three layers: candidate payload (components, exports, tests, assets), temporary preview and review evidence (specimens, fixtures, renders, results, approvals), and a route-neutral manifest (revisions/digests, classifications, contracts, assumptions, non-goals, rule decisions, exceptions, and integration obligations). Evidence, approval, and delivery bind the confirmed Design brief digest. Keep temporary evidence private and do not retain workflow documentation merely because Design ran. Direct invocation preserves unrelated work, returns the delivered summary and stable review entry point without creating a candidate commit, then stops. When the workflow finishes, give the user the file path to the written Design Brief so they can find and reuse it. That summary names the confirmed brief digest, the approval digests, and the consequential decisions so the next phase inherits the complete context with no re-asking. In routed mode only, create one coherent local commit directly above the frozen baseline after approval and checkpoint it through `design_state.py`. Corrections amend that one commit and invalidate affected evidence and approval. Routed invocation returns the candidate-bearing delivery receipt and manifest to the router, then stops without integration.
 
 ## Rules and recovery
 
