@@ -98,7 +98,7 @@ Do not include the complete transcript, raw research, cosmetic alternatives, imp
 
 ## Boundaries and recovery
 
-This skill is permanently read-only: never create, edit, or delete files, including a Concept Brief file. Do not run commands or tools with unclear or external side effects. Never open or invoke another product skill. Never select or recommend a downstream skill. Stop after the brainstorm result. The Concept Brief remains in the conversation. It is the canonical decision record for this phase. A later phase inherits the pasted brief as settled and does not re-ask what the brief already answers.
+This skill is permanently read-only: never create, edit, or delete files, including a Concept Brief file. Do not run commands or tools with unclear or external side effects. Never open or invoke another product skill. Never select or recommend a downstream skill. Stop after the brainstorm result. The Concept Brief remains in the conversation. It is the canonical decision record for this phase. When the workflow finishes, point the user to the location of the Concept Brief in the conversation so they can find and reuse it. A later phase inherits the pasted brief as settled and does not re-ask what the brief already answers.
 
 Stay conceptual. Do not produce technical implementation details, repository-grounded findings beyond lightweight context, or technical plans. Technical questions belong to plan and design. Record them as deferred uncertainties instead of answering them here.
 
