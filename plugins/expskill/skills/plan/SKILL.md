@@ -7,7 +7,8 @@ description: Plan a sufficiently concrete direction through explicit $plan invoc
 ## Boundary
 
 `$plan` is a standalone, concept-read-only and source-read-only planning skill
-that may also run as one router-owned `expskill-planner` session. Accept a
+that may also run as one router-launched `expskill-planner` provider-CLI
+conversation. Accept a
 completed Concept Brief or another sufficiently concrete direction. Preserve
 settled conceptual decisions. Technical evidence may expose a contradiction,
 but planning must not repeat brainstorm, simulate brainstorm, or silently
@@ -31,11 +32,13 @@ Follow this order, scaling depth to the work:
 10. Only after the backend graph is complete, derive concise progressive user projections in dependency order. The user never sees YAML. Present one coherent part per turn, include every material decision in plain language, and ask the user to confirm or correct its meaning. Each projection binds the decision versions it covers, so the confirmed graph carries the complete decision record forward. On correction, update canonical meaning first, explain the affected subgraph, invalidate and regenerate only affected evidence, decisions, work, proof, and projections, and preserve unrelated confirmations. Wording-only clarification is non-material. Derive `ready` automatically when every current part is confirmed and all invariants pass. Ask no redundant final confirmation. `ready` means every material decision lives in the graph with evidence and a current confirmation. Nothing material survives only in chat.
 
 In routed parallel mode, work from the exact target checkout and baseline given
-by the router. Remain the only Plan Graph writer. Return user questions to the
+by the router. You run as one of two provider-CLI conversations started at the
+same time, beside the Design conversation, never as a sub-agent of the router.
+Remain the only Plan Graph writer. Return user questions to the
 router instead of asking them directly. Mark the optional typed Design join as
 required when production UI approval is part of the accepted outcome. The graph
 must remain `not-ready` while that receipt is absent or stale. When the same
-router returns the sibling Design result, verify its frozen baseline, isolated
+router returns the peer Design conversation result, verify its frozen baseline, isolated
 branch, one-commit candidate, Design workflow revision, confirmed brief digest,
 approval digest, and manifest digest against the unchanged candidate-bearing
 Design delivery receipt. Require its delivered lifecycle and require the

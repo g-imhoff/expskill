@@ -8,8 +8,10 @@ description: Explicitly invoked or router-selected design phase for grounded, pr
 ## Ground
 
 Use this phase when the user explicitly invokes `$design` or when the ExpSkill
-router assigns one `expskill-designer` with an exact baseline and isolated
-helper-owned worktree. It applies to UI work of any size and stops at a
+router launches one `expskill-designer` provider-CLI conversation with an exact
+baseline and isolated helper-owned worktree. That conversation starts at the
+same time as the Plan conversation. It is a peer conversation, never a
+sub-agent of the router. It applies to UI work of any size and stops at a
 route-neutral completed bundle. It does not integrate a feature or select
 another phase. Inspect the repository, branch/worktree, baseline, dirty state,
 framework, target seam, adjacent active components, primitives/tokens, content

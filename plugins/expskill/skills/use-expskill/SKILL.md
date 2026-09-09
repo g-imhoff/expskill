@@ -7,7 +7,7 @@ description: Use only for code or executable-configuration requests needing life
 
 Choose and coordinate the smallest appropriate product skill for a development
 request. Do not reproduce another skill's work inside the router. A routed UI
-request may start the bounded Plan and Design sibling pair defined below.
+request may start the bounded Plan and Design conversation pair defined below.
 
 ## Stay inactive
 
@@ -28,7 +28,7 @@ for non-code work. Let that direct request proceed.
 - Choose `implement` when the implementation facts and any required Design
   deliverables are accepted.
 
-Except for the bounded Plan and Design sibling pair, open only the selected
+Except for the bounded Plan and Design conversation pair, open only the selected
 skill for the current transition. Explain the choice in plain language. A
 direct skill remains independently usable and never needs to return through
 this router.
@@ -51,27 +51,31 @@ transition. Direct `$setup-ui-testing` remains independently usable.
 
 When setup is ready and only one of technical planning or production UI
 approval is unresolved, select its normal standalone skill. When both are
-unresolved, use the `parallel-plan-design` execution-policy route. Launch one
-fresh `expskill-planner` and one fresh `expskill-designer` before waiting for
-either result. Both receive the same exact repository baseline and accepted
-outcome. Planner reads the unchanged target checkout and is the only Plan Graph
-writer. Designer receives one isolated worktree created by
+unresolved, use the `parallel-plan-design` execution-policy route. Start Plan
+and Design at the same time as two separate provider-CLI conversations (two
+runs of `opencode`, two runs of `codex`, or one of each), one with the
+`expskill-planner` profile and one with the `expskill-designer` profile. These
+are peer conversations, not sub-agents of the router and not spawned inside the
+router conversation. Start both before waiting for either result. Both receive
+the same exact repository baseline and accepted outcome. The Plan conversation
+reads the unchanged target checkout and is the only Plan Graph writer. The
+Design conversation receives one isolated worktree created by
 `../../scripts/worktrees.py`, then populated by its `seed-ui-harness` operation.
 Never copy `.ui-harness/evidence` from the target checkout.
 Initialize the Design helper with `invocation_mode` set to `routed`. Direct
 Design uses the default `direct` mode, which cannot checkpoint a candidate.
 
-The router owns user interaction while the siblings run. Siblings return
-questions instead of asking the user. Present at most one current question at a
-time, apply its answer to the owning session, and then request the next current
-question. Do not infer approval. Start both sessions before serializing their
-questions.
+The router owns user interaction while the two conversations run. Each
+conversation returns questions instead of asking the user. Present at most one
+current question at a time, apply its answer to the owning conversation, and
+then request the next current question. Do not infer approval. Start both
+conversations before serializing their questions.
 
 After user approval, Design creates one coherent local candidate commit and
 delivers its route-neutral manifest and candidate-bearing Design receipt. Send
-that unchanged receipt and commit identity to the same Plan session. Plan
+that unchanged receipt and commit identity to the same Plan conversation. Plan
 records the typed Design join only while the isolated branch still points to
-that candidate and cannot become ready before validation. A blocked session,
+that candidate and cannot become ready before validation. A blocked conversation,
 stale baseline, moved branch, malformed receipt, invalid setup, or failed
 Design gate stops the join. Keep the isolated worktree for `$implement`, which
 alone may later integrate and clean it. Once the exact candidate is an ancestor
