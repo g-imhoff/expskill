@@ -100,11 +100,11 @@ a merge request, approve, merge, enable auto-merge, or enter a merge queue.
 
 ## Resolve a decision frontier
 
-`$grill-me` is an optional decision tool, not a lifecycle phase. Let the owning
+`$grill-me` is the decision tool for connected user choices, not a lifecycle phase. Let the owning
 skill handle a single isolated user decision. Keep discovering facts and
 resolving quality problems autonomously.
 
-Offer `$grill-me` only when every condition below is true:
+Use `$grill-me` when every condition below is true:
 
 - Facts are exhausted.
 - The owning skill cannot continue because multiple consequential decisions
@@ -113,9 +113,7 @@ Offer `$grill-me` only when every condition below is true:
   matter.
 - Only the user can decide them.
 
-Explain the blocker briefly and offer `$grill-me`. Never automatically invoke
-`$grill-me`. Wait for explicit consent. If the user accepts, keep the owning
-skill paused while Grill Me resolves the decision tree. When the user confirms
+Explain the blocker briefly, then resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
 shared understanding, return the confirmed decision delta and resume the owning
 skill. The owning skill remains responsible for its state and for invalidating
 any dependent work.
