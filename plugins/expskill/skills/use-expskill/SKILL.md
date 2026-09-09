@@ -7,7 +7,7 @@ description: Use only for code or executable-configuration requests needing life
 
 Choose and coordinate the smallest appropriate product skill for a development
 request. Do not reproduce another skill's work inside the router. A routed UI
-request may start the bounded Plan and Design conversation pair defined below.
+request may use the bounded Plan and Design conversation pair defined below.
 
 ## Stay inactive
 
@@ -51,29 +51,43 @@ transition. Direct `$setup-ui-testing` remains independently usable.
 
 When setup is ready and only one of technical planning or production UI
 approval is unresolved, select its normal standalone skill. When both are
-unresolved, use the `parallel-plan-design` execution-policy route. Start Plan
-and Design at the same time as two separate provider-CLI conversations (two
-runs of `opencode`, two runs of `codex`, or one of each), one with the
-`expskill-planner` profile and one with the `expskill-designer` profile. These
-are peer conversations, not sub-agents of the router and not spawned inside the
-router conversation. Start both before waiting for either result. Both receive
-the same exact repository baseline and accepted outcome. The Plan conversation
-reads the unchanged target checkout and is the only Plan Graph writer. The
-Design conversation receives one isolated worktree created by
-`../../scripts/worktrees.py`, then populated by its `seed-ui-harness` operation.
-Never copy `.ui-harness/evidence` from the target checkout.
-Initialize the Design helper with `invocation_mode` set to `routed`. Direct
-Design uses the default `direct` mode, which cannot checkpoint a candidate.
+unresolved, use the `parallel-plan-design` execution-policy route. The user talks
+to Plan and Design directly, in two CLI conversations the user opens. The
+router never opens them. It never spawns subagents or background runs from
+inside this conversation. Ask the user to start both before waiting for either
+result. Both work from the same exact repository baseline and accepted
+outcome. The Plan conversation reads the unchanged target checkout and is the
+only Plan Graph writer. The Design conversation receives one isolated worktree
+created by `../../scripts/worktrees.py`, then populated by its
+`seed-ui-harness` operation. Never copy `.ui-harness/evidence` from the target
+checkout. Initialize the Design helper with `invocation_mode` set to `routed`.
+Direct Design uses the default `direct` mode, which cannot checkpoint a
+candidate.
+
+Hand the user one command per conversation, in the CLI the user already runs.
+Each shape below was checked against the stated release. Run the Plan
+conversation from the target checkout.
+
+- `codex exec "Run $plan from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."` Checked on codex-cli 0.153.4.
+- `claude -p "Run $plan from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
+- `opencode run "Run $plan from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
+
+Run the Design conversation from the isolated worktree after seeding, with the
+same baseline and outcome.
+
+- `codex exec "Run $design in routed mode from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."`
+- `claude -p "Run $design in routed mode from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."`
+- `opencode run "Run $design in routed mode from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."`
 
 The router owns user interaction while the two conversations run. Each
 conversation returns questions instead of asking the user. Present at most one
 current question at a time, apply its answer to the owning conversation, and
-then request the next current question. Do not infer approval. Start both
-conversations before serializing their questions.
+then request the next current question. Do not infer approval. Relay questions
+only after the user has started both conversations.
 
 After user approval, Design creates one coherent local candidate commit and
-delivers its route-neutral manifest and candidate-bearing Design receipt. Send
-that unchanged receipt and commit identity to the same Plan conversation. Plan
+delivers its route-neutral manifest and candidate-bearing Design receipt. Pass
+that unchanged receipt and commit identity to the same Plan session. Plan
 records the typed Design join only while the isolated branch still points to
 that candidate and cannot become ready before validation. A blocked conversation,
 stale baseline, moved branch, malformed receipt, invalid setup, or failed
