@@ -7,9 +7,10 @@ description: Explicitly invoked or router-selected design phase for grounded, pr
 
 ## Ground
 
-Use this phase when the user explicitly invokes `$design` or when the ExpSkill
-router assigns one `expskill-designer` with an exact baseline and isolated
-helper-owned worktree. It applies to UI work of any size and stops at a
+Use this phase when the user explicitly invokes `$design` or opens one direct
+CLI conversation for it with an exact baseline and isolated helper-owned
+worktree. That conversation runs beside the Plan conversation. The router
+never starts it. It applies to UI work of any size and stops at a
 route-neutral completed bundle. It does not integrate a feature or select
 another phase. Inspect the repository, branch/worktree, baseline, dirty state,
 framework, target seam, adjacent active components, primitives/tokens, content
@@ -58,4 +59,4 @@ Deliver only when every retained component is current, eligible, technically pas
 
 Read `references/rules-index.md` first. For a narrow component with a small, bounded concern set, selectively load the applicable category references. For a complex composite with interacting regions, state families, density, breakpoint composition, or several behavior modes, load the complete category catalog before shaping it. When classification is uncertain, choose the broader relevant load and revisit it after the first isolated render. This is an evidence-loading strategy, not a fixed ruleset, viewport system, or state matrix. Project convention and activated obligations still decide which loaded rules apply.
 
-Resolve workflow state through the packaged `scripts/design_state.py`. Its normal root is `$XDG_STATE_HOME/expskill/design` (or the platform XDG default), while an explicit state home is test/API-only. It is the only state writer and uses expected-revision compare-and-swap. Initialize direct use with the default `direct` invocation mode. Initialize a router-created isolated session with `invocation_mode` set to `routed`. The helper refuses candidate checkpoints in direct mode and requires one before routed delivery. On missing direction return `not-ready`. On missing specimen capability return `blocked`. On unsafe workspace or contract conflict stop and present the smallest decision. Never infer approval, silently broaden scope, or route downstream.
+Resolve workflow state through the packaged `scripts/design_state.py`. Its normal root is `$XDG_STATE_HOME/expskill/design` (or the platform XDG default), while an explicit state home is test/API-only. It is the only state writer and uses expected-revision compare-and-swap. Initialize direct use with the default `direct` invocation mode. Initialize an isolated session the user opened with `invocation_mode` set to `routed`. The helper refuses candidate checkpoints in direct mode and requires one before routed delivery. On missing direction return `not-ready`. On missing specimen capability return `blocked`. On unsafe workspace or contract conflict stop and present the smallest decision. Never infer approval, silently broaden scope, or route downstream.
