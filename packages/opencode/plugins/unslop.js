@@ -210,3 +210,50 @@ export const UnslopPlugin = async () => {
     },
   };
 };
+
+function hasUnslopMarker(system) {
+  return system.some((entry) => {
+    if (typeof entry === "string") {
+      return entry.includes(OPEN_MARKER);
+    }
+    if (entry && typeof entry.text === "string") {
+      return entry.text.includes(OPEN_MARKER);
+    }
+    return false;
+  });
+}
+
+function injectUnslopBlock(system, text) {
+  if (system.length > 0 && typeof system[0] === "string") {
+    system[0] += "\n\n" + text;
+    return;
+  }
+  if (system.length > 0 && system[0] && typeof system[0].text === "string") {
+    system[0].text += "\n\n" + text;
+    return;
+  }
+  system.push({ type: "text", text });
+}
+
+export default {
+  id: "expskill.unslop",
+  setup: async (ctx) => {
+    const skillPath = resolveSkillPath(process.env, import.meta.url);
+    await ctx.session.hook("context", async (event) => {
+      const system = event?.system;
+      if (!Array.isArray(system)) {
+        return;
+      }
+      if (hasUnslopMarker(system)) {
+        return;
+      }
+      let text;
+      try {
+        text = buildBlock(await readFile(skillPath, "utf8"));
+      } catch {
+        return;
+      }
+      injectUnslopBlock(system, text);
+    });
+  },
+};

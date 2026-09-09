@@ -23,8 +23,11 @@ import(%s).then(async (module) => {
   };
   assert(
     'exact-module-export-keys',
-    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['UnslopPlugin']) &&
-      typeof module.UnslopPlugin === 'function'
+    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['UnslopPlugin', 'default']) &&
+      typeof module.UnslopPlugin === 'function' &&
+      typeof module.default === 'object' &&
+      typeof module.default?.id === 'string' &&
+      typeof module.default?.setup === 'function'
   );
   const hooks = await module.UnslopPlugin({});
   const transform = hooks['experimental.chat.system.transform'];
@@ -108,8 +111,11 @@ import(%s).then(async (module) => {
   const policy = JSON.parse(await fs.readFile('packages/codex/assets/execution-policy.json', 'utf8'));
   assert(
     'exact-module-export-keys',
-    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin']) &&
-      typeof module.ExecutionPolicyPlugin === 'function',
+    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin', 'default']) &&
+      typeof module.ExecutionPolicyPlugin === 'function' &&
+      typeof module.default === 'object' &&
+      typeof module.default?.id === 'string' &&
+      typeof module.default?.setup === 'function',
   );
   const implementPolicy = policy.routes.implement.standard;
   const planDesignPolicy = policy.routes['use-expskill']['parallel-plan-design'];
