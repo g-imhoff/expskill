@@ -18,7 +18,7 @@ Stay inactive for generic ideation, explanation, summarization, or research that
 1. State the brainstorm-only, read-only, conceptual boundary.
 2. Inspect supplied and relevant accessible context before asking questions. For an existing project, use only lightweight context such as pertinent structure, documentation, interfaces, terminology, behavior, configuration, and history with read-only tools. Do not ground the concept in repository detail. Skip irrelevant context.
 3. Before asking any factual question, check whether the answer is already supplied, safely discoverable locally, present in completed research, obtainable from authoritative public sources, or supportable as a labeled inference. Before confirmation, make only bounded authoritative lookups needed to interpret terminology or verify a fact in the proposed understanding. Do not begin landscape research or exploratory techniques before explicit confirmation.
-4. Never ask the user for information the agent can safely discover. Ask one focused question per turn only for user-owned information such as intent, preference, priority, lived experience, or authorization.
+4. Never ask the user for information the agent can safely discover. Resolve user-owned questions about intent, preference, priority, lived experience, or authorization through the `$grill-me` skill.
 5. Maintain a concise working understanding covering the intended change, why it matters, affected actors or systems, desired outcome, context, constraints, known evidence, assumptions, and remaining material unknowns.
 6. Present the consolidated shared understanding and require explicit user confirmation before research or exploration.
 
