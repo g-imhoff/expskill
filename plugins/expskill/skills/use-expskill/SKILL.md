@@ -55,8 +55,8 @@ unresolved, use the `parallel-plan-design` execution-policy route. The user talk
 to Plan and Design directly, in two CLI conversations the user opens. The
 router never opens them. It never spawns subagents or background runs from
 inside this conversation. Ask the user to start both before waiting for either
-result. Both work from the same exact repository baseline and accepted
-outcome. The Plan conversation reads the unchanged target checkout and is the
+result. Both work from the same exact repository baseline and saved Concept
+Brief. The Plan conversation reads the unchanged target checkout and is the
 only Plan Graph writer. The Design conversation receives one isolated worktree
 created by `../../scripts/worktrees.py`, then populated by its
 `seed-ui-harness` operation. Never copy `.ui-harness/evidence` from the target
@@ -68,16 +68,16 @@ Hand the user one command per conversation, in the CLI the user already runs.
 Each shape below was checked against the stated release. Run the Plan
 conversation from the target checkout.
 
-- `codex exec "Run $plan from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."` Checked on codex-cli 0.153.4.
-- `claude -p "Run $plan from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
-- `opencode run "Run $plan from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
+- `codex exec "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on codex-cli 0.153.4.
+- `claude -p "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
+- `opencode run "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
 
 Run the Design conversation from the isolated worktree after seeding, with the
-same baseline and outcome.
+same baseline and Concept Brief.
 
-- `codex exec "Run $design in routed mode from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."`
-- `claude -p "Run $design in routed mode from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."`
-- `opencode run "Run $design in routed mode from baseline <sha> toward <accepted outcome>. Return questions to me instead of asking the user."`
+- `codex exec "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
+- `claude -p "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
+- `opencode run "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 
 The router owns user interaction while the two conversations run. Each
 conversation returns questions instead of asking the user. Present at most one
