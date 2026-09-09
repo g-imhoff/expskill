@@ -84,7 +84,7 @@ What exists, what the landscape taught, and how this concept meaningfully differ
 
 ### Key decisions and boundaries
 
-Accepted constraints, non-goals, and consequential trade-offs.
+Every consequential user decision, each with the chosen option, the rejected alternatives and the reason they lost. Accepted constraints, explicit non-goals, and trade-offs the user accepted. Mark each entry as user-decided or agent-inferred so a later phase knows what is settled and what is a guess.
 
 ### Stress-test result
 
@@ -94,11 +94,11 @@ Strongest objections, harmful outcomes, failure modes, resulting corrections, an
 
 Only uncertainties that genuinely require later technical design, execution, experimentation, or real-world evidence, plus observable success signals. Deferred uncertainties are normally none. Omit this material when none exists.
 
-Do not include the complete transcript, raw research, cosmetic alternatives, implementation details, a technical plan, a repository destination, or a routing envelope. If the user stops early, label an early user stop `Incomplete concept` and preserve what remains unresolved. Do not present it as a completed brief.
+Do not include the complete transcript, raw research, cosmetic alternatives, implementation details, a technical plan, a repository destination, or a routing envelope. Write the brief so it stands alone. A later phase works only from the pasted brief, with no re-asking and no lost context. Anything still open belongs in Deferred uncertainties, not in a vague line elsewhere. If the user stops early, label an early user stop `Incomplete concept` and preserve what remains unresolved. Do not present it as a completed brief.
 
 ## Boundaries and recovery
 
-This skill is permanently read-only: never create, edit, or delete files, including a Concept Brief file. Do not run commands or tools with unclear or external side effects. Never open or invoke another product skill. Never select or recommend a downstream skill. Stop after the brainstorm result. The Concept Brief remains in the conversation.
+This skill is permanently read-only: never create, edit, or delete files, including a Concept Brief file. Do not run commands or tools with unclear or external side effects. Never open or invoke another product skill. Never select or recommend a downstream skill. Stop after the brainstorm result. The Concept Brief remains in the conversation. It is the canonical decision record for this phase. When the workflow finishes, point the user to the location of the Concept Brief in the conversation so they can find and reuse it. A later phase inherits the pasted brief as settled and does not re-ask what the brief already answers.
 
 Stay conceptual. Do not produce technical implementation details, repository-grounded findings beyond lightweight context, or technical plans. Technical questions belong to plan and design. Record them as deferred uncertainties instead of answering them here.
 
