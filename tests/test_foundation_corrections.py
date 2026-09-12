@@ -804,6 +804,51 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
 
+    def test_one_live_link_cannot_authorize_foreign_artifact_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            artifact = state / "expskill/opencode-artifact"
+            marker = artifact / "foreign.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            for entry in payload["links"][1:]:
+                Path(entry["destination"]).unlink()
+
+            result = uninstall_opencode(repo, config, state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertEqual(len(result.removed_links), 1)
+            self.assertFalse(Path(payload["links"][0]["destination"]).exists())
+            self.assertFalse(receipt_path(state).exists())
+
+    def test_nearly_complete_live_inventory_cannot_authorize_artifact_deletion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            artifact = state / "expskill/opencode-artifact"
+            marker = artifact / "foreign.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            missing = Path(payload["links"][-1]["destination"])
+            missing.unlink()
+
+            result = uninstall_opencode(repo, config, state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertFalse(missing.exists())
+            self.assertEqual(len(result.removed_links), len(payload["links"]) - 1)
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertFalse(receipt_path(state).exists())
+
     def test_forged_pending_publish_cannot_delete_foreign_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1042,6 +1087,187 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_anchorless_recovery_retries_after_fourth_unlink_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            Path(payload["pending_publish"]["candidate_anchor"]).unlink()
+            real_unlink = install_module._unlink_destination
+            unlinks = 0
+
+            def crash_before_fourth_unlink(destination: Path) -> None:
+                nonlocal unlinks
+                unlinks += 1
+                if unlinks == 4:
+                    raise SystemExit("injected fourth unlink crash")
+                real_unlink(destination)
+
+            with mock.patch.object(
+                install_module,
+                "_unlink_destination",
+                side_effect=crash_before_fourth_unlink,
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]) - 3,
+            )
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_anchorless_recovery_preserves_state_when_reanchoring_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            anchor = Path(payload["pending_publish"]["candidate_anchor"])
+            anchor.unlink()
+            with mock.patch.object(
+                install_module,
+                "_create_artifact_anchor",
+                side_effect=InstallError("injected re-anchor failure"),
+            ):
+                with self.assertRaisesRegex(InstallError, "re-anchor failure"):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertFalse(anchor.exists())
+            self.assertTrue((state / "expskill/opencode-artifact").is_dir())
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
+
+    def test_anchorless_recovery_removes_new_anchor_when_persistence_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            anchor = Path(payload["pending_publish"]["candidate_anchor"])
+            anchor.unlink()
+            with mock.patch.object(
+                install_module,
+                "_write_receipt",
+                side_effect=InstallError("injected re-anchor persistence failure"),
+            ):
+                with self.assertRaisesRegex(InstallError, "persistence failure"):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertFalse(anchor.exists())
+            self.assertTrue((state / "expskill/opencode-artifact").is_dir())
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
+
+    def test_resumed_initial_publish_persist_failure_keeps_links_recoverable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            with mock.patch.object(
+                install_module,
+                "_persist_receipt",
+                side_effect=InstallError("injected resumed publication persistence failure"),
+            ):
+                with self.assertRaisesRegex(InstallError, "persistence failure"):
+                    install_opencode(repo, config, state)
+
+            artifact = state / "expskill/opencode-artifact"
+            self.assertTrue(artifact.is_dir())
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
+            self.assertTrue(
+                all(
+                    Path(entry["destination"]).resolve(strict=True)
+                    == Path(entry["source"])
+                    for entry in payload["links"]
+                )
+            )
+
+            install_opencode(repo, config, state)
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(artifact.exists())
 
     def test_hard_link_anchor_failure_aborts_before_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
