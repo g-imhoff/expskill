@@ -33,6 +33,524 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_link_delete_quarantine_is_recovered_through_both_entrypoints(self) -> None:
+        for failure_type in (install_module.InstallError, SystemExit):
+            for retry in ("install", "uninstall"):
+                with (
+                    self.subTest(failure=failure_type.__name__, retry=retry),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    payload = receipt(state)
+                    recorded = payload["links"][0]
+                    destination = Path(recorded["destination"])
+                    expected = (
+                        recorded["destination_dev"],
+                        recorded["destination_ino"],
+                    )
+                    real_rename = install_module._renameat_noreplace
+                    stopped = False
+
+                    def stop_after_delete_rename(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal stopped
+                        real_rename(source_fd, source_name, target_fd, target_name)
+                        if (
+                            not stopped
+                            and source_name == destination.name
+                            and target_name.endswith(".delete")
+                        ):
+                            stopped = True
+                            raise failure_type("after exact link delete rename")
+
+                    with mock.patch.object(
+                        install_module,
+                        "_renameat_noreplace",
+                        side_effect=stop_after_delete_rename,
+                    ):
+                        with self.assertRaises(failure_type):
+                            uninstall_opencode(repo, config, state)
+
+                    quarantines = tuple(destination.parent.glob(".*.delete"))
+                    self.assertEqual(len(quarantines), 1)
+                    quarantine = quarantines[0]
+                    self.assertEqual(
+                        (quarantine.lstat().st_dev, quarantine.lstat().st_ino),
+                        expected,
+                    )
+                    foreign = root / "foreign"
+                    foreign.write_text("foreign\n", encoding="utf-8")
+                    destination.symlink_to(foreign)
+                    foreign_identity = (
+                        destination.lstat().st_dev,
+                        destination.lstat().st_ino,
+                    )
+
+                    if retry == "install":
+                        with self.assertRaisesRegex(
+                            install_module.InstallError, "conflicting opencode destination"
+                        ):
+                            install_opencode(repo, config, state)
+                        uninstall_opencode(repo, config, state)
+                    else:
+                        uninstall_opencode(repo, config, state)
+
+                    self.assertFalse(quarantine.exists())
+                    self.assertFalse(quarantine.is_symlink())
+                    self.assertTrue(destination.is_symlink())
+                    self.assertEqual(os.readlink(destination), str(foreign))
+                    self.assertEqual(
+                        (destination.lstat().st_dev, destination.lstat().st_ino),
+                        foreign_identity,
+                    )
+                    self.assertFalse(receipt_path(state).exists())
+
+    def test_staged_link_delete_quarantine_is_recovered(self) -> None:
+        for failure_type in (install_module.InstallError, SystemExit):
+            for retry in ("install", "uninstall"):
+                with (
+                    self.subTest(failure=failure_type.__name__, retry=retry),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    payload = receipt(state)
+                    recorded = payload["links"][0]
+                    destination = Path(recorded["destination"])
+                    source = Path(recorded["source"])
+                    staging = install_module._opencode_link_staging_path(
+                        source, destination
+                    )
+                    destination.rename(staging)
+                    recorded["staged_destination"] = str(staging)
+                    receipt_path(state).write_text(
+                        json.dumps(payload), encoding="utf-8"
+                    )
+                    expected = (
+                        recorded["destination_dev"],
+                        recorded["destination_ino"],
+                    )
+                    quarantine = install_module._deletion_quarantine_path(
+                        staging, *expected
+                    )
+                    real_rename = install_module._renameat_noreplace
+                    stopped = False
+
+                    def stop_after_staged_delete_rename(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal stopped
+                        real_rename(source_fd, source_name, target_fd, target_name)
+                        if (
+                            not stopped
+                            and source_name == staging.name
+                            and target_name == quarantine.name
+                        ):
+                            stopped = True
+                            raise failure_type("after staged link delete rename")
+
+                    with mock.patch.object(
+                        install_module,
+                        "_renameat_noreplace",
+                        side_effect=stop_after_staged_delete_rename,
+                    ):
+                        with self.assertRaises(failure_type):
+                            uninstall_opencode(repo, config, state)
+
+                    self.assertTrue(stopped)
+                    self.assertTrue(quarantine.is_symlink())
+                    if retry == "install":
+                        install_opencode(repo, config, state)
+                        uninstall_opencode(repo, config, state)
+                    else:
+                        uninstall_opencode(repo, config, state)
+                    self.assertFalse(quarantine.exists())
+                    self.assertFalse(quarantine.is_symlink())
+                    self.assertFalse(receipt_path(state).exists())
+
+    def test_anchor_delete_quarantine_is_recovered_through_both_entrypoints(self) -> None:
+        for failure_type in (install_module.InstallError, SystemExit):
+            for retry in ("install", "uninstall"):
+                with (
+                    self.subTest(failure=failure_type.__name__, retry=retry),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    payload = receipt(state)
+                    anchor = Path(payload["artifact_anchor"])
+                    expected = (
+                        payload["artifact_anchor_dev"],
+                        payload["artifact_anchor_ino"],
+                    )
+                    real_rename = install_module._renameat_noreplace
+                    stopped = False
+
+                    def stop_after_anchor_delete_rename(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal stopped
+                        real_rename(source_fd, source_name, target_fd, target_name)
+                        if (
+                            not stopped
+                            and source_name == anchor.name
+                            and target_name.endswith(".delete")
+                        ):
+                            stopped = True
+                            raise failure_type("after exact anchor delete rename")
+
+                    with mock.patch.object(
+                        install_module,
+                        "_renameat_noreplace",
+                        side_effect=stop_after_anchor_delete_rename,
+                    ):
+                        with self.assertRaises(failure_type):
+                            uninstall_opencode(repo, config, state)
+
+                    quarantines = tuple(anchor.parent.glob(f".{anchor.name}.*.delete"))
+                    self.assertEqual(len(quarantines), 1)
+                    quarantine = quarantines[0]
+                    self.assertEqual(
+                        (quarantine.stat().st_dev, quarantine.stat().st_ino), expected
+                    )
+                    anchor.write_text("foreign anchor\n", encoding="utf-8")
+                    foreign_identity = (anchor.stat().st_dev, anchor.stat().st_ino)
+
+                    if retry == "install":
+                        install_opencode(repo, config, state)
+                        uninstall_opencode(repo, config, state)
+                    else:
+                        uninstall_opencode(repo, config, state)
+
+                    self.assertFalse(quarantine.exists())
+                    self.assertEqual(anchor.read_text(encoding="utf-8"), "foreign anchor\n")
+                    self.assertEqual((anchor.stat().st_dev, anchor.stat().st_ino), foreign_identity)
+                    self.assertFalse(receipt_path(state).exists())
+
+    def test_link_and_anchor_unlink_fsync_failures_retain_receipt_authority(self) -> None:
+        for operation in ("link", "anchor"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                payload = receipt(state)
+                if operation == "link":
+                    recorded = payload["links"][0]
+                    owned_path = Path(recorded["destination"])
+                    quarantine = install_module._deletion_quarantine_path(
+                        owned_path,
+                        recorded["destination_dev"],
+                        recorded["destination_ino"],
+                    )
+                    retained_phase = "removing-links"
+                else:
+                    owned_path = Path(payload["artifact_anchor"])
+                    quarantine = install_module._deletion_quarantine_path(
+                        owned_path,
+                        payload["artifact_anchor_dev"],
+                        payload["artifact_anchor_ino"],
+                    )
+                    retained_phase = "artifact-removed"
+                real_fsync = os.fsync
+                failed = False
+
+                def fail_post_unlink_fsync(descriptor: int) -> None:
+                    nonlocal failed
+                    current = receipt(state) if receipt_path(state).exists() else {}
+                    if (
+                        not failed
+                        and current.get("teardown_phase") == retained_phase
+                        and not owned_path.exists()
+                        and not owned_path.is_symlink()
+                        and not quarantine.exists()
+                        and not quarantine.is_symlink()
+                    ):
+                        failed = True
+                        raise OSError("injected parent fsync failure")
+                    real_fsync(descriptor)
+
+                with mock.patch.object(
+                    install_module.os, "fsync", side_effect=fail_post_unlink_fsync
+                ):
+                    with self.assertRaisesRegex(
+                        install_module.InstallError, "fsync failure"
+                    ):
+                        uninstall_opencode(repo, config, state)
+
+                self.assertTrue(failed)
+                self.assertEqual(receipt(state)["teardown_phase"], retained_phase)
+                self.assertFalse(owned_path.exists())
+                self.assertFalse(owned_path.is_symlink())
+                self.assertFalse(quarantine.exists())
+                self.assertFalse(quarantine.is_symlink())
+
+                uninstall_opencode(repo, config, state)
+                self.assertFalse(receipt_path(state).exists())
+
+    def test_foreign_deletion_quarantine_replacements_survive(self) -> None:
+        for operation in ("link", "anchor"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                payload = receipt(state)
+                if operation == "link":
+                    recorded = payload["links"][0]
+                    owned_path = Path(recorded["destination"])
+                    expected = (
+                        recorded["destination_dev"],
+                        recorded["destination_ino"],
+                    )
+                else:
+                    owned_path = Path(payload["artifact_anchor"])
+                    expected = (
+                        payload["artifact_anchor_dev"],
+                        payload["artifact_anchor_ino"],
+                    )
+                quarantine = install_module._deletion_quarantine_path(
+                    owned_path, *expected
+                )
+                real_rename = install_module._renameat_noreplace
+                stopped = False
+
+                def stop_after_delete_rename(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal stopped
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    if (
+                        not stopped
+                        and source_name == owned_path.name
+                        and target_name == quarantine.name
+                    ):
+                        stopped = True
+                        raise SystemExit("after exact delete rename")
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_noreplace",
+                    side_effect=stop_after_delete_rename,
+                ):
+                    with self.assertRaises(SystemExit):
+                        uninstall_opencode(repo, config, state)
+
+                self.assertTrue(stopped)
+                if quarantine.is_dir() and not quarantine.is_symlink():
+                    shutil.rmtree(quarantine)
+                else:
+                    quarantine.unlink()
+                foreign = root / f"foreign-{operation}"
+                foreign.write_text("foreign\n", encoding="utf-8")
+                quarantine.symlink_to(foreign)
+                foreign_identity = (
+                    quarantine.lstat().st_dev,
+                    quarantine.lstat().st_ino,
+                )
+
+                uninstall_opencode(repo, config, state)
+
+                self.assertTrue(quarantine.is_symlink())
+                self.assertEqual(os.readlink(quarantine), str(foreign))
+                self.assertEqual(
+                    (quarantine.lstat().st_dev, quarantine.lstat().st_ino),
+                    foreign_identity,
+                )
+                self.assertFalse(receipt_path(state).exists())
+
+    def test_ordinary_failure_after_retired_pruning_does_not_recreate_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            retired_skill = config / "skills/unslop"
+            retired_command = config / "commands/unslop.md"
+            shutil.rmtree(repo / "packages/expskill/skills/unslop")
+            real_evidence = install_module._artifact_evidence
+            stopped = False
+
+            def fail_after_pruning(path: Path) -> str | None:
+                nonlocal stopped
+                evidence = real_evidence(path)
+                if (
+                    not stopped
+                    and not retired_skill.is_symlink()
+                    and not retired_command.is_symlink()
+                ):
+                    stopped = True
+                    raise install_module.InstallError("after retired pruning")
+                return evidence
+
+            with (
+                mock.patch.object(install_module, "_validate_repository"),
+                mock.patch.object(
+                    install_module, "_artifact_evidence", side_effect=fail_after_pruning
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "after retired pruning"
+                ):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(stopped)
+            self.assertFalse(retired_skill.is_symlink())
+            self.assertFalse(retired_command.is_symlink())
+            with mock.patch.object(install_module, "_validate_repository"):
+                install_opencode(repo, config, state)
+                uninstall_opencode(repo, config, state)
+            self.assertFalse(retired_skill.is_symlink())
+            self.assertFalse(retired_command.is_symlink())
+
+    def test_retired_pruning_propagates_install_error_without_losing_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            retired_skill = config / "skills/unslop"
+            retired_command = config / "commands/unslop.md"
+            shutil.rmtree(repo / "packages/expskill/skills/unslop")
+            real_unlink = install_module._unlink_destination
+            failed = False
+
+            def fail_after_exact_unlink(path: Path) -> bool:
+                nonlocal failed
+                removed = real_unlink(path)
+                if path == retired_skill and not failed:
+                    failed = True
+                    raise install_module.InstallError("after retired exact unlink")
+                return removed
+
+            with (
+                mock.patch.object(install_module, "_validate_repository"),
+                mock.patch.object(
+                    install_module,
+                    "_unlink_destination",
+                    side_effect=fail_after_exact_unlink,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "after retired exact unlink"
+                ):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(failed)
+            self.assertFalse(retired_skill.is_symlink())
+            with mock.patch.object(install_module, "_validate_repository"):
+                install_opencode(repo, config, state)
+                self.assertFalse(retired_skill.is_symlink())
+                self.assertFalse(retired_command.is_symlink())
+                uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+
+    def test_legacy_migration_delete_quarantine_is_durably_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            legacy_links = install_module._legacy_opencode_expected_links(repo, config)
+            for link in legacy_links:
+                link.destination.parent.mkdir(parents=True, exist_ok=True)
+                link.destination.symlink_to(link.source)
+            path = receipt_path(state)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {
+                                "source": str(link.source),
+                                "destination": str(link.destination),
+                            }
+                            for link in legacy_links
+                        ],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(repo),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            victim = legacy_links[0]
+            real_rename = install_module._renameat_noreplace
+            stopped = False
+
+            def stop_after_migration_delete_rename(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal stopped
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if (
+                    not stopped
+                    and source_name == victim.destination.name
+                    and target_name.endswith(".delete")
+                ):
+                    stopped = True
+                    raise SystemExit("after migrated link delete rename")
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_noreplace",
+                side_effect=stop_after_migration_delete_rename,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            interrupted = receipt(state)
+            recorded = next(
+                entry
+                for entry in interrupted["links"]
+                if entry["destination"] == str(victim.destination)
+            )
+            quarantine = install_module._deletion_quarantine_path(
+                victim.destination,
+                recorded["destination_dev"],
+                recorded["destination_ino"],
+            )
+            self.assertTrue(quarantine.is_symlink())
+
+            install_opencode(repo, config, state)
+            self.assertFalse(quarantine.exists())
+            self.assertFalse(quarantine.is_symlink())
+            self.assertNotEqual(
+                os.readlink(victim.destination), str(victim.source)
+            )
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(victim.destination.is_symlink())
+
     def test_link_identity_is_durable_before_final_publication_rename(self) -> None:
         for failure in (
             install_module.InstallError("after final link rename"),
