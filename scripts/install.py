@@ -136,6 +136,10 @@ class ProfileLink:
     # be compared with their committed, identity-bearing form.
     destination_dev: int | None = field(default=None, compare=False)
     destination_ino: int | None = field(default=None, compare=False)
+    # During OpenCode publication the symlink is first made durable at this
+    # descriptor-bound hidden name.  The receipt records this pathname and its
+    # no-follow inode identity before the exclusive rename to ``destination``.
+    staged_destination: Path | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,14 @@ class InstallResult:
     removed_links: tuple[ProfileLink, ...] = ()
     marketplace_added: bool = False
     plugin_installed: bool = False
+
+
+class _JournaledLinkList(list[ProfileLink]):
+    """Created-link inventory carrying a prepublication persistence hook."""
+
+    def __init__(self, record_staged: Callable[[ProfileLink], None]) -> None:
+        super().__init__()
+        self.record_staged = record_staged
 
 
 @dataclass(frozen=True)
@@ -660,6 +672,18 @@ def _receipt_path(state_home: Path) -> Path:
     return canonical_state_home / RECEIPT_DIRECTORY / RECEIPT_FILENAME
 
 
+def _opencode_link_staging_path(source: Path, destination: Path) -> Path:
+    """Return the fixed hidden publication name for one OpenCode link pair."""
+
+    identity = hashlib.sha256(
+        b"opencode-link-stage.v1\0"
+        + os.fsencode(_lexical_absolute(source))
+        + b"\0"
+        + os.fsencode(_lexical_absolute(destination))
+    ).hexdigest()[:32]
+    return destination.parent / f".{destination.name}.expskill-{identity}.link"
+
+
 def _receipt_links(
     value: object,
     receipt_path: Path,
@@ -706,6 +730,33 @@ def _receipt_links(
             destination_ino = destination_ino_value
         else:
             raise InstallError(f"receipt link identity is malformed: {receipt_path}")
+        staged_value = entry.get("staged_destination")
+        if staged_value is None:
+            staged_destination = None
+        elif (
+            isinstance(staged_value, str)
+            and destination_dev is not None
+            and destination_ino is not None
+        ):
+            staged_raw = Path(staged_value).expanduser()
+            if (
+                not staged_raw.is_absolute()
+                or _has_dot_components(staged_raw)
+            ):
+                raise InstallError(
+                    f"receipt staged link path is malformed: {receipt_path}"
+                )
+            staged_destination = _lexical_absolute(staged_raw)
+            if staged_destination != _opencode_link_staging_path(
+                canonical_source, lexical_destination
+            ):
+                raise InstallError(
+                    f"receipt staged link path is outside its destination: {receipt_path}"
+                )
+        else:
+            raise InstallError(
+                f"receipt staged link identity is malformed: {receipt_path}"
+            )
         seen_pairs.add(pair)
         seen_destinations.add(lexical_destination)
         links.append(
@@ -714,6 +765,7 @@ def _receipt_links(
                 destination=expected[pair].destination,
                 destination_dev=destination_dev,
                 destination_ino=destination_ino,
+                staged_destination=staged_destination,
             )
         )
     return tuple(links)
@@ -1377,6 +1429,19 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
                 raise InstallError(f"receipt link identity is incomplete: {receipt_path}")
             entry["destination_dev"] = link.destination_dev
             entry["destination_ino"] = link.destination_ino
+        if link.staged_destination is not None:
+            if link.destination_dev is None or link.destination_ino is None:
+                raise InstallError(
+                    f"receipt staged link lacks identity: {receipt_path}"
+                )
+            expected_staging = _opencode_link_staging_path(
+                link.source, link.destination
+            )
+            if link.staged_destination != expected_staging:
+                raise InstallError(
+                    f"receipt staged link path is invalid: {receipt_path}"
+                )
+            entry["staged_destination"] = str(link.staged_destination)
         serialized_links.append(entry)
     payload = {
         "links": serialized_links,
@@ -1693,7 +1758,25 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
                 raise InstallError(f"refusing conflicting agent destination: {link.destination}")
             continue
         try:
-            identity = _create_destination_link(link.destination, link.source)
+            publication_hook = getattr(created, "record_staged", None)
+
+            def record_staged(path: Path, dev: int, ino: int) -> None:
+                if publication_hook is None:
+                    return
+                publication_hook(
+                    replace(
+                        link,
+                        destination_dev=dev,
+                        destination_ino=ino,
+                        staged_destination=path,
+                    )
+                )
+
+            identity = _create_destination_link(
+                link.destination,
+                link.source,
+                record_staged if publication_hook is not None else None,
+            )
         except OSError as error:
             raise InstallError(f"cannot create agent link: {link.destination}: {error}") from error
         created.append(
@@ -1710,6 +1793,17 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
 def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
     failures: list[str] = []
     for link in reversed(tuple(links)):
+        if link.staged_destination is not None:
+            try:
+                if _lexists(link.staged_destination) and not _remove_recorded_opencode_staging(
+                    link
+                ):
+                    failures.append(
+                        "staged link preserved because ownership changed: "
+                        f"{link.staged_destination}"
+                    )
+            except (OSError, InstallError) as error:
+                failures.append(f"staged link {link.staged_destination}: {error}")
         if not _lexists(link.destination):
             continue
         if link.destination_dev is not None or link.destination_ino is not None:
@@ -1928,6 +2022,10 @@ def _persist_receipt(
         artifact_ino=receipt.artifact_ino,
         artifact_digest=receipt.artifact_digest,
         lineage=receipt.lineage,
+        artifact_anchor=receipt.artifact_anchor,
+        artifact_anchor_dev=receipt.artifact_anchor_dev,
+        artifact_anchor_ino=receipt.artifact_anchor_ino,
+        teardown_phase=receipt.teardown_phase,
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
     )
@@ -2302,7 +2400,11 @@ def _bound_link_identity(destination: Path, source: Path) -> bool:
     return True
 
 
-def _create_destination_link(destination: Path, source: Path) -> tuple[int, int] | None:
+def _create_destination_link(
+    destination: Path,
+    source: Path,
+    record_staged: Callable[[Path, int, int], None] | None = None,
+) -> tuple[int, int] | None:
     bound = _bound_config_parent(destination, create=True)
     if bound is None:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -2310,8 +2412,14 @@ def _create_destination_link(destination: Path, source: Path) -> tuple[int, int]
         return None
     binding, parent_fd = bound
     _verify_config_binding(binding)
-    temporary_name = f".{destination.name}.{uuid.uuid4().hex}.link"
+    temporary_path = (
+        _opencode_link_staging_path(source, destination)
+        if record_staged is not None
+        else destination.parent / f".{destination.name}.{uuid.uuid4().hex}.link"
+    )
+    temporary_name = temporary_path.name
     temporary_identity: tuple[int, int] | None = None
+    journaled = False
     published = False
     try:
         os.symlink(os.fspath(source), temporary_name, dir_fd=parent_fd)
@@ -2330,6 +2438,14 @@ def _create_destination_link(destination: Path, source: Path) -> tuple[int, int]
             raise InstallError(
                 f"OpenCode temporary link target changed: {destination}"
             )
+        os.fsync(parent_fd)
+        if record_staged is not None:
+            record_staged(
+                temporary_path,
+                temporary_identity[0],
+                temporary_identity[1],
+            )
+            journaled = True
         _renameat_noreplace(
             parent_fd,
             temporary_name,
@@ -2337,6 +2453,7 @@ def _create_destination_link(destination: Path, source: Path) -> tuple[int, int]
             destination.name,
         )
         published = True
+        os.fsync(parent_fd)
         current = os.stat(
             destination.name, dir_fd=parent_fd, follow_symlinks=False
         )
@@ -2350,7 +2467,7 @@ def _create_destination_link(destination: Path, source: Path) -> tuple[int, int]
         _verify_config_binding(binding)
         return temporary_identity
     finally:
-        if not published and temporary_identity is not None:
+        if not journaled and not published and temporary_identity is not None:
             try:
                 remaining = os.stat(
                     temporary_name, dir_fd=parent_fd, follow_symlinks=False
@@ -2408,6 +2525,89 @@ def _recorded_opencode_link_is_live(link: ProfileLink) -> bool:
         link.destination_dev,
         link.destination_ino,
     )
+
+
+def _recorded_opencode_link_path_is_live(link: ProfileLink, path: Path) -> bool:
+    """Match a final or staged pathname to the receipt's symlink authority."""
+
+    if link.destination_dev is None or link.destination_ino is None:
+        return False
+    bound = _bound_config_parent(path, create=False)
+    if bound is None:
+        return False
+    binding, parent_fd = bound
+    _verify_config_binding(binding)
+    try:
+        metadata = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        target = Path(os.readlink(path.name, dir_fd=parent_fd))
+    except OSError:
+        return False
+    if not stat.S_ISLNK(metadata.st_mode):
+        return False
+    if not target.is_absolute():
+        target = path.parent / target
+    if _lexical_absolute(target) != _lexical_absolute(link.source):
+        return False
+    identity = (metadata.st_dev, metadata.st_ino)
+    if identity != (link.destination_dev, link.destination_ino):
+        return False
+    binding.validated_leaves[_lexical_absolute(path)] = identity
+    _verify_config_binding(binding)
+    return True
+
+
+def _remove_recorded_opencode_staging(link: ProfileLink) -> bool:
+    """Remove only the exact staged inode cited by the durable receipt."""
+
+    staging = link.staged_destination
+    if staging is None or not _lexists(staging):
+        return False
+    if not _recorded_opencode_link_path_is_live(link, staging):
+        return False
+    _unlink_destination(staging)
+    return True
+
+
+def _recover_staged_opencode_links(receipt: _Receipt) -> None:
+    """Idempotently finish receipt-journaled staging-to-final renames."""
+
+    for link in receipt.links:
+        staging = link.staged_destination
+        if staging is None:
+            continue
+        final_owned = _recorded_opencode_link_is_live(link)
+        staged_owned = _recorded_opencode_link_path_is_live(link, staging)
+        if final_owned:
+            if staged_owned:
+                _remove_recorded_opencode_staging(link)
+            continue
+        if _lexists(link.destination):
+            # A foreign or same-target replacement is never overwritten or
+            # adopted.  The exact installer staging object no longer has a
+            # publication path, so clean only that recorded inode.
+            if staged_owned:
+                _remove_recorded_opencode_staging(link)
+            continue
+        if not staged_owned:
+            continue
+        bound = _bound_config_parent(link.destination, create=False)
+        if bound is None:
+            raise InstallError(
+                f"OpenCode staged link parent is missing: {link.destination}"
+            )
+        binding, parent_fd = bound
+        _verify_config_binding(binding)
+        _renameat_noreplace(
+            parent_fd,
+            staging.name,
+            parent_fd,
+            link.destination.name,
+        )
+        os.fsync(parent_fd)
+        if not _recorded_opencode_link_is_live(link):
+            raise InstallError(
+                f"recovered OpenCode link identity changed: {link.destination}"
+            )
 
 
 def _committed_opencode_link(
@@ -4398,6 +4598,8 @@ def _install_opencode_bound(
             artifact_pending,
             receipt,
         ) = _ensure_opencode_artifact(canonical_root, state_home, receipt)
+        if receipt is not None:
+            _recover_staged_opencode_links(receipt)
     except Exception:
         _remove_new_opencode_state(
             receipt_directory,
@@ -4426,10 +4628,31 @@ def _install_opencode_bound(
             state_home_existed,
         )
         raise
-    created_links: list[ProfileLink] = []
+    def record_staged_link(staged: ProfileLink) -> None:
+        nonlocal receipt
+        if receipt is None:
+            raise InstallError(
+                "OpenCode link publication lacks a durable receipt"
+            )
+        updated: list[ProfileLink] = []
+        replaced_link = False
+        for recorded in receipt.links:
+            if recorded.destination == staged.destination:
+                updated.append(staged)
+                replaced_link = True
+            else:
+                updated.append(recorded)
+        if not replaced_link:
+            updated.append(staged)
+        receipt = _persist_receipt(
+            receipt_path_value,
+            receipt,
+            links=tuple(updated),
+        )
+
+    created_links: list[ProfileLink] = _JournaledLinkList(record_staged_link)
     migrated_links: list[ProfileLink] = []
     removed_retired: tuple[ProfileLink, ...] = ()
-    link_publication_complete = False
     try:
         if receipt is not None and (
             receipt.artifact_root is None
@@ -4448,18 +4671,18 @@ def _install_opencode_bound(
                 _unlink_destination(old.destination)
                 migrated_links.append(old)
         if receipt is not None and receipt.pending_publish is not None:
-            planned_publish = replace(
-                receipt.pending_publish,
-                phase="planned-links",
-                planned_links=True,
-            )
-            receipt = _persist_receipt(
-                receipt_path_value,
-                _receipt_with_pending_publish(receipt, planned_publish),
-                links=links,
-            )
+            if not receipt.pending_publish.planned_links:
+                planned_publish = replace(
+                    receipt.pending_publish,
+                    phase="planned-links",
+                    planned_links=True,
+                )
+                receipt = _persist_receipt(
+                    receipt_path_value,
+                    _receipt_with_pending_publish(receipt, planned_publish),
+                    links=links,
+                )
         _create_links(links, created_links)
-        link_publication_complete = True
         if receipt is not None:
             _retained, removed_retired = _prune_opencode_retired_links(
                 receipt, links, config_dir
@@ -4551,15 +4774,31 @@ def _install_opencode_bound(
         _write_receipt(receipt_path_value, merged_receipt)
     except BaseException as error:
         preserve_exception_type = not isinstance(error, Exception)
-        if preserve_exception_type and not link_publication_complete:
-            # A crash inside publication leaves the partial inventory as
-            # independent recovery evidence.  No caller has yet observed a
-            # successfully completed link transaction to roll back.
+        if preserve_exception_type:
+            # Crash recovery owns every mutation cited by the durable receipt.
+            # Restoring retired or migrated links here would mix old-source
+            # pathnames with the retained new artifact transaction.
             raise
+        journaled_links = (
+            tuple(
+                link
+                for link in receipt.links
+                if link.staged_destination is not None
+            )
+            if receipt is not None
+            else ()
+        )
         rollback_failures = [
             *(
                 f"residual state or rollback failures: {failure}"
-                for failure in _rollback_links(created_links)
+                for failure in _rollback_links(
+                    tuple(
+                        {
+                            link.destination: link
+                            for link in (*created_links, *journaled_links)
+                        }.values()
+                    )
+                )
             ),
             *(
                 f"retired-link rollback: {failure}"
@@ -4570,13 +4809,6 @@ def _install_opencode_bound(
                 for failure in _restore_opencode_links(migrated_links, config_dir)
             ),
         ]
-        if preserve_exception_type:
-            for failure in rollback_failures:
-                error.add_note(failure)
-            # Crash-style exits keep the durably recorded artifact publication
-            # state for recovery.  Only pathname mutations without their own
-            # durable transaction (new and retired links) are rolled back.
-            raise
         for failure in rollback_failures:
             error = InstallError(f"{error}; {failure}")
         if artifact_created:
@@ -5009,6 +5241,8 @@ def _uninstall_opencode_bound(
     )
     if receipt is None:
         return InstallResult()
+    for link in receipt.links:
+        _remove_recorded_opencode_staging(link)
     if receipt.pending_swap is not None or (
         receipt.pending_publish is not None and not recovered_initial
     ):
@@ -5090,6 +5324,11 @@ def _resume_opencode_teardown(
     if current.teardown_phase == "removing-links":
         failures: list[str] = []
         for link in current.links:
+            try:
+                _remove_recorded_opencode_staging(link)
+            except (OSError, InstallError) as error:
+                failures.append(f"staged link {link.staged_destination}: {error}")
+                continue
             if not _recorded_opencode_link_is_live(link):
                 continue
             try:

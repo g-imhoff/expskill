@@ -33,6 +33,297 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_link_identity_is_durable_before_final_publication_rename(self) -> None:
+        for failure in (
+            install_module.InstallError("after final link rename"),
+            SystemExit("after final link rename"),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                real_rename = install_module._renameat_noreplace
+                injected = False
+
+                def fail_after_final_link_rename(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal injected
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    if source_name.endswith(".link") and not injected:
+                        injected = True
+                        raise failure
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_noreplace",
+                    side_effect=fail_after_final_link_rename,
+                ):
+                    with self.assertRaises(type(failure)):
+                        install_opencode(repo, config, state)
+
+                self.assertTrue(injected)
+                if isinstance(failure, install_module.InstallError):
+                    self.assertFalse(receipt_path(state).exists())
+                    self.assertFalse(
+                        any(path.is_symlink() for path in config.rglob("*"))
+                    )
+                    destination = config / "skills/brainstorm"
+                else:
+                    payload = receipt(state)
+                    published = next(
+                        entry
+                        for entry in payload["links"]
+                        if Path(entry["destination"]).is_symlink()
+                    )
+                    destination = Path(published["destination"])
+                    original_identity = (
+                        destination.lstat().st_dev,
+                        destination.lstat().st_ino,
+                    )
+                    self.assertEqual(
+                        (
+                            published["destination_dev"],
+                            published["destination_ino"],
+                        ),
+                        original_identity,
+                    )
+                    self.assertIn("staged_destination", published)
+
+                install_opencode(repo, config, state)
+                uninstall_opencode(repo, config, state)
+
+                self.assertFalse(receipt_path(state).exists())
+                self.assertFalse(destination.is_symlink())
+
+    def test_interrupted_link_publication_never_claims_same_target_replacement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_rename = install_module._renameat_noreplace
+            injected = False
+
+            def crash_after_final_link_rename(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if source_name.endswith(".link") and not injected:
+                    injected = True
+                    raise SystemExit("after final link rename")
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_noreplace",
+                side_effect=crash_after_final_link_rename,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = receipt(state)
+            published = next(
+                entry
+                for entry in payload["links"]
+                if Path(entry["destination"]).is_symlink()
+            )
+            destination = Path(published["destination"])
+            source = Path(published["source"])
+            displaced = destination.with_name(f"{destination.name}.displaced")
+            destination.rename(displaced)
+            destination.symlink_to(source)
+            replacement_identity = (
+                destination.lstat().st_dev,
+                destination.lstat().st_ino,
+            )
+
+            install_opencode(repo, config, state)
+            committed = receipt(state)
+            recorded = next(
+                entry
+                for entry in committed["links"]
+                if entry["destination"] == str(destination)
+            )
+            self.assertNotEqual(
+                (recorded["destination_dev"], recorded["destination_ino"]),
+                replacement_identity,
+            )
+            uninstall_opencode(repo, config, state)
+
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
+
+    def test_interrupted_link_publication_never_deletes_foreign_replacement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_rename = install_module._renameat_noreplace
+            injected = False
+
+            def crash_after_final_link_rename(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if source_name.endswith(".link") and not injected:
+                    injected = True
+                    raise SystemExit("after final link rename")
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_noreplace",
+                side_effect=crash_after_final_link_rename,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = receipt(state)
+            published = next(
+                entry
+                for entry in payload["links"]
+                if Path(entry["destination"]).is_symlink()
+            )
+            destination = Path(published["destination"])
+            displaced = destination.with_name(f"{destination.name}.displaced")
+            destination.rename(displaced)
+            foreign = root / "foreign"
+            foreign.write_text("foreign\n", encoding="utf-8")
+            destination.symlink_to(foreign)
+            replacement_identity = (
+                destination.lstat().st_dev,
+                destination.lstat().st_ino,
+            )
+
+            uninstall_opencode(repo, config, state)
+
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(os.readlink(destination), str(foreign))
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
+            self.assertFalse(receipt_path(state).exists())
+
+    def test_crash_after_legacy_link_publication_does_not_restore_old_targets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            legacy_links = install_module._legacy_opencode_expected_links(repo, config)
+            for link in legacy_links:
+                link.destination.parent.mkdir(parents=True, exist_ok=True)
+                link.destination.symlink_to(link.source)
+            path = receipt_path(state)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {"source": str(link.source), "destination": str(link.destination)}
+                            for link in legacy_links
+                        ],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(repo),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                install_module,
+                "_prune_opencode_retired_links",
+                side_effect=SystemExit("after migrated link publication"),
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(
+                all(
+                    Path(os.readlink(link.destination)).is_relative_to(
+                        state / "expskill/opencode-artifact"
+                    )
+                    for link in legacy_links
+                )
+            )
+            install_opencode(repo, config, state)
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_crash_after_retired_link_pruning_never_recreates_removed_entry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            retired_skill = config / "skills/unslop"
+            retired_command = config / "commands/unslop.md"
+            shutil.rmtree(repo / "packages/expskill/skills/unslop")
+            real_evidence = install_module._artifact_evidence
+            injected = False
+
+            def crash_after_pruning(path: Path) -> str | None:
+                nonlocal injected
+                evidence = real_evidence(path)
+                if (
+                    not injected
+                    and not retired_skill.is_symlink()
+                    and not retired_command.is_symlink()
+                ):
+                    injected = True
+                    raise SystemExit("after retired link pruning")
+                return evidence
+
+            with (
+                mock.patch.object(install_module, "_validate_repository"),
+                mock.patch.object(
+                    install_module,
+                    "_artifact_evidence",
+                    side_effect=crash_after_pruning,
+                ),
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertFalse(retired_skill.is_symlink())
+            self.assertFalse(retired_command.is_symlink())
+            with mock.patch.object(install_module, "_validate_repository"):
+                install_opencode(repo, config, state)
+                uninstall_opencode(repo, config, state)
+            self.assertFalse(retired_skill.is_symlink())
+            self.assertFalse(retired_command.is_symlink())
+
     def test_new_install_rejects_preexisting_same_target_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -358,12 +649,32 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     (destination.lstat().st_dev, destination.lstat().st_ino),
                     identity,
                 )
-                self.assertFalse(
-                    any(
-                        link.destination.is_symlink()
-                        for link in created_snapshot[1:]
+                if isinstance(failure, SystemExit):
+                    self.assertTrue(
+                        all(
+                            link.destination.is_symlink()
+                            for link in created_snapshot[1:]
+                        )
                     )
-                )
+                    uninstall_opencode(repo, config, state)
+                    self.assertFalse(
+                        any(
+                            link.destination.is_symlink()
+                            for link in created_snapshot[1:]
+                        )
+                    )
+                    self.assertTrue(destination.is_symlink())
+                    self.assertEqual(
+                        (destination.lstat().st_dev, destination.lstat().st_ino),
+                        identity,
+                    )
+                else:
+                    self.assertFalse(
+                        any(
+                            link.destination.is_symlink()
+                            for link in created_snapshot[1:]
+                        )
+                    )
 
     def test_anchored_uninstall_accepts_missing_and_retargeted_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

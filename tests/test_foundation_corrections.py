@@ -259,8 +259,7 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            # Link creation completed before its inode identities were
-            # journaled, so teardown preserves the unknown pathnames.
+            # Artifact publication crashed before any link was staged.
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
                 len(payload["links"]),
@@ -1106,7 +1105,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                len(payload["links"]),
+                0,
             )
 
     def test_uninstall_after_partial_initial_link_publication_crash_converges(
@@ -1120,9 +1119,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             real_create = install_module._create_destination_link
             created = 0
 
-            def crash_after_third_link(destination: Path, source: Path) -> None:
+            def crash_after_third_link(
+                destination: Path,
+                source: Path,
+                record_staged: object = None,
+            ) -> None:
                 nonlocal created
-                real_create(destination, source)
+                real_create(destination, source, record_staged)
                 created += 1
                 if created == 3:
                     raise SystemExit("injected crash after partial link publication")
@@ -1148,7 +1151,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                3,
+                0,
             )
 
     def test_complete_live_inventory_recovers_when_publication_anchor_is_gone(
@@ -1181,7 +1184,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                len(payload["links"]),
+                0,
             )
 
     def test_anchorless_recovery_retries_after_fourth_unlink_crash(self) -> None:
@@ -1226,7 +1229,7 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                len(payload["links"]),
+                0,
             )
             uninstall_opencode(repo, config, state)
 
@@ -1234,7 +1237,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                len(payload["links"]),
+                0,
             )
 
     def test_committed_uninstall_retries_after_fourth_unlink_failure(self) -> None:
@@ -1467,7 +1470,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
             with mock.patch.object(
                 install_module,
-                "_persist_receipt",
+                "_write_receipt",
                 side_effect=InstallError("injected resumed publication persistence failure"),
             ):
                 with self.assertRaisesRegex(InstallError, "persistence failure"):
@@ -1478,12 +1481,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertTrue(receipt_path(state).is_file())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                len(payload["links"]),
+                0,
             )
             self.assertTrue(
                 all(
-                    Path(entry["destination"]).resolve(strict=True)
-                    == Path(entry["source"])
+                    entry.get("destination_dev") is not None
+                    and entry.get("destination_ino") is not None
+                    and entry.get("staged_destination") is not None
                     for entry in payload["links"]
                 )
             )
@@ -1547,7 +1551,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                29,
+                1,
             )
 
     def test_failed_first_publish_preserves_replacement_at_fixed_name(self) -> None:
