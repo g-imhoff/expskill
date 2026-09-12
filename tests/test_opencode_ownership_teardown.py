@@ -241,6 +241,130 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 replacement_identity,
             )
 
+    def test_upgrade_accepts_frozen_inventory_and_prunes_only_exact_retired_inode(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            original = receipt(state)
+            retired = {
+                Path(link["destination"]).parent.name: link
+                for link in original["links"]
+                if Path(link["destination"]).stem == "unslop"
+                and Path(link["destination"]).parent.name in {"skills", "commands"}
+            }
+            owned_command = Path(retired["commands"]["destination"])
+            replaced_skill = Path(retired["skills"]["destination"])
+            replaced_source = Path(retired["skills"]["source"])
+            displaced = replaced_skill.with_name("unslop.displaced")
+            replaced_skill.rename(displaced)
+            replaced_skill.symlink_to(replaced_source)
+            replacement_identity = (
+                replaced_skill.lstat().st_dev,
+                replaced_skill.lstat().st_ino,
+            )
+            shutil.rmtree(repo / "packages/expskill/skills/unslop")
+
+            with mock.patch.object(install_module, "_validate_repository"):
+                install_opencode(repo, config, state)
+
+            upgraded = receipt(state)
+            self.assertNotIn(
+                str(replaced_skill),
+                {link["destination"] for link in upgraded["links"]},
+            )
+            self.assertFalse(owned_command.exists())
+            self.assertFalse(owned_command.is_symlink())
+            self.assertTrue(replaced_skill.is_symlink())
+            self.assertEqual(os.readlink(replaced_skill), str(replaced_source))
+            self.assertEqual(
+                (replaced_skill.lstat().st_dev, replaced_skill.lstat().st_ino),
+                replacement_identity,
+            )
+
+    def test_install_failure_rolls_back_only_exact_new_link_inodes(self) -> None:
+        for failure in (
+            install_module.InstallError("after link creation"),
+            SystemExit("after link creation"),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                real_create_links = install_module._create_links
+                created_snapshot: list[install_module.ProfileLink] = []
+                replacement: tuple[Path, Path, tuple[int, int]] | None = None
+
+                def replace_after_creation(
+                    links: object, created: list[install_module.ProfileLink]
+                ) -> None:
+                    nonlocal replacement
+                    real_create_links(links, created)
+                    created_snapshot.extend(created)
+                    victim = created[0]
+                    displaced = victim.destination.with_name(
+                        f"{victim.destination.name}.displaced"
+                    )
+                    victim.destination.rename(displaced)
+                    victim.destination.symlink_to(victim.source)
+                    replacement = (
+                        victim.destination,
+                        victim.source,
+                        (
+                            victim.destination.lstat().st_dev,
+                            victim.destination.lstat().st_ino,
+                        ),
+                    )
+
+                def fail_later(*_args: object) -> None:
+                    raise failure
+
+                with (
+                    mock.patch.object(
+                        install_module,
+                        "_create_links",
+                        side_effect=replace_after_creation,
+                    ),
+                    mock.patch.object(
+                        install_module,
+                        "_prune_opencode_retired_links",
+                        side_effect=fail_later,
+                    ),
+                ):
+                    with self.assertRaises(type(failure)):
+                        install_opencode(repo, config, state)
+
+                self.assertTrue(created_snapshot)
+                self.assertTrue(
+                    all(
+                        link.destination_dev is not None
+                        and link.destination_ino is not None
+                        for link in created_snapshot
+                    )
+                )
+                assert replacement is not None
+                destination, source, identity = replacement
+                self.assertTrue(destination.is_symlink())
+                self.assertEqual(os.readlink(destination), str(source))
+                self.assertEqual(
+                    (destination.lstat().st_dev, destination.lstat().st_ino),
+                    identity,
+                )
+                self.assertFalse(
+                    any(
+                        link.destination.is_symlink()
+                        for link in created_snapshot[1:]
+                    )
+                )
+
     def test_anchored_uninstall_accepts_missing_and_retargeted_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -663,8 +787,13 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                                     for link in converged["links"]
                                     if link["destination"] == str(replacement[0])
                                 )
-                                self.assertNotIn("destination_dev", preserved)
-                                self.assertNotIn("destination_ino", preserved)
+                                self.assertNotEqual(
+                                    (
+                                        preserved.get("destination_dev"),
+                                        preserved.get("destination_ino"),
+                                    ),
+                                    replacement[2],
+                                )
                         else:
                             uninstall_opencode(repo, config, state)
                             self.assertFalse(receipt_path(state).exists())

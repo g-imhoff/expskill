@@ -1693,10 +1693,18 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
                 raise InstallError(f"refusing conflicting agent destination: {link.destination}")
             continue
         try:
-            _create_destination_link(link.destination, link.source)
+            identity = _create_destination_link(link.destination, link.source)
         except OSError as error:
             raise InstallError(f"cannot create agent link: {link.destination}: {error}") from error
-        created.append(link)
+        created.append(
+            link
+            if identity is None
+            else replace(
+                link,
+                destination_dev=identity[0],
+                destination_ino=identity[1],
+            )
+        )
 
 
 def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
@@ -1704,7 +1712,15 @@ def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
     for link in reversed(tuple(links)):
         if not _lexists(link.destination):
             continue
-        if not _same_recorded_link(link.destination, link.source):
+        if link.destination_dev is not None or link.destination_ino is not None:
+            owned = (
+                link.destination_dev is not None
+                and link.destination_ino is not None
+                and _recorded_opencode_link_is_live(link)
+            )
+        else:
+            owned = _same_recorded_link(link.destination, link.source)
+        if not owned:
             failures.append(f"link preserved because ownership changed: {link.destination}")
             continue
         try:
@@ -2286,21 +2302,63 @@ def _bound_link_identity(destination: Path, source: Path) -> bool:
     return True
 
 
-def _create_destination_link(destination: Path, source: Path) -> None:
+def _create_destination_link(destination: Path, source: Path) -> tuple[int, int] | None:
     bound = _bound_config_parent(destination, create=True)
     if bound is None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.symlink_to(source)
-        return
+        return None
     binding, parent_fd = bound
     _verify_config_binding(binding)
-    os.symlink(os.fspath(source), destination.name, dir_fd=parent_fd)
-    metadata = os.stat(destination.name, dir_fd=parent_fd, follow_symlinks=False)
-    binding.validated_leaves[_lexical_absolute(destination)] = (
-        metadata.st_dev,
-        metadata.st_ino,
-    )
-    _verify_config_binding(binding)
+    temporary_name = f".{destination.name}.{uuid.uuid4().hex}.link"
+    temporary_identity: tuple[int, int] | None = None
+    published = False
+    try:
+        os.symlink(os.fspath(source), temporary_name, dir_fd=parent_fd)
+        temporary = os.stat(
+            temporary_name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if not stat.S_ISLNK(temporary.st_mode):
+            raise InstallError(
+                f"OpenCode temporary destination is not a symlink: {destination}"
+            )
+        temporary_identity = (temporary.st_dev, temporary.st_ino)
+        target = Path(os.readlink(temporary_name, dir_fd=parent_fd))
+        if not target.is_absolute():
+            target = destination.parent / target
+        if _lexical_absolute(target) != _lexical_absolute(source):
+            raise InstallError(
+                f"OpenCode temporary link target changed: {destination}"
+            )
+        _renameat_noreplace(
+            parent_fd,
+            temporary_name,
+            parent_fd,
+            destination.name,
+        )
+        published = True
+        current = os.stat(
+            destination.name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if (current.st_dev, current.st_ino) != temporary_identity:
+            raise InstallError(
+                f"OpenCode config destination identity changed: {destination}"
+            )
+        binding.validated_leaves[
+            _lexical_absolute(destination)
+        ] = temporary_identity
+        _verify_config_binding(binding)
+        return temporary_identity
+    finally:
+        if not published and temporary_identity is not None:
+            try:
+                remaining = os.stat(
+                    temporary_name, dir_fd=parent_fd, follow_symlinks=False
+                )
+                if (remaining.st_dev, remaining.st_ino) == temporary_identity:
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+            except OSError:
+                pass
 
 
 def _capture_opencode_link_identity(link: ProfileLink) -> ProfileLink:
@@ -4371,6 +4429,7 @@ def _install_opencode_bound(
     created_links: list[ProfileLink] = []
     migrated_links: list[ProfileLink] = []
     removed_retired: tuple[ProfileLink, ...] = ()
+    link_publication_complete = False
     try:
         if receipt is not None and (
             receipt.artifact_root is None
@@ -4400,6 +4459,7 @@ def _install_opencode_bound(
                 links=links,
             )
         _create_links(links, created_links)
+        link_publication_complete = True
         if receipt is not None:
             _retained, removed_retired = _prune_opencode_retired_links(
                 receipt, links, config_dir
@@ -4489,32 +4549,36 @@ def _install_opencode_bound(
             pending_swap=artifact_pending,
         )
         _write_receipt(receipt_path_value, merged_receipt)
-    except Exception as error:
-        for failure in _rollback_links(created_links):
-            error = InstallError(f"{error}; residual state or rollback failures: {failure}")
-        for failure in _restore_opencode_links(removed_retired, config_dir):
-            error = InstallError(f"{error}; retired-link rollback: {failure}")
-        for failure in _restore_opencode_links(migrated_links, config_dir):
-            error = InstallError(f"{error}; legacy-link rollback: {failure}")
-        if isinstance(error, InstallError):
-            if artifact_created:
-                try:
-                    _remove_initial_publication_artifact(artifact_root, receipt)
-                    _discard_prepublication_receipt(receipt_path_value, receipt)
-                except InstallError as cleanup_error:
-                    error = InstallError(f"{error}; {cleanup_error}")
-            elif artifact_backup is not None:
-                try:
-                    _restore_opencode_artifact(artifact_root, artifact_backup, artifact_pending)
-                except InstallError as cleanup_error:
-                    error = InstallError(f"{error}; {cleanup_error}")
-            _remove_new_opencode_state(
-                receipt_directory,
-                receipt_directory_existed,
-                canonical_state_home,
-                state_home_existed,
-            )
-            raise error
+    except BaseException as error:
+        preserve_exception_type = not isinstance(error, Exception)
+        if preserve_exception_type and not link_publication_complete:
+            # A crash inside publication leaves the partial inventory as
+            # independent recovery evidence.  No caller has yet observed a
+            # successfully completed link transaction to roll back.
+            raise
+        rollback_failures = [
+            *(
+                f"residual state or rollback failures: {failure}"
+                for failure in _rollback_links(created_links)
+            ),
+            *(
+                f"retired-link rollback: {failure}"
+                for failure in _restore_opencode_links(removed_retired, config_dir)
+            ),
+            *(
+                f"legacy-link rollback: {failure}"
+                for failure in _restore_opencode_links(migrated_links, config_dir)
+            ),
+        ]
+        if preserve_exception_type:
+            for failure in rollback_failures:
+                error.add_note(failure)
+            # Crash-style exits keep the durably recorded artifact publication
+            # state for recovery.  Only pathname mutations without their own
+            # durable transaction (new and retired links) are rolled back.
+            raise
+        for failure in rollback_failures:
+            error = InstallError(f"{error}; {failure}")
         if artifact_created:
             try:
                 _remove_initial_publication_artifact(artifact_root, receipt)
@@ -4532,6 +4596,8 @@ def _install_opencode_bound(
             canonical_state_home,
             state_home_existed,
         )
+        if isinstance(error, InstallError):
+            raise error
         raise InstallError(str(error)) from error
     # The receipt now names the successfully committed artifact.  Retry only
     # the one exact backup identity still named by its pending-swap record;
@@ -4554,7 +4620,7 @@ def _opencode_receipt_links_without_artifact(
     state_home: Path,
     repository_root: Path | None = None,
 ) -> tuple[ProfileLink, ...]:
-    """Reconstruct a constrained receipt allow-list when state was removed."""
+    """Reconstruct a structurally constrained prior artifact inventory."""
 
     try:
         payload = json.loads(_read_state_text(receipt_path))
@@ -4572,15 +4638,15 @@ def _opencode_receipt_links_without_artifact(
             raise InstallError(f"receipt artifact root must be an absolute path: {receipt_path}")
         _fixed_opencode_artifact(state_home, recorded_artifact)
     canonical_config = _canonical_opencode_config(config_dir)
-    if repository_root is not None:
-        try:
-            allowed_skills = set(_skill_inventory(repository_root))
-        except Exception as error:
-            raise InstallError(f"canonical skill inventory cannot be read: {error}") from error
-    else:
-        allowed_skills = set(LEGACY_OPENCODE_SKILLS)
-    allowed_agents = set(_OPENCODE_AGENT_NAMES)
     allowed_plugins = set(LEGACY_OPENCODE_PLUGINS)
+
+    def valid_name(value: str) -> bool:
+        return bool(value) and value[0].isascii() and value[0].isalnum() and all(
+            character.isascii()
+            and (character.isalnum() or character in {"-", "_"})
+            for character in value
+        )
+
     expected: list[ProfileLink] = []
     seen_destinations: set[Path] = set()
     for entry in payload["links"]:
@@ -4610,15 +4676,30 @@ def _opencode_receipt_links_without_artifact(
         source_group, source_name = source_relative.parts
         destination_group, destination_name = destination_relative.parts
         if source_group == "skills":
-            valid = source_name in allowed_skills and destination_group == "skills" and destination_name == source_name
+            valid = (
+                valid_name(source_name)
+                and destination_group == "skills"
+                and destination_name == source_name
+            )
             if valid and _lexists(source) and (source.is_symlink() or not source.is_dir()):
                 valid = False
         elif source_group == "commands":
-            valid = source_name.endswith(".md") and source_name[:-3] in allowed_skills and destination_group == "commands" and destination_name == source_name
+            valid = (
+                source_name.endswith(".md")
+                and valid_name(source_name[:-3])
+                and destination_group == "commands"
+                and destination_name == source_name
+            )
             if valid and _lexists(source) and (source.is_symlink() or not source.is_file()):
                 valid = False
         elif source_group == "agents":
-            valid = source_name.endswith(".md") and source_name[:-3] in allowed_agents and destination_group == "agents" and destination_name == source_name
+            valid = (
+                source_name.endswith(".md")
+                and source_name[:-3].startswith("expskill-")
+                and valid_name(source_name[:-3])
+                and destination_group == "agents"
+                and destination_name == source_name
+            )
             if valid and _lexists(source) and (source.is_symlink() or not source.is_file()):
                 valid = False
         elif source_group == "plugins":
@@ -4761,39 +4842,6 @@ def _read_opencode_receipt(
             ):
                 raise InstallError(
                     f"OpenCode prepublication receipt is inconsistent: {receipt_path}"
-                )
-        else:
-            artifact = _fixed_opencode_artifact(state_home, receipt.artifact_root)
-            canonical_config = _canonical_opencode_config(config_dir)
-            skill_names = tuple(_skill_inventory(repository_root))
-            expected_current = {
-                ProfileLink(artifact / "skills" / name, canonical_config / "skills" / name)
-                for name in skill_names
-            }
-            expected_current.update(
-                ProfileLink(
-                    artifact / "commands" / f"{name}.md",
-                    canonical_config / "commands" / f"{name}.md",
-                )
-                for name in skill_names
-            )
-            expected_current.update(
-                ProfileLink(
-                    artifact / "agents" / f"{name}.md",
-                    canonical_config / "agents" / f"{name}.md",
-                )
-                for name in _OPENCODE_AGENT_NAMES
-            )
-            expected_current.update(
-                ProfileLink(
-                    artifact / "plugins" / name,
-                    canonical_config / "plugins" / name,
-                )
-                for name in LEGACY_OPENCODE_PLUGINS
-            )
-            if set(receipt.links) != expected_current:
-                raise InstallError(
-                    f"current OpenCode receipt link inventory is incomplete: {receipt_path}"
                 )
     elif set(receipt.links) != set(expected):
         raise InstallError(f"legacy OpenCode receipt is incomplete: {receipt_path}")
