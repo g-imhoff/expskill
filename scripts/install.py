@@ -89,6 +89,25 @@ OPENCODE_PACKAGE_NAME = "opencode-expskill"
 OPENCODE_ARTIFACT_DIRECTORY = "opencode-artifact"
 OPENCODE_ARTIFACT_ANCHOR_FILE = "package.json"
 OPENCODE_ARTIFACT_ANCHOR_PREFIX = f".{OPENCODE_ARTIFACT_DIRECTORY}.anchor-"
+OPENCODE_RECEIPT_TEARDOWN_PHASES = frozenset(
+    {"committed", "removing-links", "artifact-removed", "anchor-removed"}
+)
+OPENCODE_RECEIPT_PENDING_PHASES = frozenset(
+    {
+        "none",
+        "migration-prepared",
+        "swap-prepared",
+        "swap-anchor-recorded",
+        "swap-backup-created",
+        "swap-published",
+        "swap-old-artifact-removed",
+        "swap-old-anchor-removed",
+        "publish-prepared",
+        "publish-anchor-recorded",
+        "publish-published",
+        "publish-planned-links",
+    }
+)
 # Exact source/destination roster emitted by the parent-repository installer
 # before receipt-owned artifacts were introduced.  These names are deliberately
 # frozen: receipt migration must not turn arbitrary receipt text into deletion
@@ -469,32 +488,104 @@ def _state_lstat(path: Path) -> os.stat_result:
     return os.stat(path.name, dir_fd=binding.directory_fd, follow_symlinks=False)
 
 
-def _terminal_receipt_quarantine_path(
-    path: Path, dev: int, ino: int, lineage: str
-) -> Path:
-    """Bind terminal receipt recovery to its inode, lineage, and phase."""
+def _receipt_deletion_phase(receipt: _Receipt) -> tuple[str, str]:
+    """Return the closed, filename-safe phase pair bound to receipt deletion."""
 
+    current_phase = receipt.teardown_phase
+    if current_phase not in OPENCODE_RECEIPT_TEARDOWN_PHASES:
+        raise InstallError("OpenCode receipt deletion phase is invalid")
+    if receipt.pending_swap is not None:
+        pending_phase = f"swap-{receipt.pending_swap.phase}"
+    elif receipt.pending_publish is not None:
+        pending_phase = f"publish-{receipt.pending_publish.phase}"
+    elif receipt.pending_migration:
+        pending_phase = "migration-prepared"
+    else:
+        pending_phase = "none"
+    if pending_phase not in OPENCODE_RECEIPT_PENDING_PHASES:
+        raise InstallError("OpenCode receipt pending deletion phase is invalid")
+    return current_phase, pending_phase
+
+
+def _receipt_deletion_quarantine_path(
+    path: Path,
+    dev: int,
+    ino: int,
+    lineage: str,
+    current_phase: str,
+    pending_phase: str,
+) -> Path:
+    """Bind recoverable receipt deletion to inode, lineage, and exact phase."""
+
+    if path.name != OPENCODE_RECEIPT_FILENAME:
+        raise InstallError(f"unsupported receipt deletion path: {path}")
+    identity = f"{dev:x}-{ino:x}"
     token = hashlib.sha256(
-        b"opencode-terminal-receipt.v1\0"
+        b"opencode-receipt-deletion.v2\0"
+        + path.name.encode()
+        + b"\0"
+        + identity.encode()
+        + b"\0"
         + lineage.encode()
-        + b"\0anchor-removed"
+        + b"\0"
+        + current_phase.encode()
+        + b"\0"
+        + pending_phase.encode()
     ).hexdigest()[:32]
     return path.parent / (
-        f".{path.name}.{dev:x}-{ino:x}.{token}.anchor-removed.delete"
+        f".{path.name}.{identity}.{token}.{pending_phase}.{current_phase}.delete"
     )
 
 
-def _terminal_receipt_lineage(path: Path) -> str | None:
+def _receipt_deletion_descriptor(path: Path) -> tuple[str, str, str]:
+    """Parse the receipt fields required to create its deletion capability."""
+
     if path.name != OPENCODE_RECEIPT_FILENAME:
-        return None
+        raise InstallError(f"unsupported receipt deletion path: {path}")
     try:
         payload = json.loads(_read_state_text(path))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or payload.get("teardown_phase") != "anchor-removed":
-        return None
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"receipt is malformed: {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise InstallError(f"receipt is malformed: {path}")
     lineage = payload.get("lineage")
-    return lineage if isinstance(lineage, str) and len(lineage) >= 32 else None
+    if not isinstance(lineage, str) or len(lineage) < 32:
+        raise InstallError(f"receipt deletion lineage is malformed: {path}")
+    current_phase = payload.get("teardown_phase", "committed")
+    if current_phase not in OPENCODE_RECEIPT_TEARDOWN_PHASES:
+        raise InstallError(f"receipt deletion phase is malformed: {path}")
+    pending_swap = payload.get("pending_swap")
+    pending_publish = payload.get("pending_publish")
+    pending_migration = payload.get("pending_migration")
+    if (
+        sum(
+            value is not None
+            for value in (pending_swap, pending_publish, pending_migration)
+        )
+        > 1
+    ):
+        raise InstallError(f"receipt deletion pending phase is malformed: {path}")
+    if pending_swap is not None:
+        if not isinstance(pending_swap, dict) or not isinstance(
+            pending_swap.get("phase"), str
+        ):
+            raise InstallError(f"receipt deletion pending phase is malformed: {path}")
+        pending_phase = f"swap-{pending_swap['phase']}"
+    elif pending_publish is not None:
+        if not isinstance(pending_publish, dict) or not isinstance(
+            pending_publish.get("phase"), str
+        ):
+            raise InstallError(f"receipt deletion pending phase is malformed: {path}")
+        pending_phase = f"publish-{pending_publish['phase']}"
+    elif pending_migration is not None:
+        if pending_migration != {"phase": "prepared"}:
+            raise InstallError(f"receipt deletion pending phase is malformed: {path}")
+        pending_phase = "migration-prepared"
+    else:
+        pending_phase = "none"
+    if pending_phase not in OPENCODE_RECEIPT_PENDING_PHASES:
+        raise InstallError(f"receipt deletion pending phase is malformed: {path}")
+    return lineage, current_phase, pending_phase
 
 
 def _unlink_state_path(path: Path) -> None:
@@ -509,11 +600,13 @@ def _unlink_state_path(path: Path) -> None:
             path.name, dir_fd=binding.directory_fd, follow_symlinks=False
         )
         expected = (metadata.st_dev, metadata.st_ino)
-    lineage = _terminal_receipt_lineage(path)
-    quarantine_path = (
-        _terminal_receipt_quarantine_path(path, *expected, lineage)
-        if lineage is not None
-        else _deletion_quarantine_path(path, *expected)
+    lineage, current_phase, pending_phase = _receipt_deletion_descriptor(path)
+    quarantine_path = _receipt_deletion_quarantine_path(
+        path,
+        *expected,
+        lineage,
+        current_phase,
+        pending_phase,
     )
     quarantine = quarantine_path.name
 
@@ -536,9 +629,15 @@ def _unlink_state_path(path: Path) -> None:
             quarantined.st_dev,
             quarantined.st_ino,
         ) == expected
-        if original is not None and not original_is_exact:
+        if original is not None and (
+            not original_is_exact or not stat.S_ISREG(original.st_mode)
+        ):
             raise InstallError(
                 f"receipt path identity changed before deletion: {path}"
+            )
+        if quarantine_is_exact and not stat.S_ISREG(quarantined.st_mode):
+            raise InstallError(
+                f"receipt quarantine identity changed before deletion: {quarantine_path}"
             )
         if original_is_exact and quarantined is None:
             _renameat_noreplace(
@@ -549,7 +648,11 @@ def _unlink_state_path(path: Path) -> None:
             )
             os.fsync(binding.directory_fd)
             moved = metadata(quarantine)
-            if moved is None or (moved.st_dev, moved.st_ino) != expected:
+            if (
+                moved is None
+                or not stat.S_ISREG(moved.st_mode)
+                or (moved.st_dev, moved.st_ino) != expected
+            ):
                 raise InstallError(
                     f"receipt path identity changed before deletion: {path}"
                 )
@@ -564,6 +667,10 @@ def _unlink_state_path(path: Path) -> None:
         if quarantine_is_exact:
             os.unlink(quarantine, dir_fd=binding.directory_fd)
             os.fsync(binding.directory_fd)
+            if metadata(quarantine) is not None:
+                raise InstallError(
+                    f"receipt quarantine was replaced during deletion: {quarantine_path}"
+                )
         # A retry that observes absence still supplies the durability barrier
         # for the preceding rename/unlink attempt.
         os.fsync(binding.directory_fd)
@@ -4887,7 +4994,7 @@ def _install_opencode_bound(
     receipt_directory = receipt_path_value.parent
     canonical_state_home = receipt_directory.parent
     receipt: _Receipt | None = None
-    _recover_terminal_receipt_deletion(
+    _recover_receipt_deletion(
         canonical_root, config_dir, state_home, receipt_path_value
     )
     if _lexists(receipt_path_value):
@@ -5095,6 +5202,11 @@ def _install_opencode_bound(
             committed_anchor = (None, None, None)
         if not _artifact_anchor_matches(artifact_root, *committed_anchor):
             raise InstallError("committed OpenCode artifact lost its permanent anchor")
+        active_pending_swap = (
+            artifact_pending
+            if artifact_pending is not None
+            else (receipt.pending_swap if receipt is not None else None)
+        )
         merged_receipt = _Receipt(
             repository_root=canonical_root,
             links=committed_links,
@@ -5109,7 +5221,11 @@ def _install_opencode_bound(
             artifact_anchor_dev=committed_anchor[1],
             artifact_anchor_ino=committed_anchor[2],
             teardown_phase="committed",
-            pending_swap=artifact_pending,
+            # A recovered retirement journal remains authoritative until its
+            # exact old directory and anchor reach durable terminal cleanup.
+            # The unchanged-artifact fast path deliberately returns no newly
+            # created swap, so it must not erase the current receipt's journal.
+            pending_swap=active_pending_swap,
         )
         _write_receipt(receipt_path_value, merged_receipt)
     except BaseException as error:
@@ -5414,44 +5530,51 @@ def _read_opencode_receipt(
     return receipt
 
 
-def _terminal_receipt_quarantine_identity(
+def _receipt_deletion_quarantine_identity(
     receipt_path: Path, name: str
-) -> tuple[int, int] | None:
+) -> tuple[int, int, str, str] | None:
     prefix = f".{receipt_path.name}."
-    suffix = ".anchor-removed.delete"
+    suffix = ".delete"
     if not name.startswith(prefix) or not name.endswith(suffix):
         return None
     encoded = name[len(prefix) : -len(suffix)]
     try:
-        identity, token = encoded.split(".", 1)
+        identity, token, pending_phase, current_phase = encoded.split(".", 3)
         dev_text, ino_text = identity.split("-", 1)
         dev = int(dev_text, 16)
         ino = int(ino_text, 16)
     except (ValueError, TypeError):
         return None
-    if dev <= 0 or ino <= 0 or len(token) != 32 or any(
-        character not in "0123456789abcdef" for character in token
+    if (
+        dev <= 0
+        or ino <= 0
+        or len(token) != 32
+        or any(character not in "0123456789abcdef" for character in token)
+        or current_phase not in OPENCODE_RECEIPT_TEARDOWN_PHASES
+        or pending_phase not in OPENCODE_RECEIPT_PENDING_PHASES
     ):
         return None
-    return dev, ino
+    return dev, ino, current_phase, pending_phase
 
 
-def _recover_terminal_receipt_deletion(
+def _recover_receipt_deletion(
     repository_root: Path,
     config_dir: Path,
     state_home: Path,
     receipt_path: Path,
 ) -> None:
-    """Delete only an identity-encoded, validated terminal receipt quarantine."""
+    """Resume only an inode-, lineage-, and phase-bound receipt deletion."""
 
     binding = _state_binding(receipt_path)
     if binding is None:
         return
     _verify_state_binding(binding)
     for name in tuple(os.listdir(binding.directory_fd)):
-        identity = _terminal_receipt_quarantine_identity(receipt_path, name)
-        if identity is None:
+        encoded = _receipt_deletion_quarantine_identity(receipt_path, name)
+        if encoded is None:
             continue
+        identity = encoded[:2]
+        encoded_current_phase, encoded_pending_phase = encoded[2:]
         try:
             metadata = os.stat(
                 name, dir_fd=binding.directory_fd, follow_symlinks=False
@@ -5470,42 +5593,73 @@ def _recover_terminal_receipt_deletion(
             )
         except InstallError:
             continue
+        if terminal is None or terminal.lineage is None:
+            continue
+        current_phase, pending_phase = _receipt_deletion_phase(terminal)
         if (
-            terminal is None
-            or terminal.teardown_phase != "anchor-removed"
-            or terminal.pending_swap is not None
-            or terminal.pending_publish is not None
-            or terminal.pending_migration
-            or terminal.lineage is None
+            current_phase != encoded_current_phase
+            or pending_phase != encoded_pending_phase
             or quarantine
-            != _terminal_receipt_quarantine_path(
-                receipt_path, *identity, terminal.lineage
+            != _receipt_deletion_quarantine_path(
+                receipt_path,
+                *identity,
+                terminal.lineage,
+                current_phase,
+                pending_phase,
             )
         ):
             continue
-        canonical = None
         try:
-            canonical = os.stat(
-                receipt_path.name,
-                dir_fd=binding.directory_fd,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            pass
-        if canonical is not None and (
-            canonical.st_dev,
-            canonical.st_ino,
-        ) == identity:
-            os.unlink(receipt_path.name, dir_fd=binding.directory_fd)
+            # The retry's first barrier makes a preceding rename durable even
+            # when the process stopped before the original caller could fsync.
             os.fsync(binding.directory_fd)
-        os.unlink(name, dir_fd=binding.directory_fd)
-        os.fsync(binding.directory_fd)
-        os.fsync(binding.directory_fd)
+            exact = os.stat(
+                name, dir_fd=binding.directory_fd, follow_symlinks=False
+            )
+            if (
+                not stat.S_ISREG(exact.st_mode)
+                or (exact.st_dev, exact.st_ino) != identity
+            ):
+                continue
+            canonical = None
+            try:
+                canonical = os.stat(
+                    receipt_path.name,
+                    dir_fd=binding.directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            if canonical is not None and (
+                canonical.st_dev,
+                canonical.st_ino,
+            ) == identity:
+                if not stat.S_ISREG(canonical.st_mode):
+                    continue
+                os.unlink(receipt_path.name, dir_fd=binding.directory_fd)
+                os.fsync(binding.directory_fd)
+            os.unlink(name, dir_fd=binding.directory_fd)
+            os.fsync(binding.directory_fd)
+            try:
+                os.stat(name, dir_fd=binding.directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise InstallError(
+                    f"receipt quarantine was replaced during recovery: {quarantine}"
+                )
+            # A separate barrier records the confirmed absence before this
+            # entrypoint creates or removes any new canonical receipt state.
+            os.fsync(binding.directory_fd)
+        except OSError as error:
+            raise InstallError(
+                f"cannot recover receipt deletion quarantine: {quarantine}: {error}"
+            ) from error
         binding.validated_leaves.pop(receipt_path.name, None)
         binding.validated_leaves.pop(name, None)
         _verify_state_binding(binding)
-    # Even when the exact quarantine was already unlinked, entrypoint recovery
-    # supplies an absence-confirmation barrier before treating teardown done.
+    # Recovery also supplies an absence-confirmation barrier when the exact
+    # quarantine disappeared after its durable unlink.
     os.fsync(binding.directory_fd)
     _verify_state_binding(binding)
 
@@ -5639,7 +5793,7 @@ def _uninstall_opencode_bound(
     state_home: Path,
     receipt_path_value: Path,
 ) -> InstallResult:
-    _recover_terminal_receipt_deletion(
+    _recover_receipt_deletion(
         canonical_root, config_dir, state_home, receipt_path_value
     )
     if not _lexists(receipt_path_value):

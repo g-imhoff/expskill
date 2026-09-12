@@ -1838,6 +1838,206 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 self.assertTrue(Path(committed["artifact_anchor"]).is_file())
                 self.assertNotEqual(committed["artifact_anchor"], old["artifact_anchor"])
 
+    def test_repeated_upgrade_cleanup_failure_keeps_one_retirement_journal(
+        self,
+    ) -> None:
+        for final_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(final_entrypoint=final_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                skill.write_text(
+                    skill.read_text(encoding="utf-8").replace(
+                        "Cut AI tells", "repeated retirement marker"
+                    ),
+                    encoding="utf-8",
+                )
+                real_remove = install_module._remove_opencode_artifact_exact
+
+                def fail_exact_old_backup(path: Path, dev: int, ino: int) -> None:
+                    if ".old-" in path.name:
+                        raise install_module.InstallError("old backup remains busy")
+                    real_remove(path, dev, ino)
+
+                proof_keys = {
+                    "artifact",
+                    "candidate",
+                    "candidate_dev",
+                    "candidate_ino",
+                    "candidate_digest",
+                    "candidate_anchor",
+                    "candidate_anchor_dev",
+                    "candidate_anchor_ino",
+                    "backup",
+                    "backup_dev",
+                    "backup_ino",
+                    "backup_digest",
+                    "old_anchor",
+                    "old_anchor_dev",
+                    "old_anchor_ino",
+                    "lineage",
+                }
+
+                with mock.patch.object(
+                    install_module,
+                    "_remove_opencode_artifact_exact",
+                    side_effect=fail_exact_old_backup,
+                ):
+                    install_opencode(repo, config, state)
+                    first = receipt(state)["pending_swap"]
+                    frozen_proof = {key: first[key] for key in proof_keys}
+                    self.assertEqual(first["phase"], "published")
+                    missing = Path(receipt(state)["links"][0]["destination"])
+                    missing.unlink()
+
+                    for _retry in range(2):
+                        install_opencode(repo, config, state)
+                        current = receipt(state)["pending_swap"]
+                        self.assertEqual(
+                            {key: current[key] for key in proof_keys}, frozen_proof
+                        )
+                        self.assertEqual(current["phase"], "published")
+
+                pending = receipt(state)["pending_swap"]
+                exact_backup = Path(pending["backup"])
+                exact_old_anchor = Path(pending["old_anchor"])
+                foreign_backup = exact_backup.with_name(
+                    ".opencode-artifact.old-foreign"
+                )
+                foreign_backup.mkdir()
+                foreign_backup.joinpath("keep").write_text("foreign\n", encoding="utf-8")
+                foreign_anchor = exact_old_anchor.with_name(
+                    ".opencode-artifact.anchor-foreign"
+                )
+                foreign_anchor.write_text("foreign\n", encoding="utf-8")
+
+                if final_entrypoint == "install":
+                    install_opencode(repo, config, state)
+                    self.assertNotIn("pending_swap", receipt(state))
+                else:
+                    uninstall_opencode(repo, config, state)
+                    self.assertFalse(receipt_path(state).exists())
+                self.assertFalse(exact_backup.exists())
+                self.assertFalse(exact_old_anchor.exists())
+                self.assertEqual(
+                    foreign_backup.joinpath("keep").read_text(encoding="utf-8"),
+                    "foreign\n",
+                )
+                self.assertEqual(foreign_anchor.read_text(encoding="utf-8"), "foreign\n")
+
+    def test_nonterminal_receipt_delete_quarantine_recovers_through_entrypoints(
+        self,
+    ) -> None:
+        for cleanup_boundary in ("publication", "preflight"):
+            for failure_type in (install_module.InstallError, SystemExit):
+                for retry_entrypoint in ("install", "uninstall"):
+                    with (
+                        self.subTest(
+                            cleanup_boundary=cleanup_boundary,
+                            failure=failure_type.__name__,
+                            retry_entrypoint=retry_entrypoint,
+                        ),
+                        tempfile.TemporaryDirectory() as temporary,
+                    ):
+                        root = Path(temporary)
+                        repo = seed_repository(root / "repo")
+                        config = root / "config"
+                        state = root / "state"
+                        final_receipt = receipt_path(state)
+                        real_delete_rename = install_module._renameat_noreplace
+                        deletion_interrupted = False
+
+                        def stop_after_receipt_quarantine(
+                            source_fd: int,
+                            source_name: str,
+                            target_fd: int,
+                            target_name: str,
+                        ) -> None:
+                            nonlocal deletion_interrupted
+                            real_delete_rename(
+                                source_fd, source_name, target_fd, target_name
+                            )
+                            if (
+                                source_name == final_receipt.name
+                                and target_name.endswith(".delete")
+                                and not deletion_interrupted
+                            ):
+                                deletion_interrupted = True
+                                raise failure_type("after nonterminal receipt rename")
+
+                        patches = [
+                            mock.patch.object(
+                                install_module,
+                                "_renameat_noreplace",
+                                side_effect=stop_after_receipt_quarantine,
+                            )
+                        ]
+                        if cleanup_boundary == "publication":
+                            real_publish = install_module._rename_noreplace
+
+                            def fail_initial_publication(
+                                source: Path, target: Path
+                            ) -> None:
+                                if ".next-" in source.name and target.name == "opencode-artifact":
+                                    raise install_module.InstallError(
+                                        "initial publication failed"
+                                    )
+                                real_publish(source, target)
+
+                            patches.append(
+                                mock.patch.object(
+                                    install_module,
+                                    "_rename_noreplace",
+                                    side_effect=fail_initial_publication,
+                                )
+                            )
+                        else:
+                            patches.append(
+                                mock.patch.object(
+                                    install_module,
+                                    "preflight_opencode_links",
+                                    side_effect=install_module.InstallError(
+                                        "preflight failed"
+                                    ),
+                                )
+                            )
+
+                        with patches[0], patches[1]:
+                            with self.assertRaises(
+                                SystemExit
+                                if failure_type is SystemExit
+                                else install_module.InstallError
+                            ):
+                                install_opencode(repo, config, state)
+
+                        self.assertTrue(deletion_interrupted)
+                        self.assertFalse(final_receipt.exists())
+                        quarantines = tuple(final_receipt.parent.glob("*.delete"))
+                        self.assertEqual(len(quarantines), 1)
+                        quarantined_receipt = quarantines[0]
+                        quarantined_payload = json.loads(
+                            quarantined_receipt.read_text(encoding="utf-8")
+                        )
+                        self.assertIn("lineage", quarantined_payload)
+                        self.assertIn("pending_publish", quarantined_payload)
+
+                        if retry_entrypoint == "install":
+                            install_opencode(repo, config, state)
+                            self.assertTrue(final_receipt.is_file())
+                        else:
+                            uninstall_opencode(repo, config, state)
+                            self.assertFalse(final_receipt.exists())
+                        self.assertFalse(quarantined_receipt.exists())
+                        self.assertEqual(
+                            tuple(final_receipt.parent.glob("*.delete")), ()
+                        )
+
     def test_upgrade_cleanup_phase_write_failures_recover_from_absence(self) -> None:
         for phase in ("old-artifact-removed", "old-anchor-removed"):
             for failure_type in (OSError, SystemExit):
