@@ -56,6 +56,225 @@ def receipt_path(state: Path) -> Path:
 
 
 class FoundationCorrectionTests(unittest.TestCase):
+    def test_receipt_reverse_exchange_failure_restores_foreign_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_directory = root / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            displaced_original = state_directory / "displaced-original.json"
+            receipt.write_text('{"generation": "original"}\n', encoding="utf-8")
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            real_exchange = install_module._renameat_exchange
+            exchanges = 0
+
+            def replace_then_fail_reverse(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal exchanges
+                exchanges += 1
+                if exchanges == 1:
+                    receipt.rename(displaced_original)
+                    receipt.write_text("foreign receipt\n", encoding="utf-8")
+                    real_exchange(source_fd, source_name, target_fd, target_name)
+                    return
+                raise OSError("injected reverse exchange failure")
+
+            try:
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_exchange",
+                    side_effect=replace_then_fail_reverse,
+                ):
+                    with self.assertRaises(InstallError):
+                        install_module._write_state_payload(
+                            receipt, {"generation": "installer"}
+                        )
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+            self.assertEqual(receipt.read_text(encoding="utf-8"), "foreign receipt\n")
+            self.assertEqual(
+                displaced_original.read_text(encoding="utf-8"),
+                '{"generation": "original"}\n',
+            )
+            self.assertFalse(
+                any(path.name.endswith(".tmp") for path in state_directory.iterdir())
+            )
+
+    def test_source_changing_upgrade_recovers_old_backup_after_each_publish_rename(
+        self,
+    ) -> None:
+        for crash_point in ("backup", "published"):
+            with self.subTest(crash_point=crash_point):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    old_marker = "Cut AI tells"
+                    new_marker = "Source-changing recovery marker"
+                    skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                    self.assertIn(old_marker, skill.read_text(encoding="utf-8"))
+                    skill.write_text(
+                        skill.read_text(encoding="utf-8").replace(
+                            old_marker, new_marker
+                        ),
+                        encoding="utf-8",
+                    )
+                    real_rename = install_module._rename_noreplace
+
+                    def crash_after_rename(source: Path, target: Path) -> None:
+                        is_backup = (
+                            source.name == "opencode-artifact"
+                            and target.name.startswith(".opencode-artifact.old-")
+                        )
+                        is_publish = (
+                            source.name.startswith(".opencode-artifact.next-")
+                            and target.name == "opencode-artifact"
+                        )
+                        real_rename(source, target)
+                        if (crash_point == "backup" and is_backup) or (
+                            crash_point == "published" and is_publish
+                        ):
+                            raise SystemExit(f"injected {crash_point} crash")
+
+                    with mock.patch.object(
+                        install_module,
+                        "_rename_noreplace",
+                        side_effect=crash_after_rename,
+                    ):
+                        with self.assertRaises(SystemExit):
+                            install_opencode(repo, config, state)
+
+                    if crash_point == "backup":
+                        install_opencode(repo, config, state)
+                        self.assertIn(
+                            new_marker,
+                            (config / "commands/unslop.md").read_text(
+                                encoding="utf-8"
+                            ),
+                        )
+                    else:
+                        uninstall_opencode(repo, config, state)
+                        self.assertFalse(receipt_path(state).exists())
+                        self.assertFalse(
+                            (state / "expskill/opencode-artifact").exists()
+                        )
+                    self.assertFalse(
+                        any(
+                            path.name.startswith(".opencode-artifact.old-")
+                            or path.name.startswith(".opencode-artifact.next-")
+                            for path in (state / "expskill").iterdir()
+                        )
+                    )
+
+    def test_failed_install_cleans_bound_state_not_redirected_empty_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            moved = root / "moved-state"
+            outside = root / "outside"
+            outside.mkdir()
+            redirected = outside / "expskill"
+
+            def redirect_state_then_fail(_source: Path, _candidate: Path) -> Path:
+                state.rename(moved)
+                state.symlink_to(outside, target_is_directory=True)
+                redirected.mkdir()
+                raise BuildError("injected build failure after state substitution")
+
+            with mock.patch.object(
+                install_module,
+                "build_opencode_package",
+                side_effect=redirect_state_then_fail,
+            ):
+                with self.assertRaises(InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(redirected.is_dir())
+            self.assertEqual(list(redirected.iterdir()), [])
+            self.assertFalse((moved / "expskill").exists())
+
+    def test_uninstall_recovers_interrupted_initial_artifact_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_rename = install_module._rename_noreplace
+
+            def crash_after_initial_publish(source: Path, target: Path) -> None:
+                real_rename(source, target)
+                if (
+                    source.name.startswith(".opencode-artifact.next-")
+                    and target.name == "opencode-artifact"
+                ):
+                    raise SystemExit("injected initial publication crash")
+
+            with mock.patch.object(
+                install_module,
+                "_rename_noreplace",
+                side_effect=crash_after_initial_publish,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            self.assertEqual(payload["pending_publish"]["phase"], "prepared")
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_uninstall_preserves_unproven_interrupted_initial_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            artifact = state / "expskill/opencode-artifact"
+            real_rename = install_module._rename_noreplace
+
+            def crash_after_initial_publish(source: Path, target: Path) -> None:
+                real_rename(source, target)
+                if (
+                    source.name.startswith(".opencode-artifact.next-")
+                    and target.name == "opencode-artifact"
+                ):
+                    raise SystemExit("injected initial publication crash")
+
+            with mock.patch.object(
+                install_module,
+                "_rename_noreplace",
+                side_effect=crash_after_initial_publish,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            (artifact / "unexpected.txt").write_text("foreign\n", encoding="utf-8")
+            receipt_before = receipt_path(state).read_bytes()
+            with self.assertRaises(InstallError):
+                uninstall_opencode(repo, config, state)
+
+            self.assertEqual(receipt_path(state).read_bytes(), receipt_before)
+            self.assertEqual(
+                (artifact / "unexpected.txt").read_text(encoding="utf-8"),
+                "foreign\n",
+            )
+
     def test_foreign_matching_backup_survives_reinstall(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
