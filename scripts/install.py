@@ -148,6 +148,19 @@ class _Receipt:
     artifact_root: Path | None = None
     lineage: str | None = None
     pending_swap: "_PendingSwap | None" = None
+    pending_publish: "_PendingPublish | None" = None
+
+
+@dataclass(frozen=True)
+class _PendingPublish:
+    """Identity-bound state written before an initial artifact publication."""
+
+    lineage: str
+    artifact: Path
+    candidate: Path
+    candidate_dev: int
+    candidate_ino: int
+    phase: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +180,29 @@ class _PendingSwap:
     phase: str
 
 
+def _pending_swap_payload(pending: _PendingSwap) -> dict[str, object]:
+    return {
+        "artifact": str(pending.artifact),
+        "backup": str(pending.backup),
+        "backup_dev": pending.backup_dev,
+        "backup_ino": pending.backup_ino,
+        "candidate": str(pending.candidate),
+        "candidate_dev": pending.candidate_dev,
+        "candidate_ino": pending.candidate_ino,
+        "lineage": pending.lineage,
+        "live_dev": pending.live_dev,
+        "live_ino": pending.live_ino,
+        "phase": pending.phase,
+    }
+
+
+def _pending_swap_auth(lineage: str, payload: Mapping[str, object]) -> str:
+    canonical = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(
+        b"opencode-pending-swap.v1\0" + lineage.encode() + b"\0" + canonical.encode()
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class _CommandResult:
     returncode: int
@@ -174,8 +210,103 @@ class _CommandResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class _StateBinding:
+    """A state directory retained through one installer transaction."""
+
+    directory: Path
+    directory_fd: int
+    identity: tuple[int, int]
+
+
+_STATE_BINDINGS: dict[str, _StateBinding] = {}
+
+
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _open_state_binding(directory: Path, *, create: bool) -> _StateBinding | None:
+    """Open every ancestor without following links and optionally create it."""
+
+    absolute = _lexical_absolute(directory)
+    descriptor = os.open(absolute.anchor, _directory_open_flags())
+    try:
+        for component in absolute.parts[1:]:
+            try:
+                child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    os.close(descriptor)
+                    return None
+                os.mkdir(component, mode=0o755, dir_fd=descriptor)
+                child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        metadata = os.fstat(descriptor)
+        binding = _StateBinding(
+            directory=absolute,
+            directory_fd=descriptor,
+            identity=(metadata.st_dev, metadata.st_ino),
+        )
+        _verify_state_binding(binding)
+        return binding
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _verify_state_binding(binding: _StateBinding) -> None:
+    try:
+        metadata = os.stat(binding.directory, follow_symlinks=False)
+    except OSError as error:
+        raise InstallError(
+            f"OpenCode state directory binding was replaced: {binding.directory}: {error}"
+        ) from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != binding.identity
+    ):
+        raise InstallError(
+            f"OpenCode state directory binding was replaced: {binding.directory}"
+        )
+
+
+def _state_binding(path: Path) -> _StateBinding | None:
+    return _STATE_BINDINGS.get(str(_lexical_absolute(path).parent))
+
+
+def _state_lstat(path: Path) -> os.stat_result:
+    binding = _state_binding(path)
+    if binding is None:
+        return os.lstat(path)
+    _verify_state_binding(binding)
+    return os.stat(path.name, dir_fd=binding.directory_fd, follow_symlinks=False)
+
+
+def _unlink_state_path(path: Path) -> None:
+    binding = _state_binding(path)
+    if binding is None:
+        path.unlink()
+        return
+    _verify_state_binding(binding)
+    os.unlink(path.name, dir_fd=binding.directory_fd)
+    os.fsync(binding.directory_fd)
+    _verify_state_binding(binding)
+
+
 def _lexists(path: Path) -> bool:
-    return os.path.lexists(path)
+    try:
+        _state_lstat(path)
+    except OSError:
+        return False
+    return True
 
 
 def _canonical_repository_root(repo_root: Path, require_directory: bool = True) -> Path:
@@ -371,6 +502,88 @@ def _receipt_links(
     return tuple(links)
 
 
+def _read_state_text(path: Path) -> str:
+    binding = _state_binding(path)
+    if binding is None:
+        return path.read_text(encoding="utf-8")
+    _verify_state_binding(binding)
+    descriptor = os.open(
+        path.name,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=binding.directory_fd,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise InstallError(f"receipt path is not a regular file: {path}")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            contents = stream.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    _verify_state_binding(binding)
+    return contents
+
+
+def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
+    """Write through the retained state descriptor; return false if unbound."""
+
+    binding = _state_binding(path)
+    if binding is None:
+        return False
+    _verify_state_binding(binding)
+    try:
+        current = os.stat(path.name, dir_fd=binding.directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(current.st_mode):
+            raise InstallError(f"receipt path is not a regular file: {path}")
+    temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+    descriptor = -1
+    published = False
+    try:
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=binding.directory_fd,
+        )
+        encoded = (json.dumps(dict(payload), indent=2, sort_keys=True) + "\n").encode()
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=binding.directory_fd,
+            dst_dir_fd=binding.directory_fd,
+        )
+        published = True
+        os.fsync(binding.directory_fd)
+        _verify_state_binding(binding)
+        return True
+    except OSError as error:
+        raise InstallError(f"cannot durably write receipt: {path}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if not published:
+            try:
+                os.unlink(temporary_name, dir_fd=binding.directory_fd)
+            except OSError:
+                pass
+
+
 def _read_receipt(
     receipt_path: Path,
     repository_root: Path,
@@ -378,10 +591,10 @@ def _read_receipt(
 ) -> _Receipt | None:
     if not _lexists(receipt_path):
         return None
-    if receipt_path.is_symlink() or not receipt_path.is_file():
+    if not stat.S_ISREG(_state_lstat(receipt_path).st_mode):
         raise InstallError(f"receipt path is not a regular file: {receipt_path}")
     try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_state_text(receipt_path))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
     if not isinstance(payload, dict):
@@ -441,6 +654,12 @@ def _read_receipt(
             raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
         if pending_value.get("lineage") != lineage:
             raise InstallError(f"receipt pending swap lineage mismatch: {receipt_path}")
+        auth_value = payload.get("pending_swap_auth")
+        if (
+            not isinstance(auth_value, str)
+            or auth_value != _pending_swap_auth(lineage, pending_value)
+        ):
+            raise InstallError(f"receipt pending swap authentication failed: {receipt_path}")
         paths = {
             key: pending_value.get(key)
             for key in ("artifact", "candidate", "backup")
@@ -459,6 +678,13 @@ def _read_receipt(
         if (
             any(not isinstance(value, str) for value in paths.values())
             or any(not isinstance(value, int) or value <= 0 for value in numbers.values())
+            or numbers["backup_dev"] != numbers["live_dev"]
+            or numbers["backup_ino"] != numbers["live_ino"]
+            or (
+                numbers["candidate_dev"],
+                numbers["candidate_ino"],
+            )
+            == (numbers["live_dev"], numbers["live_ino"])
             or pending_value.get("phase") not in {"prepared", "backup-created", "published"}
         ):
             raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
@@ -487,6 +713,59 @@ def _read_receipt(
             live_ino=numbers["live_ino"],
             phase=pending_value["phase"],
         )
+    publish_value = payload.get("pending_publish")
+    pending_publish: _PendingPublish | None = None
+    if publish_value is not None:
+        required_publish = {
+            "lineage",
+            "artifact",
+            "candidate",
+            "candidate_dev",
+            "candidate_ino",
+            "phase",
+        }
+        if (
+            not isinstance(publish_value, dict)
+            or set(publish_value) != required_publish
+            or lineage is None
+            or pending is not None
+            or publish_value.get("lineage") != lineage
+            or publish_value.get("phase") not in {"prepared", "published"}
+        ):
+            raise InstallError(f"receipt pending publish is malformed: {receipt_path}")
+        publish_paths = {
+            key: publish_value.get(key) for key in ("artifact", "candidate")
+        }
+        publish_numbers = {
+            key: publish_value.get(key) for key in ("candidate_dev", "candidate_ino")
+        }
+        if any(not isinstance(value, str) for value in publish_paths.values()) or any(
+            not isinstance(value, int) or value <= 0 for value in publish_numbers.values()
+        ):
+            raise InstallError(f"receipt pending publish is malformed: {receipt_path}")
+        normalized_publish_paths = {
+            key: _lexical_absolute(Path(value).expanduser())
+            for key, value in publish_paths.items()
+        }
+        expected_artifact = _lexical_absolute(
+            receipt_path.parent / OPENCODE_ARTIFACT_DIRECTORY
+        )
+        if (
+            normalized_publish_paths["artifact"] != expected_artifact
+            or normalized_publish_paths["candidate"].parent != expected_artifact.parent
+            or not normalized_publish_paths["candidate"].name.startswith(
+                f".{OPENCODE_ARTIFACT_DIRECTORY}.next-"
+            )
+        ):
+            raise InstallError(f"receipt pending publish path is invalid: {receipt_path}")
+        pending_publish = _PendingPublish(
+            lineage=lineage,
+            artifact=normalized_publish_paths["artifact"],
+            candidate=normalized_publish_paths["candidate"],
+            candidate_dev=publish_numbers["candidate_dev"],
+            candidate_ino=publish_numbers["candidate_ino"],
+            phase=publish_value["phase"],
+        )
     return _Receipt(
         repository_root=recorded_root,
         links=links,
@@ -495,17 +774,24 @@ def _read_receipt(
         artifact_root=artifact_root,
         lineage=lineage,
         pending_swap=pending,
+        pending_publish=pending_publish,
     )
 
 
 def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
     receipt_directory = receipt_path.parent
-    if _lexists(receipt_path) and (receipt_path.is_symlink() or not receipt_path.is_file()):
+    if _lexists(receipt_path) and not stat.S_ISREG(_state_lstat(receipt_path).st_mode):
         raise InstallError(f"receipt path is not a regular file: {receipt_path}")
-    try:
-        receipt_directory.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise InstallError(f"cannot create receipt directory: {receipt_directory}: {error}") from error
+    binding = _state_binding(receipt_path)
+    if binding is not None:
+        _verify_state_binding(binding)
+    else:
+        try:
+            receipt_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise InstallError(
+                f"cannot create receipt directory: {receipt_directory}: {error}"
+            ) from error
     payload = {
         "links": [
             {"destination": str(link.destination), "source": str(link.source)}
@@ -521,19 +807,21 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
         payload["lineage"] = receipt.lineage
     if receipt.pending_swap is not None:
         pending = receipt.pending_swap
-        payload["pending_swap"] = {
-            "artifact": str(pending.artifact),
-            "backup": str(pending.backup),
-            "backup_dev": pending.backup_dev,
-            "backup_ino": pending.backup_ino,
-            "candidate": str(pending.candidate),
-            "candidate_dev": pending.candidate_dev,
-            "candidate_ino": pending.candidate_ino,
-            "lineage": pending.lineage,
-            "live_dev": pending.live_dev,
-            "live_ino": pending.live_ino,
-            "phase": pending.phase,
+        pending_payload = _pending_swap_payload(pending)
+        payload["pending_swap"] = pending_payload
+        payload["pending_swap_auth"] = _pending_swap_auth(pending.lineage, pending_payload)
+    if receipt.pending_publish is not None:
+        pending_publish = receipt.pending_publish
+        payload["pending_publish"] = {
+            "artifact": str(pending_publish.artifact),
+            "candidate": str(pending_publish.candidate),
+            "candidate_dev": pending_publish.candidate_dev,
+            "candidate_ino": pending_publish.candidate_ino,
+            "lineage": pending_publish.lineage,
+            "phase": pending_publish.phase,
         }
+    if _write_state_payload(receipt_path, payload):
+        return
     temporary_path: Path | None = None
     write_error: InstallError | None = None
     write_cause: OSError | None = None
@@ -981,6 +1269,7 @@ def _persist_receipt(
         artifact_root=receipt.artifact_root,
         lineage=receipt.lineage,
         pending_swap=receipt.pending_swap,
+        pending_publish=receipt.pending_publish,
     )
     _write_receipt(receipt_path, updated)
     return updated
@@ -1247,7 +1536,8 @@ def _fixed_opencode_artifact(state_home: Path, candidate: Path | None = None) ->
                 f"receipt artifact is outside the fixed OpenCode state: {observed}"
             )
     if _lexists(expected):
-        if expected.is_symlink() or not expected.is_dir():
+        metadata = _state_lstat(expected)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise InstallError(f"opencode artifact is not a regular directory: {expected}")
     return expected
 
@@ -1256,8 +1546,13 @@ def _remove_opencode_artifact(path: Path) -> None:
     if not _lexists(path):
         return
     _assert_no_symlink_components(path, "opencode artifact")
-    if path.is_symlink() or not path.is_dir():
+    metadata = _state_lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise InstallError(f"opencode artifact is not a regular directory: {path}")
+    binding = _state_binding(path)
+    if binding is not None:
+        _remove_opencode_artifact_exact(path, metadata.st_dev, metadata.st_ino)
+        return
     try:
         shutil.rmtree(path)
     except OSError as error:
@@ -1270,10 +1565,17 @@ def _remove_opencode_artifact_exact(path: Path, dev: int, ino: int) -> None:
     parent_fd: int | None = None
     target_fd: int | None = None
     try:
-        parent_fd = os.open(
-            path.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
+        binding = _state_binding(path)
+        if binding is not None:
+            _verify_state_binding(binding)
+            parent_fd = os.dup(binding.directory_fd)
+        else:
+            parent_fd = os.open(
+                path.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
         target_fd = os.open(
             path.name,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -1332,6 +1634,9 @@ def _remove_opencode_artifact_exact(path: Path, dev: int, ino: int) -> None:
         if current.st_dev != dev or current.st_ino != ino:
             raise InstallError(f"OpenCode artifact identity changed: {path}")
         os.rmdir(path.name, dir_fd=parent_fd)
+        if binding is not None:
+            os.fsync(parent_fd)
+            _verify_state_binding(binding)
     except FileNotFoundError:
         return
     except OSError as error:
@@ -1345,7 +1650,7 @@ def _remove_opencode_artifact_exact(path: Path, dev: int, ino: int) -> None:
 
 def _pending_identity(path: Path, dev: int, ino: int) -> bool:
     try:
-        metadata = os.lstat(path)
+        metadata = _state_lstat(path)
     except OSError:
         return False
     return (
@@ -1367,11 +1672,20 @@ def _rename_noreplace(source: Path, target: Path) -> None:
     except (AttributeError, OSError) as error:
         raise InstallError("exclusive recovery rename is unavailable") from error
     parent_fd: int | None = None
+    binding = _state_binding(source)
     try:
-        parent_fd = os.open(
-            source.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
+        if binding is not None:
+            if _state_binding(target) != binding:
+                raise InstallError("recovery paths do not share one state binding")
+            _verify_state_binding(binding)
+            parent_fd = os.dup(binding.directory_fd)
+        else:
+            parent_fd = os.open(
+                source.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
         function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
         function.restype = ctypes.c_int
         result = function(
@@ -1382,6 +1696,9 @@ def _rename_noreplace(source: Path, target: Path) -> None:
             1,
         )
         if result == 0:
+            if binding is not None:
+                os.fsync(parent_fd)
+                _verify_state_binding(binding)
             return
         error_number = ctypes.get_errno()
         if error_number == errno.EEXIST:
@@ -1405,6 +1722,22 @@ def _receipt_with_pending(receipt: _Receipt, pending: _PendingSwap | None) -> _R
         artifact_root=receipt.artifact_root,
         lineage=receipt.lineage,
         pending_swap=pending,
+        pending_publish=receipt.pending_publish,
+    )
+
+
+def _receipt_with_pending_publish(
+    receipt: _Receipt, pending_publish: _PendingPublish | None
+) -> _Receipt:
+    return _Receipt(
+        repository_root=receipt.repository_root,
+        links=receipt.links,
+        marketplace_added=receipt.marketplace_added,
+        plugin_installed=receipt.plugin_installed,
+        artifact_root=receipt.artifact_root,
+        lineage=receipt.lineage,
+        pending_swap=receipt.pending_swap,
+        pending_publish=pending_publish,
     )
 
 
@@ -1412,33 +1745,28 @@ def _rewrite_receipt_pending(receipt_path: Path, pending: _PendingSwap | None) -
     """Durably update only the owned receipt's pending-swap field."""
 
     try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_state_text(receipt_path))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
     if not isinstance(payload, dict):
         raise InstallError(f"receipt is malformed: {receipt_path}")
     if pending is None:
         payload.pop("pending_swap", None)
+        payload.pop("pending_swap_auth", None)
     else:
-        payload["pending_swap"] = {
-            "artifact": str(pending.artifact),
-            "backup": str(pending.backup),
-            "backup_dev": pending.backup_dev,
-            "backup_ino": pending.backup_ino,
-            "candidate": str(pending.candidate),
-            "candidate_dev": pending.candidate_dev,
-            "candidate_ino": pending.candidate_ino,
-            "lineage": pending.lineage,
-            "live_dev": pending.live_dev,
-            "live_ino": pending.live_ino,
-            "phase": pending.phase,
-        }
+        pending_payload = _pending_swap_payload(pending)
+        payload["pending_swap"] = pending_payload
+        payload["pending_swap_auth"] = _pending_swap_auth(
+            pending.lineage, pending_payload
+        )
     _write_receipt_raw(receipt_path, payload)
 
 
 def _write_receipt_raw(receipt_path: Path, payload: Mapping[str, object]) -> None:
     """Atomically write and fsync an already-owned receipt payload."""
 
+    if _write_state_payload(receipt_path, payload):
+        return
     receipt_directory = receipt_path.parent
     temporary_path: Path | None = None
     try:
@@ -1471,48 +1799,13 @@ def _write_receipt_raw(receipt_path: Path, payload: Mapping[str, object]) -> Non
                 pass
 
 
-def _recover_pending_swap(state_home: Path) -> _PendingSwap | None:
+def _recover_pending_swap(state_home: Path, receipt: _Receipt | None) -> _Receipt | None:
     """Recover exactly the pending swap named by the owned main receipt."""
 
     receipt_path = _opencode_receipt_path(state_home)
-    if not _lexists(receipt_path):
-        return None
-    # The full receipt parser is called by install_opencode before this helper;
-    # recovery itself reads only the durable pending record below.
-    try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
-    if not isinstance(payload, dict):
-        raise InstallError(f"receipt is malformed: {receipt_path}")
-    pending_value = payload.get("pending_swap")
-    if pending_value is None:
-        return None
-    lineage = payload.get("lineage")
-    if not isinstance(lineage, str) or not isinstance(pending_value, dict):
-        raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
-    keys = {
-        "lineage", "artifact", "candidate", "candidate_dev", "candidate_ino",
-        "backup", "backup_dev", "backup_ino", "live_dev", "live_ino", "phase",
-    }
-    if set(pending_value) != keys or pending_value.get("lineage") != lineage:
-        raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
-    try:
-        pending = _PendingSwap(
-            lineage=lineage,
-            artifact=_lexical_absolute(Path(pending_value["artifact"])),
-            candidate=_lexical_absolute(Path(pending_value["candidate"])),
-            candidate_dev=int(pending_value["candidate_dev"]),
-            candidate_ino=int(pending_value["candidate_ino"]),
-            backup=_lexical_absolute(Path(pending_value["backup"])),
-            backup_dev=int(pending_value["backup_dev"]),
-            backup_ino=int(pending_value["backup_ino"]),
-            live_dev=int(pending_value["live_dev"]),
-            live_ino=int(pending_value["live_ino"]),
-            phase=str(pending_value["phase"]),
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise InstallError(f"receipt pending swap is malformed: {receipt_path}") from error
+    if receipt is None or receipt.pending_swap is None:
+        return receipt
+    pending = receipt.pending_swap
     expected_artifact = _lexical_absolute(receipt_path.parent / OPENCODE_ARTIFACT_DIRECTORY)
     if (
         pending.artifact != expected_artifact
@@ -1550,8 +1843,9 @@ def _recover_pending_swap(state_home: Path) -> _PendingSwap | None:
                 _remove_opencode_artifact_exact(
                     pending.candidate, pending.candidate_dev, pending.candidate_ino
                 )
-            _rewrite_receipt_pending(receipt_path, None)
-            return None
+            receipt = _receipt_with_pending(receipt, None)
+            _write_receipt(receipt_path, receipt)
+            return receipt
         if artifact_is_live and backup_exists:
             # The first rename happened even though its status rewrite did not.
             pending = _PendingSwap(**{**pending.__dict__, "phase": "backup-created"})
@@ -1567,77 +1861,61 @@ def _recover_pending_swap(state_home: Path) -> _PendingSwap | None:
             _rename_noreplace(pending.backup, pending.artifact)
             artifact_is_live = True
             backup_exists = False
-            _rewrite_receipt_pending(receipt_path, None)
+            receipt = _receipt_with_pending(receipt, None)
+            _write_receipt(receipt_path, receipt)
         else:
             _rename_noreplace(pending.backup, pending.artifact)
             artifact_is_live = True
             backup_exists = False
-            _rewrite_receipt_pending(receipt_path, None)
+            receipt = _receipt_with_pending(receipt, None)
+            _write_receipt(receipt_path, receipt)
     elif artifact_is_candidate and backup_exists:
         # Candidate was published before receipt status rewrite.
         pass
     elif artifact_is_candidate and not backup_exists:
-        _rewrite_receipt_pending(receipt_path, None)
-        return None
+        receipt = _receipt_with_pending(receipt, None)
+        _write_receipt(receipt_path, receipt)
+        return receipt
     elif artifact_is_live and not backup_exists:
-        _rewrite_receipt_pending(receipt_path, None)
-        return None
+        receipt = _receipt_with_pending(receipt, None)
+        _write_receipt(receipt_path, receipt)
+        return receipt
     elif backup_exists and not artifact_is_candidate:
         raise InstallError("OpenCode swap has an unproven live occupant; preserving state")
-    return _PendingSwap(**{**pending.__dict__, "phase": "published"})
+    published = _PendingSwap(**{**pending.__dict__, "phase": "published"})
+    receipt = _receipt_with_pending(receipt, published)
+    if pending.phase != "published":
+        _write_receipt(receipt_path, receipt)
+    return receipt
 
 
-def _garbage_collect_opencode_backups(state_home: Path) -> None:
+def _garbage_collect_opencode_backups(
+    state_home: Path, receipt: _Receipt | None = None
+) -> _Receipt | None:
     """Best-effort cleanup of the one receipt-owned pending backup."""
 
     receipt_path = _opencode_receipt_path(state_home)
-    if not _lexists(receipt_path):
-        return
-    try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(payload, dict) or not isinstance(payload.get("pending_swap"), dict):
-        return
-    try:
-        # Parse identity fields without consulting neighboring names.
-        pending_value = payload["pending_swap"]
-        pending = _PendingSwap(
-            lineage=str(payload["lineage"]),
-            artifact=_lexical_absolute(Path(pending_value["artifact"])),
-            candidate=_lexical_absolute(Path(pending_value["candidate"])),
-            candidate_dev=int(pending_value["candidate_dev"]),
-            candidate_ino=int(pending_value["candidate_ino"]),
-            backup=_lexical_absolute(Path(pending_value["backup"])),
-            backup_dev=int(pending_value["backup_dev"]),
-            backup_ino=int(pending_value["backup_ino"]),
-            live_dev=int(pending_value["live_dev"]),
-            live_ino=int(pending_value["live_ino"]),
-            phase=str(pending_value["phase"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        return
-    if (
-        pending.lineage != pending_value.get("lineage")
-        or pending.artifact != _lexical_absolute(receipt_path.parent / OPENCODE_ARTIFACT_DIRECTORY)
-        or pending.candidate.parent != pending.artifact.parent
-        or pending.backup.parent != pending.artifact.parent
-        or not pending.candidate.name.startswith(f".{OPENCODE_ARTIFACT_DIRECTORY}.next-")
-        or not pending.backup.name.startswith(f".{OPENCODE_ARTIFACT_DIRECTORY}.old-")
-        or pending.phase != "published"
-    ):
-        return
+    if receipt is None or receipt.pending_swap is None:
+        return receipt
+    pending = receipt.pending_swap
+    if pending.phase != "published":
+        return receipt
     if not _pending_identity(pending.artifact, pending.candidate_dev, pending.candidate_ino):
-        return
+        return receipt
     if not _pending_identity(pending.backup, pending.backup_dev, pending.backup_ino):
         if not _lexists(pending.backup):
-            return
-        return
+            receipt = _receipt_with_pending(receipt, None)
+            _write_receipt(receipt_path, receipt)
+        return receipt
     try:
-        _remove_opencode_artifact(pending.backup)
+        _remove_opencode_artifact_exact(
+            pending.backup, pending.backup_dev, pending.backup_ino
+        )
     except (InstallError, OSError, TypeError, ValueError):
-        return
-    _rewrite_receipt_pending(receipt_path, None)
+        return receipt
+    receipt = _receipt_with_pending(receipt, None)
+    _write_receipt(receipt_path, receipt)
+    return receipt
 
 
 def _remove_new_opencode_state(
@@ -1768,17 +2046,18 @@ def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
         return False
 
 
-def _receipt_owns_artifact(receipt_path: Path, artifact: Path) -> bool:
-    if not _lexists(receipt_path) or receipt_path.is_symlink() or not receipt_path.is_file():
-        return False
-    try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
-        recorded = payload.get("artifact_root")
-        if not isinstance(recorded, str):
-            return False
-        return _lexical_absolute(Path(recorded).expanduser()) == _lexical_absolute(artifact)
-    except (OSError, json.JSONDecodeError, ValueError, TypeError):
-        return False
+def _receipt_owns_artifact(receipt: _Receipt | None, artifact: Path) -> bool:
+    """Use only a fully parsed current receipt as artifact ownership proof."""
+
+    return (
+        receipt is not None
+        and receipt.artifact_root is not None
+        and bool(receipt.links)
+        and receipt.lineage is not None
+        and not receipt.marketplace_added
+        and receipt.plugin_installed
+        and _lexical_absolute(receipt.artifact_root) == _lexical_absolute(artifact)
+    )
 
 
 def _validate_receipt_artifact(receipt: _Receipt, state_home: Path) -> None:
@@ -1810,21 +2089,83 @@ def _restore_opencode_artifact(
         raise InstallError(f"cannot restore opencode artifact: {artifact}: {error}") from error
 
 
+def _recover_pending_publish(
+    repo_root: Path, state_home: Path, receipt: _Receipt | None
+) -> tuple[_Receipt | None, bool]:
+    """Recover an authenticated initial publication before ordinary ownership."""
+
+    if receipt is None or receipt.pending_publish is None:
+        return receipt, False
+    pending = receipt.pending_publish
+    receipt_path = _opencode_receipt_path(state_home)
+    candidate_exists = _pending_identity(
+        pending.candidate, pending.candidate_dev, pending.candidate_ino
+    )
+    artifact_exists = _lexists(pending.artifact)
+    artifact_is_candidate = _pending_identity(
+        pending.artifact, pending.candidate_dev, pending.candidate_ino
+    )
+    if artifact_exists and not artifact_is_candidate:
+        raise InstallError(
+            "OpenCode initial publication has an unproven live occupant; preserving it"
+        )
+    if candidate_exists and not artifact_exists and pending.phase == "prepared":
+        _remove_opencode_artifact_exact(
+            pending.candidate, pending.candidate_dev, pending.candidate_ino
+        )
+        if receipt.links:
+            restored = _Receipt(
+                repository_root=receipt.repository_root,
+                links=receipt.links,
+                marketplace_added=receipt.marketplace_added,
+                plugin_installed=receipt.plugin_installed,
+            )
+            _write_receipt(receipt_path, restored)
+            return restored, False
+        _unlink_state_path(receipt_path)
+        return None, False
+    if candidate_exists or not artifact_is_candidate:
+        raise InstallError("OpenCode initial publication state is inconsistent")
+    if not _artifact_matches_sources(repo_root, pending.artifact):
+        raise InstallError("recovered OpenCode artifact failed exact source validation")
+    if pending.phase != "published":
+        pending = _PendingPublish(**{**pending.__dict__, "phase": "published"})
+        receipt = _receipt_with_pending_publish(receipt, pending)
+        _write_receipt(receipt_path, receipt)
+    return receipt, True
+
+
+def _discard_prepublication_receipt(
+    receipt_path: Path, receipt: _Receipt | None
+) -> None:
+    if receipt is not None and receipt.pending_publish is not None and _lexists(
+        receipt_path
+    ):
+        _unlink_state_path(receipt_path)
+
+
 def _ensure_opencode_artifact(
     repo_root: Path, state_home: Path, receipt: _Receipt | None = None
-) -> tuple[Path, bool, Path | None, _PendingSwap | None]:
+) -> tuple[Path, bool, Path | None, _PendingSwap | None, _Receipt | None]:
     """Build and publish a candidate with receipt-owned durable swap state."""
 
     artifact = _fixed_opencode_artifact(state_home)
     receipt_path = _opencode_receipt_path(state_home)
-    _recover_pending_swap(state_home)
+    receipt, recovered_initial = _recover_pending_publish(repo_root, state_home, receipt)
+    if recovered_initial:
+        return artifact, True, None, None, receipt
+    receipt = _recover_pending_swap(state_home, receipt)
     # A completed-but-not-cleaned swap is recovered from the receipt and its
     # exact backup is removed before beginning another publication.
-    _garbage_collect_opencode_backups(state_home)
+    receipt = _garbage_collect_opencode_backups(state_home, receipt)
     existing = _lexists(artifact)
-    if existing and not _receipt_owns_artifact(receipt_path, artifact):
+    if existing and not _receipt_owns_artifact(receipt, artifact):
         raise InstallError(f"opencode artifact is stale and not receipt-owned: {artifact}")
-    artifact.parent.mkdir(parents=True, exist_ok=True)
+    binding = _state_binding(artifact)
+    if binding is None:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        _verify_state_binding(binding)
     candidate = artifact.parent / f".{artifact.name}.next-{uuid.uuid4().hex}"
     backup: Path | None = None
     pending: _PendingSwap | None = None
@@ -1834,14 +2175,17 @@ def _ensure_opencode_artifact(
         build_opencode_package(repo_root, candidate)
         if not _artifact_matches_sources(repo_root, candidate):
             raise InstallError("fresh OpenCode artifact failed exact inventory or byte validation")
-        candidate_metadata = os.lstat(candidate)
+        candidate_metadata = _state_lstat(candidate)
         candidate_identity = (candidate_metadata.st_dev, candidate_metadata.st_ino)
         if _lexists(artifact):
-            if artifact.is_symlink() or not artifact.is_dir():
+            artifact_metadata = _state_lstat(artifact)
+            if stat.S_ISLNK(artifact_metadata.st_mode) or not stat.S_ISDIR(
+                artifact_metadata.st_mode
+            ):
                 raise InstallError(f"opencode artifact is not a regular directory: {artifact}")
-            if not _receipt_owns_artifact(receipt_path, artifact) or receipt is None:
+            if not _receipt_owns_artifact(receipt, artifact) or receipt is None:
                 raise InstallError(f"opencode artifact ownership changed: {artifact}")
-            live_metadata = os.lstat(artifact)
+            live_metadata = artifact_metadata
             live_identity = (live_metadata.st_dev, live_metadata.st_ino)
             lineage = receipt.lineage or uuid.uuid4().hex
             receipt_for_swap = _Receipt(
@@ -1874,19 +2218,45 @@ def _ensure_opencode_artifact(
             _write_receipt(receipt_path, _receipt_with_pending(receipt_for_swap, pending))
             if not _pending_identity(artifact, pending.live_dev, pending.live_ino):
                 raise InstallError("live OpenCode artifact changed before swap")
-            artifact.replace(backup)
+            _rename_noreplace(artifact, backup)
             pending = _PendingSwap(**{**pending.__dict__, "phase": "backup-created"})
             _write_receipt(receipt_path, _receipt_with_pending(receipt_for_swap, pending))
-            candidate.replace(artifact)
+            _rename_noreplace(candidate, artifact)
             if not _pending_identity(artifact, pending.candidate_dev, pending.candidate_ino):
                 raise InstallError("published OpenCode candidate identity changed")
             pending = _PendingSwap(**{**pending.__dict__, "phase": "published"})
             _write_receipt(receipt_path, _receipt_with_pending(receipt_for_swap, pending))
-            return artifact, False, backup, pending
-        candidate.replace(artifact)
+            return artifact, False, backup, pending, receipt_for_swap
+        lineage = uuid.uuid4().hex
+        pending_publish = _PendingPublish(
+            lineage=lineage,
+            artifact=artifact,
+            candidate=candidate,
+            candidate_dev=candidate_identity[0],
+            candidate_ino=candidate_identity[1],
+            phase="prepared",
+        )
+        prepublication_receipt = _Receipt(
+            repository_root=repo_root,
+            links=receipt.links if receipt is not None else (),
+            marketplace_added=False,
+            plugin_installed=True,
+            artifact_root=artifact,
+            lineage=lineage,
+            pending_publish=pending_publish,
+        )
+        _write_receipt(receipt_path, prepublication_receipt)
+        _rename_noreplace(candidate, artifact)
         if not _pending_identity(artifact, candidate_identity[0], candidate_identity[1]):
             raise InstallError("published OpenCode candidate identity changed")
-        return artifact, True, None, None
+        pending_publish = _PendingPublish(
+            **{**pending_publish.__dict__, "phase": "published"}
+        )
+        prepublication_receipt = _receipt_with_pending_publish(
+            prepublication_receipt, pending_publish
+        )
+        _write_receipt(receipt_path, prepublication_receipt)
+        return artifact, True, None, None, prepublication_receipt
     except (OpencodeBuildError, OSError, InstallError) as error:
         if _lexists(candidate) and candidate_identity is not None and _pending_identity(
             candidate, candidate_identity[0], candidate_identity[1]
@@ -2048,7 +2418,10 @@ def preflight_opencode_links(
         if not _lexists(link.destination):
             continue
         if not _same_owned_link(link.destination, link.source):
-            if legacy_receipt is not None and legacy_receipt.artifact_root is None:
+            if legacy_receipt is not None and (
+                legacy_receipt.artifact_root is None
+                or legacy_receipt.pending_publish is not None
+            ):
                 legacy = next(
                     (
                         item
@@ -2078,10 +2451,44 @@ def install_opencode(
     # state; resolving a symlinked ancestor here would redirect every output.
     _canonical_opencode_config(config_dir)
     receipt_path_value = _opencode_receipt_path(state_home)
+    receipt_directory_existed = receipt_path_value.parent.exists()
+    state_home_existed = receipt_path_value.parent.parent.exists()
+    try:
+        binding = _open_state_binding(receipt_path_value.parent, create=True)
+    except OSError as error:
+        raise InstallError(
+            f"cannot bind OpenCode state directory: {receipt_path_value.parent}: {error}"
+        ) from error
+    if binding is None:
+        raise InstallError(f"cannot create OpenCode state directory: {receipt_path_value.parent}")
+    key = str(binding.directory)
+    if key in _STATE_BINDINGS:
+        os.close(binding.directory_fd)
+        raise InstallError(f"OpenCode state directory is already active: {binding.directory}")
+    _STATE_BINDINGS[key] = binding
+    try:
+        return _install_opencode_bound(
+            canonical_root,
+            config_dir,
+            state_home,
+            receipt_directory_existed,
+            state_home_existed,
+        )
+    finally:
+        _STATE_BINDINGS.pop(key, None)
+        os.close(binding.directory_fd)
+
+
+def _install_opencode_bound(
+    canonical_root: Path,
+    config_dir: Path,
+    state_home: Path,
+    receipt_directory_existed: bool,
+    state_home_existed: bool,
+) -> InstallResult:
+    receipt_path_value = _opencode_receipt_path(state_home)
     receipt_directory = receipt_path_value.parent
-    receipt_directory_existed = receipt_directory.exists()
     canonical_state_home = receipt_directory.parent
-    state_home_existed = canonical_state_home.exists()
     receipt: _Receipt | None = None
     if _lexists(receipt_path_value):
         receipt = _read_opencode_receipt(
@@ -2091,9 +2498,13 @@ def install_opencode(
             raise InstallError(f"receipt disappeared while reading: {receipt_path_value}")
         _validate_receipt_artifact(receipt, state_home)
     try:
-        artifact_root, artifact_created, artifact_backup, artifact_pending = _ensure_opencode_artifact(
-            canonical_root, state_home, receipt
-        )
+        (
+            artifact_root,
+            artifact_created,
+            artifact_backup,
+            artifact_pending,
+            receipt,
+        ) = _ensure_opencode_artifact(canonical_root, state_home, receipt)
     except Exception:
         _remove_new_opencode_state(
             receipt_directory,
@@ -2112,6 +2523,7 @@ def install_opencode(
     except Exception:
         if artifact_created:
             _remove_opencode_artifact(artifact_root)
+            _discard_prepublication_receipt(receipt_path_value, receipt)
         elif artifact_backup is not None:
             _restore_opencode_artifact(artifact_root, artifact_backup, artifact_pending)
         _remove_new_opencode_state(
@@ -2125,7 +2537,9 @@ def install_opencode(
     migrated_links: list[ProfileLink] = []
     removed_retired: tuple[ProfileLink, ...] = ()
     try:
-        if receipt is not None and receipt.artifact_root is None:
+        if receipt is not None and (
+            receipt.artifact_root is None or receipt.pending_publish is not None
+        ):
             for old in receipt.links:
                 if not _lexists(old.destination):
                     continue
@@ -2161,6 +2575,7 @@ def install_opencode(
             if artifact_created:
                 try:
                     _remove_opencode_artifact(artifact_root)
+                    _discard_prepublication_receipt(receipt_path_value, receipt)
                 except InstallError as cleanup_error:
                     error = InstallError(f"{error}; {cleanup_error}")
             elif artifact_backup is not None:
@@ -2178,6 +2593,7 @@ def install_opencode(
         if artifact_created:
             try:
                 _remove_opencode_artifact(artifact_root)
+                _discard_prepublication_receipt(receipt_path_value, receipt)
             except InstallError as cleanup_error:
                 error = InstallError(f"{error}; {cleanup_error}")
         elif artifact_backup is not None:
@@ -2196,13 +2612,19 @@ def install_opencode(
         # Commit is complete once links and receipt point at the new artifact.
         # Garbage collection is post-commit and safely retried on a later run.
         try:
-            _remove_opencode_artifact(artifact_backup)
+            if artifact_pending is None:
+                raise InstallError("OpenCode backup is missing its recorded identity")
+            _remove_opencode_artifact_exact(
+                artifact_backup,
+                artifact_pending.backup_dev,
+                artifact_pending.backup_ino,
+            )
         except (InstallError, OSError):
             pass
     # The receipt now names the successfully committed artifact.  Retry only
     # the one exact backup identity still named by its pending-swap record;
     # foreign ``.old-*`` directories are untouched.
-    _garbage_collect_opencode_backups(state_home)
+    merged_receipt = _garbage_collect_opencode_backups(state_home, merged_receipt)
     return InstallResult(
         links=links,
         created_links=tuple(created_links),
@@ -2221,7 +2643,7 @@ def _opencode_receipt_links_without_artifact(
     """Reconstruct a constrained receipt allow-list when state was removed."""
 
     try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_state_text(receipt_path))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
     if not isinstance(payload, dict) or not isinstance(payload.get("links"), list):
@@ -2311,21 +2733,93 @@ def _read_opencode_receipt(
 
     if not _lexists(receipt_path):
         return None
-    if receipt_path.is_symlink() or not receipt_path.is_file():
+    if not stat.S_ISREG(_state_lstat(receipt_path).st_mode):
         raise InstallError(f"receipt path is not a regular file: {receipt_path}")
     try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_state_text(receipt_path))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
     if not isinstance(payload, dict):
         raise InstallError(f"receipt is malformed: {receipt_path}")
+    base_keys = {
+        "links",
+        "marketplace_added",
+        "plugin_installed",
+        "repository_root",
+    }
     if "artifact_root" in payload:
-        expected = _opencode_receipt_links_without_artifact(
-            receipt_path, config_dir, state_home, repository_root
-        )
+        allowed_keys = base_keys | {"artifact_root", "lineage"}
+        if "pending_swap" in payload:
+            allowed_keys.update({"pending_swap", "pending_swap_auth"})
+        if "pending_publish" in payload:
+            allowed_keys.add("pending_publish")
+        if set(payload) != allowed_keys:
+            raise InstallError(f"current OpenCode receipt is inconsistent: {receipt_path}")
+        if "pending_publish" in payload and payload.get("links"):
+            expected = _legacy_opencode_expected_links(repository_root, config_dir)
+        else:
+            expected = _opencode_receipt_links_without_artifact(
+                receipt_path, config_dir, state_home, repository_root
+            )
     else:
+        if set(payload) != base_keys:
+            raise InstallError(f"legacy OpenCode receipt is inconsistent: {receipt_path}")
         expected = _legacy_opencode_expected_links(repository_root, config_dir)
-    return _read_receipt(receipt_path, repository_root, expected)
+    receipt = _read_receipt(receipt_path, repository_root, expected)
+    if receipt is None:
+        return None
+    if receipt.artifact_root is not None:
+        if (
+            receipt.lineage is None
+            or receipt.marketplace_added
+            or not receipt.plugin_installed
+        ):
+            raise InstallError(f"current OpenCode receipt is incomplete: {receipt_path}")
+        if receipt.pending_publish is not None:
+            legacy_expected = _legacy_opencode_expected_links(repository_root, config_dir)
+            if (
+                receipt.pending_swap is not None
+                or (receipt.links and set(receipt.links) != set(legacy_expected))
+            ):
+                raise InstallError(
+                    f"OpenCode prepublication receipt is inconsistent: {receipt_path}"
+                )
+        else:
+            artifact = _fixed_opencode_artifact(state_home, receipt.artifact_root)
+            canonical_config = _canonical_opencode_config(config_dir)
+            skill_names = tuple(_skill_inventory(repository_root))
+            expected_current = {
+                ProfileLink(artifact / "skills" / name, canonical_config / "skills" / name)
+                for name in skill_names
+            }
+            expected_current.update(
+                ProfileLink(
+                    artifact / "commands" / f"{name}.md",
+                    canonical_config / "commands" / f"{name}.md",
+                )
+                for name in skill_names
+            )
+            expected_current.update(
+                ProfileLink(
+                    artifact / "agents" / f"{name}.md",
+                    canonical_config / "agents" / f"{name}.md",
+                )
+                for name in _OPENCODE_AGENT_NAMES
+            )
+            expected_current.update(
+                ProfileLink(
+                    artifact / "plugins" / name,
+                    canonical_config / "plugins" / name,
+                )
+                for name in LEGACY_OPENCODE_PLUGINS
+            )
+            if set(receipt.links) != expected_current:
+                raise InstallError(
+                    f"current OpenCode receipt link inventory is incomplete: {receipt_path}"
+                )
+    elif set(receipt.links) != set(expected):
+        raise InstallError(f"legacy OpenCode receipt is incomplete: {receipt_path}")
+    return receipt
 
 
 def _prune_opencode_retired_links(
@@ -2382,6 +2876,34 @@ def uninstall_opencode(
 ) -> InstallResult:
     canonical_root = _canonical_repository_root(repo_root)
     receipt_path_value = _opencode_receipt_path(state_home)
+    try:
+        binding = _open_state_binding(receipt_path_value.parent, create=False)
+    except OSError as error:
+        raise InstallError(
+            f"cannot bind OpenCode state directory: {receipt_path_value.parent}: {error}"
+        ) from error
+    if binding is None:
+        return InstallResult()
+    key = str(binding.directory)
+    if key in _STATE_BINDINGS:
+        os.close(binding.directory_fd)
+        raise InstallError(f"OpenCode state directory is already active: {binding.directory}")
+    _STATE_BINDINGS[key] = binding
+    try:
+        return _uninstall_opencode_bound(
+            canonical_root, config_dir, state_home, receipt_path_value
+        )
+    finally:
+        _STATE_BINDINGS.pop(key, None)
+        os.close(binding.directory_fd)
+
+
+def _uninstall_opencode_bound(
+    canonical_root: Path,
+    config_dir: Path,
+    state_home: Path,
+    receipt_path_value: Path,
+) -> InstallResult:
     if not _lexists(receipt_path_value):
         return InstallResult()
     receipt = _read_opencode_receipt(
@@ -2418,10 +2940,10 @@ def uninstall_opencode(
     if current.artifact_root is not None:
         artifact = _fixed_opencode_artifact(state_home, current.artifact_root)
         _remove_opencode_artifact(artifact)
-    if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
+    if not stat.S_ISREG(_state_lstat(receipt_path_value).st_mode):
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
-        receipt_path_value.unlink()
+        _unlink_state_path(receipt_path_value)
     except OSError as error:
         raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
     return InstallResult(

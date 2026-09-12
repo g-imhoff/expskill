@@ -77,14 +77,16 @@ class FoundationCorrectionTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = state / "expskill" / "opencode-artifact"
-            original_replace = Path.replace
+            original_rename = install_module._rename_noreplace
 
-            def crash_after_live_backup(source: Path, target: Path) -> Path:
+            def crash_after_live_backup(source: Path, target: Path) -> None:
                 if source.name.startswith(".opencode-artifact.next-") and target.name == "opencode-artifact":
                     raise SystemExit("simulated process crash")
-                return original_replace(source, target)
+                original_rename(source, target)
 
-            with mock.patch.object(Path, "replace", autospec=True, side_effect=crash_after_live_backup):
+            with mock.patch.object(
+                install_module, "_rename_noreplace", side_effect=crash_after_live_backup
+            ):
                 with self.assertRaises(SystemExit):
                     install_opencode(repo, config, state)
             backups = tuple((state / "expskill").glob(".opencode-artifact.old-*"))
@@ -264,6 +266,304 @@ class FoundationCorrectionTests(unittest.TestCase):
             install_opencode(repo, config, state)
             self.assertTrue((foreign / "foreign.txt").exists())
 
+    def test_empty_link_receipt_cannot_own_foreign_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            artifact = state / "expskill" / "opencode-artifact"
+            artifact.mkdir(parents=True)
+            marker = artifact / "foreign.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            receipt_path(state).write_text(
+                json.dumps(
+                    {
+                        "artifact_root": str(artifact),
+                        "lineage": "f" * 32,
+                        "links": [],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(repo.resolve()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(InstallError):
+                install_opencode(repo, config, state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+
+    def test_incomplete_current_receipt_link_inventory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            payload["links"].pop()
+            receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(InstallError):
+                install_opencode(repo, config, state)
+
+    def test_state_ancestor_replacement_cannot_redirect_receipt_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            moved = root / "moved-state"
+            outside = root / "outside"
+            outside.mkdir()
+            real_write = install_module._write_state_payload
+            replaced = False
+
+            def replace_ancestor(path: Path, payload: object) -> bool:
+                nonlocal replaced
+                if not replaced:
+                    replaced = True
+                    state.rename(moved)
+                    state.symlink_to(outside, target_is_directory=True)
+                return real_write(path, payload)
+
+            with mock.patch.object(
+                install_module, "_write_state_payload", side_effect=replace_ancestor
+            ):
+                with self.assertRaises(InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(replaced)
+            self.assertEqual(list(outside.iterdir()), [])
+            self.assertFalse((outside / "expskill" / "install-opencode.json").exists())
+
+    def test_pending_swap_alone_cannot_authorize_backup_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = root / "state"
+            parent = state / "expskill"
+            artifact = parent / "opencode-artifact"
+            backup = parent / ".opencode-artifact.old-forged"
+            artifact.mkdir(parents=True)
+            backup.mkdir()
+            marker = backup / "foreign.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            artifact_metadata = artifact.stat()
+            backup_metadata = backup.stat()
+            lineage = "f" * 32
+            receipt_path(state).write_text(
+                json.dumps(
+                    {
+                        "lineage": lineage,
+                        "pending_swap": {
+                            "artifact": str(artifact),
+                            "backup": str(backup),
+                            "backup_dev": backup_metadata.st_dev,
+                            "backup_ino": backup_metadata.st_ino,
+                            "candidate": str(parent / ".opencode-artifact.next-forged"),
+                            "candidate_dev": artifact_metadata.st_dev,
+                            "candidate_ino": artifact_metadata.st_ino,
+                            "lineage": lineage,
+                            "live_dev": artifact_metadata.st_dev,
+                            "live_ino": artifact_metadata.st_ino,
+                            "phase": "published",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            install_module._garbage_collect_opencode_backups(state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+
+    def test_forged_pending_swap_in_legitimate_receipt_cannot_delete_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            parent = state / "expskill"
+            artifact = parent / "opencode-artifact"
+            backup = parent / ".opencode-artifact.old-forged"
+            backup.mkdir()
+            marker = backup / "foreign.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            artifact_metadata = artifact.stat()
+            backup_metadata = backup.stat()
+            lineage = payload["lineage"]
+            payload["pending_swap"] = {
+                "artifact": str(artifact),
+                "backup": str(backup),
+                "backup_dev": backup_metadata.st_dev,
+                "backup_ino": backup_metadata.st_ino,
+                "candidate": str(parent / ".opencode-artifact.next-forged"),
+                "candidate_dev": artifact_metadata.st_dev,
+                "candidate_ino": artifact_metadata.st_ino,
+                "lineage": lineage,
+                "live_dev": artifact_metadata.st_dev,
+                "live_ino": artifact_metadata.st_ino,
+                "phase": "published",
+            }
+            receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(InstallError):
+                install_opencode(repo, config, state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+
+    def test_first_publish_preserves_late_foreign_live_occupant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            artifact = state / "expskill" / "opencode-artifact"
+            real_matches = install_module._artifact_matches_sources
+            foreign_identity: tuple[int, int] | None = None
+
+            def inject_live(source: Path, candidate: Path) -> bool:
+                nonlocal foreign_identity
+                matches = real_matches(source, candidate)
+                artifact.mkdir()
+                metadata = artifact.stat()
+                foreign_identity = (metadata.st_dev, metadata.st_ino)
+                return matches
+
+            with mock.patch.object(install_module, "_artifact_matches_sources", side_effect=inject_live):
+                with self.assertRaises(InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertIsNotNone(foreign_identity)
+            self.assertEqual((artifact.stat().st_dev, artifact.stat().st_ino), foreign_identity)
+
+    def test_reinstall_preserves_late_foreign_backup_occupant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            real_write = install_module._write_receipt
+            foreign: Path | None = None
+            foreign_identity: tuple[int, int] | None = None
+
+            def inject_backup(path: Path, receipt: object) -> None:
+                nonlocal foreign, foreign_identity
+                real_write(path, receipt)
+                pending = getattr(receipt, "pending_swap", None)
+                if foreign is None and pending is not None and pending.phase == "prepared":
+                    foreign = pending.backup
+                    foreign.mkdir()
+                    metadata = foreign.stat()
+                    foreign_identity = (metadata.st_dev, metadata.st_ino)
+
+            with mock.patch.object(install_module, "_write_receipt", side_effect=inject_backup):
+                with self.assertRaises(InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertIsNotNone(foreign)
+            self.assertIsNotNone(foreign_identity)
+            assert foreign is not None
+            self.assertEqual((foreign.stat().st_dev, foreign.stat().st_ino), foreign_identity)
+
+    def test_backup_cleanup_preserves_identity_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            real_write = install_module._write_receipt
+            published_writes = 0
+            replacement: Path | None = None
+            detached: Path | None = None
+
+            def replace_before_cleanup(path: Path, receipt: object) -> None:
+                nonlocal published_writes, replacement, detached
+                real_write(path, receipt)
+                pending = getattr(receipt, "pending_swap", None)
+                if pending is not None and pending.phase == "published":
+                    published_writes += 1
+                    if published_writes == 2:
+                        replacement = pending.backup
+                        detached = pending.backup.with_name(pending.backup.name + ".detached")
+                        pending.backup.rename(detached)
+                        replacement.mkdir()
+                        (replacement / "foreign.txt").write_text("must survive\n", encoding="utf-8")
+
+            with mock.patch.object(install_module, "_write_receipt", side_effect=replace_before_cleanup):
+                install_opencode(repo, config, state)
+
+            self.assertIsNotNone(replacement)
+            self.assertIsNotNone(detached)
+            assert replacement is not None and detached is not None
+            self.assertEqual((replacement / "foreign.txt").read_text(encoding="utf-8"), "must survive\n")
+            self.assertTrue(detached.is_dir())
+
+    def test_recovery_persists_published_state_before_next_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            real_write = install_module._write_receipt
+
+            def crash_before_published_receipt(path: Path, receipt: object) -> None:
+                pending = getattr(receipt, "pending_swap", None)
+                if pending is not None and pending.phase == "published":
+                    raise SystemExit("injected process death")
+                real_write(path, receipt)
+
+            with mock.patch.object(
+                install_module, "_write_receipt", side_effect=crash_before_published_receipt
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            install_opencode(repo, config, state)
+
+            self.assertFalse(
+                any(path.name.startswith(".opencode-artifact.old-") for path in (state / "expskill").iterdir())
+            )
+
+    def test_first_publish_crash_recovers_from_prepublication_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+
+            with mock.patch.object(
+                install_module,
+                "preflight_opencode_links",
+                side_effect=SystemExit("injected process death"),
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue((state / "expskill" / "opencode-artifact").is_dir())
+            install_opencode(repo, config, state)
+            self.assertTrue(receipt_path(state).is_file())
+
+    def test_successful_reinstall_clears_pending_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+
+            install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            self.assertNotIn("pending_swap", payload)
+
     def test_validate_rejects_mutated_provenance_and_unexpected_artifact_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -395,14 +695,16 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            real_remove = install_module._remove_opencode_artifact
+            real_remove = install_module._remove_opencode_artifact_exact
 
-            def fail_backup(path: Path) -> None:
+            def fail_backup(path: Path, dev: int, ino: int) -> None:
                 if ".old-" in path.name:
                     raise InstallError("injected backup cleanup failure")
-                real_remove(path)
+                real_remove(path, dev, ino)
 
-            with mock.patch.object(install_module, "_remove_opencode_artifact", side_effect=fail_backup):
+            with mock.patch.object(
+                install_module, "_remove_opencode_artifact_exact", side_effect=fail_backup
+            ):
                 install_opencode(repo, config, state)
             self.assertTrue((state / "expskill/opencode-artifact").is_dir())
             self.assertTrue(receipt_path(state).is_file())
