@@ -33,6 +33,36 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_new_install_rejects_preexisting_same_target_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            planned = install_module.preflight_opencode_links(repo, config, state)
+            existing = planned[0]
+            existing.destination.parent.mkdir(parents=True)
+            existing.destination.symlink_to(existing.source)
+            identity = (
+                existing.destination.lstat().st_dev,
+                existing.destination.lstat().st_ino,
+            )
+
+            with self.assertRaisesRegex(
+                install_module.InstallError, "unowned opencode destination"
+            ):
+                install_opencode(repo, config, state)
+
+            self.assertTrue(existing.destination.is_symlink())
+            self.assertEqual(os.readlink(existing.destination), str(existing.source))
+            self.assertEqual(
+                (
+                    existing.destination.lstat().st_dev,
+                    existing.destination.lstat().st_ino,
+                ),
+                identity,
+            )
+
     def test_anchor_created_before_persistence_is_adopted_on_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -117,6 +147,99 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             self.assertTrue(destination.is_symlink())
             self.assertEqual(os.readlink(destination), str(source))
             self.assertFalse(receipt_path(state).exists())
+
+    def test_reinstall_does_not_adopt_same_target_recreated_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            first = receipt(state)
+            owned = first["links"][0]
+            destination = Path(owned["destination"])
+            source = Path(owned["source"])
+            recorded_identity = (owned["destination_dev"], owned["destination_ino"])
+            displaced = destination.with_name(f"{destination.name}.displaced")
+            destination.rename(displaced)
+            destination.symlink_to(source)
+            replacement_identity = (
+                destination.lstat().st_dev,
+                destination.lstat().st_ino,
+            )
+            self.assertNotEqual(replacement_identity, recorded_identity)
+
+            install_opencode(repo, config, state)
+
+            reinstalled = receipt(state)
+            reinstalled_link = next(
+                link
+                for link in reinstalled["links"]
+                if link["destination"] == str(destination)
+            )
+            self.assertEqual(
+                (
+                    reinstalled_link["destination_dev"],
+                    reinstalled_link["destination_ino"],
+                ),
+                recorded_identity,
+            )
+
+            uninstall_opencode(repo, config, state)
+
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
+
+    def test_retired_link_pruning_preserves_same_target_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config"
+            source = root / "source"
+            destination = config / "skills" / "retired"
+            destination.parent.mkdir(parents=True)
+            source.mkdir()
+            destination.symlink_to(source)
+            owned_metadata = destination.lstat()
+            displaced = destination.with_name("retired.displaced")
+            destination.rename(displaced)
+            destination.symlink_to(source)
+            replacement_identity = (
+                destination.lstat().st_dev,
+                destination.lstat().st_ino,
+            )
+            self.assertNotEqual(
+                replacement_identity,
+                (owned_metadata.st_dev, owned_metadata.st_ino),
+            )
+            recorded = install_module.ProfileLink(
+                source=source,
+                destination=destination,
+                destination_dev=owned_metadata.st_dev,
+                destination_ino=owned_metadata.st_ino,
+            )
+            installed = install_module._Receipt(
+                repository_root=root,
+                links=(recorded,),
+                marketplace_added=False,
+                plugin_installed=True,
+            )
+
+            retained, removed = install_module._prune_opencode_retired_links(
+                installed, (), config
+            )
+
+            self.assertEqual(retained, ())
+            self.assertEqual(removed, ())
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
 
     def test_anchored_uninstall_accepts_missing_and_retargeted_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -373,6 +496,316 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     self.assertIn("pending_swap", receipt(state))
                     install_opencode(repo, config, state)
                     self.assertNotIn("pending_swap", receipt(state))
+
+    def test_upgrade_cleanup_recovery_does_not_require_live_link_quorum(self) -> None:
+        for entrypoint, link_change in (("install", "remove"), ("uninstall", "retarget")):
+            with (
+                self.subTest(entrypoint=entrypoint, link_change=link_change),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                skill.write_text(
+                    skill.read_text(encoding="utf-8").replace(
+                        "Cut AI tells", "frozen cleanup identity marker"
+                    ),
+                    encoding="utf-8",
+                )
+                real_write = install_module._write_receipt
+                failed = False
+
+                def fail_old_artifact_phase(path: Path, value: object) -> None:
+                    nonlocal failed
+                    pending = getattr(value, "pending_swap", None)
+                    if (
+                        pending is not None
+                        and pending.phase == "old-artifact-removed"
+                        and not failed
+                    ):
+                        failed = True
+                        raise SystemExit("before old-artifact-removed persistence")
+                    real_write(path, value)
+
+                with mock.patch.object(
+                    install_module,
+                    "_write_receipt",
+                    side_effect=fail_old_artifact_phase,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_opencode(repo, config, state)
+
+                interrupted = receipt(state)
+                self.assertEqual(
+                    interrupted["pending_swap"]["phase"], "published"
+                )
+                changed = interrupted["links"][0]
+                destination = Path(changed["destination"])
+                destination.unlink()
+                foreign_target = root / "foreign-target"
+                if link_change == "retarget":
+                    foreign_target.write_text("foreign\n", encoding="utf-8")
+                    destination.symlink_to(foreign_target)
+
+                if entrypoint == "install":
+                    install_opencode(repo, config, state)
+                    converged = receipt(state)
+                    self.assertNotIn("pending_swap", converged)
+                    self.assertTrue(destination.is_symlink())
+                else:
+                    uninstall_opencode(repo, config, state)
+                    self.assertFalse(receipt_path(state).exists())
+                    self.assertTrue(destination.is_symlink())
+                    self.assertEqual(os.readlink(destination), str(foreign_target))
+
+    def test_initial_publication_receipt_boundaries_converge(self) -> None:
+        boundaries = (
+            "prepared",
+            "anchor-recorded",
+            "published",
+            "planned-links",
+            "final-committed",
+        )
+        for boundary in boundaries:
+            for failure_type in (OSError, SystemExit):
+                for entrypoint in ("install", "uninstall"):
+                    with (
+                        self.subTest(
+                            boundary=boundary,
+                            failure=failure_type.__name__,
+                            entrypoint=entrypoint,
+                        ),
+                        tempfile.TemporaryDirectory() as temporary,
+                    ):
+                        root = Path(temporary)
+                        repo = seed_repository(root / "repo")
+                        config = root / "config"
+                        state = root / "state"
+                        real_write = install_module._write_receipt
+                        injected = False
+
+                        def classify(value: object) -> str | None:
+                            pending = getattr(value, "pending_publish", None)
+                            if pending is not None:
+                                return pending.phase
+                            if getattr(value, "artifact_root", None) is not None:
+                                return "final-committed"
+                            return None
+
+                        def interrupt_write(path: Path, value: object) -> None:
+                            nonlocal injected
+                            if classify(value) != boundary or injected:
+                                real_write(path, value)
+                                return
+                            injected = True
+                            if failure_type is SystemExit:
+                                real_write(path, value)
+                            raise failure_type(f"at {boundary}")
+
+                        with mock.patch.object(
+                            install_module,
+                            "_write_receipt",
+                            side_effect=interrupt_write,
+                        ):
+                            with self.assertRaises(
+                                SystemExit
+                                if failure_type is SystemExit
+                                else (install_module.InstallError, OSError)
+                            ):
+                                install_opencode(repo, config, state)
+                        self.assertTrue(injected)
+
+                        replacement: tuple[Path, Path, tuple[int, int]] | None = None
+                        replacement_has_no_authority = False
+                        live_links = sorted(
+                            path for path in config.rglob("*") if path.is_symlink()
+                        )
+                        if not live_links and receipt_path(state).is_file():
+                            interrupted = receipt(state)
+                            planned = interrupted.get("links", [])
+                            if planned:
+                                destination = Path(planned[0]["destination"])
+                                target = Path(planned[0]["source"])
+                                destination.parent.mkdir(parents=True, exist_ok=True)
+                                destination.symlink_to(target)
+                                live_links = [destination]
+                                replacement_has_no_authority = True
+                        if live_links:
+                            destination = live_links[0]
+                            target = Path(os.readlink(destination))
+                            displaced = destination.with_name(
+                                f"{destination.name}.displaced"
+                            )
+                            destination.rename(displaced)
+                            destination.symlink_to(target)
+                            replacement = (
+                                destination,
+                                target,
+                                (
+                                    destination.lstat().st_dev,
+                                    destination.lstat().st_ino,
+                                ),
+                            )
+
+                        if entrypoint == "install":
+                            install_opencode(repo, config, state)
+                            converged = receipt(state)
+                            self.assertNotIn("pending_publish", converged)
+                            self.assertNotIn("pending_swap", converged)
+                            self.assertEqual(converged["teardown_phase"], "committed")
+                            self.assertTrue(Path(converged["artifact_anchor"]).is_file())
+                            if replacement_has_no_authority:
+                                preserved = next(
+                                    link
+                                    for link in converged["links"]
+                                    if link["destination"] == str(replacement[0])
+                                )
+                                self.assertNotIn("destination_dev", preserved)
+                                self.assertNotIn("destination_ino", preserved)
+                        else:
+                            uninstall_opencode(repo, config, state)
+                            self.assertFalse(receipt_path(state).exists())
+                            self.assertFalse(
+                                (state / "expskill/opencode-artifact").exists()
+                            )
+
+                        if replacement is not None:
+                            destination, target, identity = replacement
+                            self.assertTrue(destination.is_symlink())
+                            self.assertEqual(Path(os.readlink(destination)), target)
+                            self.assertEqual(
+                                (
+                                    destination.lstat().st_dev,
+                                    destination.lstat().st_ino,
+                                ),
+                                identity,
+                            )
+
+    def test_upgrade_receipt_boundaries_converge_without_claiming_replacements(
+        self,
+    ) -> None:
+        boundaries = (
+            "prepared",
+            "anchor-recorded",
+            "backup-created",
+            "published",
+            "final-committed",
+            "old-artifact-removed",
+            "old-anchor-removed",
+        )
+        for boundary in boundaries:
+            for failure_type in (OSError, SystemExit):
+                for entrypoint in ("install", "uninstall"):
+                    with (
+                        self.subTest(
+                            boundary=boundary,
+                            failure=failure_type.__name__,
+                            entrypoint=entrypoint,
+                        ),
+                        tempfile.TemporaryDirectory() as temporary,
+                    ):
+                        root = Path(temporary)
+                        repo = seed_repository(root / "repo")
+                        config = root / "config"
+                        state = root / "state"
+                        install_opencode(repo, config, state)
+                        original = receipt(state)
+                        skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                        skill.write_text(
+                            skill.read_text(encoding="utf-8").replace(
+                                "Cut AI tells", f"{boundary} upgrade marker"
+                            ),
+                            encoding="utf-8",
+                        )
+                        real_write = install_module._write_receipt
+                        injected = False
+
+                        def classify(value: object) -> str | None:
+                            pending = getattr(value, "pending_swap", None)
+                            if pending is None:
+                                return None
+                            if (
+                                pending.phase == "published"
+                                and (
+                                    getattr(value, "artifact_dev", None),
+                                    getattr(value, "artifact_ino", None),
+                                )
+                                == (pending.candidate_dev, pending.candidate_ino)
+                            ):
+                                return "final-committed"
+                            return pending.phase
+
+                        def interrupt_write(path: Path, value: object) -> None:
+                            nonlocal injected
+                            if classify(value) != boundary or injected:
+                                real_write(path, value)
+                                return
+                            injected = True
+                            if failure_type is SystemExit:
+                                real_write(path, value)
+                            raise failure_type(f"at {boundary}")
+
+                        with mock.patch.object(
+                            install_module,
+                            "_write_receipt",
+                            side_effect=interrupt_write,
+                        ):
+                            with self.assertRaises(
+                                SystemExit
+                                if failure_type is SystemExit
+                                else (install_module.InstallError, OSError)
+                            ):
+                                install_opencode(repo, config, state)
+                        self.assertTrue(injected)
+
+                        owned = original["links"][0]
+                        destination = Path(owned["destination"])
+                        target = Path(os.readlink(destination))
+                        displaced = destination.with_name(
+                            f"{destination.name}.displaced"
+                        )
+                        destination.rename(displaced)
+                        destination.symlink_to(target)
+                        replacement_identity = (
+                            destination.lstat().st_dev,
+                            destination.lstat().st_ino,
+                        )
+
+                        if entrypoint == "install":
+                            install_opencode(repo, config, state)
+                            converged = receipt(state)
+                            self.assertNotIn("pending_swap", converged)
+                            recorded = next(
+                                link
+                                for link in converged["links"]
+                                if link["destination"] == str(destination)
+                            )
+                            self.assertEqual(
+                                (
+                                    recorded["destination_dev"],
+                                    recorded["destination_ino"],
+                                ),
+                                (
+                                    owned["destination_dev"],
+                                    owned["destination_ino"],
+                                ),
+                            )
+                        else:
+                            uninstall_opencode(repo, config, state)
+                            self.assertFalse(receipt_path(state).exists())
+                            self.assertFalse(
+                                (state / "expskill/opencode-artifact").exists()
+                            )
+
+                        self.assertTrue(destination.is_symlink())
+                        self.assertEqual(Path(os.readlink(destination)), target)
+                        self.assertEqual(
+                            (destination.lstat().st_dev, destination.lstat().st_ino),
+                            replacement_identity,
+                        )
 
     def test_legacy_anchorless_receipt_migrates_only_with_full_live_inventory(self) -> None:
         for remove_link in (False, True):
