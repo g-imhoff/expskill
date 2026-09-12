@@ -4374,6 +4374,44 @@ def _restore_opencode_links(links: Sequence[ProfileLink], config_dir: Path) -> l
     return failures
 
 
+def _anchor_committed_artifact_for_uninstall(
+    receipt_path: Path,
+    receipt: _Receipt,
+    artifact: Path,
+    artifact_identity: tuple[int, int],
+) -> _Receipt:
+    """Persist exact artifact ownership before committed links are removed."""
+
+    if receipt.pending_publish is not None:
+        return receipt
+    if receipt.lineage is None:
+        raise InstallError("committed OpenCode artifact lacks an ownership lineage")
+    anchor = _create_artifact_anchor(artifact, receipt.lineage)
+    pending = _PendingPublish(
+        lineage=receipt.lineage,
+        artifact=artifact,
+        candidate=artifact.parent / f".{artifact.name}.next-{receipt.lineage}",
+        candidate_dev=artifact_identity[0],
+        candidate_ino=artifact_identity[1],
+        phase="published",
+        candidate_digest=receipt.artifact_digest,
+        candidate_anchor=anchor[0],
+        candidate_anchor_dev=anchor[1],
+        candidate_anchor_ino=anchor[2],
+        planned_links=True,
+    )
+    anchored = _receipt_with_pending_publish(receipt, pending)
+    try:
+        _write_receipt(receipt_path, anchored)
+    except InstallError:
+        try:
+            _remove_artifact_anchor_exact(artifact, *anchor)
+        except InstallError:
+            pass
+        raise
+    return anchored
+
+
 def uninstall_opencode(
     repo_root: Path,
     config_dir: Path,
@@ -4461,6 +4499,7 @@ def _uninstall_opencode_bound(
         )
     links = receipt.links
     _validate_receipt_artifact(receipt, state_home)
+    current = receipt
     artifact_identity: tuple[int, int] | None = None
     if receipt.artifact_root is not None:
         artifact = _fixed_opencode_artifact(state_home, receipt.artifact_root)
@@ -4496,17 +4535,18 @@ def _uninstall_opencode_bound(
                     and receipt.artifact_ino is not None
                 )
                 artifact_identity = (receipt.artifact_dev, receipt.artifact_ino)
-    current = receipt
+                current = _anchor_committed_artifact_for_uninstall(
+                    receipt_path_value,
+                    current,
+                    artifact,
+                    artifact_identity,
+                )
     removed: list[ProfileLink] = []
     failures: list[str] = []
     for link in receipt.links:
         if not _lexists(link.destination):
-            if current.pending_publish is None:
-                current = _persist_receipt(receipt_path_value, current, links=tuple(item for item in current.links if item != link))
             continue
         if not _same_recorded_link(link.destination, link.source):
-            if current.pending_publish is None:
-                current = _persist_receipt(receipt_path_value, current, links=tuple(item for item in current.links if item != link))
             continue
         try:
             if link.destination.is_dir() and not link.destination.is_symlink():
@@ -4517,18 +4557,13 @@ def _uninstall_opencode_bound(
             failures.append(f"link {link.destination}: {error}")
             continue
         removed.append(link)
-        if current.pending_publish is None:
-            current = _persist_receipt(receipt_path_value, current, links=tuple(item for item in current.links if item != link))
     if failures:
         raise InstallError("owned opencode link cleanup failed: " + "; ".join(failures))
-    if current.links and current.pending_publish is None:
-        raise InstallError("owned opencode link cleanup did not converge")
     if current.artifact_root is not None:
         artifact = _fixed_opencode_artifact(state_home, current.artifact_root)
         if artifact_identity is not None:
-            if recovered_initial:
-                pending_publish = current.pending_publish
-                assert pending_publish is not None
+            pending_publish = current.pending_publish
+            if pending_publish is not None:
                 anchor_values = (
                     pending_publish.candidate_anchor,
                     pending_publish.candidate_anchor_dev,

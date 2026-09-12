@@ -1138,6 +1138,131 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
 
+    def test_committed_uninstall_retries_after_fourth_unlink_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            receipt = receipt_path(state)
+            original_payload = json.loads(receipt.read_text(encoding="utf-8"))
+            original_links = original_payload["links"]
+            artifact = state / "expskill/opencode-artifact"
+            artifact_identity = (artifact.stat().st_dev, artifact.stat().st_ino)
+            real_unlink = install_module._unlink_destination
+            unlinks = 0
+
+            def fail_fourth_unlink(destination: Path) -> None:
+                nonlocal unlinks
+                unlinks += 1
+                if unlinks == 4:
+                    raise OSError(errno.EIO, "injected fourth unlink failure")
+                real_unlink(destination)
+
+            with mock.patch.object(
+                install_module,
+                "_unlink_destination",
+                side_effect=fail_fourth_unlink,
+            ):
+                with self.assertRaisesRegex(
+                    InstallError, "owned opencode link cleanup failed"
+                ):
+                    uninstall_opencode(repo, config, state)
+
+            failed_payload = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertEqual(failed_payload["links"], original_links)
+            pending = failed_payload["pending_publish"]
+            self.assertTrue(pending["planned_links"])
+            anchor_metadata = Path(pending["candidate_anchor"]).stat()
+            anchor_source_metadata = (
+                artifact / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE
+            ).stat()
+            self.assertEqual(
+                (anchor_metadata.st_dev, anchor_metadata.st_ino),
+                (anchor_source_metadata.st_dev, anchor_source_metadata.st_ino),
+            )
+            self.assertEqual(
+                (artifact.stat().st_dev, artifact.stat().st_ino), artifact_identity
+            )
+            remaining = [
+                Path(entry["destination"])
+                for entry in original_links
+                if Path(entry["destination"]).is_symlink()
+            ]
+            self.assertEqual(len(remaining), 1)
+            remaining_exact = remaining[0]
+            self.assertEqual(
+                remaining_exact.resolve(strict=True),
+                Path(
+                    next(
+                        entry["source"]
+                        for entry in original_links
+                        if Path(entry["destination"]) == remaining_exact
+                    )
+                ),
+            )
+
+            unrelated_destination = Path(original_links[0]["destination"])
+            unrelated_destination.write_text("user-owned\n", encoding="utf-8")
+            remaining_exact.unlink()
+            unrelated_target = root / "user-owned-target.md"
+            unrelated_target.write_text("retargeted\n", encoding="utf-8")
+            remaining_exact.symlink_to(unrelated_target)
+
+            uninstall_opencode(repo, config, state)
+
+            self.assertEqual(
+                unrelated_destination.read_text(encoding="utf-8"), "user-owned\n"
+            )
+            self.assertTrue(remaining_exact.is_symlink())
+            self.assertEqual(os.readlink(remaining_exact), str(unrelated_target))
+            self.assertFalse(receipt.exists())
+            self.assertFalse(artifact.exists())
+
+    def test_committed_uninstall_retries_after_fourth_unlink_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            receipt = receipt_path(state)
+            original_payload = json.loads(receipt.read_text(encoding="utf-8"))
+            real_unlink = install_module._unlink_destination
+            unlinks = 0
+
+            def crash_before_fourth_unlink(destination: Path) -> None:
+                nonlocal unlinks
+                unlinks += 1
+                if unlinks == 4:
+                    raise SystemExit("injected fourth unlink crash")
+                real_unlink(destination)
+
+            with mock.patch.object(
+                install_module,
+                "_unlink_destination",
+                side_effect=crash_before_fourth_unlink,
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            interrupted_payload = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertEqual(interrupted_payload["links"], original_payload["links"])
+            pending = interrupted_payload["pending_publish"]
+            self.assertTrue(pending["planned_links"])
+            self.assertTrue(Path(pending["candidate_anchor"]).is_file())
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(original_payload["links"]) - 3,
+            )
+
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt.exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
     def test_anchorless_recovery_preserves_state_when_reanchoring_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
