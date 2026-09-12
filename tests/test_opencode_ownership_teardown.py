@@ -33,6 +33,433 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_partial_artifact_package_deletion_retries_through_both_entrypoints(
+        self,
+    ) -> None:
+        for failure_type in (install_module.InstallError, SystemExit):
+            for retry in ("install", "uninstall"):
+                with (
+                    self.subTest(failure=failure_type.__name__, retry=retry),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    payload = receipt(state)
+                    artifact = Path(payload["artifact_root"])
+                    anchor = Path(payload["artifact_anchor"])
+                    real_remove = install_module._remove_opencode_artifact_exact
+                    injected = False
+
+                    def stop_after_package_delete(path: Path, dev: int, ino: int) -> None:
+                        nonlocal injected
+                        if path == artifact and not injected:
+                            injected = True
+                            (path / "package.json").unlink()
+                            raise failure_type("after package deletion")
+                        real_remove(path, dev, ino)
+
+                    with mock.patch.object(
+                        install_module,
+                        "_remove_opencode_artifact_exact",
+                        side_effect=stop_after_package_delete,
+                    ):
+                        with self.assertRaises(failure_type):
+                            uninstall_opencode(repo, config, state)
+
+                    self.assertTrue(injected)
+                    if retry == "install":
+                        install_opencode(repo, config, state)
+                        self.assertEqual(receipt(state)["teardown_phase"], "committed")
+                        uninstall_opencode(repo, config, state)
+                    else:
+                        uninstall_opencode(repo, config, state)
+                    self.assertFalse(artifact.exists())
+                    self.assertFalse(anchor.exists())
+                    self.assertFalse(receipt_path(state).exists())
+
+    def test_terminal_receipt_delete_quarantine_is_recovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            final_receipt = receipt_path(state)
+            real_rename = install_module._renameat_noreplace
+            injected = False
+
+            def stop_after_receipt_rename(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if (
+                    not injected
+                    and source_name == final_receipt.name
+                    and target_name.endswith(".delete")
+                ):
+                    injected = True
+                    raise SystemExit("after terminal receipt rename")
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_noreplace",
+                side_effect=stop_after_receipt_rename,
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertFalse(final_receipt.exists())
+            self.assertEqual(len(tuple(final_receipt.parent.glob("*.delete"))), 1)
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(final_receipt.exists())
+            self.assertEqual(tuple(final_receipt.parent.glob("*.delete")), ())
+
+    def test_legacy_migration_freezes_links_before_anchor_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            Path(payload["artifact_anchor"]).unlink()
+            for key in (
+                "artifact_anchor",
+                "artifact_anchor_dev",
+                "artifact_anchor_ino",
+                "teardown_phase",
+            ):
+                payload.pop(key, None)
+            for link in payload["links"]:
+                link.pop("destination_dev", None)
+                link.pop("destination_ino", None)
+            receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")
+            victim = payload["links"][0]
+            destination = Path(victim["destination"])
+            source = Path(victim["source"])
+            real_write = install_module._write_receipt
+            injected = False
+            replacement_identity: tuple[int, int] | None = None
+
+            def replace_after_migration_prepare(path: Path, value: object) -> None:
+                nonlocal injected, replacement_identity
+                real_write(path, value)
+                if getattr(value, "pending_migration", None) is None or injected:
+                    return
+                injected = True
+                destination.rename(destination.with_name(f"{destination.name}.frozen"))
+                destination.symlink_to(source)
+                replacement_identity = (
+                    destination.lstat().st_dev,
+                    destination.lstat().st_ino,
+                )
+
+            with mock.patch.object(
+                install_module,
+                "_write_receipt",
+                side_effect=replace_after_migration_prepare,
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
+
+    def test_repaired_link_receipt_rewrite_preserves_pending_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            before = receipt(state)
+            missing = Path(before["links"][0]["destination"])
+            missing.unlink()
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "pending swap repair marker"
+                ),
+                encoding="utf-8",
+            )
+            real_rename = install_module._renameat_noreplace
+            injected = False
+
+            def stop_after_repaired_link_publication(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if source_name.endswith(".link") and not injected:
+                    injected = True
+                    raise SystemExit("after repaired link publication")
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_noreplace",
+                side_effect=stop_after_repaired_link_publication,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            interrupted = receipt(state)
+            self.assertIn("pending_swap", interrupted)
+            pending = interrupted["pending_swap"]
+            self.assertTrue(Path(pending["artifact"]).is_dir())
+            self.assertTrue(Path(pending["backup"]).is_dir())
+            self.assertTrue(Path(pending["candidate_anchor"]).is_file())
+            self.assertTrue(Path(pending["old_anchor"]).is_file())
+
+            install_opencode(repo, config, state)
+            converged = receipt(state)
+            self.assertNotIn("pending_swap", converged)
+            self.assertTrue(Path(converged["artifact_root"]).is_dir())
+            self.assertTrue(Path(converged["artifact_anchor"]).is_file())
+
+    def test_partial_backup_package_deletion_retries_through_both_entrypoints(
+        self,
+    ) -> None:
+        for failure_type in (install_module.InstallError, SystemExit):
+            for retry in ("install", "uninstall"):
+                with (
+                    self.subTest(failure=failure_type.__name__, retry=retry),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                    skill.write_text(
+                        skill.read_text(encoding="utf-8").replace(
+                            "Cut AI tells", "partial backup retirement marker"
+                        ),
+                        encoding="utf-8",
+                    )
+                    real_remove = install_module._remove_opencode_artifact_exact
+                    injected = False
+
+                    def stop_after_backup_package_delete(
+                        path: Path, dev: int, ino: int
+                    ) -> None:
+                        nonlocal injected
+                        if ".old-" in path.name and not injected:
+                            injected = True
+                            (path / "package.json").unlink()
+                            raise failure_type("after backup package deletion")
+                        real_remove(path, dev, ino)
+
+                    with mock.patch.object(
+                        install_module,
+                        "_remove_opencode_artifact_exact",
+                        side_effect=stop_after_backup_package_delete,
+                    ):
+                        if failure_type is SystemExit:
+                            with self.assertRaises(SystemExit):
+                                install_opencode(repo, config, state)
+                        else:
+                            install_opencode(repo, config, state)
+
+                    self.assertTrue(injected)
+                    interrupted = receipt(state)
+                    backup = Path(interrupted["pending_swap"]["backup"])
+                    old_anchor = Path(interrupted["pending_swap"]["old_anchor"])
+                    self.assertTrue(backup.is_dir())
+                    self.assertFalse((backup / "package.json").exists())
+                    if retry == "install":
+                        install_opencode(repo, config, state)
+                        self.assertNotIn("pending_swap", receipt(state))
+                        uninstall_opencode(repo, config, state)
+                    else:
+                        uninstall_opencode(repo, config, state)
+                    self.assertFalse(backup.exists())
+                    self.assertFalse(old_anchor.exists())
+                    self.assertFalse(receipt_path(state).exists())
+
+    def test_exact_original_and_quarantine_aliases_are_both_removed(self) -> None:
+        for operation in ("link", "anchor"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                payload = receipt(state)
+                if operation == "link":
+                    recorded = payload["links"][0]
+                    original = Path(recorded["destination"])
+                    identity = (
+                        recorded["destination_dev"],
+                        recorded["destination_ino"],
+                    )
+                else:
+                    original = Path(payload["artifact_anchor"])
+                    identity = (
+                        payload["artifact_anchor_dev"],
+                        payload["artifact_anchor_ino"],
+                    )
+                quarantine = install_module._deletion_quarantine_path(
+                    original, *identity
+                )
+                os.link(original, quarantine, follow_symlinks=False)
+                self.assertEqual(
+                    (quarantine.lstat().st_dev, quarantine.lstat().st_ino),
+                    identity,
+                )
+
+                uninstall_opencode(repo, config, state)
+
+                self.assertFalse(original.exists())
+                self.assertFalse(original.is_symlink())
+                self.assertFalse(quarantine.exists())
+                self.assertFalse(quarantine.is_symlink())
+                self.assertFalse(receipt_path(state).exists())
+
+    def test_terminal_receipt_recovery_preserves_foreign_paths_and_syncs_absence(
+        self,
+    ) -> None:
+        for replacement in ("canonical", "quarantine"):
+            with (
+                self.subTest(replacement=replacement),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                final_receipt = receipt_path(state)
+                real_rename = install_module._renameat_noreplace
+                injected = False
+
+                def stop_after_receipt_rename(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal injected
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    if source_name == final_receipt.name and not injected:
+                        injected = True
+                        raise SystemExit("after receipt quarantine rename")
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_noreplace",
+                    side_effect=stop_after_receipt_rename,
+                ):
+                    with self.assertRaises(SystemExit):
+                        uninstall_opencode(repo, config, state)
+
+                quarantine = next(final_receipt.parent.glob("*.anchor-removed.delete"))
+                if replacement == "canonical":
+                    foreign = final_receipt
+                else:
+                    quarantine.unlink()
+                    foreign = quarantine
+                foreign.write_text("foreign receipt path\n", encoding="utf-8")
+                foreign_identity = (foreign.stat().st_dev, foreign.stat().st_ino)
+                real_fsync = os.fsync
+                fsync_calls = 0
+
+                def count_fsync(descriptor: int) -> None:
+                    nonlocal fsync_calls
+                    fsync_calls += 1
+                    real_fsync(descriptor)
+
+                with mock.patch.object(
+                    install_module.os, "fsync", side_effect=count_fsync
+                ):
+                    if replacement == "canonical":
+                        with self.assertRaises(install_module.InstallError):
+                            uninstall_opencode(repo, config, state)
+                    else:
+                        uninstall_opencode(repo, config, state)
+
+                self.assertGreater(fsync_calls, 0)
+                self.assertEqual(foreign.read_text(encoding="utf-8"), "foreign receipt path\n")
+                self.assertEqual((foreign.stat().st_dev, foreign.stat().st_ino), foreign_identity)
+
+    def test_ordinary_legacy_unlink_failure_keeps_prepared_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            legacy_links = install_module._legacy_opencode_expected_links(repo, config)
+            for link in legacy_links:
+                link.destination.parent.mkdir(parents=True, exist_ok=True)
+                link.destination.symlink_to(link.source)
+            path = receipt_path(state)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {
+                                "source": str(link.source),
+                                "destination": str(link.destination),
+                            }
+                            for link in legacy_links
+                        ],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(repo),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            victim = legacy_links[0]
+            real_unlink = install_module._unlink_destination
+            injected = False
+
+            def fail_after_migrated_unlink(destination: Path) -> bool:
+                nonlocal injected
+                removed = real_unlink(destination)
+                if destination == victim.destination and not injected:
+                    injected = True
+                    raise install_module.InstallError("after migrated unlink durability")
+                return removed
+
+            with mock.patch.object(
+                install_module,
+                "_unlink_destination",
+                side_effect=fail_after_migrated_unlink,
+            ):
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "after migrated unlink durability"
+                ):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            interrupted = receipt(state)
+            self.assertIn("pending_publish", interrupted)
+            self.assertTrue(Path(interrupted["artifact_root"]).is_dir())
+            self.assertFalse(victim.destination.is_symlink())
+
+            install_opencode(repo, config, state)
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(victim.destination.is_symlink())
+
     def test_link_delete_quarantine_is_recovered_through_both_entrypoints(self) -> None:
         for failure_type in (install_module.InstallError, SystemExit):
             for retry in ("install", "uninstall"):
