@@ -17,6 +17,41 @@ profiles are rediscovered. Use `python3 scripts/install.py --dry-run` to inspect
 the planned changes and `python3 scripts/install.py --uninstall` to remove only
 repository-owned installation state.
 
+## Run under Hermes
+
+Hermes is a first-class provider next to Codex. The same skill tree ships
+per-skill Hermes metadata (`skills/*/agents/hermes.yaml`, kept identical to
+`agents/openai.yaml`) and Hermes role files
+(`plugins/expskill/assets/agents-hermes/*.md`) that mirror the Codex TOML
+agent profiles. The role files pin no model. Hermes runs each role on the
+active provider, which you pick with `hermes model`.
+
+Install for Hermes from the repository root:
+
+```bash
+python3 scripts/install.py --provider hermes
+```
+
+This links each skill to `$HERMES_HOME/skills/expskill/<name>` (respects
+`HERMES_HOME`, defaults to `~/.hermes`) and each role file to
+`$HERMES_HOME/agents/expskill-<profile>.md`. Use `--provider both` to install
+for Codex and Hermes together, `--dry-run` with either provider to inspect the
+planned links, and `--uninstall --provider hermes` to remove only the
+Hermes-owned links. Hermes needs no marketplace registration step because its
+skills load from files.
+
+Run the lifecycle from Hermes with one-shot chats. Preload the skill you need
+with `-s`:
+
+```bash
+hermes chat -s plan -q "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."
+```
+
+For routed UI work, open Plan and Design as two Hermes chats from the same
+baseline, the same way the router describes for other providers. The router
+still owns user questions while both chats run, and Plan still records the
+typed Design join before the graph can become ready.
+
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.

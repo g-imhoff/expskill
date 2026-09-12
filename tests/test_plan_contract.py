@@ -95,7 +95,7 @@ class PlanContractTests(unittest.TestCase):
                 for path in PLAN_ROOT.rglob("*")
                 if path.is_file()
             },
-            {"SKILL.md", "agents/openai.yaml"},
+            {"SKILL.md", "agents/openai.yaml", "agents/hermes.yaml"},
         )
         self.assertEqual(
             {

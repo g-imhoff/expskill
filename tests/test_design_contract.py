@@ -30,6 +30,7 @@ EXPECTED_SKILLS = {
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",
     "agents/openai.yaml",
+    "agents/hermes.yaml",
     "references/rules-index.md",
     "references/geometry.md",
     "references/typography.md",

@@ -21,7 +21,7 @@ class ImplementContractTests(unittest.TestCase):
             for path in SKILL.rglob("*")
             if path.is_file()
         }
-        self.assertEqual(files, {"SKILL.md", "agents/openai.yaml"})
+        self.assertEqual(files, {"SKILL.md", "agents/openai.yaml", "agents/hermes.yaml"})
         metadata = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
         self.assertIn('default_prompt: "Use $implement', metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)

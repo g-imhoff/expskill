@@ -23,6 +23,18 @@ REPOSITORY_URL = "https://github.com/g-imhoff/expskill"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./skills/"
 AGENTS_PATH = "assets/agents"
+HERMES_AGENTS_PATH = "assets/agents-hermes"
+HERMES_MODEL_POLICY = "active-hermes-provider"
+HERMES_AGENT_ROLES = {
+    "expskill-explorer": "explorer",
+    "expskill-test-engineer": "test-engineer",
+    "expskill-implementer": "implementer",
+    "expskill-planner": "planner",
+    "expskill-designer": "designer",
+    "expskill-review": "review",
+    "expskill-spec": "spec",
+}
+HERMES_AGENT_FRONTMATTER_FIELDS = ("name", "role", "sandbox", "model_policy")
 POLICY_PATH = "assets/execution-policy.json"
 HELPER_PATH = "scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "scripts/plan_graph.py"
@@ -1336,7 +1348,7 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             errors,
         ) is None:
             continue
-        expected_files = {"SKILL.md", "agents/openai.yaml"}
+        expected_files = {"SKILL.md", "agents/openai.yaml", "agents/hermes.yaml"}
         if skill_root.name == "brainstorm":
             expected_files.add("references/brainstorm-techniques.csv")
         if skill_root.name == "design":
@@ -2289,6 +2301,37 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
         errors.append(f"skill {skill_root.name!r} allow_implicit_invocation must be a boolean")
     elif implicit is not (skill_root.name == "use-expskill"):
         errors.append(f"skill {skill_root.name!r} implicit invocation policy drift")
+    _validate_hermes_metadata(skill_root, metadata, errors)
+
+
+def _validate_hermes_metadata(
+    skill_root: Path, openai_metadata: dict[str, dict[str, object]], errors: list[str]
+) -> None:
+    plugin_root = skill_root.parent.parent
+    metadata_path = _required_package_path(
+        plugin_root,
+        f"skills/{skill_root.name}/agents/hermes.yaml",
+        f"skill {skill_root.name!r} Hermes metadata",
+        "file",
+        errors,
+    )
+    if metadata_path is None:
+        return
+    try:
+        contents = metadata_path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"skill {skill_root.name!r} Hermes metadata could not be read: {error}")
+        return
+    metadata = _parse_skill_metadata(contents, skill_root.name, errors)
+    if metadata is None:
+        return
+    if set(metadata) != {"interface", "policy"}:
+        errors.append(f"skill {skill_root.name!r} Hermes metadata keys must be exactly interface and policy")
+        return
+    if metadata != openai_metadata:
+        errors.append(
+            f"skill {skill_root.name!r} Hermes metadata must match agents/openai.yaml"
+        )
 
 
 def _parse_skill_metadata(
@@ -2474,6 +2517,144 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
         if path is None:
             continue
         _validate_agent_profile(path, expected_name, errors)
+    _validate_hermes_agents(plugin_root, errors)
+
+
+def _parse_hermes_frontmatter(
+    path: Path, expected_name: str, errors: list[str]
+) -> dict[str, str] | None:
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"Hermes agent profile {expected_name!r} could not be read: {error}")
+        return None
+    lines = contents.splitlines()
+    if len(lines) < 3 or lines[0] != "---":
+        errors.append(f"Hermes agent profile {expected_name!r} must open with a frontmatter block")
+        return None
+    try:
+        closing = lines.index("---", 1)
+    except ValueError:
+        errors.append(f"Hermes agent profile {expected_name!r} frontmatter block is not closed")
+        return None
+    values: dict[str, str] = {}
+    for line_number, line in enumerate(lines[1:closing], start=2):
+        if not line.strip():
+            continue
+        if "\t" in line or line != line.strip():
+            errors.append(
+                f"Hermes agent profile {expected_name!r} frontmatter line {line_number} is malformed"
+            )
+            continue
+        key, separator, raw_value = line.partition(":")
+        if not separator or not key.strip() or not raw_value.strip():
+            errors.append(
+                f"Hermes agent profile {expected_name!r} frontmatter line {line_number} is malformed"
+            )
+            continue
+        if key.strip() in values:
+            errors.append(
+                f"Hermes agent profile {expected_name!r} frontmatter key {key.strip()!r} is duplicated"
+            )
+            continue
+        values[key.strip()] = raw_value.strip()
+    return values
+
+
+def _validate_hermes_agents(plugin_root: Path, errors: list[str]) -> None:
+    agents_root = plugin_root / HERMES_AGENTS_PATH
+    if (
+        _required_package_path(
+            plugin_root, HERMES_AGENTS_PATH, "Hermes agent directory", "directory", errors
+        )
+        is None
+    ):
+        return
+    expected_filenames = {f"{name}.md" for name in EXPECTED_AGENTS}
+    for path in sorted(agents_root.iterdir(), key=lambda item: item.name):
+        if path.is_symlink():
+            errors.append(f"Hermes agent profile {path.name!r} must not be a symlink")
+            continue
+        if not path.is_file():
+            if path.name.startswith("expskill-"):
+                errors.append(f"unexpected Hermes agent profile {path.name!r}")
+            continue
+        if path.suffix == ".md" and path.name not in expected_filenames:
+            errors.append(f"unexpected Hermes agent profile {path.stem!r}")
+        elif path.name.startswith("expskill-") and path.name not in expected_filenames:
+            errors.append(f"unexpected Hermes agent profile {path.name!r}")
+    for expected_name in EXPECTED_AGENTS:
+        path = _required_package_path(
+            plugin_root,
+            f"{HERMES_AGENTS_PATH}/{expected_name}.md",
+            f"Hermes agent profile {expected_name!r}",
+            "file",
+            errors,
+        )
+        if path is None:
+            continue
+        _validate_hermes_agent_profile(plugin_root, path, expected_name, errors)
+
+
+def _validate_hermes_agent_profile(
+    plugin_root: Path, path: Path, expected_name: str, errors: list[str]
+) -> None:
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"Hermes agent profile {expected_name!r} could not be read: {error}")
+        return
+    if PLACEHOLDER in contents:
+        errors.append(f"Hermes agent profile {expected_name!r} contains a placeholder")
+    frontmatter = _parse_hermes_frontmatter(path, expected_name, errors)
+    if frontmatter is None:
+        return
+    if tuple(frontmatter) != HERMES_AGENT_FRONTMATTER_FIELDS:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} frontmatter keys must be exactly "
+            "name, role, sandbox, and model_policy"
+        )
+        return
+    if frontmatter["name"] != expected_name:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} name must be {expected_name!r}, "
+            f"got {frontmatter['name']!r}"
+        )
+    if frontmatter["role"] != HERMES_AGENT_ROLES[expected_name]:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} role must be "
+            f"{HERMES_AGENT_ROLES[expected_name]!r}, got {frontmatter['role']!r}"
+        )
+    expected_sandbox = EXPECTED_AGENTS[expected_name][2]
+    if frontmatter["sandbox"] != expected_sandbox:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} sandbox must be {expected_sandbox!r}, "
+            f"got {frontmatter['sandbox']!r}"
+        )
+    if frontmatter["model_policy"] != HERMES_MODEL_POLICY:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} model_policy must be "
+            f"{HERMES_MODEL_POLICY!r}, got {frontmatter['model_policy']!r}"
+        )
+    toml_path = plugin_root / AGENTS_PATH / f"{expected_name}.toml"
+    try:
+        profile = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} Codex counterpart could not be read: {error}"
+        )
+        return
+    instructions = profile.get("developer_instructions", "")
+    if not isinstance(instructions, str) or not instructions.strip():
+        errors.append(
+            f"Hermes agent profile {expected_name!r} Codex counterpart has no instructions"
+        )
+        return
+    if instructions.strip() not in contents:
+        errors.append(
+            f"Hermes agent profile {expected_name!r} instructions must match "
+            f"{AGENTS_PATH}/{expected_name}.toml"
+        )
 
 
 def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -> None:
