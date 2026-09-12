@@ -176,6 +176,10 @@ class _Receipt:
     teardown_phase: str = "committed"
     pending_swap: "_PendingSwap | None" = None
     pending_publish: "_PendingPublish | None" = None
+    # Legacy adoption freezes every source of deletion authority in a durable
+    # receipt before the deterministic package anchor is created.  This bit
+    # distinguishes that prepared state from a fully committed migration.
+    pending_migration: bool = False
 
 
 @dataclass(frozen=True)
@@ -465,6 +469,34 @@ def _state_lstat(path: Path) -> os.stat_result:
     return os.stat(path.name, dir_fd=binding.directory_fd, follow_symlinks=False)
 
 
+def _terminal_receipt_quarantine_path(
+    path: Path, dev: int, ino: int, lineage: str
+) -> Path:
+    """Bind terminal receipt recovery to its inode, lineage, and phase."""
+
+    token = hashlib.sha256(
+        b"opencode-terminal-receipt.v1\0"
+        + lineage.encode()
+        + b"\0anchor-removed"
+    ).hexdigest()[:32]
+    return path.parent / (
+        f".{path.name}.{dev:x}-{ino:x}.{token}.anchor-removed.delete"
+    )
+
+
+def _terminal_receipt_lineage(path: Path) -> str | None:
+    if path.name != OPENCODE_RECEIPT_FILENAME:
+        return None
+    try:
+        payload = json.loads(_read_state_text(path))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("teardown_phase") != "anchor-removed":
+        return None
+    lineage = payload.get("lineage")
+    return lineage if isinstance(lineage, str) and len(lineage) >= 32 else None
+
+
 def _unlink_state_path(path: Path) -> None:
     binding = _state_binding(path)
     if binding is None:
@@ -477,32 +509,67 @@ def _unlink_state_path(path: Path) -> None:
             path.name, dir_fd=binding.directory_fd, follow_symlinks=False
         )
         expected = (metadata.st_dev, metadata.st_ino)
-    quarantine = f".{path.name}.{uuid.uuid4().hex}.delete"
-    try:
-        _renameat_noreplace(
-            binding.directory_fd,
-            path.name,
-            binding.directory_fd,
-            quarantine,
-        )
-        moved = os.stat(
-            quarantine, dir_fd=binding.directory_fd, follow_symlinks=False
-        )
-        if (moved.st_dev, moved.st_ino) != expected:
-            _renameat_noreplace(
-                binding.directory_fd,
-                quarantine,
-                binding.directory_fd,
-                path.name,
+    lineage = _terminal_receipt_lineage(path)
+    quarantine_path = (
+        _terminal_receipt_quarantine_path(path, *expected, lineage)
+        if lineage is not None
+        else _deletion_quarantine_path(path, *expected)
+    )
+    quarantine = quarantine_path.name
+
+    def metadata(name: str) -> os.stat_result | None:
+        try:
+            return os.stat(
+                name, dir_fd=binding.directory_fd, follow_symlinks=False
             )
+        except FileNotFoundError:
+            return None
+
+    try:
+        original = metadata(path.name)
+        quarantined = metadata(quarantine)
+        original_is_exact = original is not None and (
+            original.st_dev,
+            original.st_ino,
+        ) == expected
+        quarantine_is_exact = quarantined is not None and (
+            quarantined.st_dev,
+            quarantined.st_ino,
+        ) == expected
+        if original is not None and not original_is_exact:
             raise InstallError(
                 f"receipt path identity changed before deletion: {path}"
             )
-        os.unlink(quarantine, dir_fd=binding.directory_fd)
+        if original_is_exact and quarantined is None:
+            _renameat_noreplace(
+                binding.directory_fd,
+                path.name,
+                binding.directory_fd,
+                quarantine,
+            )
+            os.fsync(binding.directory_fd)
+            moved = metadata(quarantine)
+            if moved is None or (moved.st_dev, moved.st_ino) != expected:
+                raise InstallError(
+                    f"receipt path identity changed before deletion: {path}"
+                )
+            quarantine_is_exact = True
+            original_is_exact = False
+        elif original_is_exact:
+            # A foreign quarantine collision grants no authority over it, but
+            # cannot prevent deletion of the independently matched receipt.
+            os.unlink(path.name, dir_fd=binding.directory_fd)
+            os.fsync(binding.directory_fd)
+            original_is_exact = False
+        if quarantine_is_exact:
+            os.unlink(quarantine, dir_fd=binding.directory_fd)
+            os.fsync(binding.directory_fd)
+        # A retry that observes absence still supplies the durability barrier
+        # for the preceding rename/unlink attempt.
+        os.fsync(binding.directory_fd)
     except OSError as error:
         raise InstallError(f"cannot conditionally remove receipt: {path}: {error}") from error
     binding.validated_leaves.pop(path.name, None)
-    os.fsync(binding.directory_fd)
     _verify_state_binding(binding)
 
 
@@ -1391,6 +1458,27 @@ def _read_receipt(
             candidate_anchor_ino=publish_anchor_ino,
             planned_links=planned_links,
         )
+    migration_value = payload.get("pending_migration")
+    pending_migration = migration_value is not None
+    if pending_migration and (
+        migration_value != {"phase": "prepared"}
+        or artifact_root is None
+        or artifact_dev is None
+        or artifact_ino is None
+        or artifact_digest is None
+        or lineage is None
+        or artifact_anchor is None
+        or artifact_anchor_dev is None
+        or artifact_anchor_ino is None
+        or pending is not None
+        or pending_publish is not None
+        or teardown_phase != "committed"
+        or any(
+            link.destination_dev is None or link.destination_ino is None
+            for link in links
+        )
+    ):
+        raise InstallError(f"receipt pending migration is malformed: {receipt_path}")
     return _Receipt(
         repository_root=recorded_root,
         links=links,
@@ -1407,6 +1495,7 @@ def _read_receipt(
         teardown_phase=teardown_phase,
         pending_swap=pending,
         pending_publish=pending_publish,
+        pending_migration=pending_migration,
     )
 
 
@@ -1524,6 +1613,27 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
             payload["pending_publish"]["planned_links"] = (
                 pending_publish.planned_links
             )
+    if receipt.pending_migration:
+        if (
+            receipt.pending_swap is not None
+            or receipt.pending_publish is not None
+            or receipt.artifact_root is None
+            or receipt.artifact_dev is None
+            or receipt.artifact_ino is None
+            or receipt.artifact_digest is None
+            or receipt.lineage is None
+            or receipt.artifact_anchor is None
+            or receipt.artifact_anchor_dev is None
+            or receipt.artifact_anchor_ino is None
+            or any(
+                link.destination_dev is None or link.destination_ino is None
+                for link in receipt.links
+            )
+        ):
+            raise InstallError(
+                f"pending OpenCode migration receipt is incomplete: {receipt_path}"
+            )
+        payload["pending_migration"] = {"phase": "prepared"}
     if _write_state_payload(receipt_path, payload):
         return
     temporary_path: Path | None = None
@@ -2032,6 +2142,7 @@ def _persist_receipt(
         teardown_phase=receipt.teardown_phase,
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
+        pending_migration=receipt.pending_migration,
     )
     _write_receipt(receipt_path, updated)
     return updated
@@ -2720,12 +2831,15 @@ def _unlink_destination(destination: Path) -> bool:
         if quarantine_is_exact:
             os.unlink(quarantine, dir_fd=parent_fd)
             removed = True
+            if original_is_exact:
+                os.unlink(destination.name, dir_fd=parent_fd)
         elif quarantined is not None:
             if original_is_exact:
-                raise InstallError(
-                    f"OpenCode deletion quarantine was replaced: "
-                    f"{destination.parent / quarantine}"
-                )
+                # The collision is foreign and survives.  The independently
+                # matched original can still be unlinked without reusing the
+                # occupied quarantine name.
+                os.unlink(destination.name, dir_fd=parent_fd)
+                removed = True
         elif original_is_exact:
             _renameat_noreplace(
                 parent_fd, destination.name, parent_fd, quarantine
@@ -2962,6 +3076,32 @@ def _artifact_anchor_matches(
             os.close(artifact_fd)
 
 
+def _artifact_anchor_identity_is_live(
+    anchor: Path | None, anchor_dev: int | None, anchor_ino: int | None
+) -> bool:
+    """Match a frozen standalone anchor without requiring its former source."""
+
+    if anchor is None or anchor_dev is None or anchor_ino is None:
+        return False
+    binding = _state_binding(anchor)
+    if binding is None:
+        return False
+    try:
+        _verify_state_binding(binding)
+        metadata = os.stat(
+            anchor.name,
+            dir_fd=binding.directory_fd,
+            follow_symlinks=False,
+        )
+    except (OSError, InstallError):
+        return False
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and (metadata.st_dev, metadata.st_ino) == (anchor_dev, anchor_ino)
+    )
+
+
 def _create_artifact_anchor(
     artifact: Path, token: str
 ) -> tuple[Path, int, int]:
@@ -3098,12 +3238,11 @@ def _unlink_artifact_anchor_identity(anchor: Path, anchor_dev: int, anchor_ino: 
         ) == expected
         if quarantine_is_exact:
             os.unlink(quarantine, dir_fd=binding.directory_fd)
+            if original_is_exact:
+                os.unlink(anchor.name, dir_fd=binding.directory_fd)
         elif quarantined is not None:
             if original_is_exact:
-                raise InstallError(
-                    f"OpenCode anchor deletion quarantine was replaced: "
-                    f"{anchor.parent / quarantine}"
-                )
+                os.unlink(anchor.name, dir_fd=binding.directory_fd)
         elif original_is_exact:
             _renameat_noreplace(
                 binding.directory_fd,
@@ -3179,6 +3318,7 @@ def _receipt_with_pending(receipt: _Receipt, pending: _PendingSwap | None) -> _R
         teardown_phase=receipt.teardown_phase,
         pending_swap=pending,
         pending_publish=receipt.pending_publish,
+        pending_migration=receipt.pending_migration,
     )
 
 
@@ -3201,6 +3341,7 @@ def _receipt_with_pending_publish(
         teardown_phase=receipt.teardown_phase,
         pending_swap=receipt.pending_swap,
         pending_publish=pending_publish,
+        pending_migration=receipt.pending_migration,
     )
 
 
@@ -3349,11 +3490,20 @@ def _recover_pending_swap(
         if pending.candidate_digest is not None
         else _artifact_matches_sources(repo_root, pending.candidate)
     )
-    backup_proven = backup_exists and _artifact_anchor_matches(
-        pending.backup,
-        pending.old_anchor,
-        pending.old_anchor_dev,
-        pending.old_anchor_ino,
+    backup_proven = backup_exists and (
+        _artifact_anchor_identity_is_live(
+            pending.old_anchor,
+            pending.old_anchor_dev,
+            pending.old_anchor_ino,
+        )
+        if pending.phase
+        in {"published", "old-artifact-removed", "old-anchor-removed"}
+        else _artifact_anchor_matches(
+            pending.backup,
+            pending.old_anchor,
+            pending.old_anchor_dev,
+            pending.old_anchor_ino,
+        )
     )
     artifact_candidate_owned = artifact_is_candidate and _artifact_anchor_matches(
         pending.artifact,
@@ -3550,8 +3700,11 @@ def _garbage_collect_opencode_backups(
 
     if pending.phase == "published":
         if _pending_identity(pending.backup, pending.backup_dev, pending.backup_ino):
-            if not _artifact_anchor_matches(
-                pending.backup,
+            # ``published`` durably commits retirement authority.  The old
+            # directory and old anchor are now independent frozen objects; a
+            # prior partial tree deletion may already have severed their
+            # package.json hard-link relationship.
+            if not _artifact_anchor_identity_is_live(
                 pending.old_anchor,
                 pending.old_anchor_dev,
                 pending.old_anchor_ino,
@@ -3915,6 +4068,7 @@ def _with_artifact_identity(
         teardown_phase=receipt.teardown_phase,
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
+        pending_migration=receipt.pending_migration,
     )
 
 
@@ -3926,10 +4080,15 @@ def _migrate_artifact_identity(
 ) -> _Receipt:
     """Add exact identity/evidence to an older committed artifact receipt."""
 
-    if receipt.artifact_root is None or receipt.pending_publish is not None or receipt.pending_swap is not None:
+    if (
+        receipt.artifact_root is None
+        or receipt.pending_publish is not None
+        or receipt.pending_swap is not None
+    ):
         return receipt
     if (
-        receipt.artifact_dev is not None
+        not receipt.pending_migration
+        and receipt.artifact_dev is not None
         and receipt.artifact_ino is not None
         and receipt.artifact_digest is not None
         and receipt.artifact_anchor is not None
@@ -3941,6 +4100,55 @@ def _migrate_artifact_identity(
         # recovery and must never be filled in from the live filesystem.
         return receipt
     artifact = _fixed_opencode_artifact(state_home, receipt.artifact_root)
+    if receipt.pending_migration:
+        if (
+            receipt.artifact_dev is None
+            or receipt.artifact_ino is None
+            or receipt.artifact_digest is None
+            or receipt.lineage is None
+            or receipt.artifact_anchor is None
+            or receipt.artifact_anchor_dev is None
+            or receipt.artifact_anchor_ino is None
+            or receipt.artifact_anchor
+            != _artifact_anchor_path(artifact.parent, receipt.lineage)
+            or not _pending_identity(
+                artifact, receipt.artifact_dev, receipt.artifact_ino
+            )
+            or not _artifact_matches_evidence(artifact, receipt.artifact_digest)
+            or not receipt.links
+            or not all(
+                _recorded_opencode_link_is_live(link) for link in receipt.links
+            )
+        ):
+            raise InstallError(
+                "prepared legacy OpenCode migration lost its frozen ownership evidence"
+            )
+        try:
+            anchor_source = _state_lstat(
+                artifact / OPENCODE_ARTIFACT_ANCHOR_FILE
+            )
+        except OSError as error:
+            raise InstallError(
+                "prepared legacy OpenCode migration lost its anchor source"
+            ) from error
+        if (
+            not stat.S_ISREG(anchor_source.st_mode)
+            or (anchor_source.st_dev, anchor_source.st_ino)
+            != (receipt.artifact_anchor_dev, receipt.artifact_anchor_ino)
+        ):
+            raise InstallError(
+                "prepared legacy OpenCode migration anchor identity changed"
+            )
+        anchor = _create_artifact_anchor(artifact, receipt.lineage)
+        if anchor != (
+            receipt.artifact_anchor,
+            receipt.artifact_anchor_dev,
+            receipt.artifact_anchor_ino,
+        ):
+            raise InstallError("legacy OpenCode migration anchor identity changed")
+        committed = replace(receipt, pending_migration=False)
+        _write_receipt(receipt_path, committed)
+        return committed
     has_recorded_identity = (
         receipt.artifact_dev is not None and receipt.artifact_ino is not None
     )
@@ -3969,21 +4177,31 @@ def _migrate_artifact_identity(
         raise InstallError("legacy OpenCode artifact changed during validation")
     lineage = receipt.lineage or uuid.uuid4().hex
     captured_links = tuple(_capture_opencode_link_identity(link) for link in receipt.links)
-    anchor = _create_artifact_anchor(artifact, lineage)
-    updated = replace(
+    if not captured_links or not all(
+        _recorded_opencode_link_is_live(link) for link in captured_links
+    ):
+        raise InstallError("legacy OpenCode link identity changed during migration")
+    anchor_source = _state_lstat(artifact / OPENCODE_ARTIFACT_ANCHOR_FILE)
+    if not stat.S_ISREG(anchor_source.st_mode):
+        raise InstallError("legacy OpenCode anchor source is not a regular file")
+    deterministic_anchor = _artifact_anchor_path(artifact.parent, lineage)
+    prepared = replace(
         receipt,
         links=captured_links,
         artifact_dev=before.st_dev,
         artifact_ino=before.st_ino,
         artifact_digest=evidence,
         lineage=lineage,
-        artifact_anchor=anchor[0],
-        artifact_anchor_dev=anchor[1],
-        artifact_anchor_ino=anchor[2],
+        artifact_anchor=deterministic_anchor,
+        artifact_anchor_dev=anchor_source.st_dev,
+        artifact_anchor_ino=anchor_source.st_ino,
         teardown_phase="committed",
+        pending_migration=True,
     )
-    _write_receipt(receipt_path, updated)
-    return updated
+    # This is the migration's authority boundary: no live pathname is captured
+    # or adopted after the prepared receipt becomes durable.
+    _write_receipt(receipt_path, prepared)
+    return _migrate_artifact_identity(repo_root, state_home, receipt_path, prepared)
 
 
 def _restore_opencode_artifact(
@@ -4318,7 +4536,17 @@ def _ensure_opencode_artifact(
                 raise InstallError("published OpenCode candidate identity changed")
             pending = _PendingSwap(**{**pending.__dict__, "phase": "published"})
             _write_receipt(receipt_path, _receipt_with_pending(receipt_for_swap, pending))
-            return artifact, False, backup, pending, receipt_for_swap
+            # Link staging/repair rewrites occur before the final merged
+            # receipt.  Keep the active swap journal attached to every such
+            # rewrite so a crash cannot expose the candidate while forgetting
+            # the backup and both anchor proofs.
+            return (
+                artifact,
+                False,
+                backup,
+                pending,
+                _receipt_with_pending(receipt_for_swap, pending),
+            )
         lineage = uuid.uuid4().hex
         anchor_source = os.lstat(candidate / OPENCODE_ARTIFACT_ANCHOR_FILE)
         if not stat.S_ISREG(anchor_source.st_mode):
@@ -4659,6 +4887,9 @@ def _install_opencode_bound(
     receipt_directory = receipt_path_value.parent
     canonical_state_home = receipt_directory.parent
     receipt: _Receipt | None = None
+    _recover_terminal_receipt_deletion(
+        canonical_root, config_dir, state_home, receipt_path_value
+    )
     if _lexists(receipt_path_value):
         receipt = _read_opencode_receipt(
             receipt_path_value, canonical_root, config_dir, state_home
@@ -4737,6 +4968,7 @@ def _install_opencode_bound(
 
     created_links: list[ProfileLink] = _JournaledLinkList(record_staged_link)
     removed_retired: tuple[ProfileLink, ...] = ()
+    preserve_transaction = receipt is not None and receipt.pending_swap is not None
     try:
         if receipt is not None and (
             receipt.artifact_root is None
@@ -4745,6 +4977,12 @@ def _install_opencode_bound(
                 and not receipt.pending_publish.planned_links
             )
         ):
+            # Legacy link retirement is irreversible pathname progress.  From
+            # this point both ordinary and crash exits leave the new artifact
+            # receipt in place for exact retry instead of reconstructing old
+            # source links.
+            if receipt.links:
+                preserve_transaction = True
             for old in tuple(receipt.links):
                 recorded = old
                 if old.destination_dev is None or old.destination_ino is None:
@@ -4780,6 +5018,12 @@ def _install_opencode_bound(
                 )
         _create_links(links, created_links)
         if receipt is not None:
+            current_destinations = {link.destination for link in links}
+            if any(
+                link.destination not in current_destinations
+                for link in receipt.links
+            ):
+                preserve_transaction = True
             _retained, removed_retired = _prune_opencode_retired_links(
                 receipt, links, config_dir
             )
@@ -4870,7 +5114,7 @@ def _install_opencode_bound(
         _write_receipt(receipt_path_value, merged_receipt)
     except BaseException as error:
         preserve_exception_type = not isinstance(error, Exception)
-        if preserve_exception_type:
+        if preserve_exception_type or preserve_transaction:
             # Crash recovery owns every mutation cited by the durable receipt.
             # Restoring retired or migrated links here would mix old-source
             # pathnames with the retained new artifact transaction.
@@ -5082,6 +5326,8 @@ def _read_opencode_receipt(
                 allowed_keys.add("pending_swap_checksum")
         if "pending_publish" in payload:
             allowed_keys.add("pending_publish")
+        if "pending_migration" in payload:
+            allowed_keys.add("pending_migration")
         if set(payload) != allowed_keys:
             raise InstallError(f"current OpenCode receipt is inconsistent: {receipt_path}")
         pending_publish_payload = payload.get("pending_publish")
@@ -5166,6 +5412,102 @@ def _read_opencode_receipt(
     elif set(receipt.links) != set(expected):
         raise InstallError(f"legacy OpenCode receipt is incomplete: {receipt_path}")
     return receipt
+
+
+def _terminal_receipt_quarantine_identity(
+    receipt_path: Path, name: str
+) -> tuple[int, int] | None:
+    prefix = f".{receipt_path.name}."
+    suffix = ".anchor-removed.delete"
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return None
+    encoded = name[len(prefix) : -len(suffix)]
+    try:
+        identity, token = encoded.split(".", 1)
+        dev_text, ino_text = identity.split("-", 1)
+        dev = int(dev_text, 16)
+        ino = int(ino_text, 16)
+    except (ValueError, TypeError):
+        return None
+    if dev <= 0 or ino <= 0 or len(token) != 32 or any(
+        character not in "0123456789abcdef" for character in token
+    ):
+        return None
+    return dev, ino
+
+
+def _recover_terminal_receipt_deletion(
+    repository_root: Path,
+    config_dir: Path,
+    state_home: Path,
+    receipt_path: Path,
+) -> None:
+    """Delete only an identity-encoded, validated terminal receipt quarantine."""
+
+    binding = _state_binding(receipt_path)
+    if binding is None:
+        return
+    _verify_state_binding(binding)
+    for name in tuple(os.listdir(binding.directory_fd)):
+        identity = _terminal_receipt_quarantine_identity(receipt_path, name)
+        if identity is None:
+            continue
+        try:
+            metadata = os.stat(
+                name, dir_fd=binding.directory_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != identity
+        ):
+            continue
+        quarantine = receipt_path.parent / name
+        try:
+            terminal = _read_opencode_receipt(
+                quarantine, repository_root, config_dir, state_home
+            )
+        except InstallError:
+            continue
+        if (
+            terminal is None
+            or terminal.teardown_phase != "anchor-removed"
+            or terminal.pending_swap is not None
+            or terminal.pending_publish is not None
+            or terminal.pending_migration
+            or terminal.lineage is None
+            or quarantine
+            != _terminal_receipt_quarantine_path(
+                receipt_path, *identity, terminal.lineage
+            )
+        ):
+            continue
+        canonical = None
+        try:
+            canonical = os.stat(
+                receipt_path.name,
+                dir_fd=binding.directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        if canonical is not None and (
+            canonical.st_dev,
+            canonical.st_ino,
+        ) == identity:
+            os.unlink(receipt_path.name, dir_fd=binding.directory_fd)
+            os.fsync(binding.directory_fd)
+        os.unlink(name, dir_fd=binding.directory_fd)
+        os.fsync(binding.directory_fd)
+        os.fsync(binding.directory_fd)
+        binding.validated_leaves.pop(receipt_path.name, None)
+        binding.validated_leaves.pop(name, None)
+        _verify_state_binding(binding)
+    # Even when the exact quarantine was already unlinked, entrypoint recovery
+    # supplies an absence-confirmation barrier before treating teardown done.
+    os.fsync(binding.directory_fd)
+    _verify_state_binding(binding)
 
 
 def _prune_opencode_retired_links(
@@ -5297,6 +5639,9 @@ def _uninstall_opencode_bound(
     state_home: Path,
     receipt_path_value: Path,
 ) -> InstallResult:
+    _recover_terminal_receipt_deletion(
+        canonical_root, config_dir, state_home, receipt_path_value
+    )
     if not _lexists(receipt_path_value):
         return InstallResult()
     receipt = _read_opencode_receipt(
@@ -5423,13 +5768,19 @@ def _resume_opencode_teardown(
         if current.artifact_dev is None or current.artifact_ino is None:
             raise InstallError("OpenCode teardown lacks a frozen artifact identity")
         if _pending_identity(artifact, current.artifact_dev, current.artifact_ino):
-            if not _artifact_anchor_matches(
-                artifact,
+            if not _artifact_anchor_identity_is_live(
                 current.artifact_anchor,
                 current.artifact_anchor_dev,
                 current.artifact_anchor_ino,
             ):
-                raise InstallError("OpenCode teardown artifact lost its permanent anchor")
+                raise InstallError(
+                    "OpenCode teardown lost its frozen standalone anchor"
+                )
+            # ``removing-links`` is already a durable destructive boundary.
+            # A prior attempt may have removed package.json before failing, so
+            # the exact directory identity is now the complete authority for
+            # finishing directory removal.  The standalone anchor has its own
+            # independent identity and is retired in the next phase.
             _remove_opencode_artifact_exact(
                 artifact, current.artifact_dev, current.artifact_ino
             )
