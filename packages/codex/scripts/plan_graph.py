@@ -2425,12 +2425,22 @@ def _validate_typed_repairs(
             ):
                 raise PlanGraphError("decision reconfirmation is not current")
         elif operation == "refresh-proof":
+            evidence = record.get("evidence")
             if (
                 previous_record.get("fresh") is not False
                 or record.get("fresh") is not True
-                or not record.get("evidence")
+                or not isinstance(evidence, list)
+                or (
+                    evidence
+                    and any(
+                        receipt.get("graph_revision") != prior_revision
+                        for receipt in evidence
+                    )
+                )
             ):
-                raise PlanGraphError("proof refresh requires exact execution evidence")
+                raise PlanGraphError(
+                    "proof refresh requires current execution evidence or an empty pre-implementation proof"
+                )
         elif operation == "regenerate-projection":
             if (
                 previous_record.get("stale") is not True
