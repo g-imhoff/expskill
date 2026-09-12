@@ -1143,6 +1143,7 @@ def _read_receipt(
             == (numbers["live_dev"], numbers["live_ino"])
             or pending_value.get("phase") not in {
                 "prepared",
+                "anchor-recorded",
                 "backup-created",
                 "published",
                 "old-artifact-removed",
@@ -1271,7 +1272,12 @@ def _read_receipt(
             or lineage is None
             or pending is not None
             or publish_value.get("lineage") != lineage
-            or publish_value.get("phase") not in {"prepared", "published"}
+            or publish_value.get("phase") not in {
+                "prepared",
+                "anchor-recorded",
+                "published",
+                "planned-links",
+            }
         ):
             raise InstallError(f"receipt pending publish is malformed: {receipt_path}")
         publish_digest = publish_value.get("candidate_digest")
@@ -2344,6 +2350,34 @@ def _recorded_opencode_link_is_live(link: ProfileLink) -> bool:
         link.destination_dev,
         link.destination_ino,
     )
+
+
+def _committed_opencode_link(
+    link: ProfileLink, previous: ProfileLink | None, *, created: bool
+) -> ProfileLink:
+    """Capture new ownership or retain a prior exact symlink identity."""
+
+    if created or previous is None:
+        return _capture_opencode_link_identity(link)
+    if previous.destination_dev is None or previous.destination_ino is None:
+        # A planned-but-uncommitted link found after a crash has no frozen
+        # inode authority.  Preserve the pathname without adopting it.
+        return link
+    if (
+        _same_recorded_link(link.destination, link.source)
+        and not _recorded_opencode_link_is_live(previous)
+    ):
+        # A same-target replacement is compatible with an idempotent
+        # reinstall, but it remains foreign.  Keep the original authority so
+        # a later teardown cannot claim the replacement inode.
+        return replace(
+            link,
+            destination_dev=previous.destination_dev,
+            destination_ino=previous.destination_ino,
+        )
+    return _capture_opencode_link_identity(link)
+
+
 def _unlink_destination(destination: Path) -> None:
     bound = _bound_config_parent(destination, create=False)
     if bound is None:
@@ -2895,6 +2929,7 @@ def _recover_pending_swap(
         or pending.candidate == pending.backup
         or pending.phase not in {
             "prepared",
+            "anchor-recorded",
             "backup-created",
             "published",
             "old-artifact-removed",
@@ -2955,17 +2990,11 @@ def _recover_pending_swap(
         pending.old_anchor_dev,
         pending.old_anchor_ino,
     )
-    links_match = bool(receipt.links) and all(
-        _same_recorded_link(link.destination, link.source) for link in receipt.links
-    )
-    artifact_candidate_owned = artifact_is_candidate and (
-        _artifact_anchor_matches(
-            pending.artifact,
-            pending.candidate_anchor,
-            pending.candidate_anchor_dev,
-            pending.candidate_anchor_ino,
-        )
-        or links_match
+    artifact_candidate_owned = artifact_is_candidate and _artifact_anchor_matches(
+        pending.artifact,
+        pending.candidate_anchor,
+        pending.candidate_anchor_dev,
+        pending.candidate_anchor_ino,
     )
     artifact_candidate_proven = artifact_candidate_owned and (
         _artifact_matches_evidence(pending.artifact, pending.candidate_digest)
@@ -2980,7 +3009,7 @@ def _recover_pending_swap(
     )
     if artifact_exists and not artifact_is_candidate and not artifact_is_live:
         raise InstallError("OpenCode artifact was replaced by an unproven directory; preserving it")
-    if pending.phase == "prepared":
+    if pending.phase in {"prepared", "anchor-recorded"}:
         if artifact_is_live and not backup_exists:
             # Crash before the first rename: the candidate is private and the
             # old live artifact remains authoritative.  Remove only exact
@@ -3077,10 +3106,6 @@ def _recover_pending_swap(
         if not artifact_candidate_proven:
             raise InstallError(
                 "pending OpenCode artifact lacks independent ownership evidence"
-            )
-        if not links_match:
-            raise InstallError(
-                "pending OpenCode artifact links are incomplete; preserving state"
             )
         receipt = replace(
             receipt,
@@ -3560,10 +3585,6 @@ def _migrate_artifact_identity(
 
     if receipt.artifact_root is None or receipt.pending_publish is not None or receipt.pending_swap is not None:
         return receipt
-    identities_complete = bool(receipt.links) and all(
-        link.destination_dev is not None and link.destination_ino is not None
-        for link in receipt.links
-    )
     if (
         receipt.artifact_dev is not None
         and receipt.artifact_ino is not None
@@ -3571,8 +3592,10 @@ def _migrate_artifact_identity(
         and receipt.artifact_anchor is not None
         and receipt.artifact_anchor_dev is not None
         and receipt.artifact_anchor_ino is not None
-        and identities_complete
     ):
+        # Permanent artifact ownership is already complete.  Missing link
+        # identities can represent foreign pathnames observed during crash
+        # recovery and must never be filled in from the live filesystem.
         return receipt
     artifact = _fixed_opencode_artifact(state_home, receipt.artifact_root)
     has_recorded_identity = (
@@ -3726,11 +3749,18 @@ def _recover_pending_publish(
         raise InstallError(
             "OpenCode initial publication has an unproven live occupant; preserving it"
         )
-    if candidate_exists and not artifact_exists and pending.phase == "prepared":
+    if candidate_exists and not artifact_exists and pending.phase in {
+        "prepared",
+        "anchor-recorded",
+    }:
         if not candidate_proven:
             raise InstallError(
                 "pending OpenCode publication lacks independent ownership evidence"
             )
+        if pending.phase == "prepared":
+            pending = replace(pending, phase="anchor-recorded")
+            receipt = _receipt_with_pending_publish(receipt, pending)
+            _write_receipt(receipt_path, receipt)
         _rename_noreplace(pending.candidate, pending.artifact)
         if not _pending_identity(
             pending.artifact, pending.candidate_dev, pending.candidate_ino
@@ -3764,7 +3794,7 @@ def _recover_pending_publish(
             except InstallError:
                 pass
             raise
-    elif pending.phase != "published":
+    elif pending.phase in {"prepared", "anchor-recorded"}:
         pending = _PendingPublish(**{**pending.__dict__, "phase": "published"})
         receipt = _receipt_with_pending_publish(receipt, pending)
         _write_receipt(receipt_path, receipt)
@@ -3931,6 +3961,10 @@ def _ensure_opencode_artifact(
                 anchor_source.st_ino,
             ):
                 raise InstallError("candidate OpenCode anchor identity changed")
+            pending = replace(pending, phase="anchor-recorded")
+            _write_receipt(
+                receipt_path, _receipt_with_pending(receipt_for_swap, pending)
+            )
             if not _pending_identity(artifact, pending.live_dev, pending.live_ino):
                 raise InstallError("live OpenCode artifact changed before swap")
             _rename_noreplace(artifact, backup)
@@ -3976,6 +4010,11 @@ def _ensure_opencode_artifact(
             anchor_source.st_ino,
         ):
             raise InstallError("fresh OpenCode anchor identity changed before publication")
+        pending_publish = replace(pending_publish, phase="anchor-recorded")
+        prepublication_receipt = _receipt_with_pending_publish(
+            prepublication_receipt, pending_publish
+        )
+        _write_receipt(receipt_path, prepublication_receipt)
         _rename_noreplace(candidate, artifact)
         if not _pending_identity(artifact, candidate_identity[0], candidate_identity[1]):
             raise InstallError("published OpenCode candidate identity changed")
@@ -4176,24 +4215,33 @@ def preflight_opencode_links(
     for link in links:
         if not _lexists(link.destination):
             continue
-        if not _same_owned_link(link.destination, link.source):
-            if legacy_receipt is not None and (
-                legacy_receipt.artifact_root is None
-                or legacy_receipt.pending_publish is not None
+        recorded = next(
+            (
+                item
+                for item in legacy_receipt.links
+                if item.destination == link.destination
+            ),
+            None,
+        ) if legacy_receipt is not None else None
+        if _same_owned_link(link.destination, link.source):
+            # Target equality alone never creates ownership.  A current or
+            # interrupted receipt may preserve the pathname while retaining
+            # its already-recorded inode authority; a fresh install may not
+            # adopt a preexisting same-target symlink.
+            if recorded is not None:
+                continue
+            raise InstallError(
+                f"refusing unowned opencode destination: {link.destination}"
+            )
+        if legacy_receipt is not None and (
+            legacy_receipt.artifact_root is None
+            or legacy_receipt.pending_publish is not None
+        ):
+            if recorded is not None and _same_recorded_link(
+                link.destination, recorded.source
             ):
-                legacy = next(
-                    (
-                        item
-                        for item in legacy_receipt.links
-                        if item.destination == link.destination
-                    ),
-                    None,
-                )
-                if legacy is not None and _same_recorded_link(
-                    link.destination, legacy.source
-                ):
-                    continue
-            raise InstallError(f"refusing conflicting opencode destination: {link.destination}")
+                continue
+        raise InstallError(f"refusing conflicting opencode destination: {link.destination}")
     return links
 
 
@@ -4325,7 +4373,11 @@ def _install_opencode_bound(
     removed_retired: tuple[ProfileLink, ...] = ()
     try:
         if receipt is not None and (
-            receipt.artifact_root is None or receipt.pending_publish is not None
+            receipt.artifact_root is None
+            or (
+                receipt.pending_publish is not None
+                and not receipt.pending_publish.planned_links
+            )
         ):
             for old in receipt.links:
                 if not _lexists(old.destination):
@@ -4337,11 +4389,10 @@ def _install_opencode_bound(
                 _unlink_destination(old.destination)
                 migrated_links.append(old)
         if receipt is not None and receipt.pending_publish is not None:
-            planned_publish = _PendingPublish(
-                **{
-                    **receipt.pending_publish.__dict__,
-                    "planned_links": True,
-                }
+            planned_publish = replace(
+                receipt.pending_publish,
+                phase="planned-links",
+                planned_links=True,
             )
             receipt = _persist_receipt(
                 receipt_path_value,
@@ -4386,7 +4437,19 @@ def _install_opencode_bound(
             raise InstallError(
                 "published OpenCode link inventory changed before commit"
             )
-        committed_links = tuple(_capture_opencode_link_identity(link) for link in links)
+        previous_links = (
+            {link.destination: link for link in receipt.links}
+            if receipt is not None
+            else {}
+        )
+        committed_links = tuple(
+            _committed_opencode_link(
+                link,
+                previous_links.get(link.destination),
+                created=link in created_links,
+            )
+            for link in links
+        )
         if artifact_pending is not None:
             committed_anchor = (
                 artifact_pending.candidate_anchor,
@@ -4751,9 +4814,11 @@ def _prune_opencode_retired_links(
         if link.destination in current_destinations:
             retained.append(link)
             continue
-        if not _lexists(link.destination) or not _same_recorded_link(
-            link.destination, link.source
-        ):
+        has_identity = (
+            link.destination_dev is not None and link.destination_ino is not None
+        )
+        link_is_owned = has_identity and _recorded_opencode_link_is_live(link)
+        if not _lexists(link.destination) or not link_is_owned:
             # Missing and retargeted destinations are not ours to remove.
             continue
         try:
@@ -4918,15 +4983,8 @@ def _uninstall_opencode_bound(
             pending_publish.candidate_anchor_ino,
         ):
             raise InstallError("recovered OpenCode artifact lost its frozen identity")
-        captured: list[ProfileLink] = []
-        for link in receipt.links:
-            if _same_recorded_link(link.destination, link.source):
-                captured.append(_capture_opencode_link_identity(link))
-            else:
-                captured.append(link)
         receipt = replace(
             receipt,
-            links=tuple(captured),
             artifact_dev=pending_publish.candidate_dev,
             artifact_ino=pending_publish.candidate_ino,
             artifact_digest=pending_publish.candidate_digest,
@@ -4968,10 +5026,9 @@ def _resume_opencode_teardown(
         for link in current.links:
             if link.destination_dev is not None and link.destination_ino is not None:
                 frozen_links.append(link)
-            elif _same_recorded_link(link.destination, link.source):
-                frozen_links.append(_capture_opencode_link_identity(link))
             else:
-                # Missing or foreign destinations have no deletion authority.
+                # Planned-but-uncommitted, missing, and foreign destinations
+                # have no deletion authority.
                 frozen_links.append(link)
         current = replace(
             current,
@@ -5057,7 +5114,21 @@ def _print_opencode_dry_run(
     receipt_state_home = _default_state_home() if state_home is None else state_home
     # A dry run must not adopt or rebuild receipt-owned state.  Build the
     # planned artifact in the preflight temporary directory instead.
-    links = preflight_opencode_links(repo_root, config_dir, receipt_state_home)
+    existing_receipt: _Receipt | None = None
+    receipt_path = _opencode_receipt_path(receipt_state_home)
+    if state_home is not None and _lexists(receipt_path):
+        existing_receipt = _read_opencode_receipt(
+            receipt_path,
+            _canonical_repository_root(repo_root),
+            _canonical_opencode_config(config_dir),
+            receipt_state_home,
+        )
+    links = preflight_opencode_links(
+        repo_root,
+        config_dir,
+        receipt_state_home,
+        legacy_receipt=existing_receipt,
+    )
     for link in links:
         print(f"link {link.destination} -> {link.source}")
     print(f"opencode {OPENCODE_PACKAGE_NAME} receipt {_opencode_receipt_path(receipt_state_home)}")

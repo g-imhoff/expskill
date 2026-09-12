@@ -233,12 +233,38 @@ class FoundationCorrectionTests(unittest.TestCase):
                     install_opencode(repo, config, state)
 
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
-            self.assertEqual(payload["pending_publish"]["phase"], "prepared")
+            anchor = (
+                state
+                / "expskill"
+                / f"{install_module.OPENCODE_ARTIFACT_ANCHOR_PREFIX}{payload['lineage']}"
+            )
+            self.assertEqual(payload["teardown_phase"], "committed")
+            self.assertTrue(anchor.is_file())
+            self.assertEqual(
+                (anchor.stat().st_dev, anchor.stat().st_ino),
+                (
+                    (
+                        state
+                        / "expskill/opencode-artifact"
+                        / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE
+                    ).stat().st_dev,
+                    (
+                        state
+                        / "expskill/opencode-artifact"
+                        / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE
+                    ).stat().st_ino,
+                ),
+            )
             uninstall_opencode(repo, config, state)
 
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            # Link creation completed before its inode identities were
+            # journaled, so teardown preserves the unknown pathnames.
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
 
     def test_uninstall_preserves_unproven_interrupted_initial_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -297,6 +323,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = state / "expskill" / "opencode-artifact"
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "interrupted swap recovery marker"
+                ),
+                encoding="utf-8",
+            )
             original_rename = install_module._rename_noreplace
 
             def crash_after_live_backup(source: Path, target: Path) -> None:
@@ -671,6 +704,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "late foreign backup marker"
+                ),
+                encoding="utf-8",
+            )
             real_write = install_module._write_receipt
             foreign: Path | None = None
             foreign_identity: tuple[int, int] | None = None
@@ -701,6 +741,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "backup identity replacement marker"
+                ),
+                encoding="utf-8",
+            )
             real_write = install_module._write_receipt
             published_writes = 0
             replacement: Path | None = None
@@ -735,6 +782,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "published recovery marker"
+                ),
+                encoding="utf-8",
+            )
             real_write = install_module._write_receipt
 
             def crash_before_published_receipt(path: Path, receipt: object) -> None:
@@ -795,14 +849,46 @@ class FoundationCorrectionTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = state / "expskill" / "opencode-artifact"
-            marker = artifact / "foreign.txt"
-            marker.write_text("must survive\n", encoding="utf-8")
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            artifact_identity = (artifact.stat().st_dev, artifact.stat().st_ino)
+            anchor = Path(payload["artifact_anchor"])
+            self.assertEqual(
+                (anchor.stat().st_dev, anchor.stat().st_ino),
+                (
+                    (artifact / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE).stat().st_dev,
+                    (artifact / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE).stat().st_ino,
+                ),
+            )
             shutil.rmtree(config)
 
-            with self.assertRaises(InstallError):
-                install_opencode(repo, config, state)
+            install_opencode(repo, config, state)
 
-            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertEqual(
+                (artifact.stat().st_dev, artifact.stat().st_ino), artifact_identity
+            )
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            artifact = Path(payload["artifact_root"])
+            anchor = Path(payload["artifact_anchor"])
+            displaced_anchor = anchor.with_name("displaced-permanent-anchor")
+            anchor.rename(displaced_anchor)
+            anchor.write_text("forged anchor\n", encoding="utf-8")
+
+            with self.assertRaises(InstallError):
+                uninstall_opencode(repo, config, state)
+
+            self.assertTrue(artifact.is_dir())
+            self.assertEqual(anchor.read_text(encoding="utf-8"), "forged anchor\n")
 
     def test_one_live_link_cannot_authorize_foreign_artifact_deletion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -812,18 +898,19 @@ class FoundationCorrectionTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = state / "expskill/opencode-artifact"
-            marker = artifact / "foreign.txt"
-            marker.write_text("must survive\n", encoding="utf-8")
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            anchor = Path(payload["artifact_anchor"])
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
             for entry in payload["links"][1:]:
                 Path(entry["destination"]).unlink()
 
             result = uninstall_opencode(repo, config, state)
 
-            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
             self.assertEqual(len(result.removed_links), 1)
             self.assertFalse(Path(payload["links"][0]["destination"]).exists())
             self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(artifact.exists())
+            self.assertFalse(anchor.exists())
 
     def test_nearly_complete_live_inventory_cannot_authorize_artifact_deletion(
         self,
@@ -835,19 +922,19 @@ class FoundationCorrectionTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = state / "expskill/opencode-artifact"
-            marker = artifact / "foreign.txt"
-            marker.write_text("must survive\n", encoding="utf-8")
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            anchor = Path(payload["artifact_anchor"])
             missing = Path(payload["links"][-1]["destination"])
             missing.unlink()
 
             result = uninstall_opencode(repo, config, state)
 
-            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
             self.assertFalse(missing.exists())
             self.assertEqual(len(result.removed_links), len(payload["links"]) - 1)
             self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
             self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(artifact.exists())
+            self.assertFalse(anchor.exists())
 
     def test_forged_pending_publish_cannot_delete_foreign_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1017,7 +1104,10 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
 
     def test_uninstall_after_partial_initial_link_publication_crash_converges(
         self,
@@ -1056,7 +1146,10 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                3,
+            )
 
     def test_complete_live_inventory_recovers_when_publication_anchor_is_gone(
         self,
@@ -1086,7 +1179,10 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
 
     def test_anchorless_recovery_retries_after_fourth_unlink_crash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1110,33 +1206,36 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
             Path(payload["pending_publish"]["candidate_anchor"]).unlink()
-            real_unlink = install_module._unlink_destination
-            unlinks = 0
+            real_remove = install_module._remove_opencode_artifact_exact
+            removed = False
 
-            def crash_before_fourth_unlink(destination: Path) -> None:
-                nonlocal unlinks
-                unlinks += 1
-                if unlinks == 4:
-                    raise SystemExit("injected fourth unlink crash")
-                real_unlink(destination)
+            def crash_after_artifact_remove(path: Path, dev: int, ino: int) -> None:
+                nonlocal removed
+                real_remove(path, dev, ino)
+                if not removed:
+                    removed = True
+                    raise SystemExit("injected artifact removal crash")
 
             with mock.patch.object(
                 install_module,
-                "_unlink_destination",
-                side_effect=crash_before_fourth_unlink,
+                "_remove_opencode_artifact_exact",
+                side_effect=crash_after_artifact_remove,
             ):
                 with self.assertRaises(SystemExit):
                     uninstall_opencode(repo, config, state)
 
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                len(payload["links"]) - 3,
+                len(payload["links"]),
             )
             uninstall_opencode(repo, config, state)
 
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(payload["links"]),
+            )
 
     def test_committed_uninstall_retries_after_fourth_unlink_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1172,9 +1271,8 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             failed_payload = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(failed_payload["links"], original_links)
-            pending = failed_payload["pending_publish"]
-            self.assertTrue(pending["planned_links"])
-            anchor_metadata = Path(pending["candidate_anchor"]).stat()
+            self.assertEqual(failed_payload["teardown_phase"], "removing-links")
+            anchor_metadata = Path(failed_payload["artifact_anchor"]).stat()
             anchor_source_metadata = (
                 artifact / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE
             ).stat()
@@ -1249,9 +1347,10 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             interrupted_payload = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(interrupted_payload["links"], original_payload["links"])
-            pending = interrupted_payload["pending_publish"]
-            self.assertTrue(pending["planned_links"])
-            self.assertTrue(Path(pending["candidate_anchor"]).is_file())
+            self.assertEqual(
+                interrupted_payload["teardown_phase"], "removing-links"
+            )
+            self.assertTrue(Path(interrupted_payload["artifact_anchor"]).is_file())
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
                 len(original_payload["links"]) - 3,
@@ -1447,8 +1546,8 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
-                [path for path in config.rglob("*") if path.is_symlink()],
-                [retargeted],
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                29,
             )
 
     def test_failed_first_publish_preserves_replacement_at_fixed_name(self) -> None:
@@ -1493,10 +1592,10 @@ class FoundationCorrectionTests(unittest.TestCase):
             marker = artifact / "foreign.txt"
             marker.write_text("must survive\n", encoding="utf-8")
 
-            with self.assertRaises(InstallError):
-                uninstall_opencode(repo, config, state)
+            uninstall_opencode(repo, config, state)
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertFalse(receipt_path(state).exists())
 
     def test_install_config_root_substitution_cannot_redirect_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1538,23 +1637,25 @@ class FoundationCorrectionTests(unittest.TestCase):
             install_opencode(repo, config, state)
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
             target = Path(payload["links"][0]["destination"])
-            real_same = install_module._same_recorded_link
+            real_exact = install_module._recorded_opencode_link_is_live
             substituted = False
 
-            def substitute_after_check(destination: Path, source: Path) -> bool:
+            def substitute_after_check(link: install_module.ProfileLink) -> bool:
                 nonlocal substituted
-                matches = real_same(destination, source)
+                matches = real_exact(link)
                 if matches and not substituted:
                     substituted = True
                     config.rename(moved)
                     config.symlink_to(outside, target_is_directory=True)
-                    foreign = outside / destination.relative_to(config)
+                    foreign = outside / link.destination.relative_to(config)
                     foreign.parent.mkdir(parents=True, exist_ok=True)
                     foreign.write_text("must survive\n", encoding="utf-8")
                 return matches
 
             with mock.patch.object(
-                install_module, "_same_recorded_link", side_effect=substitute_after_check
+                install_module,
+                "_recorded_opencode_link_is_live",
+                side_effect=substitute_after_check,
             ):
                 with self.assertRaises(InstallError):
                     uninstall_opencode(repo, config, state)
@@ -1627,6 +1728,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "uninstall interrupted swap marker"
+                ),
+                encoding="utf-8",
+            )
             original_rename = install_module._rename_noreplace
 
             def stop_after_live_backup(source: Path, target: Path) -> None:
@@ -1779,6 +1887,13 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "backup cleanup retry marker"
+                ),
+                encoding="utf-8",
+            )
             real_remove = install_module._remove_opencode_artifact_exact
 
             def fail_backup(path: Path, dev: int, ino: int) -> None:
