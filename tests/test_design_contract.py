@@ -26,6 +26,7 @@ EXPECTED_SKILLS = {
     "test",
     "unslop",
     "use-expskill",
+    "autonomous-run",
 }
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",

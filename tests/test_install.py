@@ -43,6 +43,7 @@ SKILL_NAMES = (
     "setup-ui-testing",
     "skill-builder",
     "unslop",
+    "autonomous-run",
 )
 PLUGIN_SELECTOR = "expskill@expskill"
 MANIFEST_VERSION = json.loads(
