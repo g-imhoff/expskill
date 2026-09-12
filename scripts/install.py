@@ -639,6 +639,23 @@ def _unlink_state_path(path: Path) -> None:
             raise InstallError(
                 f"receipt quarantine identity changed before deletion: {quarantine_path}"
             )
+        if quarantined is not None and not quarantine_is_exact:
+            raise InstallError(
+                f"receipt quarantine is occupied by a foreign object: {quarantine_path}"
+            )
+        if original_is_exact and quarantine_is_exact:
+            # An authenticated hard-link alias still does not permit bypassing
+            # the rename boundary by directly unlinking the canonical name.
+            # Retire the redundant alias first, then run the same
+            # canonical->quarantine protocol as every other deletion.
+            os.unlink(quarantine, dir_fd=binding.directory_fd)
+            os.fsync(binding.directory_fd)
+            if metadata(quarantine) is not None:
+                raise InstallError(
+                    f"receipt quarantine was replaced during deletion: {quarantine_path}"
+                )
+            quarantined = None
+            quarantine_is_exact = False
         if original_is_exact and quarantined is None:
             _renameat_noreplace(
                 binding.directory_fd,
@@ -657,12 +674,6 @@ def _unlink_state_path(path: Path) -> None:
                     f"receipt path identity changed before deletion: {path}"
                 )
             quarantine_is_exact = True
-            original_is_exact = False
-        elif original_is_exact:
-            # A foreign quarantine collision grants no authority over it, but
-            # cannot prevent deletion of the independently matched receipt.
-            os.unlink(path.name, dir_fd=binding.directory_fd)
-            os.fsync(binding.directory_fd)
             original_is_exact = False
         if quarantine_is_exact:
             os.unlink(quarantine, dir_fd=binding.directory_fd)
@@ -4417,6 +4428,23 @@ def _recover_pending_publish(
         raise InstallError(
             "OpenCode initial publication has an unproven live occupant; preserving it"
         )
+    if (
+        not candidate_exists
+        and not artifact_exists
+        and not receipt.links
+        and not pending.planned_links
+        and not _artifact_anchor_identity_is_live(
+            pending.candidate_anchor,
+            pending.candidate_anchor_dev,
+            pending.candidate_anchor_ino,
+        )
+    ):
+        # Rollback removed every receipt-owned publication object before a
+        # foreign deterministic quarantine collision blocked the final
+        # receipt rename.  Retry that same authenticated deletion boundary;
+        # no link inventory has been published or can be orphaned here.
+        _unlink_state_path(receipt_path)
+        return None, False
     if candidate_exists and not artifact_exists and pending.phase in {
         "prepared",
         "anchor-recorded",
@@ -4526,6 +4554,20 @@ def _ensure_opencode_artifact(
     existing = _lexists(artifact)
     if existing and not _receipt_owns_artifact(receipt, artifact):
         raise InstallError(f"opencode artifact is stale and not receipt-owned: {artifact}")
+    if receipt is not None and receipt.pending_swap is not None:
+        if (
+            existing
+            and receipt.teardown_phase == "committed"
+            and _artifact_matches_sources(repo_root, artifact)
+        ):
+            # An identity-preserving reinstall may retry exact retirement and
+            # link repair while retaining the original journal.  Changed
+            # sources must wait: a second swap would overwrite the only proof
+            # authorizing deletion of the first backup and old anchor.
+            return artifact, False, None, None, receipt
+        raise InstallError(
+            "prior OpenCode artifact retirement is incomplete; preserving its backup and anchors"
+        )
     if (
         existing
         and receipt is not None
