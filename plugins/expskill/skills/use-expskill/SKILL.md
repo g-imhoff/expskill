@@ -71,6 +71,7 @@ conversation from the target checkout.
 - `codex exec "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on codex-cli 0.153.4.
 - `claude -p "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
 - `opencode run "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
+- `hermes chat -s plan -q "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Shape follows the Hermes CLI reference. Set the active provider before starting.
 
 Run the Design conversation from the isolated worktree after seeding, with the
 same baseline and Concept Brief.
@@ -78,6 +79,7 @@ same baseline and Concept Brief.
 - `codex exec "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 - `claude -p "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 - `opencode run "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
+- `hermes chat -s design -q "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 
 The router owns user interaction while the two conversations run. Each
 conversation returns questions instead of asking the user. Present at most one

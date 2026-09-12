@@ -627,6 +627,7 @@ class ContractTests(unittest.TestCase):
             {
                 "SKILL.md",
                 "agents/openai.yaml",
+                "agents/hermes.yaml",
                 "references/capability-contract.md",
                 "scripts/inspect_setup.py",
             },

@@ -201,6 +201,7 @@ class BrainstormContractTests(unittest.TestCase):
             {
                 "SKILL.md",
                 "agents/openai.yaml",
+                "agents/hermes.yaml",
                 "references/brainstorm-techniques.csv",
             },
         )

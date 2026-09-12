@@ -38,6 +38,9 @@ RETIRED_PROFILE_NAMES = (
 )
 RECEIPT_DIRECTORY = "expskill"
 RECEIPT_FILENAME = "install.json"
+PROVIDERS = ("codex", "hermes")
+HERMES_SKILLS_CATEGORY = "expskill"
+HERMES_MODEL_POLICY = "active-hermes-provider"
 
 
 class InstallError(RuntimeError):
@@ -155,6 +158,136 @@ def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
     return tuple(sources)
 
 
+def _validate_provider(provider: str) -> str:
+    if provider not in (*PROVIDERS, "both"):
+        raise InstallError(f"provider must be one of codex, hermes, both; got {provider!r}")
+    return provider
+
+
+def _hermes_agent_sources(repository_root: Path) -> tuple[Path, ...]:
+    _assert_no_symlink_components(
+        repository_root,
+        ("plugins", PLUGIN_NAME, "assets", "agents-hermes"),
+    )
+    agents_root = repository_root / "plugins" / PLUGIN_NAME / "assets" / "agents-hermes"
+    if not agents_root.is_dir():
+        raise InstallError(f"Hermes agent source directory is missing: {agents_root}")
+    try:
+        resolved_agents_root = agents_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise InstallError(f"Hermes agent source directory cannot be resolved: {agents_root}: {error}") from error
+    if resolved_agents_root != agents_root:
+        raise InstallError(f"Hermes agent source directory resolves outside the repository: {agents_root}")
+    discovered = tuple(sorted(agents_root.glob("expskill-*.md"), key=lambda path: path.name))
+    expected_names = {f"{name}.md" for name in PROFILE_NAMES}
+    discovered_names = {path.name for path in discovered}
+    if discovered_names != expected_names or len(discovered) != len(expected_names):
+        found = ", ".join(sorted(discovered_names)) or "none"
+        expected = ", ".join(sorted(expected_names))
+        raise InstallError(
+            f"Hermes agent sources must be exactly the validated profiles; found {found}; expected {expected}"
+        )
+    sources: list[Path] = []
+    for path in discovered:
+        if path.is_symlink() or not path.is_file():
+            raise InstallError(f"Hermes agent source is not a regular file: {path}")
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise InstallError(f"Hermes agent source could not be read: {path}: {error}") from error
+        frontmatter = contents.split("---")[1] if contents.startswith("---") else ""
+        if f"name: {path.stem}" not in frontmatter:
+            raise InstallError(f"Hermes agent source profile name does not match {path.name}")
+        try:
+            source = path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise InstallError(f"Hermes agent source cannot be resolved: {path}: {error}") from error
+        try:
+            source.relative_to(agents_root)
+        except ValueError as error:
+            raise InstallError(f"Hermes agent source resolves outside the agent directory: {path}") from error
+        if source.parent != agents_root:
+            raise InstallError(f"Hermes agent source resolves outside the exact agent directory: {path}")
+        sources.append(source)
+    return tuple(sources)
+
+
+def _skill_sources(repository_root: Path) -> tuple[Path, ...]:
+    skills_root = repository_root / "plugins" / PLUGIN_NAME / "skills"
+    if not skills_root.is_dir():
+        raise InstallError(f"skill source directory is missing: {skills_root}")
+    discovered = tuple(
+        sorted(
+            (path for path in skills_root.iterdir() if (path / "SKILL.md").is_file()),
+            key=lambda path: path.name,
+        )
+    )
+    if not discovered:
+        raise InstallError(f"skill source directory contains no skills: {skills_root}")
+    sources: list[Path] = []
+    for path in discovered:
+        if path.is_symlink():
+            raise InstallError(f"skill source is not a regular directory: {path}")
+        try:
+            source = path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise InstallError(f"skill source cannot be resolved: {path}: {error}") from error
+        try:
+            source.relative_to(skills_root)
+        except ValueError as error:
+            raise InstallError(f"skill source resolves outside the skill directory: {path}") from error
+        if source.parent != skills_root:
+            raise InstallError(f"skill source resolves outside the exact skill directory: {path}")
+        sources.append(source)
+    return tuple(sources)
+
+
+def _expected_hermes_links(canonical_root: Path, hermes_home: Path) -> tuple[ProfileLink, ...]:
+    canonical_hermes_home = Path(hermes_home).expanduser().resolve(strict=False)
+    agents_directory = canonical_hermes_home / "agents"
+    _validate_agent_directory(agents_directory)
+    skills_directory = canonical_hermes_home / "skills"
+    _validate_agent_directory(skills_directory)
+    links = [
+        ProfileLink(source=source, destination=agents_directory / source.name)
+        for source in _hermes_agent_sources(canonical_root)
+    ]
+    links.extend(
+        ProfileLink(
+            source=source,
+            destination=skills_directory / HERMES_SKILLS_CATEGORY / source.name,
+        )
+        for source in _skill_sources(canonical_root)
+    )
+    return tuple(links)
+
+
+def _allowlisted_hermes_links(canonical_root: Path, hermes_home: Path) -> tuple[ProfileLink, ...]:
+    canonical_hermes_home = Path(hermes_home).expanduser().resolve(strict=False)
+    agents_directory = canonical_hermes_home / "agents"
+    _validate_agent_directory(agents_directory)
+    skills_directory = canonical_hermes_home / "skills"
+    _validate_agent_directory(skills_directory)
+    source_agents = canonical_root / "plugins" / PLUGIN_NAME / "assets" / "agents-hermes"
+    source_skills = canonical_root / "plugins" / PLUGIN_NAME / "skills"
+    links = [
+        ProfileLink(
+            source=_lexical_absolute(source_agents / f"{name}.md"),
+            destination=agents_directory / f"{name}.md",
+        )
+        for name in PROFILE_NAMES
+    ]
+    if source_skills.is_dir():
+        links.extend(
+            ProfileLink(
+                source=_lexical_absolute(source_skills / name),
+                destination=skills_directory / HERMES_SKILLS_CATEGORY / name,
+            )
+            for name in sorted(path.name for path in source_skills.iterdir() if (path / "SKILL.md").is_file())
+        )
+    return tuple(links)
+
+
 def _validate_agent_directory(agents_directory: Path) -> None:
     if _lexists(agents_directory):
         if agents_directory.is_symlink():
@@ -186,9 +319,30 @@ def _same_owned_link(destination: Path, source: Path) -> bool:
         return False
 
 
-def _expected_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+def _default_hermes_home() -> Path:
+    return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
+
+
+def _expected_links(
+    repo_root: Path,
+    codex_home: Path,
+    provider: str = "codex",
+    hermes_home: Path | None = None,
+) -> tuple[ProfileLink, ...]:
+    _validate_provider(provider)
     canonical_root = _canonical_repository_root(repo_root)
     _validate_repository(canonical_root)
+    links: list[ProfileLink] = []
+    if provider in ("codex", "both"):
+        links.extend(_expected_codex_links(canonical_root, codex_home))
+    if provider in ("hermes", "both"):
+        if hermes_home is None:
+            raise InstallError("Hermes home is required for the Hermes provider")
+        links.extend(_expected_hermes_links(canonical_root, hermes_home))
+    return tuple(links)
+
+
+def _expected_codex_links(canonical_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
     sources = _profile_sources(canonical_root)
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
@@ -199,8 +353,25 @@ def _expected_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...
     )
 
 
-def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+def _allowlisted_links(
+    repo_root: Path,
+    codex_home: Path,
+    provider: str = "codex",
+    hermes_home: Path | None = None,
+) -> tuple[ProfileLink, ...]:
+    _validate_provider(provider)
     canonical_root = _canonical_repository_root(repo_root)
+    links: list[ProfileLink] = []
+    if provider in ("codex", "both"):
+        links.extend(_allowlisted_codex_links(canonical_root, codex_home))
+    if provider in ("hermes", "both"):
+        if hermes_home is None:
+            raise InstallError("Hermes home is required for the Hermes provider")
+        links.extend(_allowlisted_hermes_links(canonical_root, hermes_home))
+    return tuple(links)
+
+
+def _allowlisted_codex_links(canonical_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
@@ -214,8 +385,13 @@ def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, 
     )
 
 
-def preflight_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
-    links = _expected_links(repo_root, codex_home)
+def preflight_links(
+    repo_root: Path,
+    codex_home: Path,
+    provider: str = "codex",
+    hermes_home: Path | None = None,
+) -> tuple[ProfileLink, ...]:
+    links = _expected_links(repo_root, codex_home, provider, hermes_home)
     for link in links:
         if not _lexists(link.destination):
             continue
@@ -257,7 +433,7 @@ def _receipt_links(
         lexical_destination = _lexical_absolute(destination)
         pair = (canonical_source, lexical_destination)
         if pair not in expected:
-            raise InstallError(f"receipt link is outside the selected repository or Codex home: {receipt_path}")
+            raise InstallError(f"receipt link is outside the selected repository or provider home: {receipt_path}")
         if pair in seen_pairs or lexical_destination in seen_destinations:
             raise InstallError(f"receipt link is duplicated: {receipt_path}")
         seen_pairs.add(pair)
@@ -529,12 +705,13 @@ def _validate_plugin_add(payload: Mapping[str, Any], expected_version: str) -> N
 
 
 def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> None:
-    if links:
+    parents = {link.destination.parent for link in links}
+    for parent in sorted(parents):
         try:
-            links[0].destination.parent.mkdir(parents=True, exist_ok=True)
+            parent.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise InstallError(
-                f"cannot create agent destination directory: {links[0].destination.parent}: {error}"
+                f"cannot create agent destination directory: {parent}: {error}"
             ) from error
     for link in links:
         if _lexists(link.destination):
@@ -656,47 +833,52 @@ def install(
     codex_home: Path,
     state_home: Path,
     run: Runner | Callable[[Sequence[str]], object],
+    provider: str = "codex",
+    hermes_home: Path | None = None,
 ) -> InstallResult:
+    _validate_provider(provider)
     canonical_root = _canonical_repository_root(repo_root)
-    links = preflight_links(canonical_root, codex_home)
-    receipt_links = _allowlisted_links(canonical_root, codex_home)
+    links = preflight_links(canonical_root, codex_home, provider, hermes_home)
+    receipt_links = _allowlisted_links(canonical_root, codex_home, provider, hermes_home)
     plugin_version = _validated_manifest_version(canonical_root)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_receipt(receipt_path_value, canonical_root, receipt_links)
-    marketplace_payload = _run_json(
-        run,
-        ["codex", "plugin", "marketplace", "list", "--json"],
-    )
-    marketplace_state = _marketplace_state(marketplace_payload, canonical_root)
-    if marketplace_state == "foreign":
-        raise InstallError("marketplace name conflict from another repository")
-    created_links: list[ProfileLink] = []
     marketplace_new = False
     plugin_new = False
+    if provider in ("codex", "both"):
+        marketplace_payload = _run_json(
+            run,
+            ["codex", "plugin", "marketplace", "list", "--json"],
+        )
+        marketplace_state = _marketplace_state(marketplace_payload, canonical_root)
+        if marketplace_state == "foreign":
+            raise InstallError("marketplace name conflict from another repository")
+    created_links: list[ProfileLink] = []
     removed_links: tuple[ProfileLink, ...] = ()
     try:
         _create_links(links, created_links)
-        marketplace_add_command = [
-            "codex",
-            "plugin",
-            "marketplace",
-            "add",
-            str(canonical_root),
-            "--json",
-        ]
-        marketplace_add_result = _run_command(run, marketplace_add_command)
-        _require_success(marketplace_add_command, marketplace_add_result)
-        marketplace_new = marketplace_state == "absent"
-        marketplace_add_json = _parse_json(marketplace_add_command, marketplace_add_result)
-        _validate_marketplace_add(marketplace_add_json, canonical_root)
-        plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
-        plugin_state = _plugin_presence(plugin_payload)
-        plugin_add_command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
-        plugin_add_result = _run_command(run, plugin_add_command)
-        _require_success(plugin_add_command, plugin_add_result)
-        plugin_new = plugin_state == "absent"
-        plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
-        _validate_plugin_add(plugin_add_json, plugin_version)
+        if provider in ("codex", "both"):
+            marketplace_add_command = [
+                "codex",
+                "plugin",
+                "marketplace",
+                "add",
+                str(canonical_root),
+                "--json",
+            ]
+            marketplace_add_result = _run_command(run, marketplace_add_command)
+            _require_success(marketplace_add_command, marketplace_add_result)
+            marketplace_new = marketplace_state == "absent"
+            marketplace_add_json = _parse_json(marketplace_add_command, marketplace_add_result)
+            _validate_marketplace_add(marketplace_add_json, canonical_root)
+            plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+            plugin_state = _plugin_presence(plugin_payload)
+            plugin_add_command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
+            plugin_add_result = _run_command(run, plugin_add_command)
+            _require_success(plugin_add_command, plugin_add_result)
+            plugin_new = plugin_state == "absent"
+            plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
+            _validate_plugin_add(plugin_add_json, plugin_version)
         if receipt is not None:
             receipt, removed_links = _prune_retired_links(
                 receipt_path_value,
@@ -785,9 +967,12 @@ def uninstall(
     codex_home: Path,
     state_home: Path,
     run: Runner | Callable[[Sequence[str]], object],
+    provider: str = "codex",
+    hermes_home: Path | None = None,
 ) -> InstallResult:
+    _validate_provider(provider)
     canonical_root = _canonical_repository_root(repo_root)
-    links = _allowlisted_links(canonical_root, codex_home)
+    links = _allowlisted_links(canonical_root, codex_home, provider, hermes_home)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_receipt(receipt_path_value, canonical_root, links)
     if receipt is None:
@@ -860,13 +1045,19 @@ def _default_state_home() -> Path:
     ).expanduser()
 
 
-def _print_dry_run(repo_root: Path, codex_home: Path) -> None:
-    links = preflight_links(repo_root, codex_home)
+def _print_dry_run(
+    repo_root: Path,
+    codex_home: Path,
+    provider: str = "codex",
+    hermes_home: Path | None = None,
+) -> None:
+    links = preflight_links(repo_root, codex_home, provider, hermes_home)
     for link in links:
         print(f"link {link.destination} -> {link.source}")
-    repository = links[0].source.parent.parent.parent.parent.parent
-    print(f"codex plugin marketplace add {repository} --json")
-    print(f"codex plugin add {PLUGIN_SELECTOR} --json")
+    if provider in ("codex", "both"):
+        repository = links[0].source.parent.parent.parent.parent.parent
+        print(f"codex plugin marketplace add {repository} --json")
+        print(f"codex plugin add {PLUGIN_SELECTOR} --json")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -874,17 +1065,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true")
     group.add_argument("--uninstall", action="store_true")
+    parser.add_argument(
+        "--provider",
+        choices=(*PROVIDERS, "both"),
+        default="codex",
+        help="Agent provider to install for (default: codex).",
+    )
     arguments = parser.parse_args(argv)
     repository_root = Path(__file__).resolve().parents[1]
     codex_home = _default_codex_home()
+    hermes_home = _default_hermes_home()
     state_home = _default_state_home()
     try:
         if arguments.dry_run:
-            _print_dry_run(repository_root, codex_home)
+            _print_dry_run(repository_root, codex_home, arguments.provider, hermes_home)
         elif arguments.uninstall:
-            uninstall(repository_root, codex_home, state_home, _subprocess_runner)
+            uninstall(repository_root, codex_home, state_home, _subprocess_runner, arguments.provider, hermes_home)
         else:
-            install(repository_root, codex_home, state_home, _subprocess_runner)
+            install(repository_root, codex_home, state_home, _subprocess_runner, arguments.provider, hermes_home)
     except InstallError as error:
         print(f"install error: {error}", file=sys.stderr)
         return 1

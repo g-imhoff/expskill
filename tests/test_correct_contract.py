@@ -49,7 +49,7 @@ class CorrectContractTests(unittest.TestCase):
                     for path in root.rglob("*")
                     if path.is_file()
                 }
-                self.assertEqual(files, {"SKILL.md", "agents/openai.yaml"})
+                self.assertEqual(files, {"SKILL.md", "agents/openai.yaml", "agents/hermes.yaml"})
                 metadata = _metadata(name)
                 self.assertEqual(set(metadata), {"interface", "policy"})
                 self.assertIs(

@@ -1055,6 +1055,7 @@ class TestSkillContractTests(unittest.TestCase):
             {
                 "SKILL.md",
                 "agents/openai.yaml",
+                "agents/hermes.yaml",
                 "references/quality-rules.json",
                 "references/evidence-contract.json",
                 "scripts/append_ledger.py",
