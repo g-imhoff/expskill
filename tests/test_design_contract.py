@@ -39,6 +39,7 @@ EXPECTED_DESIGN_FILES = {
     "references/accessibility.md",
     "references/motion.md",
     "references/data-display.md",
+    "references/yodea-preview.md",
 }
 
 

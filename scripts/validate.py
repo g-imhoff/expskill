@@ -1344,6 +1344,7 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "references/rules-index.md", "references/geometry.md", "references/typography.md",
                 "references/interaction.md", "references/forms.md", "references/responsive.md",
                 "references/accessibility.md", "references/motion.md", "references/data-display.md",
+                "references/yodea-preview.md",
             })
         if skill_root.name == "skill-builder":
             expected_files.update({
