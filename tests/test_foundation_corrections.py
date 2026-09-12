@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -844,6 +845,260 @@ class FoundationCorrectionTests(unittest.TestCase):
                 install_opencode(repo, config, state)
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+
+    def test_forged_digest_and_identity_cannot_delete_foreign_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            parent = state / "expskill"
+            artifact = build_opencode_package(
+                repo, parent / "opencode-artifact"
+            )
+            marker = artifact / "foreign-marker.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            metadata = artifact.stat()
+            lineage = "f" * 32
+            digest = install_module._artifact_evidence(artifact)
+            self.assertIsNotNone(digest)
+            receipt_path(state).write_text(
+                json.dumps(
+                    {
+                        "artifact_root": str(artifact),
+                        "lineage": lineage,
+                        "links": [],
+                        "marketplace_added": False,
+                        "pending_publish": {
+                            "artifact": str(artifact),
+                            "candidate": str(
+                                parent / ".opencode-artifact.next-forged"
+                            ),
+                            "candidate_dev": metadata.st_dev,
+                            "candidate_digest": digest,
+                            "candidate_ino": metadata.st_ino,
+                            "lineage": lineage,
+                            "phase": "published",
+                        },
+                        "plugin_installed": True,
+                        "repository_root": str(repo.resolve()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(InstallError):
+                uninstall_opencode(repo, config, state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertTrue(receipt_path(state).is_file())
+
+    def test_forged_digest_and_identity_cannot_delete_foreign_swap_candidate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            parent = state / "expskill"
+            artifact = parent / "opencode-artifact"
+            candidate = build_opencode_package(
+                repo, parent / ".opencode-artifact.next-forged"
+            )
+            marker = candidate / "foreign-marker.txt"
+            marker.write_text("must survive\n", encoding="utf-8")
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            live_metadata = artifact.stat()
+            candidate_metadata = candidate.stat()
+            pending = {
+                "artifact": str(artifact),
+                "backup": str(parent / ".opencode-artifact.old-forged"),
+                "backup_dev": live_metadata.st_dev,
+                "backup_digest": payload["artifact_digest"],
+                "backup_ino": live_metadata.st_ino,
+                "candidate": str(candidate),
+                "candidate_dev": candidate_metadata.st_dev,
+                "candidate_digest": install_module._artifact_evidence(candidate),
+                "candidate_ino": candidate_metadata.st_ino,
+                "lineage": payload["lineage"],
+                "live_dev": live_metadata.st_dev,
+                "live_ino": live_metadata.st_ino,
+                "phase": "prepared",
+            }
+            payload["pending_swap"] = pending
+            payload["pending_swap_checksum"] = install_module._pending_swap_checksum(
+                payload["lineage"], pending
+            )
+            receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(InstallError):
+                uninstall_opencode(repo, config, state)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertTrue(receipt_path(state).is_file())
+
+    def test_uninstall_after_complete_initial_link_publication_crash_converges(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                29,
+            )
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            self.assertTrue(payload["pending_publish"]["planned_links"])
+            self.assertEqual(len(payload["links"]), 29)
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_uninstall_after_partial_initial_link_publication_crash_converges(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create = install_module._create_destination_link
+            created = 0
+
+            def crash_after_third_link(destination: Path, source: Path) -> None:
+                nonlocal created
+                real_create(destination, source)
+                created += 1
+                if created == 3:
+                    raise SystemExit("injected crash after partial link publication")
+
+            with mock.patch.object(
+                install_module,
+                "_create_destination_link",
+                side_effect=crash_after_third_link,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertEqual(
+                len([path for path in config.rglob("*") if path.is_symlink()]),
+                3,
+            )
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            self.assertTrue(payload["pending_publish"]["planned_links"])
+            self.assertEqual(len(payload["links"]), 29)
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_complete_live_inventory_recovers_when_publication_anchor_is_gone(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
+            Path(payload["pending_publish"]["candidate_anchor"]).unlink()
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_hard_link_anchor_failure_aborts_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+
+            with mock.patch.object(
+                install_module.os,
+                "link",
+                side_effect=OSError(errno.EXDEV, "cross-device link"),
+            ):
+                with self.assertRaisesRegex(
+                    InstallError, "anchor before publication"
+                ):
+                    install_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_crash_cleanup_preserves_retargeted_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_create_links = install_module._create_links
+
+            def crash_after_links(
+                links: object, created: list[install_module.ProfileLink]
+            ) -> None:
+                real_create_links(links, created)
+                raise SystemExit("injected crash after complete link publication")
+
+            with mock.patch.object(
+                install_module, "_create_links", side_effect=crash_after_links
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            retargeted = config / "agents/expskill-review.md"
+            retargeted.unlink()
+            unrelated = root / "user-owned.md"
+            unrelated.write_text("user-owned\n", encoding="utf-8")
+            retargeted.symlink_to(unrelated)
+            uninstall_opencode(repo, config, state)
+
+            self.assertTrue(retargeted.is_symlink())
+            self.assertEqual(os.readlink(retargeted), str(unrelated))
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertEqual(
+                [path for path in config.rglob("*") if path.is_symlink()],
+                [retargeted],
+            )
 
     def test_failed_first_publish_preserves_replacement_at_fixed_name(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
