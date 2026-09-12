@@ -33,6 +33,320 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_source_changing_upgrade_waits_for_prior_retirement(self) -> None:
+        for blocked_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(blocked_entrypoint=blocked_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                original_text = skill.read_text(encoding="utf-8")
+                skill.write_text(
+                    original_text.replace(
+                        "Cut AI tells", "first retirement generation"
+                    ),
+                    encoding="utf-8",
+                )
+                real_remove = install_module._remove_opencode_artifact_exact
+
+                def fail_old_backup(path: Path, dev: int, ino: int) -> None:
+                    if ".old-" in path.name:
+                        raise install_module.InstallError("old backup remains busy")
+                    real_remove(path, dev, ino)
+
+                with mock.patch.object(
+                    install_module,
+                    "_remove_opencode_artifact_exact",
+                    side_effect=fail_old_backup,
+                ):
+                    install_opencode(repo, config, state)
+
+                first_receipt = receipt(state)
+                first_pending = first_receipt["pending_swap"]
+                first_receipt_bytes = receipt_path(state).read_bytes()
+                artifact = Path(first_pending["artifact"])
+                backup = Path(first_pending["backup"])
+                current_anchor = Path(first_pending["candidate_anchor"])
+                old_anchor = Path(first_pending["old_anchor"])
+                frozen_identities = {
+                    path: (path.lstat().st_dev, path.lstat().st_ino)
+                    for path in (artifact, backup, current_anchor, old_anchor)
+                }
+                candidates_before = tuple(
+                    artifact.parent.glob(f".{artifact.name}.next-*")
+                )
+                skill.write_text(
+                    original_text.replace(
+                        "Cut AI tells", "second retirement generation"
+                    ),
+                    encoding="utf-8",
+                )
+
+                with mock.patch.object(
+                    install_module,
+                    "_remove_opencode_artifact_exact",
+                    side_effect=fail_old_backup,
+                ):
+                    with self.assertRaisesRegex(
+                        install_module.InstallError,
+                        "retirement|backup|publication",
+                    ):
+                        if blocked_entrypoint == "install":
+                            install_opencode(repo, config, state)
+                        else:
+                            uninstall_opencode(repo, config, state)
+
+                self.assertEqual(receipt_path(state).read_bytes(), first_receipt_bytes)
+                self.assertEqual(receipt(state)["pending_swap"], first_pending)
+                self.assertEqual(
+                    tuple(artifact.parent.glob(f".{artifact.name}.next-*")),
+                    candidates_before,
+                )
+                for path, identity in frozen_identities.items():
+                    self.assertTrue(path.exists())
+                    self.assertEqual((path.lstat().st_dev, path.lstat().st_ino), identity)
+
+                install_opencode(repo, config, state)
+                converged = receipt(state)
+                self.assertNotIn("pending_swap", converged)
+                self.assertTrue(
+                    install_module._artifact_matches_sources(repo, artifact)
+                )
+                self.assertEqual(
+                    tuple(artifact.parent.glob(f".{artifact.name}.old-*")), ()
+                )
+                self.assertEqual(
+                    tuple(artifact.parent.glob(f".{artifact.name}.next-*")), ()
+                )
+                anchors = tuple(
+                    artifact.parent.glob(
+                        f"{install_module.OPENCODE_ARTIFACT_ANCHOR_PREFIX}*"
+                    )
+                )
+                self.assertEqual(anchors, (Path(converged["artifact_anchor"]),))
+
+    def test_foreign_receipt_quarantine_collision_blocks_terminal_deletion(
+        self,
+    ) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(retry_entrypoint=retry_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                canonical = receipt_path(state)
+                real_unlink = install_module._unlink_state_path
+                collision: Path | None = None
+                canonical_identity: tuple[int, int] | None = None
+                canonical_bytes: bytes | None = None
+
+                def collide(path: Path) -> None:
+                    nonlocal collision, canonical_identity, canonical_bytes
+                    metadata = path.lstat()
+                    canonical_identity = (metadata.st_dev, metadata.st_ino)
+                    canonical_bytes = path.read_bytes()
+                    lineage, current_phase, pending_phase = (
+                        install_module._receipt_deletion_descriptor(path)
+                    )
+                    collision = install_module._receipt_deletion_quarantine_path(
+                        path,
+                        *canonical_identity,
+                        lineage,
+                        current_phase,
+                        pending_phase,
+                    )
+                    collision.write_text("foreign collision\n", encoding="utf-8")
+                    real_unlink(path)
+
+                with mock.patch.object(
+                    install_module, "_unlink_state_path", side_effect=collide
+                ):
+                    with self.assertRaisesRegex(
+                        install_module.InstallError, "quarantine|conditionally remove"
+                    ):
+                        uninstall_opencode(repo, config, state)
+
+                assert collision is not None
+                assert canonical_identity is not None
+                assert canonical_bytes is not None
+                self.assertEqual(canonical.read_bytes(), canonical_bytes)
+                self.assertEqual(
+                    (canonical.lstat().st_dev, canonical.lstat().st_ino),
+                    canonical_identity,
+                )
+                self.assertEqual(collision.read_text(encoding="utf-8"), "foreign collision\n")
+                collision.unlink()
+                real_rename = install_module._renameat_noreplace
+                rename_calls = 0
+                real_fsync = os.fsync
+                fsync_calls = 0
+
+                def observe_rename(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal rename_calls
+                    if source_name == canonical.name and target_name.endswith(".delete"):
+                        rename_calls += 1
+                    real_rename(source_fd, source_name, target_fd, target_name)
+
+                def observe_fsync(descriptor: int) -> None:
+                    nonlocal fsync_calls
+                    fsync_calls += 1
+                    real_fsync(descriptor)
+
+                with (
+                    mock.patch.object(
+                        install_module,
+                        "_renameat_noreplace",
+                        side_effect=observe_rename,
+                    ),
+                    mock.patch.object(
+                        install_module.os, "fsync", side_effect=observe_fsync
+                    ),
+                ):
+                    if retry_entrypoint == "install":
+                        install_opencode(repo, config, state)
+                        self.assertTrue(canonical.is_file())
+                    else:
+                        uninstall_opencode(repo, config, state)
+                        self.assertFalse(canonical.exists())
+                self.assertEqual(rename_calls, 1)
+                self.assertGreater(fsync_calls, 0)
+                self.assertFalse(collision.exists())
+
+    def test_foreign_receipt_quarantine_collision_blocks_nonterminal_deletion(
+        self,
+    ) -> None:
+        for failure_type in (install_module.InstallError, SystemExit):
+            for retry_entrypoint in ("install", "uninstall"):
+                with (
+                    self.subTest(
+                        failure=failure_type.__name__,
+                        retry_entrypoint=retry_entrypoint,
+                    ),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    canonical = receipt_path(state)
+                    real_unlink = install_module._unlink_state_path
+                    collision: Path | None = None
+                    canonical_identity: tuple[int, int] | None = None
+                    canonical_bytes: bytes | None = None
+
+                    def collide_and_interrupt(path: Path) -> None:
+                        nonlocal collision, canonical_identity, canonical_bytes
+                        metadata = path.lstat()
+                        canonical_identity = (metadata.st_dev, metadata.st_ino)
+                        canonical_bytes = path.read_bytes()
+                        lineage, current_phase, pending_phase = (
+                            install_module._receipt_deletion_descriptor(path)
+                        )
+                        collision = install_module._receipt_deletion_quarantine_path(
+                            path,
+                            *canonical_identity,
+                            lineage,
+                            current_phase,
+                            pending_phase,
+                        )
+                        collision.write_text(
+                            "foreign nonterminal collision\n", encoding="utf-8"
+                        )
+                        try:
+                            real_unlink(path)
+                        except install_module.InstallError as error:
+                            raise failure_type("interrupted nonterminal deletion") from error
+                        raise failure_type("interrupted nonterminal deletion")
+
+                    with (
+                        mock.patch.object(
+                            install_module,
+                            "_unlink_state_path",
+                            side_effect=collide_and_interrupt,
+                        ),
+                        mock.patch.object(
+                            install_module,
+                            "preflight_opencode_links",
+                            side_effect=install_module.InstallError(
+                                "preflight failed"
+                            ),
+                        ),
+                    ):
+                        with self.assertRaises(failure_type):
+                            install_opencode(repo, config, state)
+
+                    assert collision is not None
+                    assert canonical_identity is not None
+                    assert canonical_bytes is not None
+                    self.assertEqual(canonical.read_bytes(), canonical_bytes)
+                    self.assertEqual(
+                        (canonical.lstat().st_dev, canonical.lstat().st_ino),
+                        canonical_identity,
+                    )
+                    self.assertIn("pending_publish", receipt(state))
+                    self.assertEqual(
+                        collision.read_text(encoding="utf-8"),
+                        "foreign nonterminal collision\n",
+                    )
+                    collision.unlink()
+                    real_rename = install_module._renameat_noreplace
+                    receipt_renames = 0
+                    real_fsync = os.fsync
+                    fsync_calls = 0
+
+                    def observe_rename(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal receipt_renames
+                        if source_name == canonical.name and target_name.endswith(
+                            ".delete"
+                        ):
+                            receipt_renames += 1
+                        real_rename(source_fd, source_name, target_fd, target_name)
+
+                    def observe_fsync(descriptor: int) -> None:
+                        nonlocal fsync_calls
+                        fsync_calls += 1
+                        real_fsync(descriptor)
+
+                    with (
+                        mock.patch.object(
+                            install_module,
+                            "_renameat_noreplace",
+                            side_effect=observe_rename,
+                        ),
+                        mock.patch.object(
+                            install_module.os, "fsync", side_effect=observe_fsync
+                        ),
+                    ):
+                        if retry_entrypoint == "install":
+                            install_opencode(repo, config, state)
+                            self.assertTrue(canonical.is_file())
+                            self.assertNotIn("pending_publish", receipt(state))
+                        else:
+                            uninstall_opencode(repo, config, state)
+                            self.assertFalse(canonical.exists())
+                    self.assertEqual(receipt_renames, 1)
+                    self.assertGreater(fsync_calls, 0)
+                    self.assertFalse(collision.exists())
+
     def test_partial_artifact_package_deletion_retries_through_both_entrypoints(
         self,
     ) -> None:
