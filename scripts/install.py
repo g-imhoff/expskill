@@ -684,6 +684,12 @@ def _opencode_link_staging_path(source: Path, destination: Path) -> Path:
     return destination.parent / f".{destination.name}.expskill-{identity}.link"
 
 
+def _deletion_quarantine_path(path: Path, dev: int, ino: int) -> Path:
+    """Return a receipt-recoverable deletion name for one exact inode."""
+
+    return path.parent / f".{path.name}.{dev:x}-{ino:x}.delete"
+
+
 def _receipt_links(
     value: object,
     receipt_path: Path,
@@ -1795,31 +1801,29 @@ def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
     for link in reversed(tuple(links)):
         if link.staged_destination is not None:
             try:
-                if _lexists(link.staged_destination) and not _remove_recorded_opencode_staging(
-                    link
-                ):
-                    failures.append(
-                        "staged link preserved because ownership changed: "
-                        f"{link.staged_destination}"
-                    )
+                _remove_recorded_opencode_staging(link)
             except (OSError, InstallError) as error:
                 failures.append(f"staged link {link.staged_destination}: {error}")
+        if link.destination_dev is not None or link.destination_ino is not None:
+            if link.destination_dev is None or link.destination_ino is None:
+                failures.append(
+                    f"link preserved because ownership is incomplete: {link.destination}"
+                )
+                continue
+            try:
+                _unlink_recorded_destination(link)
+            except (OSError, InstallError) as error:
+                failures.append(f"link {link.destination}: {error}")
+            continue
         if not _lexists(link.destination):
             continue
-        if link.destination_dev is not None or link.destination_ino is not None:
-            owned = (
-                link.destination_dev is not None
-                and link.destination_ino is not None
-                and _recorded_opencode_link_is_live(link)
-            )
-        else:
-            owned = _same_recorded_link(link.destination, link.source)
+        owned = _same_recorded_link(link.destination, link.source)
         if not owned:
             failures.append(f"link preserved because ownership changed: {link.destination}")
             continue
         try:
             _unlink_destination(link.destination)
-        except OSError as error:
+        except (OSError, InstallError) as error:
             failures.append(f"link {link.destination}: {error}")
     return failures
 
@@ -2560,12 +2564,13 @@ def _remove_recorded_opencode_staging(link: ProfileLink) -> bool:
     """Remove only the exact staged inode cited by the durable receipt."""
 
     staging = link.staged_destination
-    if staging is None or not _lexists(staging):
+    if (
+        staging is None
+        or link.destination_dev is None
+        or link.destination_ino is None
+    ):
         return False
-    if not _recorded_opencode_link_path_is_live(link, staging):
-        return False
-    _unlink_destination(staging)
-    return True
+    return _unlink_recorded_destination(link, staging)
 
 
 def _recover_staged_opencode_links(receipt: _Receipt) -> None:
@@ -2575,6 +2580,15 @@ def _recover_staged_opencode_links(receipt: _Receipt) -> None:
         staging = link.staged_destination
         if staging is None:
             continue
+        if link.destination_dev is None or link.destination_ino is None:
+            continue
+        identity = (link.destination_dev, link.destination_ino)
+        final_quarantine = _deletion_quarantine_path(link.destination, *identity)
+        staged_quarantine = _deletion_quarantine_path(staging, *identity)
+        if _recorded_opencode_link_path_is_live(link, final_quarantine):
+            _unlink_recorded_destination(link)
+        if _recorded_opencode_link_path_is_live(link, staged_quarantine):
+            _unlink_recorded_destination(link, staging)
         final_owned = _recorded_opencode_link_is_live(link)
         staged_owned = _recorded_opencode_link_path_is_live(link, staging)
         if final_owned:
@@ -2636,11 +2650,45 @@ def _committed_opencode_link(
     return _capture_opencode_link_identity(link)
 
 
-def _unlink_destination(destination: Path) -> None:
+def _unlink_recorded_destination(
+    link: ProfileLink, path: Path | None = None
+) -> bool:
+    """Delete only an independently matched receipt symlink or quarantine."""
+
+    if link.destination_dev is None or link.destination_ino is None:
+        return False
+    destination = link.destination if path is None else path
+    identity = (link.destination_dev, link.destination_ino)
+    quarantine = _deletion_quarantine_path(destination, *identity)
+    original_owned = _recorded_opencode_link_path_is_live(link, destination)
+    quarantine_owned = _recorded_opencode_link_path_is_live(link, quarantine)
+    bound = _bound_config_parent(destination, create=False)
+    if bound is None:
+        return False
+    binding, parent_fd = bound
+    if not original_owned and not quarantine_owned:
+        try:
+            os.fsync(parent_fd)
+            _verify_config_binding(binding)
+        except OSError as error:
+            raise InstallError(
+                f"cannot durably confirm exact OpenCode link absence: "
+                f"{destination}: {error}"
+            ) from error
+        return False
+    # A quarantine match is independent filesystem evidence for the exact
+    # recorded symlink; prime the original key used by the stable unlink seam.
+    binding.validated_leaves[_lexical_absolute(destination)] = identity
+    return _unlink_destination(destination)
+
+
+def _unlink_destination(destination: Path) -> bool:
+    """Durably remove one exact bound leaf through its recoverable quarantine."""
+
     bound = _bound_config_parent(destination, create=False)
     if bound is None:
         destination.unlink()
-        return
+        return True
     binding, parent_fd = bound
     key = _lexical_absolute(destination)
     expected = binding.validated_leaves.get(key)
@@ -2649,26 +2697,56 @@ def _unlink_destination(destination: Path) -> None:
             destination.name, dir_fd=parent_fd, follow_symlinks=False
         )
         expected = (metadata.st_dev, metadata.st_ino)
-    quarantine = f".{destination.name}.{uuid.uuid4().hex}.delete"
+    quarantine = _deletion_quarantine_path(destination, *expected).name
+
+    def metadata(name: str) -> os.stat_result | None:
+        try:
+            return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
     try:
-        _renameat_noreplace(
-            parent_fd, destination.name, parent_fd, quarantine
-        )
-        moved = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
-        if (moved.st_dev, moved.st_ino) != expected:
+        quarantined = metadata(quarantine)
+        original = metadata(destination.name)
+        quarantine_is_exact = quarantined is not None and (
+            quarantined.st_dev,
+            quarantined.st_ino,
+        ) == expected
+        original_is_exact = original is not None and (
+            original.st_dev,
+            original.st_ino,
+        ) == expected
+        removed = False
+        if quarantine_is_exact:
+            os.unlink(quarantine, dir_fd=parent_fd)
+            removed = True
+        elif quarantined is not None:
+            if original_is_exact:
+                raise InstallError(
+                    f"OpenCode deletion quarantine was replaced: "
+                    f"{destination.parent / quarantine}"
+                )
+        elif original_is_exact:
             _renameat_noreplace(
-                parent_fd, quarantine, parent_fd, destination.name
+                parent_fd, destination.name, parent_fd, quarantine
             )
-            raise InstallError(
-                f"OpenCode config destination identity changed: {destination}"
-            )
-        os.unlink(quarantine, dir_fd=parent_fd)
+            moved = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
+            if (moved.st_dev, moved.st_ino) != expected:
+                raise InstallError(
+                    f"OpenCode config destination identity changed: {destination}"
+                )
+            os.unlink(quarantine, dir_fd=parent_fd)
+            removed = True
+        # Even an absence result must make a prior successful unlink durable
+        # before the receipt is allowed to retire this identity.
+        os.fsync(parent_fd)
+        _verify_config_binding(binding)
     except OSError as error:
         raise InstallError(
             f"cannot conditionally remove OpenCode link: {destination}: {error}"
         ) from error
     binding.validated_leaves.pop(key, None)
-    _verify_config_binding(binding)
+    return removed
 
 
 def _validate_opencode_destination(destination: Path, config_dir: Path) -> None:
@@ -2988,34 +3066,63 @@ def _remove_artifact_anchor_exact(
 
 
 def _unlink_artifact_anchor_identity(anchor: Path, anchor_dev: int, anchor_ino: int) -> None:
-    """Unlink a previously proven anchor without following or replacing names."""
+    """Durably unlink or confirm absence of one receipt-recorded anchor."""
 
     binding = _state_binding(anchor)
     if binding is None:
         raise InstallError("OpenCode artifact anchor is outside bound owned state")
-    quarantine = f".{anchor.name}.{uuid.uuid4().hex}.delete"
     expected = (anchor_dev, anchor_ino)
+    quarantine = _deletion_quarantine_path(anchor, *expected).name
+
+    def metadata(name: str) -> os.stat_result | None:
+        try:
+            return os.stat(
+                name,
+                dir_fd=binding.directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return None
+
     try:
-        _renameat_noreplace(
-            binding.directory_fd,
-            anchor.name,
-            binding.directory_fd,
-            quarantine,
-        )
-        moved = os.stat(
-            quarantine,
-            dir_fd=binding.directory_fd,
-            follow_symlinks=False,
-        )
-        if (moved.st_dev, moved.st_ino) != expected:
+        _verify_state_binding(binding)
+        quarantined = metadata(quarantine)
+        original = metadata(anchor.name)
+        quarantine_is_exact = quarantined is not None and (
+            quarantined.st_dev,
+            quarantined.st_ino,
+        ) == expected
+        original_is_exact = original is not None and (
+            original.st_dev,
+            original.st_ino,
+        ) == expected
+        if quarantine_is_exact:
+            os.unlink(quarantine, dir_fd=binding.directory_fd)
+        elif quarantined is not None:
+            if original_is_exact:
+                raise InstallError(
+                    f"OpenCode anchor deletion quarantine was replaced: "
+                    f"{anchor.parent / quarantine}"
+                )
+        elif original_is_exact:
             _renameat_noreplace(
                 binding.directory_fd,
-                quarantine,
-                binding.directory_fd,
                 anchor.name,
+                binding.directory_fd,
+                quarantine,
             )
-            raise InstallError("OpenCode artifact anchor identity changed during cleanup")
-        os.unlink(quarantine, dir_fd=binding.directory_fd)
+            moved = os.stat(
+                quarantine,
+                dir_fd=binding.directory_fd,
+                follow_symlinks=False,
+            )
+            if (moved.st_dev, moved.st_ino) != expected:
+                raise InstallError(
+                    "OpenCode artifact anchor identity changed during cleanup"
+                )
+            os.unlink(quarantine, dir_fd=binding.directory_fd)
+        # A retry that sees neither exact name still performs the durability
+        # barrier whose earlier attempt may have failed after unlink(2).
         os.fsync(binding.directory_fd)
         _verify_state_binding(binding)
     except OSError as error:
@@ -3293,23 +3400,11 @@ def _recover_pending_swap(
                 and pending.candidate_anchor_dev is not None
                 and pending.candidate_anchor_ino is not None
             ):
-                try:
-                    anchor_metadata = _state_lstat(pending.candidate_anchor)
-                except FileNotFoundError:
-                    pass
-                else:
-                    if (
-                        anchor_metadata.st_dev,
-                        anchor_metadata.st_ino,
-                    ) == (
-                        pending.candidate_anchor_dev,
-                        pending.candidate_anchor_ino,
-                    ):
-                        _unlink_artifact_anchor_identity(
-                            pending.candidate_anchor,
-                            pending.candidate_anchor_dev,
-                            pending.candidate_anchor_ino,
-                        )
+                _unlink_artifact_anchor_identity(
+                    pending.candidate_anchor,
+                    pending.candidate_anchor_dev,
+                    pending.candidate_anchor_ino,
+                )
             receipt = _receipt_with_pending(receipt, None)
             _write_receipt(receipt_path, receipt)
             return receipt
@@ -3482,23 +3577,13 @@ def _garbage_collect_opencode_backups(
         ):
             return receipt
         try:
-            metadata = _state_lstat(pending.old_anchor)
-        except FileNotFoundError:
-            pass
-        else:
-            if (
-                stat.S_ISREG(metadata.st_mode)
-                and (metadata.st_dev, metadata.st_ino)
-                == (pending.old_anchor_dev, pending.old_anchor_ino)
-            ):
-                try:
-                    _unlink_artifact_anchor_identity(
-                        pending.old_anchor,
-                        pending.old_anchor_dev,
-                        pending.old_anchor_ino,
-                    )
-                except (InstallError, OSError, TypeError, ValueError):
-                    return receipt
+            _unlink_artifact_anchor_identity(
+                pending.old_anchor,
+                pending.old_anchor_dev,
+                pending.old_anchor_ino,
+            )
+        except (InstallError, OSError, TypeError, ValueError):
+            return receipt
         pending = replace(pending, phase="old-anchor-removed")
         receipt = _receipt_with_pending(receipt, pending)
         _write_receipt(receipt_path, receipt)
@@ -4651,7 +4736,6 @@ def _install_opencode_bound(
         )
 
     created_links: list[ProfileLink] = _JournaledLinkList(record_staged_link)
-    migrated_links: list[ProfileLink] = []
     removed_retired: tuple[ProfileLink, ...] = ()
     try:
         if receipt is not None and (
@@ -4661,15 +4745,27 @@ def _install_opencode_bound(
                 and not receipt.pending_publish.planned_links
             )
         ):
-            for old in receipt.links:
-                if not _lexists(old.destination):
-                    continue
-                if not _same_recorded_link(old.destination, old.source):
-                    raise InstallError(
-                        f"refusing to migrate retargeted legacy link: {old.destination}"
+            for old in tuple(receipt.links):
+                recorded = old
+                if old.destination_dev is None or old.destination_ino is None:
+                    if not _lexists(old.destination):
+                        continue
+                    if not _same_recorded_link(old.destination, old.source):
+                        raise InstallError(
+                            f"refusing to migrate retargeted legacy link: {old.destination}"
+                        )
+                    recorded = _capture_opencode_link_identity(old)
+                    receipt = _persist_receipt(
+                        receipt_path_value,
+                        receipt,
+                        links=tuple(
+                            recorded if item.destination == old.destination else item
+                            for item in receipt.links
+                        ),
                     )
-                _unlink_destination(old.destination)
-                migrated_links.append(old)
+                assert recorded.destination_dev is not None
+                assert recorded.destination_ino is not None
+                _unlink_recorded_destination(recorded)
         if receipt is not None and receipt.pending_publish is not None:
             if not receipt.pending_publish.planned_links:
                 planned_publish = replace(
@@ -4799,14 +4895,6 @@ def _install_opencode_bound(
                         }.values()
                     )
                 )
-            ),
-            *(
-                f"retired-link rollback: {failure}"
-                for failure in _restore_opencode_links(removed_retired, config_dir)
-            ),
-            *(
-                f"legacy-link rollback: {failure}"
-                for failure in _restore_opencode_links(migrated_links, config_dir)
             ),
         ]
         for failure in rollback_failures:
@@ -5097,35 +5185,19 @@ def _prune_opencode_retired_links(
         has_identity = (
             link.destination_dev is not None and link.destination_ino is not None
         )
-        link_is_owned = has_identity and _recorded_opencode_link_is_live(link)
-        if not _lexists(link.destination) or not link_is_owned:
-            # Missing and retargeted destinations are not ours to remove.
+        if not has_identity:
+            # Receipt text without a frozen inode grants no deletion authority.
             continue
+        assert link.destination_dev is not None and link.destination_ino is not None
         try:
-            _unlink_destination(link.destination)
-        except OSError as error:
-            for restored in _restore_opencode_links(removed, config_dir):
-                error = InstallError(f"{error}; retired-link rollback: {restored}")
+            removed_exact = _unlink_recorded_destination(link)
+        except (OSError, InstallError) as error:
             raise InstallError(
                 f"cannot remove retired OpenCode link: {link.destination}: {error}"
             ) from error
-        removed.append(link)
+        if removed_exact:
+            removed.append(link)
     return tuple(retained), tuple(removed)
-
-
-def _restore_opencode_links(links: Sequence[ProfileLink], config_dir: Path) -> list[str]:
-    failures: list[str] = []
-    for link in reversed(tuple(links)):
-        if _lexists(link.destination):
-            continue
-        try:
-            _validate_opencode_destination(link.destination, config_dir)
-            _create_destination_link(link.destination, link.source)
-        except OSError as error:
-            failures.append(f"link {link.destination}: {error}")
-        except InstallError as error:
-            failures.append(str(error))
-    return failures
 
 
 def _anchor_committed_artifact_for_uninstall(
@@ -5329,14 +5401,19 @@ def _resume_opencode_teardown(
             except (OSError, InstallError) as error:
                 failures.append(f"staged link {link.staged_destination}: {error}")
                 continue
-            if not _recorded_opencode_link_is_live(link):
+            if link.destination_dev is None or link.destination_ino is None:
                 continue
             try:
-                _unlink_destination(link.destination)
+                # Preserve the target-and-inode proof seam before exact
+                # descriptor-bound deletion.  Recovery does not depend on the
+                # result because the inode may already be quarantined.
+                _recorded_opencode_link_is_live(link)
+                removed_exact = _unlink_recorded_destination(link)
             except (OSError, InstallError) as error:
                 failures.append(f"link {link.destination}: {error}")
                 continue
-            removed.append(link)
+            if removed_exact:
+                removed.append(link)
         if failures:
             raise InstallError(
                 "owned opencode link cleanup failed: " + "; ".join(failures)
@@ -5368,22 +5445,12 @@ def _resume_opencode_teardown(
             or current.artifact_anchor_ino is None
         ):
             raise InstallError("OpenCode teardown lacks a frozen anchor identity")
-        try:
-            anchor_metadata = _state_lstat(current.artifact_anchor)
-        except FileNotFoundError:
-            pass
-        else:
-            if (
-                anchor_metadata.st_dev == current.artifact_anchor_dev
-                and anchor_metadata.st_ino == current.artifact_anchor_ino
-                and stat.S_ISREG(anchor_metadata.st_mode)
-            ):
-                _unlink_artifact_anchor_identity(
-                    current.artifact_anchor,
-                    current.artifact_anchor_dev,
-                    current.artifact_anchor_ino,
-                )
-            # A foreign pathname replacement is intentionally preserved.
+        _unlink_artifact_anchor_identity(
+            current.artifact_anchor,
+            current.artifact_anchor_dev,
+            current.artifact_anchor_ino,
+        )
+        # A foreign pathname replacement is intentionally preserved.
         current = replace(current, teardown_phase="anchor-removed")
         _write_receipt(receipt_path_value, current)
 
