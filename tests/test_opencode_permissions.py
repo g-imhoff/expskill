@@ -285,7 +285,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
             }
             spec["agents"][name]["permission"]["bash"] = reordered
         spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_main=False, include_opencode=True)
         self.assertTrue(
             any("read-only Git permission" in error and "order" in error for error in errors),
             errors,
@@ -349,7 +349,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
             for rule in UNSAFE_WILDCARD_RULES:
                 spec["agents"][name]["permission"]["bash"][rule] = "allow"
         spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_main=False, include_opencode=True)
         self.assertTrue(
             any("read-only Git permission" in error for error in errors),
             errors,
