@@ -912,22 +912,33 @@ def _identity_value(value: os.stat_result | tuple[int, int]) -> tuple[int, int]:
 
 
 def _stat_name(parent_fd: int, name: str) -> os.stat_result | None:
+    """Observe a name, falling back to no-follow directory identity by fd."""
+
     try:
         return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
+    except OSError:
+        descriptor = -1
+        try:
+            descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+            return os.fstat(descriptor)
+        except FileNotFoundError:
+            return None
+        finally:
+            _close_owned_descriptors(descriptor)
 
 
 def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None = None) -> None:
     """Reclaim after identity checks; Linux has no inode-conditional rmdir/unlink."""
 
     try:
-        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
+        metadata = _stat_name(parent_fd, name)
+    except OSError:
         return
-    if expected is not None and (
-        metadata.st_dev != expected.st_dev or metadata.st_ino != expected.st_ino
-    ):
+    if metadata is None:
+        return
+    if expected is not None and _entry_identity(metadata) != _identity_value(expected):
         return
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         return
@@ -937,7 +948,11 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None =
         return
     try:
         opened = os.fstat(descriptor)
-        if opened.st_dev != metadata.st_dev or opened.st_ino != metadata.st_ino:
+        opened_identity = _entry_identity(opened)
+        if (
+            opened_identity != _entry_identity(metadata)
+            or (expected is not None and opened_identity != _identity_value(expected))
+        ):
             return
         for entry in list(os.scandir(descriptor)):
             child_metadata = entry.stat(follow_symlinks=False)
@@ -957,7 +972,13 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None =
                 # Unknown entries are preserved rather than guessed at.
                 continue
         try:
-            if _entry_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != _entry_identity(opened):
+            current = _stat_name(parent_fd, name)
+            if (
+                current is None
+                or stat.S_ISLNK(current.st_mode)
+                or not stat.S_ISDIR(current.st_mode)
+                or _entry_identity(current) != opened_identity
+            ):
                 return
         except OSError:
             return
@@ -1341,6 +1362,8 @@ def _replace_output(staging: Path, output: Path) -> None:
 
     staging = Path(os.path.abspath(os.fspath(staging)))
     output = Path(os.path.abspath(os.fspath(output)))
+    if staging == output:
+        raise BuildError("staging and output must be distinct")
     if staging.parent != output.parent:
         raise BuildError("staging and output must share one normalized parent")
     key = os.fspath(staging)
