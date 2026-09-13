@@ -27,16 +27,33 @@ ARTIFACT_MTIME = 0
 def artifact_output_relative(source_relative: str | Path) -> str | None:
     """Map a repository source path to its published artifact path."""
 
+    # Validate the spelling that the caller can actually observe before Path
+    # normalizes any raw string input.  A Path object may already have lost
+    # repeated separators or explicit ``.`` components; those spellings are
+    # intentionally not reconstructed here, while preserved ``..`` segments
+    # remain rejectable through this same lexical check.
+    lexical = str(source_relative)
+    lexical_parts = lexical.replace("\\", "/").split("/")
+    absolute = lexical.startswith(("/", "\\")) or (
+        len(lexical) >= 3 and lexical[1] == ":" and lexical[2] in "/\\"
+    )
+    if (
+        not lexical
+        or absolute
+        or any(part in {"", ".", ".."} for part in lexical_parts)
+    ):
+        return None
+
     relative = Path(source_relative)
     package_marker = Path("plugins") / "expskill"
     if relative.parts[:2] != package_marker.parts:
         return None
     within = Path(*relative.parts[2:])
-    if within.parts and within.parts[0] in COPY_TREES:
+    if len(within.parts) > 1 and within.parts[0] in COPY_TREES:
         return within.as_posix()
     if within in COPY_FILES:
         return within.as_posix()
-    if within.parts[:2] == COPY_LICENSES.parts:
+    if len(within.parts) > len(COPY_LICENSES.parts) and within.parts[:2] == COPY_LICENSES.parts:
         return within.as_posix()
     if (
         len(within.parts) == 3
