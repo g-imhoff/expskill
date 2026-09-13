@@ -40,8 +40,12 @@ def artifact_output_relative(source_relative: str | Path) -> str | None:
         return within.as_posix()
     if within.parts[:2] == ("opencode", PLATFORM_PLUGIN_DIRECTORY):
         return Path(*within.parts[1:]).as_posix()
-    if within.as_posix() in PLATFORM_FILES:
-        return within.as_posix()
+    if (
+        len(within.parts) == 2
+        and within.parts[0] == "opencode"
+        and within.parts[1] in PLATFORM_FILES
+    ):
+        return within.parts[1]
     return None
 
 

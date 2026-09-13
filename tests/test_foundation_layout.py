@@ -12,6 +12,12 @@ import unittest
 from pathlib import Path
 
 from scripts.build_opencode_package import BuildError, build_opencode_package
+from scripts.artifact_contract import (
+    PLATFORM_FILES,
+    PLATFORM_PLUGIN_DIRECTORY,
+    PLATFORM_PLUGIN_FILES,
+    artifact_output_relative,
+)
 from scripts.render_opencode import RenderError, render_agents, render_all, render_catalog
 
 
@@ -19,6 +25,42 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FoundationLayoutTests(unittest.TestCase):
+    def test_artifact_output_relative_declares_canonical_source_mapping(self) -> None:
+        package_root = Path("plugins/expskill")
+        cases = [
+            *[
+                (package_root / "opencode" / name, name)
+                for name in PLATFORM_FILES
+            ],
+            *[
+                (
+                    package_root / "opencode" / PLATFORM_PLUGIN_DIRECTORY / name,
+                    f"{PLATFORM_PLUGIN_DIRECTORY}/{name}",
+                )
+                for name in PLATFORM_PLUGIN_FILES
+            ],
+            (package_root / "skills" / "unslop" / "SKILL.md", "skills/unslop/SKILL.md"),
+            (package_root / "scripts" / "design_state.py", "scripts/design_state.py"),
+            (package_root / "assets" / "execution-policy.json", "assets/execution-policy.json"),
+            (
+                package_root / "third-party" / "licenses" / "mattpocock-skills-MIT.txt",
+                "third-party/licenses/mattpocock-skills-MIT.txt",
+            ),
+            (
+                package_root / "third-party" / "licenses" / "pstack-MIT.txt",
+                "third-party/licenses/pstack-MIT.txt",
+            ),
+            (Path("packages/expskill/opencode/agents.json"), None),
+            (Path("packages/opencode/package.json"), None),
+            (Path("packages/codex/README.md"), None),
+            (Path("packages/expskill/skills/unslop/SKILL.md"), None),
+            (Path("plugins/other/skills/unslop/SKILL.md"), None),
+            (package_root / "opencode" / "catalog.json", None),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(artifact_output_relative(source), expected)
+
     def test_plugin_tree_is_the_only_canonical_shared_source(self) -> None:
         plugin_root = ROOT / "plugins" / "expskill"
         self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
