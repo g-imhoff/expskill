@@ -131,6 +131,13 @@ class FoundationCorrectionTests(unittest.TestCase):
                         install_module._write_state_payload(
                             receipt, {"generation": "installer"}
                         )
+                # The failed reverse syscall leaves both exact identities in
+                # their recoverable names.  A lock-held retry restores the
+                # displaced public object before rejecting the write.
+                with self.assertRaises(InstallError):
+                    install_module._write_state_payload(
+                        receipt, {"generation": "installer"}
+                    )
             finally:
                 install_module._STATE_BINDINGS.pop(key, None)
                 install_module._close_state_binding(binding)
