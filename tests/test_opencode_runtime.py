@@ -26,9 +26,10 @@ import(%s).then(async (module) => {
       typeof module.UnslopPlugin === 'function' &&
       typeof module.default === 'object' &&
       typeof module.default?.id === 'string' &&
-      typeof module.default?.setup === 'function'
+      typeof module.default?.server === 'function' &&
+      module.default.server === module.UnslopPlugin
   );
-  const hooks = await module.UnslopPlugin({});
+  const hooks = await module.default.server({});
   const transform = hooks['experimental.chat.system.transform'];
   const compacting = hooks['experimental.session.compacting'];
 
@@ -72,7 +73,7 @@ import(%s).then(async (module) => {
 
 UNSLP_MISSING_SKILL_CASE = """
 import(%s).then(async (module) => {
-  const hooks = await module.UnslopPlugin({});
+  const hooks = await module.default.server({});
   const output = { system: ['base instructions'] };
   await hooks['experimental.chat.system.transform']({ sessionID: 'missing' }, output);
   const unchanged = output.system.length === 1 && output.system[0] === 'base instructions';
@@ -115,7 +116,8 @@ import(%s).then(async (module) => {
       typeof module.ExecutionPolicyPlugin === 'function' &&
       typeof module.default === 'object' &&
       typeof module.default?.id === 'string' &&
-      typeof module.default?.setup === 'function',
+      typeof module.default?.server === 'function' &&
+      module.default.server === module.ExecutionPolicyPlugin,
   );
   const implementPolicy = policy.routes.implement.standard;
   const planDesignPolicy = policy.routes['use-expskill']['parallel-plan-design'];
@@ -133,7 +135,7 @@ import(%s).then(async (module) => {
     ),
   );
 
-  const hooks = await module.ExecutionPolicyPlugin({});
+  const hooks = await module.default.server({});
   assert('hooks', 'tool.execute.before' in hooks && 'tool.execute.after' in hooks);
   const before = hooks['tool.execute.before'];
   const after = hooks['tool.execute.after'];
