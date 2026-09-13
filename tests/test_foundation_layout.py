@@ -70,6 +70,29 @@ class FoundationLayoutTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(artifact_output_relative(source), expected)
 
+    def test_artifact_output_relative_rejects_noncanonical_lexical_spellings(self) -> None:
+        package_root = "plugins/expskill"
+        adversarial: list[tuple[str | Path, None]] = [
+            # These must be rejected from the raw string before Path can
+            # normalize the spelling away.
+            (f"{package_root}//opencode/agents.json", None),
+            (f"{package_root}/./opencode/agents.json", None),
+            (f"/{package_root}/opencode/agents.json", None),
+            (f"{package_root}/opencode/agents.json/", None),
+            (f"{package_root}/opencode//agents.json", None),
+            (f"{package_root}/skills/../skills/unslop/SKILL.md", None),
+            (Path(package_root) / "skills" / ".." / "skills" / "unslop" / "SKILL.md", None),
+            (f"{package_root}/skills", None),
+            (f"{package_root}/scripts", None),
+            (f"{package_root}/third-party/licenses", None),
+            (Path(package_root) / "skills", None),
+            (Path(package_root) / "scripts", None),
+            (Path(package_root) / "third-party" / "licenses", None),
+        ]
+        for source, expected in adversarial:
+            with self.subTest(source=source):
+                self.assertEqual(artifact_output_relative(source), expected)
+
     def test_plugin_tree_is_the_only_canonical_shared_source(self) -> None:
         plugin_root = ROOT / "plugins" / "expskill"
         self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
