@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -478,6 +479,10 @@ def _open_state_binding(directory: Path, *, create: bool) -> _StateBinding | Non
             created_directories=tuple(created_directories),
         )
         _verify_state_binding(binding)
+        # The retained state-directory descriptor is also the transaction
+        # lock.  Retirement records below are safe to reclaim only while one
+        # installer owns this lock; Linux does not provide unlink-by-inode.
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return binding
     except Exception:
         if descriptor >= 0:
@@ -1056,123 +1061,115 @@ def _unlink_exact_leaf_via_exchange(
     expected: tuple[int, int],
     label: str,
 ) -> bool:
-    """Remove an exact leaf through a reversible final exchange boundary.
+    """Remove an exact leaf through a receipt-recoverable private record."""
 
-    Linux has no conditional unlink-by-inode operation.  The bound operation
-    therefore exchanges the public/recoverable name with a per-call private
-    sentinel, authenticates the non-destructive exchange result, restores any
-    foreign result, and only then unlinks names created by this call.  Callers
-    retain their durable receipt/quarantine authority until the final fsync.
-    """
+    return _remove_exact_via_exchange(
+        parent_fd, name, expected, label, directory=False
+    )
 
+
+def _retirement_record_descriptor(
+    candidate: str, *, directory: bool = False
+) -> tuple[str, tuple[int, int], tuple[int, int]] | None:
+    """Decode one identity-bearing retirement pathname from its right edge."""
+
+    suffix = ".retire-dir" if directory else ".retire"
+    if not candidate.endswith(suffix):
+        return None
+    encoded = candidate[: -len(suffix)]
     try:
-        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return False
-    if (current.st_dev, current.st_ino) != expected:
-        return False
-
-    sentinel = f".{name}.{uuid.uuid4().hex}.retire"
-    retired_sentinel = f".{name}.{uuid.uuid4().hex}.sentinel"
-    descriptor = -1
-    sentinel_identity: tuple[int, int] | None = None
-    exchanged = False
-    placeholder_moved = False
-    try:
-        descriptor = os.open(
-            sentinel,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=parent_fd,
+        base, expected_text, placeholder_text = encoded.rsplit(".", 2)
+        expected_dev, expected_ino = (
+            int(value, 16) for value in expected_text.split("-", 1)
         )
-        created = os.fstat(descriptor)
-        sentinel_identity = (created.st_dev, created.st_ino)
-        os.fsync(descriptor)
-        os.fsync(parent_fd)
-        _renameat_exchange(parent_fd, name, parent_fd, sentinel)
-        exchanged = True
-        moved = os.stat(sentinel, dir_fd=parent_fd, follow_symlinks=False)
-        placeholder = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            (moved.st_dev, moved.st_ino) != expected
-            or (placeholder.st_dev, placeholder.st_ino) != sentinel_identity
+        placeholder_dev, placeholder_ino = (
+            int(value, 16) for value in placeholder_text.split("-", 1)
+        )
+    except (TypeError, ValueError):
+        return None
+    if min(expected_dev, expected_ino, placeholder_dev, placeholder_ino) <= 0:
+        return None
+    return (
+        base.removeprefix("."),
+        (expected_dev, expected_ino),
+        (placeholder_dev, placeholder_ino),
+    )
+
+
+def _retirement_record_exists(
+    parent_fd: int,
+    name: str,
+    expected: tuple[int, int],
+    *,
+    directory: bool,
+) -> bool:
+    """Return whether a private record reserves this exact retirement."""
+
+    return any(
+        descriptor is not None
+        and descriptor[0] == name
+        and descriptor[1] == expected
+        for descriptor in (
+            _retirement_record_descriptor(candidate, directory=directory)
+            for candidate in os.listdir(parent_fd)
+        )
+    )
+
+
+def _exact_retired_object_exists(
+    parent_fd: int,
+    name: str,
+    *,
+    directory: bool,
+    expected: tuple[int, int] | None = None,
+) -> bool:
+    """Recognize an exact object at its identity-bearing retirement name."""
+
+    for candidate in os.listdir(parent_fd):
+        descriptor = _retirement_record_descriptor(candidate, directory=directory)
+        if descriptor is None or descriptor[0] != name:
+            continue
+        recorded, placeholder = descriptor[1:]
+        if expected is not None and recorded != expected:
+            continue
+        try:
+            retired = os.stat(
+                candidate, dir_fd=parent_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            continue
+        if (retired.st_dev, retired.st_ino) != recorded or (
+            stat.S_ISDIR(retired.st_mode) != directory
         ):
-            try:
-                _renameat_exchange(parent_fd, name, parent_fd, sentinel)
-                exchanged = False
-                os.fsync(parent_fd)
-            except (OSError, InstallError) as reverse_error:
-                try:
-                    live = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                    if (live.st_dev, live.st_ino) == sentinel_identity:
-                        _renameat_noreplace(
-                            parent_fd, name, parent_fd, retired_sentinel
-                        )
-                        _renameat_noreplace(parent_fd, sentinel, parent_fd, name)
-                        exchanged = False
-                        os.fsync(parent_fd)
-                except (OSError, InstallError):
-                    pass
-                raise InstallError(
-                    f"{label} replacement could not be restored after exchange"
-                ) from reverse_error
-            raise InstallError(f"{label} identity changed at final exchange")
-
-        _renameat_noreplace(parent_fd, name, parent_fd, retired_sentinel)
-        placeholder_moved = True
-        displaced_sentinel = os.stat(
-            retired_sentinel, dir_fd=parent_fd, follow_symlinks=False
+            continue
+        placeholder_name = (
+            f".{name}.{recorded[0]:x}-{recorded[1]:x}."
+            f"{placeholder[0]:x}-{placeholder[1]:x}.sentinel"
+            f"{'-dir' if directory else ''}"
         )
-        if (displaced_sentinel.st_dev, displaced_sentinel.st_ino) != sentinel_identity:
-            try:
-                _renameat_noreplace(parent_fd, retired_sentinel, parent_fd, name)
-                os.fsync(parent_fd)
-            except (OSError, InstallError):
-                pass
-            raise InstallError(f"{label} pathname changed after final exchange")
-
-        # Only per-call private names are unlinked, with no intervening
-        # pathname validation after the final exchange/rename boundaries.
-        os.unlink(sentinel, dir_fd=parent_fd)
-        exchanged = False
-        os.unlink(retired_sentinel, dir_fd=parent_fd)
-        os.fsync(parent_fd)
+        public = None
+        private_placeholder = None
+        try:
+            public = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        try:
+            private_placeholder = os.stat(
+                placeholder_name, dir_fd=parent_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            pass
+        for observed in (public, private_placeholder):
+            if observed is not None and (
+                not stat.S_ISREG(observed.st_mode)
+                or stat.S_ISLNK(observed.st_mode)
+                or (observed.st_dev, observed.st_ino) != placeholder
+            ):
+                return False
+        if public is not None and private_placeholder is not None:
+            return False
         return True
-    except InstallError:
-        raise
-    except OSError as error:
-        if exchanged and placeholder_moved:
-            try:
-                retained = os.stat(
-                    sentinel, dir_fd=parent_fd, follow_symlinks=False
-                )
-                if (retained.st_dev, retained.st_ino) == expected:
-                    _renameat_noreplace(parent_fd, sentinel, parent_fd, name)
-                    exchanged = False
-                    os.fsync(parent_fd)
-            except (OSError, InstallError):
-                # A foreign object won the recoverable pathname.  Never move
-                # or unlink it; the receipt remains live and the exact object
-                # remains under the private name for this failed operation.
-                pass
-        raise InstallError(f"cannot conditionally remove {label}: {error}") from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if not exchanged and sentinel_identity is not None:
-            for private_name in (sentinel, retired_sentinel):
-                try:
-                    private = os.stat(
-                        private_name, dir_fd=parent_fd, follow_symlinks=False
-                    )
-                    if (private.st_dev, private.st_ino) == sentinel_identity:
-                        os.unlink(private_name, dir_fd=parent_fd)
-                except OSError:
-                    pass
+    return False
 
 
 def _rmdir_exact_via_exchange(
@@ -1181,97 +1178,193 @@ def _rmdir_exact_via_exchange(
     expected: tuple[int, int],
     label: str,
 ) -> bool:
-    """Remove one empty exact directory through a reversible exchange."""
+    """Remove one empty exact directory through a recoverable exchange."""
+
+    return _remove_exact_via_exchange(
+        parent_fd, name, expected, label, directory=True
+    )
+
+
+def _remove_exact_via_exchange(
+    parent_fd: int,
+    name: str,
+    expected: tuple[int, int],
+    label: str,
+    *,
+    directory: bool,
+) -> bool:
+    """Retire an exact inode using a durable, identity-bearing private name.
+
+    Linux has no conditional unlink-by-inode operation.  The installer lock is
+    therefore part of the normal-reclamation boundary.  Before exchange, both
+    the owned and placeholder identities are encoded in a deterministic name
+    and made durable.  A retry can resume every exchange state.  Any observed
+    mismatch is preserved and reported so the caller cannot retire its receipt
+    authority.  The final path operation is still pathname based and is never
+    represented as stronger than that kernel primitive.
+    """
+
+    kind_suffix = "-dir" if directory else ""
+    prefix = f".{name}.{expected[0]:x}-{expected[1]:x}."
+    retire_suffix = f".retire{kind_suffix}"
+    sentinel_suffix = f".sentinel{kind_suffix}"
+
+    def metadata(candidate: str) -> os.stat_result | None:
+        try:
+            return os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
+    def identity(value: os.stat_result) -> tuple[int, int]:
+        return value.st_dev, value.st_ino
+
+    def require_kind(value: os.stat_result, description: str) -> None:
+        matches = stat.S_ISDIR(value.st_mode) if directory else not stat.S_ISDIR(value.st_mode)
+        if not matches:
+            raise InstallError(f"{label} {description} changed type")
+
+    def require_placeholder(value: os.stat_result, description: str) -> None:
+        if not stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
+            raise InstallError(f"{label} {description} changed type")
+
+    def private_names() -> tuple[str, tuple[int, int]] | None:
+        matches = [
+            candidate
+            for candidate in os.listdir(parent_fd)
+            if candidate.startswith(prefix) and candidate.endswith(retire_suffix)
+        ]
+        if len(matches) > 1:
+            raise InstallError(f"{label} has ambiguous retirement records")
+        if not matches:
+            return None
+        candidate = matches[0]
+        encoded = candidate[len(prefix) : -len(retire_suffix)]
+        try:
+            dev_text, ino_text = encoded.split("-", 1)
+            placeholder_identity = (int(dev_text, 16), int(ino_text, 16))
+        except ValueError as error:
+            raise InstallError(f"{label} retirement record is malformed") from error
+        if placeholder_identity[0] <= 0 or placeholder_identity[1] <= 0:
+            raise InstallError(f"{label} retirement record is malformed")
+        return candidate, placeholder_identity
 
     try:
-        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return False
-    if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != expected:
-        return False
-    sentinel = f".{name}.{uuid.uuid4().hex}.retire-dir"
-    retired_sentinel = f".{name}.{uuid.uuid4().hex}.sentinel-dir"
-    os.mkdir(sentinel, mode=0o700, dir_fd=parent_fd)
-    sentinel_metadata = os.stat(sentinel, dir_fd=parent_fd, follow_symlinks=False)
-    sentinel_identity = (sentinel_metadata.st_dev, sentinel_metadata.st_ino)
-    exchanged = False
-    placeholder_moved = False
-    try:
-        os.fsync(parent_fd)
-        _renameat_exchange(parent_fd, name, parent_fd, sentinel)
-        exchanged = True
-        moved = os.stat(sentinel, dir_fd=parent_fd, follow_symlinks=False)
-        placeholder = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            (moved.st_dev, moved.st_ino) != expected
-            or (placeholder.st_dev, placeholder.st_ino) != sentinel_identity
-        ):
+        record = private_names()
+        current = metadata(name)
+        if record is None:
+            if current is None:
+                return False
+            require_kind(current, "pathname")
+            if identity(current) != expected:
+                return False
+            # O_TMPFILE gives the exchange placeholder an identity before it
+            # has any pathname.  Its first and only link is therefore already
+            # the final receipt-derived retirement record; a crash cannot
+            # strand an unjournaled preparation name.
+            descriptor = os.open(
+                ".",
+                os.O_WRONLY
+                | getattr(os, "O_TMPFILE", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=parent_fd,
+            )
             try:
-                _renameat_exchange(parent_fd, name, parent_fd, sentinel)
-                exchanged = False
+                created = os.fstat(descriptor)
+                placeholder_identity = identity(created)
+                retirement = (
+                    f"{prefix}{placeholder_identity[0]:x}-{placeholder_identity[1]:x}"
+                    f"{retire_suffix}"
+                )
+                os.fsync(descriptor)
+                _link_open_descriptor(descriptor, parent_fd, retirement)
                 os.fsync(parent_fd)
-            except (OSError, InstallError) as reverse_error:
-                try:
-                    live = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                    if (live.st_dev, live.st_ino) == sentinel_identity:
-                        _renameat_noreplace(
-                            parent_fd, name, parent_fd, retired_sentinel
-                        )
-                        _renameat_noreplace(parent_fd, sentinel, parent_fd, name)
-                        exchanged = False
-                        os.fsync(parent_fd)
-                except (OSError, InstallError):
-                    pass
-                raise InstallError(
-                    f"{label} replacement could not be restored after exchange"
-                ) from reverse_error
-            raise InstallError(f"{label} identity changed at final exchange")
-        _renameat_noreplace(parent_fd, name, parent_fd, retired_sentinel)
-        placeholder_moved = True
-        moved_sentinel = os.stat(
-            retired_sentinel, dir_fd=parent_fd, follow_symlinks=False
+            finally:
+                os.close(descriptor)
+            record = retirement, placeholder_identity
+
+        retirement, placeholder_identity = record
+        placeholder = (
+            f"{prefix}{placeholder_identity[0]:x}-{placeholder_identity[1]:x}"
+            f"{sentinel_suffix}"
         )
-        if (moved_sentinel.st_dev, moved_sentinel.st_ino) != sentinel_identity:
-            try:
-                _renameat_noreplace(parent_fd, retired_sentinel, parent_fd, name)
-                os.fsync(parent_fd)
-            except (OSError, InstallError):
-                pass
-            raise InstallError(f"{label} pathname changed after final exchange")
-        os.rmdir(sentinel, dir_fd=parent_fd)
-        exchanged = False
-        os.rmdir(retired_sentinel, dir_fd=parent_fd)
+        retired = metadata(retirement)
+        if retired is None:
+            # Both terminal names absent means a prior unlink completed; the
+            # directory barrier below makes that absence durable on retry.
+            if metadata(placeholder) is not None or current is not None:
+                raise InstallError(f"{label} retirement record disappeared")
+            os.fsync(parent_fd)
+            return True
+        retired_identity = identity(retired)
+        if retired_identity == placeholder_identity:
+            require_placeholder(retired, "retirement placeholder")
+            if current is None or identity(current) != expected:
+                raise InstallError(f"{label} identity changed before final exchange")
+            require_kind(current, "pathname")
+            _renameat_exchange(parent_fd, name, parent_fd, retirement)
+            retired = metadata(retirement)
+            current = metadata(name)
+            if (
+                retired is None
+                or identity(retired) != expected
+                or current is None
+                or identity(current) != placeholder_identity
+            ):
+                try:
+                    _renameat_exchange(parent_fd, name, parent_fd, retirement)
+                    os.fsync(parent_fd)
+                except (OSError, InstallError) as reverse_error:
+                    raise InstallError(
+                        f"{label} replacement could not be restored after exchange"
+                    ) from reverse_error
+                raise InstallError(f"{label} identity changed at final exchange")
+            os.fsync(parent_fd)
+        elif retired_identity != expected:
+            raise InstallError(f"{label} retirement pathname was replaced")
+        else:
+            require_kind(retired, "retirement pathname")
+
+        current = metadata(name)
+        private_placeholder = metadata(placeholder)
+        if current is not None:
+            require_placeholder(current, "placeholder")
+            if identity(current) != placeholder_identity:
+                raise InstallError(f"{label} public pathname was replaced after exchange")
+            if private_placeholder is not None:
+                raise InstallError(f"{label} placeholder pathname is occupied")
+            _renameat_noreplace(parent_fd, name, parent_fd, placeholder)
+            os.fsync(parent_fd)
+            private_placeholder = metadata(placeholder)
+        if private_placeholder is not None:
+            require_placeholder(private_placeholder, "private placeholder")
+            if identity(private_placeholder) != placeholder_identity:
+                raise InstallError(f"{label} private placeholder was replaced")
+            # Revalidate immediately before the raw pathname operation.  The
+            # installer lock excludes another normal reclaimer; this is not a
+            # claim that unlink/rmdir itself is inode-conditional.
+            private_placeholder = metadata(placeholder)
+            if private_placeholder is None or identity(
+                private_placeholder
+            ) != placeholder_identity:
+                raise InstallError(f"{label} private placeholder changed before removal")
+            os.unlink(placeholder, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+
+        retired = metadata(retirement)
+        if retired is None or identity(retired) != expected:
+            raise InstallError(f"{label} retirement pathname changed before removal")
+        require_kind(retired, "retired object")
+        if directory:
+            os.rmdir(retirement, dir_fd=parent_fd)
+        else:
+            os.unlink(retirement, dir_fd=parent_fd)
         os.fsync(parent_fd)
         return True
     except InstallError:
         raise
     except OSError as error:
-        if exchanged and placeholder_moved:
-            try:
-                retained = os.stat(
-                    sentinel, dir_fd=parent_fd, follow_symlinks=False
-                )
-                if (retained.st_dev, retained.st_ino) == expected:
-                    _renameat_noreplace(parent_fd, sentinel, parent_fd, name)
-                    exchanged = False
-                    os.fsync(parent_fd)
-            except (OSError, InstallError):
-                pass
         raise InstallError(f"cannot conditionally remove {label}: {error}") from error
-    finally:
-        if not exchanged:
-            for private_name in (sentinel, retired_sentinel):
-                try:
-                    private = os.stat(
-                        private_name, dir_fd=parent_fd, follow_symlinks=False
-                    )
-                    if (
-                        stat.S_ISDIR(private.st_mode)
-                        and (private.st_dev, private.st_ino) == sentinel_identity
-                    ):
-                        os.rmdir(private_name, dir_fd=parent_fd)
-                except OSError:
-                    pass
 
 
 def _receipt_links(
@@ -3314,7 +3407,12 @@ def _unlink_recorded_destination(
     if bound is None:
         return False
     binding, parent_fd = bound
-    if not original_owned and not quarantine_owned:
+    retirement_owned = _retirement_record_exists(
+        parent_fd, destination.name, identity, directory=False
+    ) or _retirement_record_exists(
+        parent_fd, quarantine.name, identity, directory=False
+    )
+    if not original_owned and not quarantine_owned and not retirement_owned:
         try:
             os.fsync(parent_fd)
             _verify_config_binding(binding)
@@ -3354,6 +3452,29 @@ def _unlink_destination(destination: Path) -> bool:
             return None
 
     try:
+        if _retirement_record_exists(
+            parent_fd, quarantine, expected, directory=False
+        ):
+            removed = _unlink_exact_leaf_via_exchange(
+                parent_fd, quarantine, expected, "OpenCode link quarantine"
+            )
+            os.fsync(parent_fd)
+            _verify_config_binding(binding)
+            binding.validated_leaves.pop(key, None)
+            return removed
+        if _retirement_record_exists(
+            parent_fd, destination.name, expected, directory=False
+        ):
+            removed = _unlink_exact_leaf_via_exchange(
+                parent_fd,
+                destination.name,
+                expected,
+                "OpenCode config destination",
+            )
+            os.fsync(parent_fd)
+            _verify_config_binding(binding)
+            binding.validated_leaves.pop(key, None)
+            return removed
         quarantined = metadata(quarantine)
         original = metadata(destination.name)
         quarantine_is_exact = quarantined is not None and (
@@ -3457,7 +3578,13 @@ def _fixed_opencode_artifact(state_home: Path, candidate: Path | None = None) ->
     if _lexists(expected):
         metadata = _state_lstat(expected)
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise InstallError(f"opencode artifact is not a regular directory: {expected}")
+            binding = _state_binding(expected)
+            if binding is None or not _exact_retired_object_exists(
+                binding.directory_fd,
+                expected.name,
+                directory=True,
+            ):
+                raise InstallError(f"opencode artifact is not a regular directory: {expected}")
     return expected
 
 
@@ -3495,6 +3622,20 @@ def _remove_opencode_artifact_exact(path: Path, dev: int, ino: int) -> None:
                 | getattr(os, "O_DIRECTORY", 0)
                 | getattr(os, "O_NOFOLLOW", 0),
             )
+        if _retirement_record_exists(
+            parent_fd, path.name, (dev, ino), directory=True
+        ):
+            if not _rmdir_exact_via_exchange(
+                parent_fd,
+                path.name,
+                (dev, ino),
+                "OpenCode artifact directory",
+            ):
+                raise InstallError(f"OpenCode artifact identity changed: {path}")
+            if binding is not None:
+                os.fsync(parent_fd)
+                _verify_state_binding(binding)
+            return
         target_fd = os.open(
             path.name,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -3574,12 +3715,17 @@ def _pending_identity(path: Path, dev: int, ino: int) -> bool:
     try:
         metadata = _state_lstat(path)
     except OSError:
-        return False
-    return (
+        metadata = None
+    if metadata is not None and (
         stat.S_ISDIR(metadata.st_mode)
         and not stat.S_ISLNK(metadata.st_mode)
         and metadata.st_dev == dev
         and metadata.st_ino == ino
+    ):
+        return True
+    binding = _state_binding(path)
+    return binding is not None and _retirement_record_exists(
+        binding.directory_fd, path.name, (dev, ino), directory=True
     )
 
 
@@ -4039,7 +4185,21 @@ def _rollback_pending_publish(
         receipt = _receipt_with_pending_publish(receipt, pending)
         _write_receipt(receipt_path, receipt)
     if pending.phase == "rollback-prepared":
-        link_failures = _rollback_links(receipt.links)
+        # A planned roster is not ownership evidence.  Initial-publication
+        # rollback may remove only a staged or final inode whose exact identity
+        # was durably recorded before publication; target text alone never
+        # authorizes deletion of a same-target foreign symlink.
+        link_failures = _rollback_links(
+            tuple(
+                link
+                for link in receipt.links
+                if link.staged_destination is not None
+                or (
+                    link.destination_dev is not None
+                    and link.destination_ino is not None
+                )
+            )
+        )
         if link_failures:
             raise InstallError(
                 "OpenCode publication link rollback failed: "
@@ -6317,6 +6477,52 @@ def _recover_receipt_deletion(
     if binding is None:
         return
     _verify_state_binding(binding)
+    names = tuple(os.listdir(binding.directory_fd))
+    # A process may have stopped after the exchange inside exact receipt
+    # retirement.  Its identity-bearing private name is itself the durable
+    # recovery record; validate the receipt contents and encoded phase before
+    # allowing the locked retry to reclaim it.
+    for name in names:
+        retirement = _retirement_record_descriptor(name)
+        if retirement is None:
+            continue
+        base_name, identity, _placeholder_identity = retirement
+        encoded = _receipt_deletion_quarantine_identity(receipt_path, base_name)
+        if encoded is None:
+            encoded = _receipt_deletion_quarantine_identity(
+                receipt_path, base_name, suffix=".pin"
+            )
+        if encoded is None or encoded[:2] != identity:
+            continue
+        try:
+            exact = os.stat(
+                name, dir_fd=binding.directory_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(exact.st_mode) or (
+            exact.st_dev,
+            exact.st_ino,
+        ) != identity:
+            continue
+        terminal = _read_opencode_receipt(
+            receipt_path.parent / name,
+            repository_root,
+            config_dir,
+            state_home,
+        )
+        if terminal is None or terminal.lineage is None:
+            continue
+        current_phase, pending_phase = _receipt_deletion_phase(terminal)
+        if (current_phase, pending_phase) != (encoded[2], encoded[3]):
+            continue
+        _unlink_exact_leaf_via_exchange(
+            binding.directory_fd,
+            base_name,
+            identity,
+            "receipt retirement",
+        )
+        os.fsync(binding.directory_fd)
     names = tuple(os.listdir(binding.directory_fd))
     for name in names:
         encoded = _receipt_deletion_quarantine_identity(receipt_path, name)
