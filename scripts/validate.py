@@ -8,9 +8,63 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
+
+# Validation is a read-only contract check; do not leave import caches in the
+# checkout while exercising the temporary renderer/builder artifact.
+sys.dont_write_bytecode = True
+
+try:
+    from scripts.build_opencode_package import BuildError as OpencodeBuildError
+    from scripts.build_opencode_package import build_opencode_package
+    from scripts.artifact_contract import (
+        ARTIFACT_DIRECTORY_MODE,
+        ARTIFACT_FILE_MODE,
+        ARTIFACT_MTIME,
+        COPY_FILES,
+        COPY_LICENSES,
+        COPY_TREES,
+        PLATFORM_FILES,
+        PLATFORM_PLUGIN_DIRECTORY,
+        PLATFORM_PLUGIN_FILES,
+        PROVENANCE_SCHEMA_VERSION,
+        artifact_output_relative,
+        canonical_provenance,
+    )
+    from scripts.render_opencode import RenderError as AgentSyncError
+    from scripts.render_opencode import (
+        OPENCODE_DESCRIPTION_MAX_LENGTH,
+        render_agents,
+        render_all,
+        skill_inventory,
+    )
+except ModuleNotFoundError:
+    from build_opencode_package import BuildError as OpencodeBuildError
+    from build_opencode_package import build_opencode_package
+    from artifact_contract import (
+        ARTIFACT_DIRECTORY_MODE,
+        ARTIFACT_FILE_MODE,
+        ARTIFACT_MTIME,
+        COPY_FILES,
+        COPY_LICENSES,
+        COPY_TREES,
+        PLATFORM_FILES,
+        PLATFORM_PLUGIN_DIRECTORY,
+        PLATFORM_PLUGIN_FILES,
+        PROVENANCE_SCHEMA_VERSION,
+        artifact_output_relative,
+        canonical_provenance,
+    )
+    from render_opencode import RenderError as AgentSyncError
+    from render_opencode import (
+        OPENCODE_DESCRIPTION_MAX_LENGTH,
+        render_agents,
+        render_all,
+        skill_inventory,
+    )
 
 
 MARKETPLACE_NAME = "expskill"
@@ -51,6 +105,17 @@ PROJECT_IDENTITY_TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+
+
+def _bounded_description(value: Any, label: str) -> str:
+    """Independently enforce OpenCode's bounded description contract."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise AgentSyncError(f"{label} must be non-empty")
+    normalized = " ".join(value.split())
+    if len(normalized) <= OPENCODE_DESCRIPTION_MAX_LENGTH:
+        return normalized
+    return normalized[: OPENCODE_DESCRIPTION_MAX_LENGTH - 3].rstrip() + "..."
 PLUGIN_INTERFACE_FIELDS = {
     "displayName",
     "shortDescription",
@@ -950,45 +1015,64 @@ def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_resu
     return entries
 
 
-def validate_repository(root: Path) -> tuple[str, ...]:
+def validate_repository(
+    root: Path, *, include_opencode: bool = True, include_main: bool | None = None
+) -> tuple[str, ...]:
     repository_root = Path(root).expanduser()
     try:
         repository_root = repository_root.resolve(strict=True)
     except (OSError, RuntimeError):
         repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
-    marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
-    marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
-    if marketplace is not None:
-        _validate_marketplace(marketplace, repository_root, errors)
-
-    plugin_root = repository_root / "plugins" / PLUGIN_NAME
-    if _validate_plugin_root(plugin_root, errors):
-        manifest_path = _required_package_path(
-            plugin_root,
-            ".codex-plugin/plugin.json",
-            "plugin manifest",
-            "file",
-            errors,
+    if include_main is None:
+        # A package-only OpenCode fixture is a valid intermediate source tree,
+        # while an integration checkout carrying the Codex plugin must validate
+        # both surfaces.  Never let the package duplicate stand in for the
+        # marketplace plugin when both trees are present.
+        package_root = repository_root / "packages" / PLUGIN_NAME
+        include_main = os.path.lexists(repository_root / "plugins") or not os.path.lexists(
+            package_root
         )
-        manifest = (
-            _load_json_object(manifest_path, "plugin.json", errors)
-            if manifest_path is not None
-            else None
-        )
-        if manifest is not None:
-            _validate_plugin_manifest(manifest, plugin_root, errors)
+    if include_main:
+        marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
+        marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
+        if marketplace is not None:
+            _validate_marketplace(marketplace, repository_root, errors)
 
-        _validate_agents(plugin_root, errors)
-        _validate_review_handoff_contract(plugin_root, errors)
-        _validate_policy(plugin_root, errors)
-        _validate_unslop_hook(plugin_root, errors)
-        _validate_third_party_sources(plugin_root, errors)
-        _validate_helper_and_package_layout(plugin_root, errors)
-    _validate_public_readme(repository_root, errors)
-    _validate_removed_repository_local_skill(repository_root, errors)
-    _validate_skill_punctuation(repository_root, errors)
-    _validate_no_legacy_project_identity(repository_root, errors)
+        plugin_root = repository_root / "plugins" / PLUGIN_NAME
+        if _validate_plugin_root(plugin_root, errors):
+            manifest_path = _required_package_path(
+                plugin_root,
+                ".codex-plugin/plugin.json",
+                "plugin manifest",
+                "file",
+                errors,
+            )
+            manifest = (
+                _load_json_object(manifest_path, "plugin.json", errors)
+                if manifest_path is not None
+                else None
+            )
+            if manifest is not None:
+                _validate_plugin_manifest(manifest, plugin_root, errors)
+
+            _validate_agents(plugin_root, errors)
+            _validate_review_handoff_contract(plugin_root, errors)
+            _validate_policy(plugin_root, errors)
+            _validate_unslop_hook(plugin_root, errors)
+            _validate_third_party_sources(plugin_root, errors)
+            _validate_helper_and_package_layout(plugin_root, errors)
+        _validate_public_readme(repository_root, errors)
+        _validate_removed_repository_local_skill(repository_root, errors)
+        _validate_skill_punctuation(repository_root, errors)
+        _validate_no_legacy_project_identity(repository_root, errors)
+    if include_opencode:
+        opencode_root = repository_root / "packages" / "expskill" / "opencode"
+        # Main/Codex fixtures predate the intermediate OpenCode package.  When
+        # it is present, validate the complete package contract; its absence
+        # is not a defect in the main plugin checkout.
+        if os.path.lexists(opencode_root):
+            _validate_opencode_package(repository_root, errors)
     return tuple(errors)
 
 
@@ -1426,10 +1510,11 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         frontmatter = _parse_frontmatter(contents, skill_root.name, errors)
         if frontmatter is None:
             continue
-        if set(frontmatter) != {"name", "description"}:
+        if set(frontmatter) not in ({"name", "description"}, {"name", "description", "metadata"}):
             errors.append(
                 f"skill {skill_root.name!r} frontmatter keys must be exactly name and description"
             )
+        _validate_shared_skill_metadata(skill_root, frontmatter, errors)
         name = frontmatter.get("name", "")
         description = frontmatter.get("description", "")
         if not isinstance(name, str) or not name.strip():
@@ -1453,7 +1538,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 )
         if isinstance(description, str) and any(character in description for character in "<>\r\n"):
             errors.append(f"skill {skill_root.name!r} description contains forbidden characters")
-        if len(contents.splitlines()) >= 500:
+        body_lines = contents.splitlines()[_frontmatter_line_count(contents):]
+        if len(body_lines) >= 500:
             errors.append(f"skill {skill_root.name!r} SKILL.md body is overlong")
         normalized_contents = contents.lower()
         if any(retired in normalized_contents for retired in RETIRED_SKILLS):
@@ -2048,7 +2134,7 @@ def _validate_public_third_party_derivations(
             b"",
             1,
         )
-        if public_unslop != expected_unslop:
+        if _without_shared_metadata_block(public_unslop) != expected_unslop:
             errors.append("public skill 'unslop' does not match its declared derived upstream copy")
 
     try:
@@ -2075,7 +2161,7 @@ def _validate_public_third_party_derivations(
             b"report. Ask",
         )
         expected_grill = frontmatter + b"\n" + body
-        if public_grill != expected_grill:
+        if _without_shared_metadata_block(public_grill) != expected_grill:
             errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
 
 
@@ -2148,6 +2234,22 @@ def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> Non
                 errors.append(f"skill text {relative} contains an em dash")
             if ";" in contents:
                 errors.append(f"skill text {relative} contains a semicolon")
+    opencode_root = repository_root / "packages" / "expskill" / "opencode"
+    if opencode_root.is_dir():
+        for path in sorted(opencode_root.rglob("*")):
+            if "skills" in path.relative_to(opencode_root).parts:
+                continue
+            if path.suffix.lower() != ".md" or not path.is_file() or path.is_symlink():
+                continue
+            try:
+                contents = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            relative = path.relative_to(repository_root)
+            if "\N{EM DASH}" in contents:
+                errors.append(f"skill text {relative} contains an em dash")
+            if ";" in contents:
+                errors.append(f"skill text {relative} contains a semicolon")
 
 
 def _validate_no_legacy_project_identity(
@@ -2182,7 +2284,7 @@ def _validate_no_legacy_project_identity(
 
 def _parse_frontmatter(
     contents: str, skill_directory: str, errors: list[str]
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     lines = contents.splitlines()
     if not lines or lines[0].strip() != "---":
         errors.append(f"skill {skill_directory!r} must start with frontmatter")
@@ -2192,36 +2294,129 @@ def _parse_frontmatter(
     except ValueError:
         errors.append(f"skill {skill_directory!r} frontmatter is not closed")
         return None
-    values: dict[str, str] = {}
+    values: dict[str, object] = {}
+    nested_parent: str | None = None
     for line in lines[1:end]:
-        key, separator, raw_value = line.partition(":")
+        if not line.strip():
+            nested_parent = None
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        if "\t" in line[:indentation]:
+            errors.append(f"skill {skill_directory!r} frontmatter contains a tab")
+            continue
+        key, separator, raw_value = line.strip().partition(":")
         if not separator:
             if line.strip():
                 errors.append(f"skill {skill_directory!r} frontmatter contains an invalid line")
+            nested_parent = None
             continue
         key = key.strip()
         value = raw_value.strip()
         if not key:
             errors.append(f"skill {skill_directory!r} frontmatter contains an empty key")
+            nested_parent = None
             continue
-        if key in values:
+        if indentation == 0:
+            nested_parent = None
+            if key in values:
+                errors.append(f"skill {skill_directory!r} frontmatter key {key!r} is duplicated")
+                continue
+            if not value:
+                if key != "metadata":
+                    errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
+                    continue
+                values[key] = {}
+                nested_parent = key
+                continue
+            if value.startswith(("[", "{")):
+                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
+                continue
+            values[key] = _parse_frontmatter_scalar(value, skill_directory, key, errors)
+            continue
+        if nested_parent != "metadata" or indentation != 2:
+            errors.append(f"skill {skill_directory!r} frontmatter contains an invalid line")
+            continue
+        nested = values["metadata"]
+        assert isinstance(nested, dict)
+        if key in nested:
             errors.append(f"skill {skill_directory!r} frontmatter key {key!r} is duplicated")
             continue
-        if value.startswith(("[", "{")):
+        if not value:
             errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
             continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            try:
-                parsed = ast.literal_eval(value)
-            except (SyntaxError, ValueError):
-                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is invalid")
-                continue
-            if not isinstance(parsed, str):
-                errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a string")
-                continue
-            value = parsed
-        values[key] = value
+        parsed = _parse_frontmatter_scalar(value, skill_directory, key, errors)
+        if parsed is None:
+            continue
+        nested[key] = parsed
     return values
+
+
+def _parse_frontmatter_scalar(
+    value: str, skill_directory: str, key: str, errors: list[str]
+) -> str | None:
+    if value.startswith(("[", "{")):
+        errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a scalar")
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is invalid")
+            return None
+        if not isinstance(parsed, str):
+            errors.append(f"skill {skill_directory!r} frontmatter value {key!r} is not a string")
+            return None
+        return parsed
+    return value
+
+
+SHARED_SKILL_METADATA_KEYS = ("opencode/slash", "opencode/autoinvoke")
+SHARED_METADATA_BLOCK_EXPLICIT_ONLY = (
+    'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "false"\n'
+)
+SHARED_METADATA_BLOCK_ROUTER = (
+    'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "true"\n'
+)
+
+
+def _frontmatter_line_count(contents: str) -> int:
+    lines = contents.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return 0
+    try:
+        return lines.index("---", 1) + 1
+    except ValueError:
+        return 0
+
+
+def _without_shared_metadata_block(contents: bytes) -> bytes:
+    for block in (SHARED_METADATA_BLOCK_EXPLICIT_ONLY, SHARED_METADATA_BLOCK_ROUTER):
+        marker = block.encode("utf-8")
+        if marker in contents:
+            return contents.replace(marker, b"", 1)
+    return contents
+
+
+def _validate_shared_skill_metadata(
+    skill_root: Path, frontmatter: dict[str, object], errors: list[str]
+) -> None:
+    metadata = frontmatter.get("metadata")
+    if metadata is None:
+        return
+    if not isinstance(metadata, dict):
+        errors.append(f"skill {skill_root.name!r} frontmatter metadata must be a mapping")
+        return
+    for key in sorted(str(item) for item in metadata):
+        if key not in SHARED_SKILL_METADATA_KEYS:
+            errors.append(f"skill {skill_root.name!r} frontmatter metadata key {key!r} is unexpected")
+    for key in SHARED_SKILL_METADATA_KEYS:
+        if key not in metadata:
+            continue
+        value = metadata[key]
+        if value not in ("true", "false"):
+            errors.append(
+                f"skill {skill_root.name!r} frontmatter metadata {key!r} must be 'true' or 'false'"
+            )
 
 
 def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
@@ -2533,6 +2728,944 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
                     f"agent profile {expected_name!r} instructions differ from their "
                     "validated normalized content"
                 )
+
+
+OPENCODE_PACKAGE_NAME = "opencode-expskill"
+OPENCODE_PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
+OPENCODE_AGENTS = (
+    "expskill-explorer",
+    "expskill-planner",
+    "expskill-designer",
+    "expskill-implementer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+# These four profiles are intentionally stricter than the planner: their
+# Bash permission is an allow-list of bounded Git inspection forms.  The
+# revision/path tails are safe only after Git's option terminators; arbitrary
+# subcommands and arbitrary option-bearing Git invocations remain denied.
+OPENCODE_READ_ONLY_GIT_AGENTS = (
+    "expskill-explorer",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+OPENCODE_READ_ONLY_GIT_RULE_ORDER = (
+    ("*", "deny"),
+    ("git status", "allow"),
+    ("git status --short", "allow"),
+    ("git status --short --branch", "allow"),
+    ("git status --porcelain", "allow"),
+    ("git status --porcelain=v1", "allow"),
+    ("git branch", "allow"),
+    ("git branch --show-current", "allow"),
+    ("git branch --list", "allow"),
+    ("git branch --list -- *", "allow"),
+    ("git --no-pager diff --no-ext-diff --no-textconv --no-renames", "allow"),
+    (
+        "git --no-pager diff --no-ext-diff --no-textconv --no-renames --end-of-options *",
+        "allow",
+    ),
+    ("git --no-pager diff --no-ext-diff --no-textconv --no-renames -- *", "allow"),
+    ("git --no-pager log --no-ext-diff --no-textconv --no-renames", "allow"),
+    (
+        "git --no-pager log --no-ext-diff --no-textconv --no-renames --end-of-options *",
+        "allow",
+    ),
+    ("git --no-pager show --no-ext-diff --no-textconv --no-renames", "allow"),
+    (
+        "git --no-pager show --no-ext-diff --no-textconv --no-renames --end-of-options *",
+        "allow",
+    ),
+    ("git * --output*", "deny"),
+    ("git * -o*", "deny"),
+    ("git * --ext-diff*", "deny"),
+    ("git * --textconv*", "deny"),
+    ("git *>*", "deny"),
+    ("git *<*", "deny"),
+)
+OPENCODE_READ_ONLY_GIT_RULES = dict(OPENCODE_READ_ONLY_GIT_RULE_ORDER)
+OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
+OPENCODE_PACKAGE_EXPORTS = {".": "./index.js"}
+OPENCODE_PACKAGE_FILES = (
+    "LICENSE",
+    "README.md",
+    "index.js",
+    "agents.json",
+    "catalog.json",
+    "provenance.json",
+    "agents/",
+    "assets/",
+    "commands/",
+    "plugins/",
+    "scripts/",
+    "skills/",
+    "third-party/licenses/",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo",
+)
+OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
+    "description",
+    "mode",
+    "model",
+    "reasoningEffort",
+    "temperature",
+    "permission",
+}
+OPENCODE_AGENT_BOUNDARIES = {
+    "expskill-explorer": ("read-only mode", "no delegation", "no scope expansion"),
+    "expskill-planner": (
+        "private plan graph",
+        "never edit",
+        "only plan graph writer",
+        "do not delegate",
+    ),
+    "expskill-designer": (
+        "isolated helper-owned worktree",
+        "one coherent local candidate commit",
+        "do not write the plan graph",
+        "do not delegate",
+    ),
+    "expskill-test-engineer": ("no product implementation", "no delegation"),
+    "expskill-implementer": (
+        "red-green-refactor",
+        "no delegation",
+        "no scope expansion",
+        "never push",
+    ),
+    "expskill-review": (
+        "read-only mode",
+        "invalid handoff",
+        "do not treat another agent's conclusion as evidence",
+    ),
+    "expskill-spec": (
+        "no tracked-source edits",
+        "invalid handoff",
+        "pass or fail",
+    ),
+}
+OPENCODE_READ_ONLY_AGENTS = (
+    "expskill-explorer",
+    "expskill-planner",
+    "expskill-test-engineer",
+    "expskill-review",
+    "expskill-spec",
+)
+OPENCODE_WORKSPACE_AGENTS = (
+    "expskill-designer",
+    "expskill-implementer",
+)
+
+
+def _validate_opencode_root(package_root: Path, errors: list[str]) -> bool:
+    if package_root.is_symlink():
+        errors.append(f"opencode package root must not be a symlink: {package_root}")
+        return False
+    metadata = _lstat(package_root)
+    if metadata is None:
+        errors.append(f"opencode package directory is missing: {package_root}")
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"opencode package root must be a directory: {package_root}")
+        return False
+    try:
+        resolved = package_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        errors.append(f"opencode package root cannot be resolved: {package_root}: {error}")
+        return False
+    if resolved != package_root:
+        errors.append(f"opencode package root resolves outside its lexical path: {package_root}")
+        return False
+    return True
+
+
+def _validate_opencode_platform_source(package_root: Path, errors: list[str]) -> None:
+    """Reject any checked-in platform entry outside the exact source roster."""
+
+    expected = set(OPENCODE_PLATFORM_FILES) | {"plugins"}
+    try:
+        entries = {path.name: path for path in package_root.iterdir()}
+    except OSError as error:
+        errors.append(f"opencode platform source could not be listed: {error}")
+        return
+    unexpected = sorted(set(entries) - expected)
+    missing = sorted(expected - set(entries))
+    if unexpected:
+        errors.append(f"opencode platform source has unexpected entries: {unexpected!r}")
+    if missing:
+        errors.append(f"opencode platform source is missing entries: {missing!r}")
+    for name in OPENCODE_PLATFORM_FILES:
+        path = package_root / name
+        metadata = _lstat(path)
+        if metadata is None or not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            errors.append(f"opencode platform source file is not regular: {path}")
+    plugins = package_root / "plugins"
+    metadata = _lstat(plugins)
+    if metadata is None or not stat.S_ISDIR(metadata.st_mode) or plugins.is_symlink():
+        errors.append(f"opencode plugin source directory is not regular: {plugins}")
+        return
+    expected_plugins = set(OPENCODE_PLUGINS)
+    try:
+        plugin_entries = {path.name: path for path in plugins.iterdir()}
+    except OSError as error:
+        errors.append(f"opencode plugin source could not be listed: {error}")
+        return
+    if set(plugin_entries) != expected_plugins:
+        errors.append(
+            "opencode plugin source roster must be exactly "
+            f"{sorted(expected_plugins)!r}, found {sorted(plugin_entries)!r}"
+        )
+    for name in expected_plugins:
+        path = plugins / name
+        metadata = _lstat(path)
+        if metadata is None or not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            errors.append(f"opencode plugin source file is not regular: {path}")
+
+
+def _parse_overlay_frontmatter(
+    contents: str, label: str, errors: list[str]
+) -> tuple[dict[str, str], set[str], str] | None:
+    lines = contents.splitlines()
+    if not lines or lines[0].strip() != "---":
+        errors.append(f"{label} must start with frontmatter")
+        return None
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        errors.append(f"{label} frontmatter is not closed")
+        return None
+    scalars: dict[str, str] = {}
+    mappings: set[str] = set()
+    for line in lines[1:end]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation != 0:
+            continue
+        key, separator, raw_value = line.strip().partition(":")
+        if not separator or not key:
+            errors.append(f"{label} frontmatter contains an invalid line")
+            continue
+        if key in scalars or key in mappings:
+            errors.append(f"{label} frontmatter key {key!r} is duplicated")
+            continue
+        value = raw_value.strip()
+        if not value:
+            mappings.add(key)
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                errors.append(f"{label} frontmatter value {key!r} is invalid")
+                continue
+            if not isinstance(parsed, str):
+                errors.append(f"{label} frontmatter value {key!r} is not a string")
+                continue
+            value = parsed
+        scalars[key] = value
+    return scalars, mappings, "\n".join(lines[1:end])
+
+
+def _read_overlay_text(path: Path, label: str, errors: list[str]) -> str | None:
+    if path.is_symlink():
+        errors.append(f"{label} must not be a symlink: {path}")
+        return None
+    try:
+        metadata = _lstat(path)
+    except OSError:
+        metadata = None
+    if metadata is None or not stat.S_ISREG(metadata.st_mode):
+        errors.append(f"{label} is missing: {path}")
+        return None
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"{label} could not be read: {error}")
+        return None
+    if not contents.strip():
+        errors.append(f"{label} must be non-empty: {path}")
+        return None
+    if PLACEHOLDER in contents:
+        errors.append(f"{label} contains a placeholder")
+        return None
+    return contents
+
+
+def _active_opencode_model(package_root: Path) -> tuple[str | None, str | None]:
+    try:
+        spec = json.loads((package_root / "agents.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(spec, dict):
+        return None, None
+    profiles = spec.get("model_profiles")
+    default_name = spec.get("default_model_profile")
+    if not isinstance(profiles, dict) or not isinstance(default_name, str):
+        return None, None
+    active = profiles.get(default_name)
+    if not isinstance(active, dict):
+        return None, None
+    model = active.get("model")
+    effort = active.get("reasoningEffort")
+    return (
+        model if isinstance(model, str) and model.strip() else None,
+        effort if isinstance(effort, str) and effort.strip() else None,
+    )
+
+
+def _validator_source_inventory(root: Path) -> list[tuple[str, Path]]:
+    """Walk the contract roster independently of the package builder."""
+
+    package_root = root / "packages" / "expskill"
+    paths: list[tuple[str, Path]] = []
+
+    def add(path: Path) -> None:
+        relative = path.relative_to(root).as_posix()
+        metadata = os.lstat(path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"source is not a regular file: {path}")
+        paths.append((relative, path))
+
+    def walk(directory: Path) -> None:
+        metadata = os.lstat(directory)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise OSError(f"source directory is not regular: {directory}")
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            child_metadata = os.lstat(child)
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise OSError(f"source entry must not be a symlink: {child}")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                walk(child)
+            elif stat.S_ISREG(child_metadata.st_mode):
+                relative = child.relative_to(directory)
+                if "__pycache__" not in relative.parts and child.suffix not in {".pyc", ".pyo"}:
+                    add(child)
+            else:
+                raise OSError(f"source entry is not regular: {child}")
+
+    for tree in COPY_TREES:
+        walk(package_root / tree)
+    for relative in COPY_FILES:
+        add(package_root / relative)
+    walk(package_root / COPY_LICENSES)
+    platform_root = package_root / "opencode"
+    for name in PLATFORM_FILES:
+        add(platform_root / name)
+    walk(platform_root / PLATFORM_PLUGIN_DIRECTORY)
+    walk(package_root / "assets" / "agents")
+    add(root / "scripts/artifact_contract.py")
+    add(root / "scripts/build_opencode_package.py")
+    add(root / "scripts/render_opencode.py")
+    return sorted(paths, key=lambda item: item[0])
+
+
+def _artifact_output_relative(source_relative: str) -> str | None:
+    """Map one provenance input to its published artifact path."""
+
+    return artifact_output_relative(source_relative)
+
+
+def _artifact_inventory(
+    artifact: Path,
+) -> tuple[dict[str, os.stat_result], list[str]]:
+    """Enumerate every artifact entry without following symlinks."""
+
+    entries: dict[str, os.stat_result] = {}
+    errors: list[str] = []
+    try:
+        root_metadata = os.lstat(artifact)
+    except OSError as error:
+        return {}, [f"opencode artifact root cannot be inspected: {error}"]
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        return {}, [f"opencode artifact root must be a regular directory: {artifact}"]
+    pending = [artifact]
+    while pending:
+        current = pending.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError as error:
+            errors.append(f"opencode artifact directory cannot be listed: {current}: {error}")
+            continue
+        for child in children:
+            relative = child.relative_to(artifact).as_posix()
+            try:
+                metadata = os.lstat(child)
+            except OSError as error:
+                errors.append(f"opencode artifact entry cannot be inspected: {child}: {error}")
+                continue
+            entries[relative] = metadata
+            if stat.S_ISLNK(metadata.st_mode):
+                errors.append(f"opencode artifact entry must not be a symlink: {child}")
+            elif stat.S_ISDIR(metadata.st_mode):
+                pending.append(child)
+            elif not stat.S_ISREG(metadata.st_mode):
+                errors.append(f"opencode artifact entry must be regular: {child}")
+    return entries, errors
+
+
+def _validate_built_opencode_artifact(
+    repository_root: Path,
+    artifact: Path,
+    rendered: dict[str, str],
+    errors: list[str],
+) -> None:
+    """Validate the exact built bytes, provenance, inventory, and metadata."""
+
+    expected_files: dict[str, bytes] = {}
+    package_root = repository_root / "packages" / "expskill"
+    platform_root = package_root / "opencode"
+    try:
+        for name in PLATFORM_FILES:
+            expected_files[name] = (platform_root / name).read_bytes()
+        for name in PLATFORM_PLUGIN_FILES:
+            expected_files[f"{PLATFORM_PLUGIN_DIRECTORY}/{name}"] = (
+                platform_root / PLATFORM_PLUGIN_DIRECTORY / name
+            ).read_bytes()
+        for relative, source in _validator_source_inventory(repository_root):
+            output_relative = _artifact_output_relative(relative)
+            if output_relative is not None:
+                expected_files[output_relative] = source.read_bytes()
+        expected_files.update(
+            {relative: contents.encode("utf-8") for relative, contents in rendered.items()}
+        )
+        expected_inputs = [
+            {"path": relative, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+            for relative, source in _validator_source_inventory(repository_root)
+        ]
+    except (OSError, OpencodeBuildError, RuntimeError) as error:
+        errors.append(f"opencode artifact inputs could not be inventoried: {error}")
+        return
+
+    provenance_path = artifact / "provenance.json"
+    provenance: object | None = None
+    expected_files["provenance.json"] = canonical_provenance(expected_inputs)
+    try:
+        provenance = json.loads(provenance_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(f"opencode artifact provenance is invalid: {error}")
+    if not isinstance(provenance, dict):
+        errors.append("opencode artifact provenance must be a JSON object")
+    else:
+        if set(provenance) != {"schema_version", "inputs"}:
+            errors.append("opencode artifact provenance must contain exactly schema_version and inputs")
+        if provenance.get("schema_version") != PROVENANCE_SCHEMA_VERSION:
+            errors.append(
+                f"opencode artifact provenance schema_version must be {PROVENANCE_SCHEMA_VERSION!r}"
+            )
+        inputs = provenance.get("inputs")
+        if not isinstance(inputs, list):
+            errors.append("opencode artifact provenance inputs must be a list")
+        else:
+            normalized_inputs: list[dict[str, str]] = []
+            for index, entry in enumerate(inputs):
+                if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                    errors.append(f"opencode artifact provenance input {index} is malformed")
+                    continue
+                path = entry.get("path")
+                digest = entry.get("sha256")
+                if not isinstance(path, str) or not isinstance(digest, str):
+                    errors.append(f"opencode artifact provenance input {index} has invalid fields")
+                    continue
+                normalized_inputs.append({"path": path, "sha256": digest})
+            if [item["path"] for item in normalized_inputs] != sorted(
+                item["path"] for item in normalized_inputs
+            ):
+                errors.append("opencode artifact provenance paths must be sorted")
+            if len({item["path"] for item in normalized_inputs}) != len(normalized_inputs):
+                errors.append("opencode artifact provenance paths must be unique")
+            if normalized_inputs != expected_inputs:
+                errors.append("opencode artifact provenance digests do not match every expected input")
+    expected_paths: set[str] = set(expected_files)
+    expected_paths.add("provenance.json")
+    expected_entries = set(expected_paths)
+    for relative in expected_paths:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_entries.add(parent.as_posix())
+            parent = parent.parent
+    actual_entries, inventory_errors = _artifact_inventory(artifact)
+    errors.extend(inventory_errors)
+    try:
+        artifact_metadata = os.lstat(artifact)
+    except OSError as error:
+        artifact_metadata = None
+        errors.append(f"opencode artifact root cannot be read for metadata: {error}")
+    if artifact_metadata is not None:
+        if stat.S_IMODE(artifact_metadata.st_mode) != ARTIFACT_DIRECTORY_MODE:
+            errors.append("opencode artifact root has non-normalized mode")
+        if artifact_metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append("opencode artifact root has non-normalized mtime")
+    actual_paths = set(actual_entries)
+    for relative in sorted(actual_paths - expected_entries):
+        errors.append(f"opencode artifact contains unexpected entry: {relative}")
+    for relative in sorted(expected_entries - actual_paths):
+        errors.append(f"opencode artifact is missing entry: {relative}")
+    for relative, metadata in actual_entries.items():
+        if stat.S_ISDIR(metadata.st_mode):
+            expected_mode = ARTIFACT_DIRECTORY_MODE
+        elif stat.S_ISREG(metadata.st_mode):
+            expected_mode = ARTIFACT_FILE_MODE
+        else:
+            continue
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            errors.append(f"opencode artifact entry {relative} has non-normalized mode")
+        if metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append(f"opencode artifact entry {relative} has non-normalized mtime")
+    for relative, expected in expected_files.items():
+        path = artifact / relative
+        try:
+            actual = path.read_bytes()
+        except OSError as error:
+            errors.append(f"opencode artifact file {relative} could not be read: {error}")
+            continue
+        if actual != expected:
+            errors.append(f"opencode artifact file {relative} does not match its accepted bytes")
+
+
+def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None:
+    package_root = repository_root / "packages" / "expskill" / "opencode"
+    if not _validate_opencode_root(package_root, errors):
+        return
+    _validate_opencode_platform_source(package_root, errors)
+    _validate_policy(package_root.parent, errors)
+    try:
+        skill_names = skill_inventory(repository_root)
+        rendered = render_all(repository_root)
+    except AgentSyncError as error:
+        errors.append(f"opencode sources cannot be rendered: {error}")
+        return
+
+    # Platform-owned files are checked in, while commands, agents, shared
+    # trees, and the runtime catalog are deliberately validated from a fresh
+    # temporary artifact.  Validation therefore exercises the same pure
+    # renderer and builder used by releases without mutating this checkout.
+    _validate_opencode_manifest(package_root, errors)
+    _validate_opencode_agent_spec(package_root, errors)
+    _validate_opencode_plugins(package_root, errors)
+    with tempfile.TemporaryDirectory(prefix="expskill-opencode-validate-") as temporary:
+        artifact = Path(temporary) / "artifact"
+        try:
+            build_opencode_package(repository_root, artifact)
+        except (OpencodeBuildError, OSError) as error:
+            errors.append(f"opencode artifact could not be built: {error}")
+            return
+        _validate_built_opencode_artifact(repository_root, artifact, rendered, errors)
+        _validate_opencode_shared_skills(repository_root / "packages" / "expskill", artifact, errors, skill_names)
+        _validate_opencode_commands(artifact, errors, skill_names)
+        _validate_opencode_agents(repository_root, repository_root / "packages" / "expskill", artifact, errors)
+        _validate_opencode_policy_asset(repository_root / "packages" / "expskill", artifact, errors)
+        _validate_opencode_catalog(artifact, rendered, errors)
+
+
+def _validate_opencode_manifest(package_root: Path, errors: list[str]) -> None:
+    manifest_path = package_root / "package.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        errors.append(f"opencode package manifest could not be read: {error}")
+        return
+    except json.JSONDecodeError as error:
+        errors.append(f"opencode package manifest is not valid JSON: {error.msg}")
+        return
+    if not isinstance(manifest, dict):
+        errors.append("opencode package manifest must contain a JSON object")
+        return
+    _reject_placeholders(manifest, "opencode package.json", errors)
+    if manifest.get("name") != OPENCODE_PACKAGE_NAME:
+        errors.append(
+            f"opencode package name must be {OPENCODE_PACKAGE_NAME!r}, "
+            f"got {manifest.get('name')!r}"
+        )
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        errors.append("opencode package version must be a non-empty string")
+    elif version != PLUGIN_VERSION:
+        errors.append(
+            f"opencode package version must match the Codex base version "
+            f"{PLUGIN_VERSION!r}, got {version!r}"
+        )
+    if manifest.get("private") is True:
+        errors.append("opencode package manifest must be publishable")
+    if manifest.get("type") != "module":
+        errors.append("opencode package manifest type must be 'module'")
+    if manifest.get("main") != "./index.js":
+        errors.append("opencode package manifest main must be './index.js'")
+    if manifest.get("exports") != OPENCODE_PACKAGE_EXPORTS:
+        errors.append("opencode package manifest must declare the exact root export")
+    if manifest.get("files") != list(OPENCODE_PACKAGE_FILES):
+        errors.append("opencode package manifest must declare the exact publish file roster")
+    if manifest.get("license") != "MIT":
+        errors.append("opencode package manifest license must be 'MIT'")
+
+
+def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None:
+    spec_path = package_root / "agents.json"
+    spec = _load_json_object(spec_path, "opencode agent spec", errors)
+    if spec is None:
+        return
+    if spec.get("schema_version") != "opencode-agents.v1":
+        errors.append("opencode agent spec schema_version must be 'opencode-agents.v1'")
+    profiles = spec.get("model_profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        errors.append("opencode agent spec must declare model_profiles")
+        return
+    default_name = spec.get("default_model_profile")
+    if not isinstance(default_name, str) or default_name not in profiles:
+        errors.append("opencode agent spec default_model_profile must name a declared profile")
+    for profile_name, profile in profiles.items():
+        if not isinstance(profile, dict):
+            errors.append(f"opencode model profile {profile_name!r} must be a mapping")
+            continue
+        model = profile.get("model")
+        effort = profile.get("reasoningEffort")
+        if not isinstance(model, str) or not model.strip() or "/" not in model:
+            errors.append(
+                f"opencode model profile {profile_name!r} model must be a provider/model string"
+            )
+        if not isinstance(effort, str) or not effort.strip():
+            errors.append(
+                f"opencode model profile {profile_name!r} must declare reasoningEffort"
+            )
+    if not isinstance(spec.get("runtime_paragraph"), str) or not str(
+        spec.get("runtime_paragraph")
+    ).strip():
+        errors.append("opencode agent spec must declare a non-empty runtime_paragraph")
+    entries = spec.get("agents")
+    if not isinstance(entries, dict) or set(entries) != set(OPENCODE_AGENTS):
+        errors.append("opencode agent spec agents must cover the exact agent roster")
+        return
+    for name in OPENCODE_READ_ONLY_GIT_AGENTS:
+        entry = entries.get(name)
+        if not isinstance(entry, dict):
+            continue
+        permission = entry.get("permission")
+        if not isinstance(permission, dict):
+            continue
+        bash = permission.get("bash")
+        if bash != OPENCODE_READ_ONLY_GIT_RULES:
+            errors.append(
+                f"opencode agent {name!r} read-only Git permission must use the bounded "
+                "inspection rule set"
+            )
+        elif list(bash.items()) != list(OPENCODE_READ_ONLY_GIT_RULE_ORDER):
+            errors.append(
+                f"opencode agent {name!r} read-only Git permission must preserve the "
+                "canonical rule order because OpenCode uses the last matching rule"
+            )
+
+
+def _validate_opencode_shared_skills(
+    codex_root: Path,
+    package_root: Path,
+    errors: list[str],
+    skill_names: tuple[str, ...],
+) -> None:
+    skills_entry = package_root / "skills"
+    if not skills_entry.exists():
+        errors.append(f"opencode shared skills entry is missing: {skills_entry}")
+        return
+    for name in skill_names:
+        label = f"opencode shared skill {name!r}"
+        try:
+            shared = (codex_root / "skills" / name / "SKILL.md").read_bytes()
+        except OSError as error:
+            errors.append(f"{label} canonical skill could not be read: {error}")
+            continue
+        try:
+            exposed = (skills_entry / name / "SKILL.md").read_bytes()
+        except OSError:
+            errors.append(f"{label} is missing: {skills_entry / name / 'SKILL.md'}")
+            continue
+        if exposed != shared:
+            errors.append(f"{label} is not the exact shared base")
+            continue
+        try:
+            contents = shared.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"{label} canonical skill is not UTF-8 text")
+            continue
+        probe: list[str] = []
+        frontmatter = _parse_frontmatter(contents, name, probe)
+        if probe or frontmatter is None:
+            continue
+        metadata = frontmatter.get("metadata")
+        if not isinstance(metadata, dict) or set(metadata) != set(SHARED_SKILL_METADATA_KEYS):
+            errors.append(f"{label} frontmatter metadata must declare the exact opencode keys")
+            continue
+        if metadata.get("opencode/slash") != "true":
+            errors.append(f"{label} frontmatter metadata opencode/slash must be 'true'")
+        expected_autoinvoke = "true" if name == "use-expskill" else "false"
+        if metadata.get("opencode/autoinvoke") != expected_autoinvoke:
+            errors.append(
+                f"{label} frontmatter metadata opencode/autoinvoke must be "
+                f"{expected_autoinvoke!r}"
+            )
+        description = frontmatter.get("description")
+        if isinstance(description, str) and len(description) > 1024:
+            errors.append(f"{label} description exceeds the opencode discovery limit")
+
+
+def _validate_opencode_commands(
+    package_root: Path, errors: list[str], skill_names: tuple[str, ...]
+) -> None:
+    commands_root = package_root / "commands"
+    if not commands_root.is_dir() or commands_root.is_symlink():
+        errors.append(f"opencode commands directory is missing: {commands_root}")
+        return
+    actual = {
+        path.name
+        for path in commands_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    expected = {f"{name}.md" for name in skill_names}
+    for name in sorted(expected - actual):
+        errors.append(f"opencode command {name!r} is missing")
+    for name in sorted(actual - expected):
+        errors.append(f"opencode unexpected command entry {name!r}")
+    for skill in skill_names:
+        path = commands_root / f"{skill}.md"
+        contents = _read_overlay_text(path, f"opencode command {skill!r}", errors)
+        if contents is None:
+            continue
+        parsed = _parse_overlay_frontmatter(contents, f"opencode command {skill!r}", errors)
+        if parsed is None:
+            continue
+        scalars, _mappings, _block = parsed
+        if set(scalars) != {"description"}:
+            errors.append(f"opencode command {skill!r} frontmatter keys must be exactly description")
+            continue
+        description = scalars["description"]
+        if not description.strip() or len(description) > 160:
+            errors.append(f"opencode command {skill!r} description must be 1-160 characters")
+        if any(character in description for character in "<>\r\n"):
+            errors.append(f"opencode command {skill!r} description contains forbidden characters")
+        body = contents.splitlines()
+        try:
+            end = body.index("---", 1)
+            text = "\n".join(body[end + 1 :])
+        except ValueError:
+            continue
+        for marker in (f"`{skill}`", "skill tool", "$ARGUMENTS"):
+            if marker not in text:
+                errors.append(f"opencode command {skill!r} body must reference {marker}")
+
+
+def _validate_opencode_agents(
+    repository_root: Path, codex_root: Path, package_root: Path, errors: list[str]
+) -> None:
+    agents_root = package_root / "agents"
+    if not agents_root.is_dir() or agents_root.is_symlink():
+        errors.append(f"opencode agents directory is missing: {agents_root}")
+        return
+    actual = {
+        path.name
+        for path in agents_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    expected = {f"{name}.md" for name in OPENCODE_AGENTS}
+    for name in sorted(expected - actual):
+        errors.append(f"opencode agent {name!r} is missing")
+    for name in sorted(actual - expected):
+        errors.append(f"opencode unexpected agent entry {name!r}")
+    try:
+        rendered = render_agents(repository_root)
+    except AgentSyncError as error:
+        errors.append(f"opencode agents cannot be rendered from shared sources: {error}")
+        return
+    stale: list[str] = []
+    for name in OPENCODE_AGENTS:
+        path = agents_root / f"{name}.md"
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if current != rendered[name]:
+            stale.append(name)
+    if stale:
+        errors.append(
+            "opencode agents differ from their shared sources "
+            f"({', '.join(stale)}); rebuild the explicit OpenCode output"
+        )
+        return
+    profile_model, profile_effort = _active_opencode_model(package_root)
+    for name in OPENCODE_AGENTS:
+        path = agents_root / f"{name}.md"
+        contents = _read_overlay_text(path, f"opencode agent {name!r}", errors)
+        if contents is None:
+            continue
+        parsed = _parse_overlay_frontmatter(contents, f"opencode agent {name!r}", errors)
+        if parsed is None:
+            continue
+        scalars, mappings, block = parsed
+        keys = set(scalars) | mappings
+        required = {"description", "mode", "model", "reasoningEffort", "permission"}
+        if not required <= keys <= OPENCODE_AGENT_ALLOWED_FRONTMATTER:
+            errors.append(
+                f"opencode agent {name!r} frontmatter keys must be exactly "
+                "description, mode, model, reasoningEffort, temperature, and permission"
+            )
+            continue
+        if name in ("expskill-review", "expskill-spec") and "temperature" not in scalars:
+            errors.append(f"opencode agent {name!r} frontmatter must declare temperature")
+        if "permission" not in mappings:
+            errors.append(f"opencode agent {name!r} permission must be a mapping")
+        if scalars.get("mode") != "subagent":
+            errors.append(f"opencode agent {name!r} mode must be subagent")
+        if profile_model is not None and scalars.get("model") != profile_model:
+            errors.append(
+                f"opencode agent {name!r} model must match the active model profile"
+            )
+        if profile_effort is not None and scalars.get("reasoningEffort") != profile_effort:
+            errors.append(
+                f"opencode agent {name!r} reasoningEffort must match the active model profile"
+            )
+        try:
+            profile = tomllib.loads(
+                (codex_root / "assets" / "agents" / f"{name}.toml").read_text(encoding="utf-8")
+            )
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            errors.append(f"opencode agent {name!r} canonical profile could not be read: {error}")
+            continue
+        try:
+            expected_description = _bounded_description(
+                profile.get("description"), f"canonical agent profile {name!r} description"
+            )
+        except AgentSyncError as error:
+            errors.append(str(error))
+            expected_description = None
+        if expected_description is not None and scalars.get("description") != expected_description:
+            errors.append(
+                f"opencode agent {name!r} description must match the bounded canonical profile"
+            )
+        for marker in ("task: deny", "question: deny"):
+            if marker not in block:
+                errors.append(f"opencode agent {name!r} permission must declare {marker}")
+        if name in OPENCODE_READ_ONLY_AGENTS:
+            if "edit: deny" not in block:
+                errors.append(f"opencode agent {name!r} must be read-only")
+        else:
+            if "edit: allow" not in block:
+                errors.append(f"opencode agent {name!r} must allow workspace edits")
+            for marker in ('git push *": deny', 'git merge *": deny', 'gh *": deny'):
+                if marker not in block:
+                    errors.append(f"opencode agent {name!r} permission must declare {marker}")
+        instructions = profile.get("developer_instructions", "")
+        normalized = " ".join(contents.lower().split())
+        if isinstance(instructions, str) and instructions.strip():
+            first_sentence = instructions.strip().split("\n")[0].strip().lower()
+            if first_sentence and first_sentence not in normalized:
+                errors.append(
+                    f"opencode agent {name!r} body must carry the canonical instructions"
+                )
+        for phrase in OPENCODE_AGENT_BOUNDARIES[name]:
+            if phrase not in normalized:
+                errors.append(f"opencode agent {name!r} body must include {phrase!r}")
+
+
+def _validate_opencode_policy_asset(
+    codex_root: Path,
+    package_root: Path,
+    errors: list[str],
+) -> None:
+    canonical = codex_root / POLICY_PATH
+    mirror = _required_package_path(
+        package_root,
+        POLICY_PATH,
+        "opencode execution policy asset",
+        "file",
+        errors,
+    )
+    if mirror is None:
+        return
+    try:
+        canonical_bytes = canonical.read_bytes()
+        mirror_bytes = mirror.read_bytes()
+    except OSError as error:
+        errors.append(f"opencode execution policy asset could not be read: {error}")
+        return
+    if mirror_bytes != canonical_bytes:
+        errors.append("opencode execution policy asset must mirror the canonical Codex asset")
+
+
+def _validate_opencode_catalog(
+    package_root: Path, rendered: dict[str, str], errors: list[str]
+) -> None:
+    catalog_path = package_root / "catalog.json"
+    catalog = _load_json_object(catalog_path, "opencode runtime catalog", errors)
+    if catalog is None:
+        return
+    try:
+        expected = json.loads(rendered["catalog.json"])
+    except (KeyError, json.JSONDecodeError) as error:
+        errors.append(f"opencode runtime catalog renderer output is invalid: {error}")
+        return
+    if catalog != expected:
+        errors.append("opencode runtime catalog differs from the pure renderer output")
+    commands = catalog.get("commands")
+    if not isinstance(commands, dict):
+        errors.append("opencode runtime catalog commands must be an object")
+        return
+    for name, entry in commands.items():
+        if not isinstance(entry, dict):
+            errors.append(f"opencode runtime catalog command {name!r} must be an object")
+            continue
+        description = entry.get("description")
+        if not isinstance(description, str) or not 1 <= len(description) <= OPENCODE_DESCRIPTION_MAX_LENGTH:
+            errors.append(
+                f"opencode runtime catalog command {name!r} description must be 1-160 characters"
+            )
+
+
+def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
+    plugins_root = package_root / "plugins"
+    if not plugins_root.is_dir() or plugins_root.is_symlink():
+        errors.append(f"opencode plugins directory is missing: {plugins_root}")
+        return
+    actual = {
+        path.name
+        for path in plugins_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    if actual != set(OPENCODE_PLUGINS):
+        errors.append(
+            f"opencode plugins must be exactly {sorted(OPENCODE_PLUGINS)!r}, "
+            f"found {sorted(actual)!r}"
+        )
+    unslop = _read_overlay_text(plugins_root / "unslop.js", "opencode unslop plugin", errors)
+    if unslop is not None:
+        for marker in (
+            "experimental.chat.system.transform",
+            "experimental.session.compacting",
+            "5000",
+            "unslop-scope",
+            "SKILL.md",
+        ):
+            if marker not in unslop:
+                errors.append(f"opencode unslop plugin is missing required marker {marker!r}")
+    policy = _read_overlay_text(
+        plugins_root / "execution-policy.js", "opencode execution-policy plugin", errors
+    )
+    if policy is not None:
+        for marker in (
+            "tool.execute.before",
+            "execution-policy.json",
+            "max_agent_calls",
+            "maxAgentCalls",
+            "allowed_profiles",
+            "selected",
+            "expskill-",
+            "implement.standard",
+            "use-expskill.parallel-plan-design",
+            "routeBudgets",
+            "failed to load",
+        ):
+            if marker not in policy:
+                errors.append(f"opencode execution-policy plugin is missing required marker {marker!r}")
 
 
 def main(argv: list[str] | None = None) -> int:

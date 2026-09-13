@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "provenance": {
+    "codex": "https://api.github.com/repos/openai/codex/releases/tags/rust-v0.153.4",
+    "opencode": "https://api.github.com/repos/anomalyco/opencode/releases/tags/v1.18.29"
+  },
+  "clis": {
+    "codex": {
+      "version": "0.153.4",
+      "tag": "rust-v0.153.4",
+      "platforms": {
+        "linux-x86_64": {
+          "archive": "codex-x86_64-unknown-linux-musl.tar.gz",
+          "binary_name": "codex-x86_64-unknown-linux-musl",
+          "sha256": "f479424eca092484dc40d87ae28c44f4cc40234a60045d6131e493800d814a30",
+          "url": "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "linux-aarch64": {
+          "archive": "codex-aarch64-unknown-linux-musl.tar.gz",
+          "binary_name": "codex-aarch64-unknown-linux-musl",
+          "sha256": "5cda6182bd94c3a30f2eb63a495489ebf7f691fddb14d70f48c6c1a5071b6cde",
+          "url": "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "darwin-arm64": {
+          "archive": "codex-aarch64-apple-darwin.tar.gz",
+          "binary_name": "codex-aarch64-apple-darwin",
+          "sha256": "8cf911ea676523bfb2121ec561848d2aba564890ad536db4d8a3353f2b9850b1",
+          "url": "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-aarch64-apple-darwin.tar.gz"
+        },
+        "darwin-x86_64": {
+          "archive": "codex-x86_64-apple-darwin.tar.gz",
+          "binary_name": "codex-x86_64-apple-darwin",
+          "sha256": "d69200f0bf841b1d1a07f80b80cf742a2e4fc2bab91ae8a44b1042f8e8ca9fa4",
+          "url": "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-x86_64-apple-darwin.tar.gz"
+        }
+      }
+    },
+    "opencode": {
+      "version": "1.18.29",
+      "tag": "v1.18.29",
+      "platforms": {
+        "linux-x86_64": {
+          "archive": "opencode-linux-x64.tar.gz",
+          "binary_name": "opencode",
+          "sha256": "ea800b7ff56226b70952126c9fc1e2517ca4c4b5682fd9d3f9e87449697a1194",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-linux-x64.tar.gz"
+        },
+        "linux-aarch64": {
+          "archive": "opencode-linux-arm64.tar.gz",
+          "binary_name": "opencode",
+          "sha256": "70baf769395ca4e7a68924026530c390eace194f3b7e4919d4efcb2aa2eed3c0",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-linux-arm64.tar.gz"
+        },
+        "darwin-arm64": {
+          "archive": "opencode-darwin-arm64.zip",
+          "binary_name": "opencode",
+          "sha256": "fe764f7f360c584a83e18dd5f23fb1a6b2725f5ee8854b0252fe558f7798e946",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-darwin-arm64.zip"
+        },
+        "darwin-x86_64": {
+          "archive": "opencode-darwin-x64.zip",
+          "binary_name": "opencode",
+          "sha256": "9858853e7bacdbbd22c2d70c377e009dc4b354dd04f5588705411e7afb89fd2d",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-darwin-x64.zip"
+        }
+      }
+    }
+  }
+}
