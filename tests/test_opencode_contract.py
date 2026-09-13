@@ -52,6 +52,20 @@ class OpencodeContractTests(unittest.TestCase):
         errors = validate_repository(ROOT)
         self.assertFalse([error for error in errors if "opencode" in error], errors)
 
+    def test_default_validation_rejects_missing_whole_source_surfaces(self) -> None:
+        for surface, expected_error in (
+            ("plugins", "plugin directory is missing"),
+            ("packages", "opencode package directory is missing"),
+        ):
+            with self.subTest(surface=surface):
+                root = self.copy_repository()
+                shutil.rmtree(root / surface)
+                errors = validate_repository(root)
+                self.assertTrue(
+                    any(expected_error in error for error in errors),
+                    errors,
+                )
+
     def test_artifact_contains_regular_dynamic_shared_skill_inventory(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
         names = skill_inventory(ROOT)

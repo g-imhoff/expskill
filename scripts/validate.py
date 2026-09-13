@@ -1016,7 +1016,7 @@ def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_resu
 
 
 def validate_repository(
-    root: Path, *, include_opencode: bool = True, include_main: bool | None = None
+    root: Path, *, include_opencode: bool | None = None, include_main: bool = True
 ) -> tuple[str, ...]:
     repository_root = Path(root).expanduser()
     try:
@@ -1024,14 +1024,16 @@ def validate_repository(
     except (OSError, RuntimeError):
         repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
-    if include_main is None:
-        # A package-only OpenCode fixture is a valid intermediate source tree,
-        # while an integration checkout carrying the Codex plugin must validate
-        # both surfaces.  Never let the package duplicate stand in for the
-        # marketplace plugin when both trees are present.
-        package_root = repository_root / "packages" / PLUGIN_NAME
-        include_main = os.path.lexists(repository_root / "plugins") or not os.path.lexists(
-            package_root
+    if include_opencode is None:
+        opencode_root = repository_root / "packages" / PLUGIN_NAME / "opencode"
+        # The builder remains outside packages/, so a complete checkout still
+        # reports a deleted OpenCode package instead of treating it as absent.
+        include_opencode = any(
+            os.path.lexists(path)
+            for path in (
+                repository_root / "scripts" / "build_opencode_package.py",
+                opencode_root,
+            )
         )
     if include_main:
         marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
@@ -1067,12 +1069,7 @@ def validate_repository(
         _validate_skill_punctuation(repository_root, errors)
         _validate_no_legacy_project_identity(repository_root, errors)
     if include_opencode:
-        opencode_root = repository_root / "packages" / "expskill" / "opencode"
-        # Main/Codex fixtures predate the intermediate OpenCode package.  When
-        # it is present, validate the complete package contract; its absence
-        # is not a defect in the main plugin checkout.
-        if os.path.lexists(opencode_root):
-            _validate_opencode_package(repository_root, errors)
+        _validate_opencode_package(repository_root, errors)
     return tuple(errors)
 
 
@@ -3671,8 +3668,24 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the expskill repository contract.")
     parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--include-main",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the main Codex plugin surface (default: enabled)",
+    )
+    parser.add_argument(
+        "--include-opencode",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="validate the OpenCode package surface (default: infer from repository capability)",
+    )
     args = parser.parse_args(argv)
-    errors = validate_repository(args.root)
+    errors = validate_repository(
+        args.root,
+        include_main=args.include_main,
+        include_opencode=args.include_opencode,
+    )
     if errors:
         for error in errors:
             print(f"- {error}")

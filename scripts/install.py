@@ -1856,11 +1856,9 @@ def _canonical_opencode_repository_root(repo_root: Path) -> Path:
 
 
 def _validate_repository(repository_root: Path) -> None:
-    # OpenCode's isolated package fixtures intentionally contain only the
-    # intermediate package tree.  A real integration checkout also carries
-    # the Codex marketplace/plugin tree, which must be validated alongside it.
-    has_main_plugin = os.path.lexists(repository_root / "plugins")
-    errors = validate_repository(repository_root, include_main=has_main_plugin)
+    errors = validate_repository(
+        repository_root, include_main=False, include_opencode=True
+    )
     # The upstream-derived copies are intentionally editable canonical skill
     # sources.  Their parity diagnostics are release hygiene checks, not
     # semantic defects that should prevent rebuilding a local artifact after a

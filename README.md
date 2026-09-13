@@ -200,13 +200,15 @@ It must not be used as a substitute for required verification.
 
 ## OpenCode package
 
-`plugins/expskill` is the universal source for every supported surface.
-`plugins/expskill/opencode` contains the native OpenCode package source:
-platform metadata, the agent overlay, and the plugins. The pure renderer in
+The current intermediate OpenCode source lives under `packages/expskill`:
+shared skills, agent profiles, and package assets are there, while native
+OpenCode metadata, documentation, and plugins are under
+`packages/expskill/opencode`. The pure renderer in
 `scripts/render_opencode.py` derives agent Markdown, command Markdown, and the
 native runtime catalog. The explicit-output builder in
 `scripts/build_opencode_package.py` materializes a self-contained npm artifact
-with regular files and sorted SHA-256 provenance.
+with regular files and sorted SHA-256 provenance. A later foundation node will
+move this source layout; that migration is not part of this integration branch.
 
 Build into a new directory, then pack that artifact:
 
@@ -216,7 +218,7 @@ python3 scripts/build_opencode_package.py "$artifact_root"
 npm pack --dry-run --json "$artifact_root"
 ```
 
-See `plugins/expskill/opencode/README.md` for the source, renderer, builder,
+See `packages/expskill/opencode/README.md` for the source, renderer, builder,
 and plugin details.
 
 The focused contract and runtime suites cover the currently implemented skill,

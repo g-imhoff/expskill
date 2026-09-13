@@ -561,7 +561,9 @@ class FoundationCorrectionTests(unittest.TestCase):
                     return result
 
                 with mock.patch.object(validate_module, "build_opencode_package", side_effect=mutate):
-                    errors = validate_module.validate_repository(repo)
+                    errors = validate_module.validate_repository(
+                        repo, include_main=False, include_opencode=True
+                    )
                 self.assertTrue(any("provenance" in error.lower() for error in errors), errors)
 
     def test_forged_transaction_record_cannot_authorize_foreign_backup_cleanup(self) -> None:
@@ -1871,7 +1873,9 @@ class FoundationCorrectionTests(unittest.TestCase):
                 return result
 
             with mock.patch.object(validate_module, "build_opencode_package", side_effect=mutate_provenance):
-                errors = validate_module.validate_repository(repo)
+                errors = validate_module.validate_repository(
+                    repo, include_main=False, include_opencode=True
+                )
             self.assertTrue(any("provenance" in error.lower() for error in errors), errors)
 
             def inject_unexpected(source: Path, artifact: Path) -> Path:
@@ -1880,7 +1884,9 @@ class FoundationCorrectionTests(unittest.TestCase):
                 return result
 
             with mock.patch.object(validate_module, "build_opencode_package", side_effect=inject_unexpected):
-                errors = validate_module.validate_repository(repo)
+                errors = validate_module.validate_repository(
+                    repo, include_main=False, include_opencode=True
+                )
             self.assertTrue(any("unexpected" in error.lower() for error in errors), errors)
 
     def test_reinstall_repairs_deleted_modified_and_unexpected_artifact_entries(self) -> None:
@@ -2143,7 +2149,12 @@ class FoundationCorrectionTests(unittest.TestCase):
             output = root / "artifact"
             for command in (
                 [sys.executable, str(repo / "scripts/build_opencode_package.py"), "--output-dir", str(output)],
-                [sys.executable, str(repo / "scripts/validate.py")],
+                [
+                    sys.executable,
+                    str(repo / "scripts/validate.py"),
+                    "--no-include-main",
+                    "--include-opencode",
+                ],
             ):
                 result = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
