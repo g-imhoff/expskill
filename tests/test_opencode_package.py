@@ -46,6 +46,324 @@ def run(
 
 
 class OpencodePackageTests(unittest.TestCase):
+    def test_post_publish_fsync_failure_rolls_back_after_parent_relocation(self) -> None:
+        """A failure after rename must not strand output under a source root."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            copied_repo = temporary_root / "repository"
+            shutil.copytree(
+                ROOT,
+                copied_repo,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            descriptor = os.open(workspace, build_module._directory_open_flags())
+            moved_workspace = copied_repo / "moved-workspace"
+            lexical_output = workspace / "artifact"
+            published = False
+            fsync_failed = False
+            real_rename = build_module._renameat2_noreplace
+            real_fsync = build_module.os.fsync
+
+            def publish_then_mark(
+                parent_fd: int, source_name: str, destination_name: str
+            ) -> bool:
+                nonlocal published
+                result = real_rename(parent_fd, source_name, destination_name)
+                if destination_name == lexical_output.name:
+                    published = True
+                return result
+
+            def relocate_then_fsync(parent_fd: int) -> None:
+                nonlocal fsync_failed
+                if published and not fsync_failed:
+                    workspace.rename(moved_workspace)
+                    fsync_failed = True
+                    raise OSError("injected parent fsync failure")
+                real_fsync(parent_fd)
+
+            try:
+                with (
+                    mock.patch.object(
+                        build_module,
+                        "_renameat2_noreplace",
+                        side_effect=publish_then_mark,
+                    ),
+                    mock.patch.object(build_module.os, "fsync", side_effect=relocate_then_fsync),
+                ):
+                    with self.assertRaises(BuildError):
+                        build_opencode_package(
+                            copied_repo,
+                            lexical_output,
+                            output_parent_fd=descriptor,
+                        )
+            finally:
+                os.close(descriptor)
+
+            self.assertTrue(published)
+            self.assertTrue(fsync_failed)
+            self.assertFalse(lexical_output.exists())
+            self.assertTrue(moved_workspace.is_dir())
+            self.assertEqual(tuple(moved_workspace.iterdir()), ())
+
+    def test_rollback_exchange_preserves_foreign_public_replacement(self) -> None:
+        """A public-name replacement cannot be moved into builder-owned staging."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            copied_repo = temporary_root / "repository"
+            shutil.copytree(
+                ROOT,
+                copied_repo,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            descriptor = os.open(workspace, build_module._directory_open_flags())
+            moved_workspace = copied_repo / "moved-workspace"
+            lexical_output = workspace / "artifact"
+            relocated = False
+            foreign_installed = False
+            checks = 0
+            real_current = build_module._binding_is_current
+            real_stat = build_module.os.stat
+            real_rename = build_module._renameat2_noreplace
+
+            def relocate_on_post_publish(binding: object) -> bool:
+                nonlocal checks, relocated
+                checks += 1
+                if not relocated and checks >= 3:
+                    workspace.rename(moved_workspace)
+                    relocated = True
+                    return False
+                return real_current(binding)  # type: ignore[arg-type]
+
+            def replace_after_observation(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                nonlocal foreign_installed
+                observed = real_stat(path, *args, **kwargs)
+                if (
+                    relocated
+                    and not foreign_installed
+                    and path == lexical_output.name
+                    and kwargs.get("dir_fd") is not None
+                ):
+                    owned = moved_workspace / lexical_output.name
+                    displaced = moved_workspace / "owned-away"
+                    owned.rename(displaced)
+                    foreign = moved_workspace / lexical_output.name
+                    foreign.mkdir()
+                    (foreign / "foreign-marker").write_text(
+                        "must survive\n", encoding="utf-8"
+                    )
+                    foreign_installed = True
+                return observed
+
+            try:
+                with (
+                    mock.patch.object(
+                        build_module,
+                        "_binding_is_current",
+                        side_effect=relocate_on_post_publish,
+                    ),
+                    mock.patch.object(build_module.os, "stat", side_effect=replace_after_observation),
+                    mock.patch.object(
+                        build_module,
+                        "_renameat2_noreplace",
+                        side_effect=real_rename,
+                    ),
+                ):
+                    with self.assertRaises(BuildError):
+                        build_opencode_package(
+                            copied_repo,
+                            lexical_output,
+                            output_parent_fd=descriptor,
+                        )
+            finally:
+                os.close(descriptor)
+
+            self.assertTrue(relocated)
+            self.assertTrue(foreign_installed)
+            self.assertTrue(
+                (moved_workspace / "artifact" / "foreign-marker").is_file()
+            )
+            self.assertFalse((moved_workspace / "owned-away").exists())
+            self.assertFalse(lexical_output.exists())
+            self.assertFalse(
+                any(
+                    entry.name.startswith(".artifact.")
+                    for entry in moved_workspace.iterdir()
+                )
+            )
+
+    def test_placeholder_final_removal_preserves_late_foreign_replacement(self) -> None:
+        """A public placeholder replacement is preserved before final removal."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            repo = temporary_root / "repository"
+            shutil.copytree(
+                ROOT,
+                repo,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            output = temporary_root / "artifact"
+            injected = False
+            checks = 0
+            real_current = build_module._binding_is_current
+            real_stat = build_module.os.stat
+
+            def fail_after_publish(binding: object) -> bool:
+                nonlocal checks
+                checks += 1
+                if checks >= 3:
+                    return False
+                return real_current(binding)  # type: ignore[arg-type]
+
+            def replace_placeholder_before_final_removal(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                nonlocal injected
+                observed = real_stat(path, *args, **kwargs)
+                directory_fd = kwargs.get("dir_fd")
+                if (
+                    not injected
+                    and directory_fd is not None
+                    and isinstance(path, str)
+                    and path == output.name
+                    and not any(
+                        name.startswith(f".{output.name}.rollback-")
+                        for name in os.listdir(directory_fd)
+                    )
+                ):
+                    os.rename(
+                        path,
+                        f"{path}.displaced",
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                    )
+                    os.mkdir(path, dir_fd=directory_fd)
+                    marker_fd = os.open(
+                        f"{path}/foreign-marker",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=directory_fd,
+                    )
+                    os.close(marker_fd)
+                    injected = True
+                return observed
+
+            with (
+                mock.patch.object(
+                    build_module,
+                    "_binding_is_current",
+                    side_effect=fail_after_publish,
+                ),
+                mock.patch.object(
+                    build_module.os,
+                    "stat",
+                    side_effect=replace_placeholder_before_final_removal,
+                ),
+            ):
+                try:
+                    build_opencode_package(repo, output)
+                except BuildError:
+                    pass
+
+            self.assertTrue(injected)
+            self.assertTrue((output / "foreign-marker").is_file())
+
+    def test_staging_failure_cleanup_closes_duplicated_descriptors(self) -> None:
+        """Staging inspection/open failures close all builder-owned descriptors."""
+
+        def fd_snapshot() -> set[int]:
+            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+
+        for failure in ("stat", "open"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                temporary_root = Path(temporary)
+                repo = temporary_root / "repository"
+                shutil.copytree(
+                    ROOT,
+                    repo,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                )
+                workspace = temporary_root / "workspace"
+                workspace.mkdir()
+                caller_fd = os.open(workspace, build_module._directory_open_flags())
+                before = fd_snapshot()
+                real_stat = build_module.os.stat
+                real_open = build_module.os.open
+
+                def fail_stat(
+                    path: object, *args: object, **kwargs: object
+                ) -> os.stat_result:
+                    if (
+                        failure == "stat"
+                        and isinstance(path, str)
+                        and path.startswith(".artifact.")
+                        and kwargs.get("dir_fd") is not None
+                    ):
+                        raise OSError("injected staging inspection failure")
+                    return real_stat(path, *args, **kwargs)
+
+                def fail_open(
+                    path: object, flags: int, *args: object, **kwargs: object
+                ) -> int:
+                    if (
+                        failure == "open"
+                        and isinstance(path, str)
+                        and path.startswith(".artifact.")
+                        and kwargs.get("dir_fd") is not None
+                    ):
+                        raise OSError("injected staging open failure")
+                    return real_open(path, flags, *args, **kwargs)
+
+                try:
+                    with (
+                        mock.patch.object(build_module.os, "stat", side_effect=fail_stat),
+                        mock.patch.object(build_module.os, "open", side_effect=fail_open),
+                        mock.patch.object(
+                            build_module,
+                            "_remove_tree_at",
+                            side_effect=OSError("injected cleanup failure"),
+                        ),
+                    ):
+                        with self.assertRaises((BuildError, OSError)):
+                            build_opencode_package(
+                                repo,
+                                workspace / "artifact",
+                                output_parent_fd=caller_fd,
+                            )
+                finally:
+                    after = fd_snapshot()
+                    self.assertEqual(after, before)
+                    os.fstat(caller_fd)
+                    os.close(caller_fd)
+
+    def test_prepublication_failure_reclaims_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            repo = temporary_root / "repository"
+            shutil.copytree(
+                ROOT,
+                repo,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            output = temporary_root / "artifact"
+            with mock.patch.object(
+                build_module,
+                "_verify_live_sources_against_snapshot",
+                side_effect=BuildError("injected prepublication failure"),
+            ):
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, output)
+            self.assertFalse(output.exists())
+            self.assertEqual(tuple(output.parent.iterdir()), (repo,))
+
     def _assert_descriptor_bound_source_parent_rejected(
         self,
         actual_parent: Path,
@@ -285,8 +603,10 @@ class OpencodePackageTests(unittest.TestCase):
             moved_workspace = copied_repo / "moved-workspace"
             lexical_output = workspace / "artifact"
             real_rename = build_module._renameat2_noreplace
+            real_exchange = build_module._renameat2_exchange
             rename_window_entered = False
             rename_calls = 0
+            exchange_calls = 0
 
             def move_during_exclusive_rename(
                 parent_fd: int, source_name: str, destination_name: str
@@ -298,11 +618,22 @@ class OpencodePackageTests(unittest.TestCase):
                     rename_window_entered = True
                 return real_rename(parent_fd, source_name, destination_name)
 
+            def count_exchange(
+                parent_fd: int, source_name: str, destination_name: str
+            ) -> None:
+                nonlocal exchange_calls
+                exchange_calls += 1
+                real_exchange(parent_fd, source_name, destination_name)
+
             try:
                 with mock.patch.object(
                     build_module,
                     "_renameat2_noreplace",
                     side_effect=move_during_exclusive_rename,
+                ), mock.patch.object(
+                    build_module,
+                    "_renameat2_exchange",
+                    side_effect=count_exchange,
                 ):
                     with self.assertRaises(BuildError):
                         build_opencode_package(
@@ -314,7 +645,8 @@ class OpencodePackageTests(unittest.TestCase):
                 os.close(descriptor)
 
             self.assertTrue(rename_window_entered)
-            self.assertEqual(rename_calls, 2)
+            self.assertEqual(rename_calls, 1)
+            self.assertGreaterEqual(exchange_calls, 1)
             self.assertFalse((moved_workspace / "artifact").exists())
             self.assertFalse(lexical_output.exists())
             self.assertEqual(tuple(moved_workspace.iterdir()), ())
