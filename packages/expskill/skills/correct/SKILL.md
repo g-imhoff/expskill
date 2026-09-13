@@ -1,6 +1,9 @@
 ---
 name: correct
 description: Repair a concrete bug, regression, failing test, or Review finding within the existing design. For structural or breaking changes, let the user choose a sound limited fix or Brainstorm.
+metadata:
+  opencode/slash: "true"
+  opencode/autoinvoke: "false"
 ---
 
 # Correct

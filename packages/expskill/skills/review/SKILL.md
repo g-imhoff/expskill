@@ -1,6 +1,9 @@
 ---
 name: review
 description: Explicitly invoke $review to adversarially inspect a user-defined code scope and save an evidence-backed Markdown report with ratings. Review reports defects, structural risks, and testing gaps without fixes or fix advice.
+metadata:
+  opencode/slash: "true"
+  opencode/autoinvoke: "false"
 ---
 
 # Review
