@@ -1025,16 +1025,11 @@ def validate_repository(
         repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
     if include_opencode is None:
-        opencode_root = repository_root / "packages" / PLUGIN_NAME / "opencode"
-        # The builder remains outside packages/, so a complete checkout still
-        # reports a deleted OpenCode package instead of treating it as absent.
-        include_opencode = any(
-            os.path.lexists(path)
-            for path in (
-                repository_root / "scripts" / "build_opencode_package.py",
-                opencode_root,
-            )
-        )
+        # A real checkout carries the OpenCode source contract even when its
+        # package tree was deleted.  Package-only callers declare that intent
+        # with include_main=False.  Sparse main-only fixtures intentionally
+        # carry neither signal, so copied build helpers do not opt them in.
+        include_opencode = include_main is False or os.path.lexists(repository_root / ".git")
     if include_main:
         marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
         marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
