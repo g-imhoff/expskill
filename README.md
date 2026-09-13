@@ -1,7 +1,8 @@
 # ExpSkill
 
 ExpSkill is a private Codex plugin with eleven independent skills and one
-optional lifecycle router.
+optional lifecycle router. The same skill base also ships as the
+`opencode-expskill` npm package for opencode.
 
 ## Install and validate
 
@@ -10,16 +11,51 @@ From the repository root:
 ```bash
 python3 scripts/validate.py
 python3 scripts/install.py
+python3 scripts/install.py --target opencode
 ```
 
 Start a new Codex session after installation so the skills and linked agent
 profiles are rediscovered. Use `python3 scripts/install.py --dry-run` to inspect
 the planned changes and `python3 scripts/install.py --uninstall` to remove only
-repository-owned installation state.
+repository-owned installation state. The Codex and opencode installers keep
+separate receipts and separate destinations, so both targets can be installed
+at once.
+
+The OpenCode target builds generated agents, commands, the catalog, and copied
+assets into receipt-owned state under the configured state home, then links
+those regular files into the OpenCode config directory. It does not require or
+create generated mirrors in the repository. Inspect that plan with
+`python3 scripts/install.py --target opencode --dry-run`; remove it with
+`python3 scripts/install.py --target opencode --uninstall`.
 
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.
+
+## Install through the Codex plugin CLI
+
+The plugin itself installs through plain Codex commands with no script
+involved. Point the marketplace at a local checkout or at a reachable Git
+source, then add the plugin:
+
+```bash
+codex plugin marketplace add /path/to/expskill
+codex plugin add expskill@expskill
+```
+
+That CLI flow installs the skills and the hook. The seven agent profiles
+cannot ride along because Codex loads custom profiles only from the agents
+directory, so link them with the installer in agents-only mode:
+
+```bash
+python3 scripts/install.py --agents-only
+python3 scripts/install.py --agents-only --uninstall
+```
+
+Agents-only mode never calls the plugin CLI. It only creates the profile
+links and records them in its own receipt, and a later full
+`python3 scripts/install.py` run keeps those links while claiming the CLI
+ownership it performed.
 
 ## Skills
 
@@ -122,7 +158,66 @@ inconsistent evidence.
 python3 scripts/validate.py
 python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
+python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_install.py tests/test_opencode_runtime.py
 ```
+
+The networked integration suite obtains pinned Codex `0.153.4` and opencode
+`1.18.29` executables into the repository-local `.testbin` directory, verifies
+the official release archive SHA-256, retains or reacquires that verified
+archive, checks the expected executable member before reusing cached bytes,
+installs both targets through the real CLIs, and verifies detection. Run it in
+the required, fail-closed mode:
+
+```bash
+EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+```
+
+The checked-in manifest records the archive digests and their authoritative
+release metadata URLs from the Codex and opencode GitHub release APIs. A
+missing binary, unsupported platform, download failure, corrupt archive or
+cache, unexpected archive layout, and any digest mismatch fails this command;
+none can become a skip. The suite runs only install/list/remove and
+config-startup smoke commands, never a model call.
+
+An explicit executable override is permitted only with an independently
+verified companion digest. Do not compute a digest from an untrusted file and
+use it as proof. Relative overrides are resolved to a stable absolute path
+before verification; a bare executable name is resolved through `PATH` at that
+time:
+
+```bash
+export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
+export EXPSKILL_TEST_CODEX_BIN_SHA256="independently-verified-sha256"
+export EXPSKILL_TEST_OPENCODE_BIN="/path/to/opencode"
+export EXPSKILL_TEST_OPENCODE_BIN_SHA256="independently-verified-sha256"
+export EXPSKILL_CLI_MODE=required
+python3 -m pytest -q tests/test_cli_install_integration.py
+```
+
+For a deliberately local/offline check, opt in explicitly with
+`EXPSKILL_CLI_MODE=optional`; only unavailable acquisition is skippable there.
+It must not be used as a substitute for required verification.
+
+## OpenCode package
+
+`plugins/expskill` is the universal source for every supported surface.
+`plugins/expskill/opencode` contains the native OpenCode package source:
+platform metadata, the agent overlay, and the plugins. The pure renderer in
+`scripts/render_opencode.py` derives agent Markdown, command Markdown, and the
+native runtime catalog. The explicit-output builder in
+`scripts/build_opencode_package.py` materializes a self-contained npm artifact
+with regular files and sorted SHA-256 provenance.
+
+Build into a new directory, then pack that artifact:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+npm pack --dry-run --json "$artifact_root"
+```
+
+See `plugins/expskill/opencode/README.md` for the source, renderer, builder,
+and plugin details.
 
 The focused contract and runtime suites cover the currently implemented skill,
 installation, security, concurrency, recovery, and lifecycle boundaries.
