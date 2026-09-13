@@ -116,6 +116,13 @@ OPENCODE_RECEIPT_PENDING_PHASES = frozenset(
         "swap-rollback-restored",
     }
 )
+OPENCODE_RETIREMENT_PHASES = frozenset(
+    {"prepared", "exchanged", "reclaimed", "done"}
+)
+OPENCODE_RETIREMENT_KINDS = frozenset({"leaf", "directory"})
+OPENCODE_RETIREMENT_ROLES = frozenset(
+    {"final-link", "staged-link", "anchor", "artifact", "candidate", "backup"}
+)
 # Exact source/destination roster emitted by the parent-repository installer
 # before receipt-owned artifacts were introduced.  These names are deliberately
 # frozen: receipt migration must not turn arbitrary receipt text into deletion
@@ -187,6 +194,287 @@ class _JournaledLinkList(list[ProfileLink]):
 
 
 @dataclass(frozen=True)
+class _PendingRetirement:
+    """One receipt-bound, exact private retirement capability."""
+
+    role: str
+    kind: str
+    source: Path
+    private: Path
+    expected_dev: int
+    expected_ino: int
+    lineage: str
+    token: str
+    phase: str
+    source_kind: str = "public"
+    placeholder_dev: int | None = None
+    placeholder_ino: int | None = None
+
+
+def _retirement_token(
+    lineage: str,
+    role: str,
+    kind: str,
+    source: Path,
+    expected_dev: int,
+    expected_ino: int,
+) -> str:
+    """Derive the unguessable capability token from frozen receipt facts."""
+
+    return hashlib.sha256(
+        b"opencode-retirement.v3\0"
+        + lineage.encode()
+        + b"\0"
+        + role.encode()
+        + b"\0"
+        + kind.encode()
+        + b"\0"
+        + os.fsencode(_lexical_absolute(source))
+        + b"\0"
+        + f"{expected_dev:x}-{expected_ino:x}".encode()
+    ).hexdigest()[:32]
+
+
+def _retirement_private_path(source: Path, token: str, kind: str) -> Path:
+    suffix = ".retire-dir" if kind == "directory" else ".retire"
+    return source.parent / f".{source.name}.expskill-{token}{suffix}"
+
+
+def _pending_retirement_payload(
+    pending: _PendingRetirement,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "role": pending.role,
+        "kind": pending.kind,
+        "source": str(pending.source),
+        "private": str(pending.private),
+        "expected_dev": pending.expected_dev,
+        "expected_ino": pending.expected_ino,
+        "lineage": pending.lineage,
+        "token": pending.token,
+        "phase": pending.phase,
+        "source_kind": pending.source_kind,
+    }
+    if pending.placeholder_dev is not None or pending.placeholder_ino is not None:
+        if pending.placeholder_dev is None or pending.placeholder_ino is None:
+            raise InstallError("OpenCode retirement placeholder identity is incomplete")
+        payload["placeholder_dev"] = pending.placeholder_dev
+        payload["placeholder_ino"] = pending.placeholder_ino
+    return payload
+
+
+def _pending_retirement_from_payload(
+    value: object, lineage: str
+) -> _PendingRetirement:
+    """Decode only the closed, recomputable retirement capability shape."""
+
+    if not isinstance(value, dict):
+        raise InstallError("OpenCode pending retirement is malformed")
+    required = {
+        "role",
+        "kind",
+        "source",
+        "private",
+        "expected_dev",
+        "expected_ino",
+        "lineage",
+        "token",
+        "phase",
+        "source_kind",
+    }
+    placeholder = {"placeholder_dev", "placeholder_ino"}
+    if frozenset(value) not in {frozenset(required), frozenset(required | placeholder)}:
+        raise InstallError("OpenCode pending retirement is malformed")
+    role = value.get("role")
+    kind = value.get("kind")
+    phase = value.get("phase")
+    source_kind = value.get("source_kind")
+    source_value = value.get("source")
+    private_value = value.get("private")
+    expected_dev = value.get("expected_dev")
+    expected_ino = value.get("expected_ino")
+    token = value.get("token")
+    if (
+        role not in OPENCODE_RETIREMENT_ROLES
+        or kind not in OPENCODE_RETIREMENT_KINDS
+        or phase not in OPENCODE_RETIREMENT_PHASES
+        or source_kind not in {"public", "quarantine"}
+        or value.get("lineage") != lineage
+        or not isinstance(source_value, str)
+        or not isinstance(private_value, str)
+        or not isinstance(expected_dev, int)
+        or expected_dev <= 0
+        or not isinstance(expected_ino, int)
+        or expected_ino <= 0
+        or not isinstance(token, str)
+        or len(token) != 32
+        or any(character not in "0123456789abcdef" for character in token)
+    ):
+        raise InstallError("OpenCode pending retirement is malformed")
+    source_raw = Path(source_value).expanduser()
+    private_raw = Path(private_value).expanduser()
+    if (
+        not source_raw.is_absolute()
+        or not private_raw.is_absolute()
+        or _has_dot_components(source_raw)
+        or _has_dot_components(private_raw)
+    ):
+        raise InstallError("OpenCode pending retirement path is malformed")
+    source = _lexical_absolute(source_raw)
+    private = _lexical_absolute(private_raw)
+    expected_token = _retirement_token(
+        lineage, role, kind, source, expected_dev, expected_ino
+    )
+    if token != expected_token or private != _retirement_private_path(
+        source, token, kind
+    ):
+        raise InstallError("OpenCode pending retirement token or path is invalid")
+    placeholder_dev = value.get("placeholder_dev")
+    placeholder_ino = value.get("placeholder_ino")
+    if placeholder_dev is not None or placeholder_ino is not None:
+        if (
+            not isinstance(placeholder_dev, int)
+            or placeholder_dev <= 0
+            or not isinstance(placeholder_ino, int)
+            or placeholder_ino <= 0
+        ):
+            raise InstallError("OpenCode retirement placeholder identity is malformed")
+    if (kind == "directory") != (role in {"artifact", "candidate", "backup"}):
+        raise InstallError("OpenCode pending retirement role and kind disagree")
+    return _PendingRetirement(
+        role=role,
+        kind=kind,
+        source=source,
+        private=private,
+        expected_dev=expected_dev,
+        expected_ino=expected_ino,
+        placeholder_dev=placeholder_dev,
+        placeholder_ino=placeholder_ino,
+        lineage=lineage,
+        token=token,
+        phase=phase,
+        source_kind=source_kind,
+    )
+
+
+def _validate_pending_retirement_authority(
+    retirement: _PendingRetirement,
+    *,
+    links: Sequence[ProfileLink],
+    artifact_root: Path | None,
+    artifact_identity: tuple[int | None, int | None],
+    artifact_anchor: tuple[Path | None, int | None, int | None],
+    pending_swap: "_PendingSwap | None",
+    pending_publish: "_PendingPublish | None",
+) -> None:
+    """Bind the journal role to authority already frozen elsewhere in receipt."""
+
+    authority: set[tuple[str, Path, int, int]] = set()
+    for link in links:
+        if link.destination_dev is None or link.destination_ino is None:
+            continue
+        authority.add(
+            ("final-link", link.destination, link.destination_dev, link.destination_ino)
+        )
+        if link.staged_destination is not None:
+            authority.add(
+                (
+                    "staged-link",
+                    link.staged_destination,
+                    link.destination_dev,
+                    link.destination_ino,
+                )
+            )
+    artifact_dev, artifact_ino = artifact_identity
+    if artifact_root is not None and artifact_dev is not None and artifact_ino is not None:
+        authority.add(("artifact", artifact_root, artifact_dev, artifact_ino))
+    anchor, anchor_dev, anchor_ino = artifact_anchor
+    if anchor is not None and anchor_dev is not None and anchor_ino is not None:
+        authority.add(("anchor", anchor, anchor_dev, anchor_ino))
+    for pending in (pending_swap, pending_publish):
+        if pending is None:
+            continue
+        authority.add(
+            (
+                "candidate",
+                pending.candidate,
+                pending.candidate_dev,
+                pending.candidate_ino,
+            )
+        )
+        # A candidate can already occupy the public artifact pathname when the
+        # process stopped between rename and its outer phase write.
+        authority.add(
+            (
+                "candidate",
+                pending.artifact,
+                pending.candidate_dev,
+                pending.candidate_ino,
+            )
+        )
+        candidate_anchor = pending.candidate_anchor
+        candidate_anchor_dev = pending.candidate_anchor_dev
+        candidate_anchor_ino = pending.candidate_anchor_ino
+        if (
+            candidate_anchor is not None
+            and candidate_anchor_dev is not None
+            and candidate_anchor_ino is not None
+        ):
+            authority.add(
+                (
+                    "anchor",
+                    candidate_anchor,
+                    candidate_anchor_dev,
+                    candidate_anchor_ino,
+                )
+            )
+    if pending_swap is not None:
+        authority.add(
+            (
+                "backup",
+                pending_swap.backup,
+                pending_swap.backup_dev,
+                pending_swap.backup_ino,
+            )
+        )
+        if (
+            pending_swap.old_anchor is not None
+            and pending_swap.old_anchor_dev is not None
+            and pending_swap.old_anchor_ino is not None
+        ):
+            authority.add(
+                (
+                    "anchor",
+                    pending_swap.old_anchor,
+                    pending_swap.old_anchor_dev,
+                    pending_swap.old_anchor_ino,
+                )
+            )
+    expected = (
+        retirement.role,
+        retirement.source,
+        retirement.expected_dev,
+        retirement.expected_ino,
+    )
+    if retirement.source_kind == "quarantine":
+        expected = next(
+            (
+                item
+                for item in authority
+                if item[0] == retirement.role
+                and item[2:] == (retirement.expected_dev, retirement.expected_ino)
+                and _deletion_quarantine_path(
+                    item[1], retirement.expected_dev, retirement.expected_ino
+                )
+                == retirement.source
+            ),
+            expected,
+        )
+    if expected not in authority:
+        raise InstallError("OpenCode pending retirement lacks receipt authority")
+
+
+@dataclass(frozen=True)
 class _Receipt:
     repository_root: Path
     links: tuple[ProfileLink, ...]
@@ -207,6 +495,7 @@ class _Receipt:
     # receipt before the deterministic package anchor is created.  This bit
     # distinguishes that prepared state from a fully committed migration.
     pending_migration: bool = False
+    pending_retirement: _PendingRetirement | None = None
 
 
 @dataclass(frozen=True)
@@ -532,6 +821,8 @@ def _state_lstat(path: Path) -> os.stat_result:
 def _receipt_deletion_phase(receipt: _Receipt) -> tuple[str, str]:
     """Return the closed, filename-safe phase pair bound to receipt deletion."""
 
+    if receipt.pending_retirement is not None:
+        raise InstallError("OpenCode receipt has an outstanding retirement")
     current_phase = receipt.teardown_phase
     if current_phase not in OPENCODE_RECEIPT_TEARDOWN_PHASES:
         raise InstallError("OpenCode receipt deletion phase is invalid")
@@ -607,6 +898,8 @@ def _receipt_deletion_descriptor(
         raise InstallError(f"receipt is malformed: {path}: {error}") from error
     if not isinstance(payload, dict):
         raise InstallError(f"receipt is malformed: {path}")
+    if payload.get("pending_retirement") is not None:
+        raise InstallError(f"receipt has an outstanding retirement: {path}")
     lineage = payload.get("lineage")
     if not isinstance(lineage, str) or len(lineage) < 32:
         raise InstallError(f"receipt deletion lineage is malformed: {path}")
@@ -2096,6 +2389,32 @@ def _read_receipt(
         )
     ):
         raise InstallError(f"receipt pending migration is malformed: {receipt_path}")
+    retirement_value = payload.get("pending_retirement")
+    pending_retirement = None
+    if retirement_value is not None:
+        if lineage is None:
+            raise InstallError(f"receipt pending retirement lacks lineage: {receipt_path}")
+        try:
+            pending_retirement = _pending_retirement_from_payload(
+                retirement_value, lineage
+            )
+            _validate_pending_retirement_authority(
+                pending_retirement,
+                links=links,
+                artifact_root=artifact_root,
+                artifact_identity=(artifact_dev, artifact_ino),
+                artifact_anchor=(
+                    artifact_anchor,
+                    artifact_anchor_dev,
+                    artifact_anchor_ino,
+                ),
+                pending_swap=pending,
+                pending_publish=pending_publish,
+            )
+        except InstallError as error:
+            raise InstallError(
+                f"receipt pending retirement is malformed: {receipt_path}: {error}"
+            ) from error
     return _Receipt(
         repository_root=recorded_root,
         links=links,
@@ -2113,6 +2432,7 @@ def _read_receipt(
         pending_swap=pending,
         pending_publish=pending_publish,
         pending_migration=pending_migration,
+        pending_retirement=pending_retirement,
     )
 
 
@@ -2250,6 +2570,35 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
                 f"pending OpenCode migration receipt is incomplete: {receipt_path}"
             )
         payload["pending_migration"] = {"phase": "prepared"}
+    if receipt.pending_retirement is not None:
+        if receipt.lineage is None:
+            raise InstallError(
+                f"pending OpenCode retirement lacks lineage: {receipt_path}"
+            )
+        payload["pending_retirement"] = _pending_retirement_payload(
+            receipt.pending_retirement
+        )
+    if binding is not None and _lexists(receipt_path):
+        try:
+            durable_payload = json.loads(_read_state_text(receipt_path))
+        except (OSError, json.JSONDecodeError) as error:
+            raise InstallError(
+                f"cannot verify receipt retirement before write: {receipt_path}: {error}"
+            ) from error
+        if isinstance(durable_payload, dict):
+            durable_retirement = durable_payload.get("pending_retirement")
+            if durable_retirement is not None:
+                durable_phase = (
+                    durable_retirement.get("phase")
+                    if isinstance(durable_retirement, dict)
+                    else None
+                )
+                if durable_phase != "done" and payload.get(
+                    "pending_retirement"
+                ) != durable_retirement:
+                    raise InstallError(
+                        "cannot overwrite an outstanding OpenCode retirement"
+                    )
     if _write_state_payload(receipt_path, payload):
         return
     temporary_path: Path | None = None
@@ -2759,6 +3108,7 @@ def _persist_receipt(
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
         pending_migration=receipt.pending_migration,
+        pending_retirement=receipt.pending_retirement,
     )
     _write_receipt(receipt_path, updated)
     return updated
@@ -3211,13 +3561,22 @@ def _create_destination_link(
         _verify_config_binding(binding)
         return temporary_identity
     finally:
-        if not journaled and not published and temporary_identity is not None:
+        # If OpenCode receipt persistence fails before ``journaled`` becomes
+        # true, no durable authority exists for this newly-created hidden inode.
+        # Preserve it rather than inventing an unjournaled OpenCode cleanup
+        # path.  The non-OpenCode installer still owns its temporary inode
+        # directly within this process and keeps its existing compensation.
+        if (
+            record_staged is None
+            and not published
+            and temporary_identity is not None
+        ):
             try:
                 _unlink_exact_leaf_via_exchange(
                     parent_fd,
                     temporary_name,
                     temporary_identity,
-                    "OpenCode staged link",
+                    "temporary destination",
                 )
             except (OSError, InstallError):
                 pass
@@ -3407,12 +3766,7 @@ def _unlink_recorded_destination(
     if bound is None:
         return False
     binding, parent_fd = bound
-    retirement_owned = _retirement_record_exists(
-        parent_fd, destination.name, identity, directory=False
-    ) or _retirement_record_exists(
-        parent_fd, quarantine.name, identity, directory=False
-    )
-    if not original_owned and not quarantine_owned and not retirement_owned:
+    if not original_owned and not quarantine_owned:
         try:
             os.fsync(parent_fd)
             _verify_config_binding(binding)
@@ -3422,10 +3776,22 @@ def _unlink_recorded_destination(
                 f"{destination}: {error}"
             ) from error
         return False
-    # A quarantine match is independent filesystem evidence for the exact
-    # recorded symlink; prime the original key used by the stable unlink seam.
-    binding.validated_leaves[_lexical_absolute(destination)] = identity
-    return _unlink_destination(destination)
+    role = "final-link" if path is None else "staged-link"
+    removed = False
+    if quarantine_owned:
+        removed = _retire_owned_object(
+            quarantine,
+            identity,
+            role,
+            directory=False,
+            source_kind="quarantine",
+        )
+    if original_owned:
+        removed = (
+            _retire_owned_object(destination, identity, role, directory=False)
+            or removed
+        )
+    return removed
 
 
 def _unlink_destination(destination: Path) -> bool:
@@ -3578,13 +3944,7 @@ def _fixed_opencode_artifact(state_home: Path, candidate: Path | None = None) ->
     if _lexists(expected):
         metadata = _state_lstat(expected)
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            binding = _state_binding(expected)
-            if binding is None or not _exact_retired_object_exists(
-                binding.directory_fd,
-                expected.name,
-                directory=True,
-            ):
-                raise InstallError(f"opencode artifact is not a regular directory: {expected}")
+            raise InstallError(f"opencode artifact is not a regular directory: {expected}")
     return expected
 
 
@@ -3606,109 +3966,32 @@ def _remove_opencode_artifact(path: Path) -> None:
 
 
 def _remove_opencode_artifact_exact(path: Path, dev: int, ino: int) -> None:
-    """Remove an opened exact directory without reopening a replaced name."""
+    """Exchange an exact root first, then reclaim only its journaled private path."""
 
-    parent_fd: int | None = None
-    target_fd: int | None = None
+    binding = _state_binding(path)
+    if binding is None:
+        raise InstallError("OpenCode artifact retirement requires bound owned state")
+    receipt_path = binding.directory / OPENCODE_RECEIPT_FILENAME
+    role = "artifact"
     try:
-        binding = _state_binding(path)
-        if binding is not None:
-            _verify_state_binding(binding)
-            parent_fd = os.dup(binding.directory_fd)
-        else:
-            parent_fd = os.open(
-                path.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-            )
-        if _retirement_record_exists(
-            parent_fd, path.name, (dev, ino), directory=True
-        ):
-            if not _rmdir_exact_via_exchange(
-                parent_fd,
-                path.name,
-                (dev, ino),
-                "OpenCode artifact directory",
-            ):
-                raise InstallError(f"OpenCode artifact identity changed: {path}")
-            if binding is not None:
-                os.fsync(parent_fd)
-                _verify_state_binding(binding)
-            return
-        target_fd = os.open(
-            path.name,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_fd,
-        )
-        opened = os.fstat(target_fd)
-        if opened.st_dev != dev or opened.st_ino != ino:
-            raise InstallError(f"OpenCode artifact identity changed: {path}")
-
-        def clear_directory(directory_fd: int) -> None:
-            for entry in list(os.scandir(directory_fd)):
-                metadata = entry.stat(follow_symlinks=False)
-                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-                    child_fd = os.open(
-                        entry.name,
-                        os.O_RDONLY
-                        | getattr(os, "O_DIRECTORY", 0)
-                        | getattr(os, "O_NOFOLLOW", 0),
-                        dir_fd=directory_fd,
-                    )
-                    try:
-                        child_opened = os.fstat(child_fd)
-                        if (
-                            child_opened.st_dev != metadata.st_dev
-                            or child_opened.st_ino != metadata.st_ino
-                        ):
-                            continue
-                        clear_directory(child_fd)
-                    finally:
-                        os.close(child_fd)
-                    try:
-                        _rmdir_exact_via_exchange(
-                            directory_fd,
-                            entry.name,
-                            (metadata.st_dev, metadata.st_ino),
-                            "OpenCode artifact child directory",
-                        )
-                    except OSError:
-                        pass
-                elif stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                    try:
-                        _unlink_exact_leaf_via_exchange(
-                            directory_fd,
-                            entry.name,
-                            (metadata.st_dev, metadata.st_ino),
-                            "OpenCode artifact child",
-                        )
-                    except OSError:
-                        pass
-
-        clear_directory(target_fd)
-        # If the lexical name was replaced while contents were being cleared,
-        # leave the replacement untouched.  The opened candidate is already
-        # detached from that foreign name.
-        if not _rmdir_exact_via_exchange(
-            parent_fd,
-            path.name,
-            (dev, ino),
-            "OpenCode artifact directory",
-        ):
-            raise InstallError(f"OpenCode artifact identity changed: {path}")
-        if binding is not None:
-            os.fsync(parent_fd)
-            _verify_state_binding(binding)
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise InstallError(f"cannot remove exact OpenCode artifact: {path}: {error}") from error
-    finally:
-        if target_fd is not None:
-            os.close(target_fd)
-        if parent_fd is not None:
-            os.close(parent_fd)
+        payload = json.loads(_read_state_text(receipt_path))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
+    if isinstance(payload, dict):
+        for key in ("pending_swap", "pending_publish"):
+            pending = payload.get(key)
+            if not isinstance(pending, dict):
+                continue
+            if (pending.get("candidate_dev"), pending.get("candidate_ino")) == (
+                dev,
+                ino,
+            ) and str(path) in {pending.get("candidate"), pending.get("artifact")}:
+                role = "candidate"
+            if key == "pending_swap" and (
+                pending.get("backup_dev"), pending.get("backup_ino")
+            ) == (dev, ino) and str(path) == pending.get("backup"):
+                role = "backup"
+    _retire_owned_object(path, (dev, ino), role, directory=True)
 
 
 def _pending_identity(path: Path, dev: int, ino: int) -> bool:
@@ -3723,10 +4006,7 @@ def _pending_identity(path: Path, dev: int, ino: int) -> bool:
         and metadata.st_ino == ino
     ):
         return True
-    binding = _state_binding(path)
-    return binding is not None and _retirement_record_exists(
-        binding.directory_fd, path.name, (dev, ino), directory=True
-    )
+    return False
 
 
 def _artifact_anchor_path(parent: Path, token: str) -> Path:
@@ -3886,13 +4166,12 @@ def _create_artifact_anchor(
             os.close(artifact_fd)
         if created and not complete and identity is not None:
             try:
-                _unlink_exact_leaf_via_exchange(
-                    binding.directory_fd,
-                    anchor.name,
+                _retire_owned_object(
+                    anchor,
                     identity,
-                    "OpenCode incomplete artifact anchor",
+                    "anchor",
+                    directory=False,
                 )
-                os.fsync(binding.directory_fd)
             except (OSError, InstallError):
                 pass
 
@@ -3946,7 +4225,7 @@ def _unlink_artifact_anchor_identity(anchor: Path, anchor_dev: int, anchor_ino: 
     if binding is None:
         raise InstallError("OpenCode artifact anchor is outside bound owned state")
     expected = (anchor_dev, anchor_ino)
-    quarantine = _deletion_quarantine_path(anchor, *expected).name
+    quarantine = _deletion_quarantine_path(anchor, *expected)
 
     def metadata(name: str) -> os.stat_result | None:
         try:
@@ -3960,74 +4239,29 @@ def _unlink_artifact_anchor_identity(anchor: Path, anchor_dev: int, anchor_ino: 
 
     try:
         _verify_state_binding(binding)
-        quarantined = metadata(quarantine)
         original = metadata(anchor.name)
-        quarantine_is_exact = quarantined is not None and (
-            quarantined.st_dev,
-            quarantined.st_ino,
-        ) == expected
+        quarantined = metadata(quarantine.name)
         original_is_exact = original is not None and (
             original.st_dev,
             original.st_ino,
         ) == expected
+        quarantine_is_exact = quarantined is not None and (
+            quarantined.st_dev,
+            quarantined.st_ino,
+        ) == expected
         if quarantine_is_exact:
-            _unlink_exact_leaf_via_exchange(
-                binding.directory_fd,
+            _retire_owned_object(
                 quarantine,
                 expected,
-                "OpenCode artifact anchor quarantine",
+                "anchor",
+                directory=False,
+                source_kind="quarantine",
             )
-            if original_is_exact:
-                _unlink_exact_leaf_via_exchange(
-                    binding.directory_fd,
-                    anchor.name,
-                    expected,
-                    "OpenCode artifact anchor",
-                )
-        elif quarantined is not None:
-            if original_is_exact:
-                _unlink_exact_leaf_via_exchange(
-                    binding.directory_fd,
-                    anchor.name,
-                    expected,
-                    "OpenCode artifact anchor",
-                )
-        elif original_is_exact:
-            _renameat_noreplace(
-                binding.directory_fd,
-                anchor.name,
-                binding.directory_fd,
-                quarantine,
-            )
-            moved = os.stat(
-                quarantine,
-                dir_fd=binding.directory_fd,
-                follow_symlinks=False,
-            )
-            if (moved.st_dev, moved.st_ino) != expected:
-                try:
-                    _renameat_noreplace(
-                        binding.directory_fd,
-                        quarantine,
-                        binding.directory_fd,
-                        anchor.name,
-                    )
-                    os.fsync(binding.directory_fd)
-                except (OSError, InstallError):
-                    pass
-                raise InstallError(
-                    "OpenCode artifact anchor identity changed during cleanup"
-                )
-            _unlink_exact_leaf_via_exchange(
-                binding.directory_fd,
-                quarantine,
-                expected,
-                "OpenCode artifact anchor quarantine",
-            )
-        # A retry that sees neither exact name still performs the durability
-        # barrier whose earlier attempt may have failed after unlink(2).
-        os.fsync(binding.directory_fd)
-        _verify_state_binding(binding)
+        if original_is_exact:
+            _retire_owned_object(anchor, expected, "anchor", directory=False)
+        if not original_is_exact and not quarantine_is_exact:
+            os.fsync(binding.directory_fd)
+            _verify_state_binding(binding)
     except OSError as error:
         raise InstallError(f"cannot remove exact OpenCode artifact anchor: {error}") from error
 
@@ -4083,6 +4317,7 @@ def _receipt_with_pending(receipt: _Receipt, pending: _PendingSwap | None) -> _R
         pending_swap=pending,
         pending_publish=receipt.pending_publish,
         pending_migration=receipt.pending_migration,
+        pending_retirement=receipt.pending_retirement,
     )
 
 
@@ -4106,6 +4341,7 @@ def _receipt_with_pending_publish(
         pending_swap=receipt.pending_swap,
         pending_publish=pending_publish,
         pending_migration=receipt.pending_migration,
+        pending_retirement=receipt.pending_retirement,
     )
 
 
@@ -4166,6 +4402,410 @@ def _write_receipt_raw(receipt_path: Path, payload: Mapping[str, object]) -> Non
                 temporary_path.unlink()
             except OSError:
                 pass
+
+
+def _rewrite_receipt_retirement(
+    receipt_path: Path, pending: _PendingRetirement | None
+) -> None:
+    """Durably transition only the one receipt-bound retirement entry."""
+
+    if _state_binding(receipt_path) is None:
+        raise InstallError("OpenCode retirement write requires the installer lock")
+    try:
+        payload = json.loads(_read_state_text(receipt_path))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise InstallError(f"receipt is malformed: {receipt_path}")
+    lineage = payload.get("lineage")
+    if not isinstance(lineage, str) or len(lineage) < 32:
+        raise InstallError(f"receipt retirement lineage is malformed: {receipt_path}")
+    current_value = payload.get("pending_retirement")
+    current = (
+        _pending_retirement_from_payload(current_value, lineage)
+        if current_value is not None
+        else None
+    )
+    phase_order = {"prepared": 0, "exchanged": 1, "reclaimed": 2, "done": 3}
+    if pending is None:
+        if current is not None and current.phase != "done":
+            raise InstallError("cannot clear an outstanding OpenCode retirement")
+        payload.pop("pending_retirement", None)
+    else:
+        if pending.lineage != lineage:
+            raise InstallError("OpenCode retirement lineage changed")
+        if current is not None:
+            current_core = replace(current, phase=pending.phase)
+            if current_core != pending or phase_order[pending.phase] < phase_order[current.phase]:
+                raise InstallError("OpenCode retirement transition is invalid")
+        elif pending.phase != "prepared":
+            raise InstallError("OpenCode retirement must begin in prepared")
+        payload["pending_retirement"] = _pending_retirement_payload(pending)
+    _write_receipt_raw(receipt_path, payload)
+
+
+def _retirement_parent(
+    pending: _PendingRetirement,
+) -> tuple[int, Callable[[], None]]:
+    state_binding = _state_binding(pending.source)
+    if state_binding is not None and pending.source.parent == state_binding.directory:
+        _verify_state_binding(state_binding)
+        return os.dup(state_binding.directory_fd), lambda: _verify_state_binding(
+            state_binding
+        )
+    bound = _bound_config_parent(pending.source, create=False)
+    if bound is None:
+        raise InstallError(
+            f"OpenCode retirement parent is missing: {pending.source.parent}"
+        )
+    config_binding, parent_fd = bound
+    _verify_config_binding(config_binding)
+    return os.dup(parent_fd), lambda: _verify_config_binding(config_binding)
+
+
+def _clear_private_retirement_directory(directory_fd: int) -> None:
+    """Clear children only beneath an authenticated journaled private root."""
+
+    for entry in list(os.scandir(directory_fd)):
+        try:
+            metadata = entry.stat(follow_symlinks=False)
+        except FileNotFoundError as error:
+            # This is not absence of the journaled top-level artifact.  Retain
+            # receipt authority and let the locked retry rescan from scratch.
+            raise InstallError(
+                f"OpenCode private retirement child disappeared: {entry.name}"
+            ) from error
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child_fd = -1
+            try:
+                child_fd = os.open(
+                    entry.name, _directory_open_flags(), dir_fd=directory_fd
+                )
+                child = os.fstat(child_fd)
+                if (child.st_dev, child.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise InstallError(
+                        f"OpenCode private retirement child changed: {entry.name}"
+                    )
+                _clear_private_retirement_directory(child_fd)
+            except FileNotFoundError as error:
+                raise InstallError(
+                    f"OpenCode private retirement child disappeared: {entry.name}"
+                ) from error
+            finally:
+                if child_fd >= 0:
+                    os.close(child_fd)
+            try:
+                os.rmdir(entry.name, dir_fd=directory_fd)
+            except FileNotFoundError as error:
+                raise InstallError(
+                    f"OpenCode private retirement child disappeared: {entry.name}"
+                ) from error
+        else:
+            try:
+                os.unlink(entry.name, dir_fd=directory_fd)
+            except FileNotFoundError as error:
+                raise InstallError(
+                    f"OpenCode private retirement child disappeared: {entry.name}"
+                ) from error
+    os.fsync(directory_fd)
+
+
+def _resume_pending_retirement(
+    receipt_path: Path, pending: _PendingRetirement
+) -> bool:
+    """Recover one journal entry through its closed private-only state machine."""
+
+    if _state_binding(receipt_path) is None:
+        raise InstallError("OpenCode retirement recovery requires the installer lock")
+    try:
+        receipt_payload = json.loads(_read_state_text(receipt_path))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
+    if not isinstance(receipt_payload, dict):
+        raise InstallError(f"receipt is malformed: {receipt_path}")
+    lineage = receipt_payload.get("lineage")
+    durable_value = receipt_payload.get("pending_retirement")
+    if not isinstance(lineage, str) or durable_value is None:
+        raise InstallError("OpenCode retirement recovery lacks a durable entry")
+    durable = _pending_retirement_from_payload(durable_value, lineage)
+    if durable != pending:
+        raise InstallError("OpenCode retirement recovery entry changed")
+    parent_fd, verify_parent = _retirement_parent(pending)
+
+    def metadata(name: str) -> os.stat_result | None:
+        try:
+            return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
+    def exact(value: os.stat_result | None) -> bool:
+        return value is not None and (value.st_dev, value.st_ino) == (
+            pending.expected_dev,
+            pending.expected_ino,
+        )
+
+    def require_kind(value: os.stat_result, label: str) -> None:
+        matches = (
+            stat.S_ISDIR(value.st_mode)
+            if pending.kind == "directory"
+            else not stat.S_ISDIR(value.st_mode)
+        )
+        if not matches:
+            raise InstallError(f"OpenCode retirement {label} changed kind")
+
+    current = pending
+    removed = False
+    try:
+        if current.phase == "prepared":
+            source = metadata(current.source.name)
+            private = metadata(current.private.name)
+            if private is not None and not exact(private):
+                raise InstallError(
+                    f"OpenCode retirement private path is occupied: {current.private}"
+                )
+            if exact(source) and exact(private):
+                raise InstallError("OpenCode retirement has two exact live names")
+            if exact(source):
+                assert source is not None
+                require_kind(source, "source")
+                if private is not None:
+                    raise InstallError(
+                        f"OpenCode retirement private path is occupied: {current.private}"
+                    )
+                _renameat_noreplace(
+                    parent_fd, current.source.name, parent_fd, current.private.name
+                )
+                os.fsync(parent_fd)
+                private = metadata(current.private.name)
+                if private is not None and not exact(private):
+                    # A public replacement won the pathname race.  Put that
+                    # foreign object back without overwrite and retain the
+                    # prepared receipt authority for explicit recovery.
+                    if metadata(current.source.name) is None:
+                        _renameat_noreplace(
+                            parent_fd,
+                            current.private.name,
+                            parent_fd,
+                            current.source.name,
+                        )
+                        os.fsync(parent_fd)
+                    raise InstallError("OpenCode retirement public identity changed")
+                if private is None:
+                    raise InstallError("OpenCode retirement exchange lost exact identity")
+            elif source is not None:
+                if not exact(private):
+                    raise InstallError("OpenCode retirement public identity changed")
+            elif private is None:
+                # The journal proves both controlled names and their exact
+                # identity.  Durable absence is the only absence-as-done case.
+                os.fsync(parent_fd)
+            else:
+                assert private is not None
+                require_kind(private, "private path")
+            verify_parent()
+            current = replace(current, phase="exchanged")
+            _rewrite_receipt_retirement(receipt_path, current)
+
+        if current.phase == "exchanged":
+            source = metadata(current.source.name)
+            private = metadata(current.private.name)
+            if exact(source):
+                raise InstallError("OpenCode retirement source reappeared with owned identity")
+            if private is not None and not exact(private):
+                raise InstallError("OpenCode retirement private identity changed")
+            if private is not None:
+                require_kind(private, "private path")
+                if current.kind == "directory":
+                    directory_fd = os.open(
+                        current.private.name,
+                        _directory_open_flags(),
+                        dir_fd=parent_fd,
+                    )
+                    try:
+                        opened = os.fstat(directory_fd)
+                        if (opened.st_dev, opened.st_ino) != (
+                            current.expected_dev,
+                            current.expected_ino,
+                        ):
+                            raise InstallError(
+                                "OpenCode retirement directory identity changed"
+                            )
+                        _clear_private_retirement_directory(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                    again = metadata(current.private.name)
+                    if again is None or not exact(again):
+                        raise InstallError(
+                            "OpenCode retirement directory changed before reclaim"
+                        )
+                    os.rmdir(current.private.name, dir_fd=parent_fd)
+                else:
+                    again = metadata(current.private.name)
+                    if again is None or not exact(again):
+                        raise InstallError(
+                            "OpenCode retirement leaf changed before reclaim"
+                        )
+                    os.unlink(current.private.name, dir_fd=parent_fd)
+                removed = True
+            os.fsync(parent_fd)
+            verify_parent()
+            current = replace(current, phase="reclaimed")
+            _rewrite_receipt_retirement(receipt_path, current)
+
+        if current.phase == "reclaimed":
+            private = metadata(current.private.name)
+            if private is not None:
+                raise InstallError("OpenCode retirement private path reappeared")
+            if exact(metadata(current.source.name)):
+                raise InstallError("OpenCode retirement source reappeared")
+            os.fsync(parent_fd)
+            verify_parent()
+            current = replace(current, phase="done")
+            _rewrite_receipt_retirement(receipt_path, current)
+
+        if current.phase != "done":
+            raise InstallError("OpenCode retirement phase is not recoverable")
+        if metadata(current.private.name) is not None:
+            raise InstallError("OpenCode completed retirement private path reappeared")
+        if exact(metadata(current.source.name)):
+            raise InstallError("OpenCode completed retirement source reappeared")
+        os.fsync(parent_fd)
+        verify_parent()
+        _rewrite_receipt_retirement(receipt_path, None)
+        return removed
+    except InstallError:
+        raise
+    except OSError as error:
+        raise InstallError(f"cannot resume OpenCode retirement: {error}") from error
+    finally:
+        os.close(parent_fd)
+
+
+def _retire_owned_object(
+    source: Path,
+    expected: tuple[int, int],
+    role: str,
+    *,
+    directory: bool,
+    source_kind: str = "public",
+) -> bool:
+    """Prepare and complete one exact receipt-authorized retirement."""
+
+    if role not in OPENCODE_RETIREMENT_ROLES or source_kind not in {
+        "public",
+        "quarantine",
+    }:
+        raise InstallError("OpenCode retirement role or source kind is invalid")
+    if expected[0] <= 0 or expected[1] <= 0:
+        raise InstallError("OpenCode retirement identity is invalid")
+    state_bindings = tuple(_STATE_BINDINGS.values())
+    config_bindings = tuple(_CONFIG_BINDINGS.values())
+    if len(state_bindings) != 1 or len(config_bindings) != 1:
+        raise InstallError("OpenCode retirement requires one active installer lock")
+    state_binding = state_bindings[0]
+    receipt_path = state_binding.directory / OPENCODE_RECEIPT_FILENAME
+    if not _lexists(receipt_path):
+        raise InstallError("OpenCode retirement lacks its durable receipt")
+    try:
+        payload = json.loads(_read_state_text(receipt_path))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise InstallError(f"receipt is malformed: {receipt_path}")
+    lineage = payload.get("lineage")
+    if not isinstance(lineage, str) or len(lineage) < 32:
+        raise InstallError("OpenCode retirement lacks a receipt lineage")
+    repository_value = payload.get("repository_root")
+    if not isinstance(repository_value, str):
+        raise InstallError("OpenCode retirement receipt lacks its repository")
+    try:
+        repository_root = Path(repository_value).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise InstallError("OpenCode retirement repository cannot be resolved") from error
+    receipt = _read_opencode_receipt(
+        receipt_path,
+        repository_root,
+        config_bindings[0].directory,
+        state_binding.directory.parent,
+    )
+    if receipt is None:
+        raise InstallError("OpenCode retirement receipt disappeared")
+    existing_value = payload.get("pending_retirement")
+    if existing_value is not None:
+        if receipt.pending_retirement is None:
+            raise InstallError("OpenCode retirement receipt entry disappeared")
+        _resume_pending_retirement(receipt_path, receipt.pending_retirement)
+        receipt = _read_opencode_receipt(
+            receipt_path,
+            repository_root,
+            config_bindings[0].directory,
+            state_binding.directory.parent,
+        )
+        if receipt is None or receipt.pending_retirement is not None:
+            raise InstallError("OpenCode retirement recovery did not close")
+    kind = "directory" if directory else "leaf"
+    token = _retirement_token(lineage, role, kind, source, *expected)
+    pending = _PendingRetirement(
+        role=role,
+        kind=kind,
+        source=_lexical_absolute(source),
+        private=_retirement_private_path(_lexical_absolute(source), token, kind),
+        expected_dev=expected[0],
+        expected_ino=expected[1],
+        lineage=lineage,
+        token=token,
+        phase="prepared",
+        source_kind=source_kind,
+    )
+    _validate_pending_retirement_authority(
+        pending,
+        links=receipt.links,
+        artifact_root=receipt.artifact_root,
+        artifact_identity=(receipt.artifact_dev, receipt.artifact_ino),
+        artifact_anchor=(
+            receipt.artifact_anchor,
+            receipt.artifact_anchor_dev,
+            receipt.artifact_anchor_ino,
+        ),
+        pending_swap=receipt.pending_swap,
+        pending_publish=receipt.pending_publish,
+    )
+    parent_fd, verify_parent = _retirement_parent(pending)
+    try:
+        try:
+            observed = os.stat(
+                pending.source.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            observed = None
+        try:
+            occupied = os.stat(
+                pending.private.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            occupied = None
+        if occupied is not None:
+            raise InstallError(
+                f"OpenCode retirement private path is occupied: {pending.private}"
+            )
+        if observed is None or (observed.st_dev, observed.st_ino) != expected:
+            os.fsync(parent_fd)
+            verify_parent()
+            return False
+    finally:
+        os.close(parent_fd)
+    _rewrite_receipt_retirement(receipt_path, pending)
+    return _resume_pending_retirement(receipt_path, pending)
+
+
+def _recover_pending_retirement(receipt_path: Path, receipt: _Receipt) -> None:
+    pending = receipt.pending_retirement
+    if pending is not None:
+        _resume_pending_retirement(receipt_path, pending)
 
 
 def _rollback_pending_publish(
@@ -4530,6 +5170,23 @@ def _recover_pending_swap(
             receipt = _receipt_with_pending(receipt, None)
             _write_receipt(receipt_path, receipt)
         return receipt
+    elif (
+        artifact_is_candidate
+        and backup_exists
+        and pending.phase in {"prepared", "anchor-recorded", "backup-created"}
+    ):
+        if not artifact_candidate_proven or not backup_proven:
+            raise InstallError(
+                "pending OpenCode swap lacks independent ownership evidence"
+            )
+        # Candidate publication is not committed until the published receipt
+        # write is durable.  Persist rollback intent before retiring either
+        # candidate or anchor, then reuse the closed rollback state machine.
+        receipt = _receipt_with_pending(
+            receipt, replace(pending, phase="rollback-prepared")
+        )
+        _write_receipt(receipt_path, receipt)
+        return _rollback_pending_swap_candidate(receipt_path, receipt)
     elif artifact_is_candidate and backup_exists:
         if not artifact_candidate_proven or not backup_proven:
             raise InstallError(
@@ -4685,50 +5342,12 @@ def _remove_new_opencode_state(
     state_home: Path,
     state_home_existed_before: bool,
 ) -> None:
-    """Remove only an empty receipt directory created by this install."""
+    """Intentionally retain newly-created empty state directories on failure.
 
-    binding = _STATE_BINDINGS.get(str(_lexical_absolute(receipt_directory)))
-    if binding is None:
-        return
-
-    def remove_bound_empty(directory: Path) -> None:
-        created = next(
-            (
-                item
-                for item in binding.created_directories
-                if item.directory == _lexical_absolute(directory)
-            ),
-            None,
-        )
-        if created is None:
-            return
-        try:
-            opened = os.fstat(created.directory_fd)
-            named = os.stat(
-                created.directory.name,
-                dir_fd=created.parent_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISDIR(opened.st_mode)
-                or (opened.st_dev, opened.st_ino) != created.identity
-                or (named.st_dev, named.st_ino) != created.identity
-                or os.listdir(created.directory_fd)
-            ):
-                return
-            _rmdir_exact_via_exchange(
-                created.parent_fd,
-                created.directory.name,
-                created.identity,
-                "new OpenCode state directory",
-            )
-        except (OSError, InstallError):
-            pass
-
-    if not existed_before:
-        remove_bound_empty(receipt_directory)
-    if not state_home_existed_before:
-        remove_bound_empty(state_home)
+    Without a durable receipt they have no retirement authority.  Empty state
+    directories are harmless and are preferable to inventing a second cleanup
+    protocol outside the receipt journal.
+    """
 
 
 def _install_source_inventory(root: Path) -> list[tuple[str, Path]]:
@@ -5007,6 +5626,7 @@ def _with_artifact_identity(
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
         pending_migration=receipt.pending_migration,
+        pending_retirement=receipt.pending_retirement,
     )
 
 
@@ -5881,6 +6501,15 @@ def _install_opencode_bound(
         )
         if receipt is None:
             raise InstallError(f"receipt disappeared while reading: {receipt_path_value}")
+        if receipt.pending_retirement is not None:
+            _recover_pending_retirement(receipt_path_value, receipt)
+            receipt = _read_opencode_receipt(
+                receipt_path_value, canonical_root, config_dir, state_home
+            )
+            if receipt is None:
+                raise InstallError(
+                    f"receipt disappeared after retirement recovery: {receipt_path_value}"
+                )
         if receipt.teardown_phase != "committed":
             if receipt.pending_publish is not None or receipt.pending_swap is not None:
                 raise InstallError("OpenCode teardown receipt contains publication state")
@@ -6350,6 +6979,8 @@ def _read_opencode_receipt(
             allowed_keys.add("pending_publish")
         if "pending_migration" in payload:
             allowed_keys.add("pending_migration")
+        if "pending_retirement" in payload:
+            allowed_keys.add("pending_retirement")
         if set(payload) != allowed_keys:
             raise InstallError(f"current OpenCode receipt is inconsistent: {receipt_path}")
         pending_publish_payload = payload.get("pending_publish")
@@ -6441,7 +7072,7 @@ def _read_opencode_receipt(
 
 def _receipt_deletion_quarantine_identity(
     receipt_path: Path, name: str, *, suffix: str = ".delete"
-) -> tuple[int, int, str, str] | None:
+) -> tuple[int, int, str, str, str] | None:
     prefix = f".{receipt_path.name}."
     if not name.startswith(prefix) or not name.endswith(suffix):
         return None
@@ -6462,7 +7093,7 @@ def _receipt_deletion_quarantine_identity(
         or pending_phase not in OPENCODE_RECEIPT_PENDING_PHASES
     ):
         return None
-    return dev, ino, current_phase, pending_phase
+    return dev, ino, token, current_phase, pending_phase
 
 
 def _recover_receipt_deletion(
@@ -6514,8 +7145,24 @@ def _recover_receipt_deletion(
         if terminal is None or terminal.lineage is None:
             continue
         current_phase, pending_phase = _receipt_deletion_phase(terminal)
-        if (current_phase, pending_phase) != (encoded[2], encoded[3]):
+        if (current_phase, pending_phase) != (encoded[3], encoded[4]):
             continue
+        expected_quarantine = _receipt_deletion_quarantine_path(
+            receipt_path,
+            *identity,
+            terminal.lineage,
+            current_phase,
+            pending_phase,
+        )
+        expected_pin = _receipt_deletion_pin_path(
+            receipt_path,
+            *identity,
+            terminal.lineage,
+            current_phase,
+            pending_phase,
+        )
+        if base_name not in {expected_quarantine.name, expected_pin.name}:
+            raise InstallError("receipt deletion token is not lineage-bound")
         _unlink_exact_leaf_via_exchange(
             binding.directory_fd,
             base_name,
@@ -6533,7 +7180,7 @@ def _recover_receipt_deletion(
         if encoded is None:
             continue
         identity = encoded[:2]
-        encoded_current_phase, encoded_pending_phase = encoded[2:]
+        encoded_token, encoded_current_phase, encoded_pending_phase = encoded[2:]
         try:
             metadata = os.stat(
                 name, dir_fd=binding.directory_fd, follow_symlinks=False
@@ -6575,7 +7222,7 @@ def _recover_receipt_deletion(
             pending_phase,
         )
         if source not in {quarantine, pin}:
-            continue
+            raise InstallError("receipt deletion token is not lineage-bound")
         source_fd = -1
         try:
             # The retry's first barrier makes a preceding rename durable even
@@ -6900,6 +7547,15 @@ def _uninstall_opencode_bound(
     )
     if receipt is None:
         return InstallResult()
+    if receipt.pending_retirement is not None:
+        _recover_pending_retirement(receipt_path_value, receipt)
+        receipt = _read_opencode_receipt(
+            receipt_path_value, canonical_root, config_dir, state_home
+        )
+        if receipt is None:
+            raise InstallError(
+                f"receipt disappeared after retirement recovery: {receipt_path_value}"
+            )
     if receipt.artifact_root is None:
         links = receipt.links
         removed = _uninstall_legacy_opencode_receipt(receipt_path_value, receipt)
@@ -7004,8 +7660,9 @@ def _resume_opencode_teardown(
             try:
                 _remove_recorded_opencode_staging(link)
             except (OSError, InstallError) as error:
-                failures.append(f"staged link {link.staged_destination}: {error}")
-                continue
+                raise InstallError(
+                    f"owned opencode staged-link cleanup failed: {error}"
+                ) from error
             if link.destination_dev is None or link.destination_ino is None:
                 continue
             try:
@@ -7015,8 +7672,9 @@ def _resume_opencode_teardown(
                 _recorded_opencode_link_is_live(link)
                 removed_exact = _unlink_recorded_destination(link)
             except (OSError, InstallError) as error:
-                failures.append(f"link {link.destination}: {error}")
-                continue
+                raise InstallError(
+                    f"owned opencode link cleanup failed: {error}"
+                ) from error
             if removed_exact:
                 removed.append(link)
         if failures:
