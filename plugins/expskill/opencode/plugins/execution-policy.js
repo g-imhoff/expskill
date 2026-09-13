@@ -58,7 +58,7 @@ function nonEmptyString(value, label) {
 function resolvePolicyPath(env, pluginFile) {
   const home = env?.EXPSKILL_HOME;
   if (typeof home === "string" && home.length > 0) {
-    return path.resolve(home, "packages", "expskill", "assets", "execution-policy.json");
+    return path.resolve(home, "plugins", "expskill", "assets", "execution-policy.json");
   }
   const base = path.dirname(fileURLToPath(pluginFile));
   return path.resolve(base, "..", "assets", "execution-policy.json");

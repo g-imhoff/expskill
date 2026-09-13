@@ -413,7 +413,7 @@ def _copy_canonical_source(canonical_root: Path, output_root: Path) -> list[Path
 
 
 def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
-    canonical_root = root / "packages" / "expskill"
+    canonical_root = root / "plugins" / "expskill"
     platform_root = canonical_root / "opencode"
     sources: list[tuple[str, Path]] = []
 
@@ -1560,7 +1560,7 @@ def build_opencode_package(
         if output_parent_fd is None
         else _bound_output_path(output_dir)
     )
-    canonical_root = root / "packages" / "expskill"
+    canonical_root = root / "plugins" / "expskill"
     platform_root = canonical_root / "opencode"
     _reject_symlink_components(canonical_root, "canonical package")
     _reject_symlink_components(platform_root, "OpenCode platform source")
@@ -1658,7 +1658,7 @@ def build_opencode_package(
         # every copied/rendered byte and provenance digest still comes solely
         # from the accepted private snapshot.
         _verify_live_sources_against_snapshot(root, snapshot_root)
-        snapshot_canonical = snapshot_root / "packages" / "expskill"
+        snapshot_canonical = snapshot_root / "plugins" / "expskill"
         snapshot_platform = snapshot_canonical / "opencode"
         _copy_platform_source(snapshot_platform, staging)
         _copy_canonical_source(snapshot_canonical, staging)

@@ -38,7 +38,7 @@ EXPECTED_LINK_COUNT = len(SKILLS) + len(SKILLS) + len(AGENTS) + len(PLUGINS)
 def seed_repository(path: Path) -> Path:
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
     shutil.copytree(ROOT / ".agents", path / ".agents", ignore=ignore)
-    shutil.copytree(ROOT / "packages", path / "packages", ignore=ignore)
+    shutil.copytree(ROOT / "plugins", path / "plugins", ignore=ignore)
     shutil.copytree(ROOT / "scripts", path / "scripts", ignore=ignore)
     shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
@@ -67,7 +67,7 @@ class OpencodeInstallerTests(unittest.TestCase):
                 self.assertTrue(skill.is_symlink())
                 self.assertEqual(
                     (skill / "SKILL.md").read_bytes(),
-                    (repo / "packages" / "expskill" / "skills" / name / "SKILL.md").read_bytes(),
+                    (repo / "plugins" / "expskill" / "skills" / name / "SKILL.md").read_bytes(),
                 )
                 self.assertTrue((config_dir / "commands" / f"{name}.md").is_symlink())
             for name in AGENTS:
@@ -83,8 +83,8 @@ class OpencodeInstallerTests(unittest.TestCase):
                     for entry in receipt["links"]
                 )
             )
-            self.assertFalse((repo / "packages" / "expskill" / "opencode" / "agents").exists())
-            self.assertFalse((repo / "packages" / "expskill" / "opencode" / "commands").exists())
+            self.assertFalse((repo / "plugins" / "expskill" / "opencode" / "agents").exists())
+            self.assertFalse((repo / "plugins" / "expskill" / "opencode" / "commands").exists())
 
     def test_install_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -104,12 +104,12 @@ class OpencodeInstallerTests(unittest.TestCase):
             config_dir = root / "config"
             state_home = root / "state"
             install_opencode(repo, config_dir, state_home)
-            skill = repo / "packages" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            skill = repo / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace("Cut AI tells", "Reinstalled marker"),
                 encoding="utf-8",
             )
-            profile = repo / "packages" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            profile = repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
             profile.write_text(
                 profile.read_text(encoding="utf-8").replace(
                     "Independently review one immutable implementation candidate.",

@@ -6,16 +6,16 @@ OpenCode installation.
 
 ## Universal source
 
-`packages/expskill` is the universal source tree. Its `skills/`, `scripts/`,
+`plugins/expskill` is the universal source tree. Its `skills/`, `scripts/`,
 `assets/`, and third-party notices are shared by every supported surface.
-`packages/expskill/opencode` contains only native OpenCode package source:
+`plugins/expskill/opencode` contains only native OpenCode package source:
 `package.json`, `agents.json`, the plugins, the license, and this README.
 Generated agents, commands, the runtime catalog, and copied package assets are
 not maintained by hand in the source tree.
 
 `agents.json` is the OpenCode overlay. It supplies model profiles, permission
 maps, runtime text, and closings for the exact seven canonical profiles in
-`packages/expskill/assets/agents/expskill-*.toml`. Descriptions and developer
+`plugins/expskill/assets/agents/expskill-*.toml`. Descriptions and developer
 instructions remain in those TOML profiles.
 
 ## Pure rendering and explicit build

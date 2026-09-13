@@ -1,7 +1,7 @@
 """Pure renderers for the OpenCode package surface.
 
 The repository keeps one canonical skill and agent source under
-``packages/expskill``.  OpenCode's markdown agents and command wrappers are
+``plugins/expskill``.  OpenCode's markdown agents and command wrappers are
 build outputs, not sources.  This module only reads those inputs and returns
 deterministic strings and JSON-compatible values; it never writes files.
 """
@@ -228,7 +228,7 @@ def skill_inventory(repo_root: Path | str | None = None) -> tuple[str, ...]:
     """Return the sorted canonical skill inventory used for commands."""
 
     root = _root(repo_root)
-    canonical_root = root / "packages" / "expskill"
+    canonical_root = root / "plugins" / "expskill"
     return tuple(item[0] for item in _skill_inputs(canonical_root))
 
 
@@ -387,7 +387,7 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
     """Render every agent described by the canonical TOML and overlay."""
 
     root = _root(repo_root)
-    canonical_root = root / "packages" / "expskill"
+    canonical_root = root / "plugins" / "expskill"
     package_root = canonical_root / "opencode"
     spec = load_overlay(package_root)
     profiles = spec["model_profiles"]
@@ -463,7 +463,7 @@ def render_commands(repo_root: Path | str | None = None) -> dict[str, str]:
     """Render one command wrapper for every canonical skill."""
 
     root = _root(repo_root)
-    canonical_root = root / "packages" / "expskill"
+    canonical_root = root / "plugins" / "expskill"
     return {
         name: render_command(name, frontmatter)
         for name, _path, frontmatter, _contents in _skill_inputs(canonical_root)
@@ -474,7 +474,7 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
     """Return the machine-readable runtime catalog for generated consumers."""
 
     root = _root(repo_root)
-    canonical_root = root / "packages" / "expskill"
+    canonical_root = root / "plugins" / "expskill"
     package_root = canonical_root / "opencode"
     spec = load_overlay(package_root)
     profiles = spec["model_profiles"]

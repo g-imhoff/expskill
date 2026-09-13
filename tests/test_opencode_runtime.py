@@ -305,7 +305,7 @@ import(%s).then(async (module) => {
       { args: { subagent_type: 'general' } },
     );
     await loadHooks['tool.execute.before']({ tool: 'bash' }, { args: { command: 'true' } });
-    const assets = path.join(temporary, 'packages', 'expskill', 'assets');
+    const assets = path.join(temporary, 'plugins', 'expskill', 'assets');
     await fs.mkdir(assets, { recursive: true });
     await fs.writeFile(path.join(assets, 'execution-policy.json'), '{invalid', 'utf8');
     loadHooks = await module.ExecutionPolicyPlugin({});

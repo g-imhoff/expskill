@@ -7069,7 +7069,7 @@ def _remove_new_opencode_state(
 def _install_source_inventory(root: Path) -> list[tuple[str, Path]]:
     """Independent source walk for install-time artifact verification."""
 
-    package_root = root / "packages" / "expskill"
+    package_root = root / "plugins" / "expskill"
     result: list[tuple[str, Path]] = []
 
     def walk(directory: Path) -> None:
@@ -7113,9 +7113,9 @@ def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
     expected: dict[str, bytes] = {}
     try:
         _reject_symlink_components(
-            repo_root / "packages" / "expskill", "canonical package"
+            repo_root / "plugins" / "expskill", "canonical package"
         )
-        package_root = repo_root / "packages" / "expskill"
+        package_root = repo_root / "plugins" / "expskill"
         platform_root = package_root / "opencode"
         for name in ("agents.json", "package.json", "README.md", "LICENSE", "index.js"):
             expected[name] = (platform_root / name).read_bytes()
@@ -7123,7 +7123,7 @@ def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
             expected[f"plugins/{name}"] = (platform_root / "plugins" / name).read_bytes()
         for relative, path in _install_source_inventory(repo_root):
             source_relative = Path(relative)
-            package_marker = Path("packages") / "expskill"
+            package_marker = Path("plugins") / "expskill"
             if source_relative.parts[:2] == package_marker.parts:
                 within = Path(*source_relative.parts[2:])
                 if within.parts and within.parts[0] in {"skills", "scripts"}:

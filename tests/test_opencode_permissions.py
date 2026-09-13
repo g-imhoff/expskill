@@ -14,7 +14,7 @@ from scripts.validate import _parse_overlay_frontmatter, validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "packages" / "expskill"
+PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 OPENCODE_ROOT = PLUGIN_ROOT / "opencode"
 READ_ONLY_AGENTS = (
     "expskill-explorer",
@@ -189,12 +189,12 @@ class OpencodePermissionContractTests(unittest.TestCase):
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
         shutil.copytree(ROOT / ".agents", temporary / ".agents")
-        shutil.copytree(ROOT / "packages", temporary / "packages")
+        shutil.copytree(ROOT / "plugins", temporary / "plugins")
         shutil.copytree(ROOT / "scripts", temporary / "scripts")
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         # A sibling lane may have a local npm install in the shared checkout;
         # generated dependency documentation is outside this contract.
-        node_modules = temporary / "packages" / "expskill" / "opencode" / "node_modules"
+        node_modules = temporary / "plugins" / "expskill" / "opencode" / "node_modules"
         if node_modules.exists():
             shutil.rmtree(node_modules)
         return temporary
@@ -275,7 +275,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
 
     def test_validation_rejects_reordered_read_only_permission_rules(self) -> None:
         root = self.copy_repository()
-        spec_path = root / "packages" / "expskill" / "opencode" / "agents.json"
+        spec_path = root / "plugins" / "expskill" / "opencode" / "agents.json"
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         for name in READ_ONLY_AGENTS:
             rules = spec["agents"][name]["permission"]["bash"]
@@ -343,7 +343,7 @@ class OpencodePermissionContractTests(unittest.TestCase):
 
     def test_validation_rejects_unsafe_read_only_policy_after_regeneration(self) -> None:
         root = self.copy_repository()
-        spec_path = root / "packages" / "expskill" / "opencode" / "agents.json"
+        spec_path = root / "plugins" / "expskill" / "opencode" / "agents.json"
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         for name in READ_ONLY_AGENTS:
             for rule in UNSAFE_WILDCARD_RULES:
