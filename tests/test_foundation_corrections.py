@@ -1128,11 +1128,11 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertEqual(
                 len([path for path in config.rglob("*") if path.is_symlink()]),
-                29,
+                33,
             )
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
             self.assertTrue(payload["pending_publish"]["planned_links"])
-            self.assertEqual(len(payload["links"]), 29)
+            self.assertEqual(len(payload["links"]), 33)
             uninstall_opencode(repo, config, state)
 
             self.assertFalse(receipt_path(state).exists())
@@ -1178,7 +1178,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             )
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
             self.assertTrue(payload["pending_publish"]["planned_links"])
-            self.assertEqual(len(payload["links"]), 29)
+            self.assertEqual(len(payload["links"]), 33)
             uninstall_opencode(repo, config, state)
 
             self.assertFalse(receipt_path(state).exists())
