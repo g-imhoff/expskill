@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "plugins" / "expskill"
+PLUGIN = ROOT / "packages" / "expskill"
 SKILLS = PLUGIN / "skills"
 ROUTER = SKILLS / "use-expskill" / "SKILL.md"
 

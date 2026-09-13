@@ -4,7 +4,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / 'plugins/expskill/skills/review/SKILL.md'
+SKILL = ROOT / 'packages/expskill/skills/review/SKILL.md'
 
 class ReviewReportingContractTests(unittest.TestCase):
     @classmethod
