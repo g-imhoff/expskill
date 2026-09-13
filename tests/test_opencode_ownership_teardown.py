@@ -113,7 +113,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             payload = receipt(state)
             victim = payload["links"][0]
             destination = Path(victim["destination"])
-            real_exchange = install_module._renameat_noreplace
+            real_exchange = install_module._renameat_exchange
             injected = False
 
             def crash_after_exchange(
@@ -133,7 +133,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     raise SystemExit("after successful leaf retirement exchange")
 
             with mock.patch.object(
-                install_module, "_renameat_noreplace", side_effect=crash_after_exchange
+                install_module, "_renameat_exchange", side_effect=crash_after_exchange
             ):
                 with self.assertRaises(SystemExit):
                     uninstall_opencode(repo, config, state)
@@ -154,7 +154,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = Path(receipt(state)["artifact_root"])
-            real_exchange = install_module._renameat_noreplace
+            real_exchange = install_module._renameat_exchange
             injected = False
 
             def crash_after_exchange(
@@ -174,7 +174,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     raise SystemExit("after successful directory retirement exchange")
 
             with mock.patch.object(
-                install_module, "_renameat_noreplace", side_effect=crash_after_exchange
+                install_module, "_renameat_exchange", side_effect=crash_after_exchange
             ):
                 with self.assertRaises(SystemExit):
                     uninstall_opencode(repo, config, state)
@@ -385,7 +385,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             expected = (victim["destination_dev"], victim["destination_ino"])
             detached = destination.with_name(f"{destination.name}.owned")
             foreign_target = root / "foreign-target"
-            real_exchange = install_module._renameat_noreplace
+            real_exchange = install_module._renameat_exchange
             injected = False
 
             def replace_at_final_exchange(
@@ -412,7 +412,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
 
             with mock.patch.object(
                 install_module,
-                "_renameat_noreplace",
+                "_renameat_exchange",
                 side_effect=replace_at_final_exchange,
             ):
                 with self.assertRaises(install_module.InstallError):
@@ -446,11 +446,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 artifact = Path(payload["artifact_root"])
                 anchor = Path(payload["artifact_anchor"])
                 receipt_file = receipt_path(state)
-                real_exchange = (
-                    install_module._renameat_exchange
-                    if kind == "receipt"
-                    else install_module._renameat_noreplace
-                )
+                real_exchange = install_module._renameat_exchange
                 injected = False
                 raced_path: Path | None = None
                 detached: Path | None = None
@@ -513,11 +509,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
 
                 with mock.patch.object(
                     install_module,
-                    (
-                        "_renameat_exchange"
-                        if kind == "receipt"
-                        else "_renameat_noreplace"
-                    ),
+                    "_renameat_exchange",
                     side_effect=replace_at_final_exchange,
                 ):
                     with self.assertRaises(install_module.InstallError):
@@ -899,7 +891,7 @@ install_module.install_opencode(repo, config, state)
                     target_name: str,
                 ) -> None:
                     nonlocal rename_calls
-                    if source_name == canonical.name and target_name.endswith(".retire"):
+                    if source_name == canonical.name and target_name.endswith(".placeholder"):
                         rename_calls += 1
                     real_rename(source_fd, source_name, target_fd, target_name)
 
@@ -1013,7 +1005,7 @@ install_module.install_opencode(repo, config, state)
                     ) -> None:
                         nonlocal receipt_renames
                         if source_name == canonical.name and target_name.endswith(
-                            ".retire"
+                            ".placeholder"
                         ):
                             receipt_renames += 1
                         real_rename(source_fd, source_name, target_fd, target_name)
@@ -1113,7 +1105,7 @@ install_module.install_opencode(repo, config, state)
                 if (
                     not injected
                     and source_name == final_receipt.name
-                    and target_name.endswith(".retire")
+                    and target_name.endswith(".placeholder")
                 ):
                     injected = True
                     raise SystemExit("after terminal receipt rename")
@@ -1366,7 +1358,11 @@ install_module.install_opencode(repo, config, state)
                 ) -> None:
                     nonlocal injected
                     real_rename(source_fd, source_name, target_fd, target_name)
-                    if source_name == final_receipt.name and not injected:
+                    if (
+                        source_name == final_receipt.name
+                        and target_name.endswith(".placeholder")
+                        and not injected
+                    ):
                         injected = True
                         raise SystemExit("after receipt quarantine rename")
 
@@ -1517,7 +1513,7 @@ install_module.install_opencode(repo, config, state)
                         if (
                             not stopped
                             and source_name == destination.name
-                            and target_name == quarantine.name
+                            and target_name.endswith(".placeholder")
                         ):
                             stopped = True
                             raise failure_type("after exact link delete rename")
@@ -1542,24 +1538,18 @@ install_module.install_opencode(repo, config, state)
                         destination.lstat().st_ino,
                     )
 
-                    if retry == "install":
-                        with self.assertRaisesRegex(
-                            install_module.InstallError, "conflicting opencode destination"
-                        ):
-                            install_opencode(repo, config, state)
-                        uninstall_opencode(repo, config, state)
-                    else:
-                        uninstall_opencode(repo, config, state)
+                    entrypoint = install_opencode if retry == "install" else uninstall_opencode
+                    with self.assertRaises(install_module.InstallError):
+                        entrypoint(repo, config, state)
 
-                    self.assertFalse(quarantine.exists())
-                    self.assertFalse(quarantine.is_symlink())
+                    self.assertTrue(quarantine.is_symlink())
                     self.assertTrue(destination.is_symlink())
                     self.assertEqual(os.readlink(destination), str(foreign))
                     self.assertEqual(
                         (destination.lstat().st_dev, destination.lstat().st_ino),
                         foreign_identity,
                     )
-                    self.assertFalse(receipt_path(state).exists())
+                    self.assertTrue(receipt_path(state).exists())
 
     def test_staged_link_delete_quarantine_is_recovered(self) -> None:
         for failure_type in (install_module.InstallError, SystemExit):
@@ -1610,7 +1600,7 @@ install_module.install_opencode(repo, config, state)
                         if (
                             not stopped
                             and source_name == staging.name
-                            and target_name == quarantine.name
+                            and target_name.endswith(".placeholder")
                         ):
                             stopped = True
                             raise failure_type("after staged link delete rename")
@@ -1673,7 +1663,7 @@ install_module.install_opencode(repo, config, state)
                         if (
                             not stopped
                             and source_name == anchor.name
-                            and target_name == quarantine.name
+                            and target_name.endswith(".placeholder")
                         ):
                             stopped = True
                             raise failure_type("after exact anchor delete rename")
@@ -1692,16 +1682,14 @@ install_module.install_opencode(repo, config, state)
                     anchor.write_text("foreign anchor\n", encoding="utf-8")
                     foreign_identity = (anchor.stat().st_dev, anchor.stat().st_ino)
 
-                    if retry == "install":
-                        install_opencode(repo, config, state)
-                        uninstall_opencode(repo, config, state)
-                    else:
-                        uninstall_opencode(repo, config, state)
+                    entrypoint = install_opencode if retry == "install" else uninstall_opencode
+                    with self.assertRaises(install_module.InstallError):
+                        entrypoint(repo, config, state)
 
-                    self.assertFalse(quarantine.exists())
+                    self.assertTrue(quarantine.is_file())
                     self.assertEqual(anchor.read_text(encoding="utf-8"), "foreign anchor\n")
                     self.assertEqual((anchor.stat().st_dev, anchor.stat().st_ino), foreign_identity)
-                    self.assertFalse(receipt_path(state).exists())
+                    self.assertTrue(receipt_path(state).exists())
 
     def test_link_and_anchor_unlink_fsync_failures_retain_receipt_authority(self) -> None:
         for operation in ("link", "anchor"):
@@ -1809,7 +1797,7 @@ install_module.install_opencode(repo, config, state)
                     if (
                         not stopped
                         and source_name == owned_path.name
-                        and target_name == quarantine.name
+                        and target_name.endswith(".placeholder")
                     ):
                         stopped = True
                         raise SystemExit("after exact delete rename")
@@ -1984,7 +1972,7 @@ install_module.install_opencode(repo, config, state)
                 if (
                     not stopped
                     and source_name == victim.destination.name
-                    and target_name.endswith(".retire")
+                    and target_name.endswith(".placeholder")
                 ):
                     stopped = True
                     raise SystemExit("after migrated link delete rename")
@@ -3002,7 +2990,7 @@ install_module.install_opencode(repo, config, state)
                             )
                             if (
                                 source_name == final_receipt.name
-                                and target_name.endswith(".retire")
+                                and target_name.endswith(".placeholder")
                                 and not deletion_interrupted
                             ):
                                 deletion_interrupted = True
@@ -3685,7 +3673,11 @@ install_module.install_opencode(repo, config, state)
                 ) -> None:
                     nonlocal stopped
                     real_rename(source_fd, source_name, target_fd, target_name)
-                    if source_name == canonical.name and not stopped:
+                    if (
+                        source_name == canonical.name
+                        and target_name.endswith(".placeholder")
+                        and not stopped
+                    ):
                         stopped = True
                         raise SystemExit("after receipt quarantine rename")
 
@@ -3793,7 +3785,7 @@ install_module.install_opencode(repo, config, state)
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            real_rename = install_module._renameat_noreplace
+            real_rename = install_module._renameat_exchange
             interrupted = False
 
             def stop_after_private_exchange(
@@ -3813,7 +3805,7 @@ install_module.install_opencode(repo, config, state)
                     raise SystemExit("after journaled anchor exchange")
 
             with mock.patch.object(
-                install_module, "_renameat_noreplace", side_effect=stop_after_private_exchange
+                install_module, "_renameat_exchange", side_effect=stop_after_private_exchange
             ):
                 with self.assertRaises(SystemExit):
                     uninstall_opencode(repo, config, state)
@@ -4179,7 +4171,7 @@ install_module.install_opencode(repo, config, state)
                     assert binding is not None
                     key = str(binding.directory)
                     install_module._STATE_BINDINGS[key] = binding
-                    real_write = install_module._write_state_generation
+                    real_write = install_module._write_named_state_generation
                     real_exchange = install_module._renameat_exchange
                     real_fsync = os.fsync
                     real_reclaim = install_module._unlink_private_state_inode
@@ -4197,15 +4189,12 @@ install_module.install_opencode(repo, config, state)
                         raise SystemExit(f"after ordinary receipt {action}")
 
                     def write_generation(
-                        bound: object, name: str, encoded: bytes
-                    ) -> tuple[int, int]:
-                        if name.startswith(
-                            install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
-                        ):
-                            return interrupt(
-                                "write", lambda: real_write(bound, name, encoded)
-                            )  # type: ignore[return-value]
-                        return real_write(bound, name, encoded)
+                        bound: object, name_from_identity: object, encoded: bytes
+                    ) -> tuple[str, tuple[int, int]]:
+                        return interrupt(
+                            "write",
+                            lambda: real_write(bound, name_from_identity, encoded),
+                        )  # type: ignore[return-value]
 
                     def exchange_generation(
                         source_fd: int,
@@ -4250,7 +4239,7 @@ install_module.install_opencode(repo, config, state)
                         with (
                             mock.patch.object(
                                 install_module,
-                                "_write_state_generation",
+                                "_write_named_state_generation",
                                 side_effect=write_generation,
                             ),
                             mock.patch.object(
@@ -4342,8 +4331,8 @@ install_module.install_opencode(repo, config, state)
                     install_module._STATE_BINDINGS[key] = binding
                     real_phase_write = install_module._write_receipt_retirement_sidecar
                     real_generation_write = install_module._write_state_generation
-                    real_receipt_exchange = install_module._renameat_noreplace
-                    real_stage_exchange = install_module._renameat_exchange
+                    real_named_write = install_module._write_named_state_generation
+                    real_exchange = install_module._renameat_exchange
                     real_fsync = os.fsync
                     real_reclaim = install_module._unlink_private_state_inode
                     triggered = False
@@ -4380,35 +4369,17 @@ install_module.install_opencode(repo, config, state)
                             return interrupt(
                                 "journal-write", perform_journal
                             )  # type: ignore[return-value]
-                        if name.endswith(".journal.stage"):
-                            return interrupt(
-                                "sidecar-stage-write",
-                                lambda: real_generation_write(bound, name, encoded),
-                            )  # type: ignore[return-value]
                         return real_generation_write(bound, name, encoded)
 
-                    def exchange_receipt(
-                        source_fd: int,
-                        source_name: str,
-                        target_fd: int,
-                        target_name: str,
-                    ) -> None:
-                        nonlocal receipt_exchanged
-                        if source_name == receipt_file.name and target_name.endswith(
-                            ".retire"
-                        ):
-                            def perform() -> None:
-                                nonlocal receipt_exchanged
-                                real_receipt_exchange(
-                                    source_fd, source_name, target_fd, target_name
-                                )
-                                receipt_exchanged = True
-
-                            interrupt("receipt-exchange", perform)
-                            return
-                        real_receipt_exchange(
-                            source_fd, source_name, target_fd, target_name
-                        )
+                    def write_named_generation(
+                        bound: object, name_from_identity: object, encoded: bytes
+                    ) -> tuple[str, tuple[int, int]]:
+                        return interrupt(
+                            "sidecar-stage-write",
+                            lambda: real_named_write(
+                                bound, name_from_identity, encoded
+                            ),
+                        )  # type: ignore[return-value]
 
                     def exchange_sidecar(
                         source_fd: int,
@@ -4416,18 +4387,30 @@ install_module.install_opencode(repo, config, state)
                         target_fd: int,
                         target_name: str,
                     ) -> None:
-                        nonlocal stage_exchanged
-                        if source_name.endswith(".journal.stage"):
+                        nonlocal receipt_exchanged, stage_exchanged
+                        if source_name == receipt_file.name and target_name.endswith(
+                            ".retire"
+                        ):
+                            def perform_receipt() -> None:
+                                nonlocal receipt_exchanged
+                                real_exchange(
+                                    source_fd, source_name, target_fd, target_name
+                                )
+                                receipt_exchanged = True
+
+                            interrupt("receipt-exchange", perform_receipt)
+                            return
+                        if ".journal.stage-" in source_name:
                             def perform() -> None:
                                 nonlocal stage_exchanged
-                                real_stage_exchange(
+                                real_exchange(
                                     source_fd, source_name, target_fd, target_name
                                 )
                                 stage_exchanged = True
 
                             interrupt("sidecar-stage-exchange", perform)
                             return
-                        real_stage_exchange(
+                        real_exchange(
                             source_fd, source_name, target_fd, target_name
                         )
 
@@ -4482,8 +4465,8 @@ install_module.install_opencode(repo, config, state)
                             ),
                             mock.patch.object(
                                 install_module,
-                                "_renameat_noreplace",
-                                side_effect=exchange_receipt,
+                                "_write_named_state_generation",
+                                side_effect=write_named_generation,
                             ),
                             mock.patch.object(
                                 install_module,
@@ -4577,7 +4560,7 @@ install_module.install_opencode(repo, config, state)
                         journals[0].read_text(encoding="utf-8")
                     )
                     self.assertEqual(journal_payload["phase"], boundary)
-                    if boundary == "prepared":
+                    if boundary in {"prepared", "exchanged"}:
                         self.assertTrue(receipt.is_file())
                     else:
                         self.assertFalse(receipt.exists())
@@ -4639,7 +4622,7 @@ install_module.install_opencode(repo, config, state)
                     real_rename(source_fd, source_name, target_fd, target_name)
                     if (
                         source_name == receipt.name
-                        and target_name.endswith(".retire")
+                        and target_name.endswith(".placeholder")
                         and not interrupted
                     ):
                         interrupted = True
@@ -4713,10 +4696,15 @@ install_module.install_opencode(repo, config, state)
                 target_name: str,
             ) -> None:
                 nonlocal interrupted
+                staged_phase = None
+                if ".stage-" in source_name:
+                    staged_phase = json.loads(
+                        (state_directory / source_name).read_text(encoding="utf-8")
+                    ).get("phase")
                 real_exchange(source_fd, source_name, target_fd, target_name)
                 if (
                     not interrupted
-                    and source_name.endswith(".stage")
+                    and staged_phase == "exchanged"
                     and target_name.endswith(".journal")
                 ):
                     interrupted = True
@@ -4732,7 +4720,7 @@ install_module.install_opencode(repo, config, state)
                         install_module._unlink_state_path(receipt)
                 self.assertTrue(interrupted)
                 journal = next(state_directory.glob("*.journal"))
-                stage = next(state_directory.glob("*.journal.stage"))
+                stage = next(state_directory.glob(".*.journal.stage*"))
                 self.assertEqual(
                     json.loads(journal.read_text(encoding="utf-8"))["phase"],
                     "exchanged",
@@ -4889,7 +4877,7 @@ install_module.install_opencode(repo, config, state)
                 receipt, expected, fixed_secret
             )
             detached = private.with_name(private.name + ".owned")
-            real_rename = install_module._renameat_noreplace
+            real_rename = install_module._renameat_exchange
             replaced = False
 
             def replace_private(
@@ -4913,14 +4901,15 @@ install_module.install_opencode(repo, config, state)
                 with mock.patch.object(
                     install_module, "_retirement_secret", return_value=fixed_secret
                 ), mock.patch.object(
-                    install_module, "_renameat_noreplace", side_effect=replace_private
+                    install_module, "_renameat_exchange", side_effect=replace_private
                 ):
                     with self.assertRaises(install_module.InstallError):
                         install_module._unlink_state_path(receipt)
                 self.assertTrue(replaced)
-                self.assertFalse(receipt.exists())
+                self.assertEqual(receipt.read_text(encoding="utf-8"), "foreign private\n")
                 self.assertTrue(detached.is_file())
-                self.assertEqual(private.read_text(encoding="utf-8"), "foreign private\n")
+                self.assertTrue(private.is_file())
+                self.assertEqual(private.read_bytes(), b"")
                 self.assertTrue(tuple(state_directory.glob("*.journal")))
             finally:
                 install_module._STATE_BINDINGS.pop(key, None)
@@ -5103,7 +5092,7 @@ install_module.install_opencode(repo, config, state)
                     with self.assertRaises(SystemExit):
                         uninstall_opencode(repo, config, state)
                 self.assertTrue(interrupted)
-                self.assertFalse(receipt_path(state).exists())
+                self.assertTrue(receipt_path(state).is_file())
 
                 if retry_entrypoint == "install":
                     install_opencode(repo, config, state)
@@ -5210,26 +5199,22 @@ install_module.install_opencode(repo, config, state)
             assert binding is not None
             key = str(binding.directory)
             install_module._STATE_BINDINGS[key] = binding
-            real_write = install_module._write_state_generation
+            real_write = install_module._write_named_state_generation
             interrupted = False
 
             def crash_after_private_write(
-                bound: object, name: str, encoded: bytes
-            ) -> tuple[int, int]:
+                bound: object, name_from_identity: object, encoded: bytes
+            ) -> tuple[str, tuple[int, int]]:
                 nonlocal interrupted
-                identity = real_write(bound, name, encoded)
-                if name.startswith(
-                    install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
-                ) and name.endswith(install_module.OPENCODE_RECEIPT_GENERATION_SUFFIX):
-                    interrupted = True
-                    raise SystemExit("after receipt generation preparation")
-                return identity
+                result = real_write(bound, name_from_identity, encoded)
+                interrupted = True
+                raise SystemExit("after receipt generation preparation")
 
             try:
                 payload = {"generation": "candidate", "receipt_secret": secret}
                 with mock.patch.object(
                     install_module,
-                    "_write_state_generation",
+                    "_write_named_state_generation",
                     side_effect=crash_after_private_write,
                 ):
                     with self.assertRaises(SystemExit):
@@ -5295,7 +5280,7 @@ install_module.install_opencode(repo, config, state)
                 real_rename(source_fd, source_name, target_fd, target_name)
                 if (
                     source_name == receipt.name
-                    and target_name.endswith(".retire")
+                    and target_name.endswith(".placeholder")
                     and not stopped
                 ):
                     stopped = True
@@ -5330,6 +5315,352 @@ install_module.install_opencode(repo, config, state)
             finally:
                 install_module._STATE_BINDINGS.pop(key, None)
                 install_module._close_state_binding(binding)
+
+    def test_object_retirement_pre_syscall_replacement_is_restored_on_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            record = receipt(state)["links"][0]
+            public = Path(record["destination"])
+            detached = public.with_name(public.name + ".detached-owned")
+            real_rename = install_module._renameat_exchange
+            interrupted = False
+
+            def displace_then_stop(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal interrupted
+                if source_name == public.name and target_name.endswith(".retire"):
+                    os.rename(
+                        source_name,
+                        detached.name,
+                        src_dir_fd=source_fd,
+                        dst_dir_fd=source_fd,
+                    )
+                    descriptor = os.open(
+                        source_name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=source_fd,
+                    )
+                    os.write(descriptor, b"foreign public\n")
+                    os.close(descriptor)
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    interrupted = True
+                    raise SystemExit("after displaced object retirement")
+                real_rename(source_fd, source_name, target_fd, target_name)
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_exchange",
+                side_effect=displace_then_stop,
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+            self.assertTrue(interrupted)
+            private = Path(receipt(state)["pending_retirement"]["private"])
+            self.assertTrue(public.is_file())
+            foreign_identity = (private.stat().st_dev, private.stat().st_ino)
+
+            with self.assertRaises(install_module.InstallError):
+                uninstall_opencode(repo, config, state)
+            self.assertEqual(public.read_text(encoding="utf-8"), "foreign public\n")
+            self.assertEqual(
+                (public.stat().st_dev, public.stat().st_ino), foreign_identity
+            )
+            self.assertTrue(detached.is_symlink())
+            self.assertTrue(private.exists())
+
+    def test_final_receipt_pre_syscall_replacement_is_restored_on_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_directory = root / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            canonical = state_directory / "install-opencode.json"
+            canonical.write_text(
+                json.dumps(
+                    {
+                        "links": [],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(root),
+                        "lineage": "9" * 32,
+                        "teardown_phase": "anchor-removed",
+                        "receipt_secret": TEST_RETIREMENT_SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            detached = canonical.with_name("detached-owned-receipt")
+            real_rename = install_module._renameat_exchange
+            interrupted = False
+
+            def displace_then_stop(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal interrupted
+                if source_name == canonical.name and target_name.endswith(".retire"):
+                    os.rename(
+                        source_name,
+                        detached.name,
+                        src_dir_fd=source_fd,
+                        dst_dir_fd=source_fd,
+                    )
+                    descriptor = os.open(
+                        source_name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=source_fd,
+                    )
+                    os.write(descriptor, b"foreign receipt\n")
+                    os.close(descriptor)
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    interrupted = True
+                    raise SystemExit("after displaced final receipt")
+                real_rename(source_fd, source_name, target_fd, target_name)
+
+            try:
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_exchange",
+                    side_effect=displace_then_stop,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_module._unlink_state_path(canonical)
+                self.assertTrue(interrupted)
+                journal = next(state_directory.glob("*.journal"))
+                private = Path(json.loads(journal.read_text(encoding="utf-8"))["private"])
+                foreign_identity = (private.stat().st_dev, private.stat().st_ino)
+
+                with self.assertRaises(install_module.InstallError):
+                    install_module._resume_receipt_retirement(
+                        journal, json.loads(journal.read_text(encoding="utf-8"))
+                    )
+                self.assertEqual(
+                    canonical.read_text(encoding="utf-8"), "foreign receipt\n"
+                )
+                self.assertEqual(
+                    (canonical.stat().st_dev, canonical.stat().st_ino),
+                    foreign_identity,
+                )
+                self.assertTrue(detached.is_file())
+                self.assertTrue(private.exists())
+                self.assertTrue(journal.exists())
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_ordinary_receipt_post_exchange_foreign_is_never_adopted(self) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with self.subTest(retry_entrypoint=retry_entrypoint), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                canonical = receipt_path(state)
+                state_directory = canonical.parent
+                payload = receipt(state)
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                detached = canonical.with_name("detached-published-receipt")
+                real_exchange = install_module._renameat_exchange
+                replaced = False
+
+                def replace_after_exchange(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal replaced
+                    real_exchange(source_fd, source_name, target_fd, target_name)
+                    if (
+                        source_name.startswith(
+                            install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                        )
+                        and not replaced
+                    ):
+                        replaced = True
+                        canonical.rename(detached)
+                        canonical.write_bytes(detached.read_bytes())
+
+                try:
+                    with mock.patch.object(
+                        install_module,
+                        "_renameat_exchange",
+                        side_effect=replace_after_exchange,
+                    ):
+                        with self.assertRaises(install_module.InstallError):
+                            install_module._write_state_payload(canonical, payload)
+                    self.assertTrue(replaced)
+                    foreign_identity = (
+                        canonical.stat().st_dev,
+                        canonical.stat().st_ino,
+                    )
+                    generations = tuple(
+                        state_directory.glob(
+                            ".install-opencode.json.receipt-*.retire"
+                        )
+                    )
+                    self.assertEqual(len(generations), 1)
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+                entrypoint = install_opencode if retry_entrypoint == "install" else uninstall_opencode
+                with self.assertRaises(install_module.InstallError):
+                    entrypoint(repo, config, state)
+                self.assertEqual(
+                    (canonical.stat().st_dev, canonical.stat().st_ino),
+                    foreign_identity,
+                )
+                self.assertTrue(detached.is_file())
+                self.assertTrue(generations[0].is_file())
+
+    def test_sidecar_post_exchange_foreign_is_never_adopted(self) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with self.subTest(retry_entrypoint=retry_entrypoint), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                canonical = receipt_path(state)
+                detached = canonical.parent / "detached-published-sidecar"
+                real_exchange = install_module._renameat_exchange
+                replaced = False
+
+                def replace_after_exchange(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal replaced
+                    real_exchange(source_fd, source_name, target_fd, target_name)
+                    if (
+                        target_name.endswith(".journal")
+                        and source_name.startswith(".")
+                        and ".stage" in source_name
+                        and not replaced
+                    ):
+                        replaced = True
+                        journal = canonical.parent / target_name
+                        journal.rename(detached)
+                        journal.write_bytes(detached.read_bytes())
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_exchange",
+                    side_effect=replace_after_exchange,
+                ):
+                    with self.assertRaises(install_module.InstallError):
+                        uninstall_opencode(repo, config, state)
+                self.assertTrue(replaced)
+                journal = next(canonical.parent.glob("*.journal"))
+                foreign_identity = (journal.stat().st_dev, journal.stat().st_ino)
+                stages = tuple(canonical.parent.glob(".*.journal.stage*"))
+                self.assertEqual(len(stages), 1)
+
+                entrypoint = install_opencode if retry_entrypoint == "install" else uninstall_opencode
+                with self.assertRaises(install_module.InstallError):
+                    entrypoint(repo, config, state)
+                self.assertEqual(
+                    (journal.stat().st_dev, journal.stat().st_ino),
+                    foreign_identity,
+                )
+                self.assertTrue(detached.is_file())
+                self.assertTrue(stages[0].is_file())
+
+    def test_sidecar_named_generations_never_expose_partial_bytes_after_exit(self) -> None:
+        for rewrite in (False, True):
+            with self.subTest(rewrite=rewrite), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state_directory = root / "state" / "expskill"
+                state_directory.mkdir(parents=True)
+                canonical = state_directory / "install-opencode.json"
+                canonical.write_text("{}\n", encoding="utf-8")
+                script = r'''
+import json
+import os
+import sys
+from pathlib import Path
+import scripts.install as install_module
+
+state_directory = Path(sys.argv[1])
+rewrite = sys.argv[2] == "rewrite"
+canonical = state_directory / "install-opencode.json"
+binding = install_module._open_state_binding(state_directory, create=False)
+assert binding is not None
+install_module._STATE_BINDINGS[str(binding.directory)] = binding
+identity = (canonical.stat().st_dev, canonical.stat().st_ino)
+payload = install_module._receipt_retirement_payload(
+    canonical,
+    identity,
+    "e" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2),
+    "prepared",
+)
+sidecar = Path(payload["sidecar"])
+if rewrite:
+    install_module._write_receipt_retirement_sidecar(sidecar, payload)
+    payload = dict(payload)
+    payload["phase"] = "exchanged"
+    payload["auth"] = install_module._receipt_retirement_auth(payload)
+real_write = os.write
+def exit_after_half_write(descriptor, value):
+    real_write(descriptor, value[:max(1, len(value) // 2)])
+    os._exit(79)
+install_module.os.write = exit_after_half_write
+install_module._write_receipt_retirement_sidecar(sidecar, payload)
+'''
+                stopped = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        script,
+                        str(state_directory),
+                        "rewrite" if rewrite else "initial",
+                    ],
+                    cwd=ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(stopped.returncode, 79, stopped.stderr)
+                journals = tuple(state_directory.glob("*.journal"))
+                stages = tuple(state_directory.glob(".*.journal.stage*"))
+                if rewrite:
+                    self.assertEqual(len(journals), 1)
+                    self.assertEqual(
+                        json.loads(journals[0].read_text(encoding="utf-8"))[
+                            "phase"
+                        ],
+                        "prepared",
+                    )
+                    self.assertFalse(stages)
+                else:
+                    self.assertFalse(journals)
+                    self.assertFalse(stages)
 
     def test_receipt_deletion_requires_bound_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
