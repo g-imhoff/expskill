@@ -249,7 +249,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             self.assertEqual((private.stat().st_dev, private.stat().st_ino), private_identity)
             self.assertEqual((private / "foreign").read_text(), "foreign\n")
 
-    def test_candidate_rollback_requires_live_exact_anchor_relationship(self) -> None:
+    def test_candidate_rollback_uses_exact_identity_when_anchor_is_lost(self) -> None:
         for generation in ("initial", "upgrade"):
             for anchor_change in ("missing", "foreign"):
                 with (
@@ -260,8 +260,14 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     repo = seed_repository(root / "repo")
                     config = root / "config"
                     state = root / "state"
+                    original_artifact_identity: tuple[int, int] | None = None
                     if generation == "upgrade":
                         install_opencode(repo, config, state)
+                        original = receipt(state)
+                        original_artifact_identity = (
+                            original["artifact_dev"],
+                            original["artifact_ino"],
+                        )
                         skill = repo / "packages/expskill/skills/unslop/SKILL.md"
                         skill.write_text(
                             skill.read_text(encoding="utf-8").replace(
@@ -298,26 +304,18 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                         with self.assertRaises(install_module.InstallError):
                             install_opencode(repo, config, state)
 
-                    self.assertTrue(receipt_path(state).is_file())
-                    interrupted = receipt(state)
-                    pending = interrupted[
-                        "pending_publish" if generation == "initial" else "pending_swap"
-                    ]
-                    self.assertEqual(pending["phase"], "rollback-prepared")
-                    candidate_identity = (
-                        pending["candidate_dev"],
-                        pending["candidate_ino"],
-                    )
-                    candidate_paths = (Path(pending["candidate"]), Path(pending["artifact"]))
-                    self.assertTrue(
-                        any(
-                            path.is_dir()
-                            and (path.stat().st_dev, path.stat().st_ino)
-                            == candidate_identity
-                            for path in candidate_paths
-                        ),
-                        "the unproven rollback candidate was deleted",
-                    )
+                    interrupted = receipt(state) if receipt_path(state).exists() else None
+                    artifact = state / "expskill/opencode-artifact"
+                    if generation == "initial":
+                        self.assertIsNone(interrupted)
+                        self.assertFalse(artifact.exists())
+                    else:
+                        assert interrupted is not None
+                        self.assertNotIn("pending_swap", interrupted)
+                        self.assertEqual(
+                            (artifact.stat().st_dev, artifact.stat().st_ino),
+                            original_artifact_identity,
+                        )
                     assert changed_anchor is not None
                     if anchor_change == "foreign":
                         self.assertEqual(
@@ -540,6 +538,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             real_write = install_module._write_receipt
+            real_retire = install_module._retire_owned_object
 
             def fail_final_commit(path: Path, value: object) -> None:
                 if (
@@ -550,6 +549,26 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     raise install_module.InstallError("injected final commit failure")
                 real_write(path, value)
 
+            def fail_link_compensation(
+                source: Path,
+                identity: tuple[int, int],
+                role: str,
+                *,
+                directory: bool,
+                source_kind: str = "public",
+            ) -> bool:
+                if role in {"final-link", "staged-link"}:
+                    raise install_module.InstallError(
+                        "injected link compensation failure"
+                    )
+                return real_retire(
+                    source,
+                    identity,
+                    role,
+                    directory=directory,
+                    source_kind=source_kind,
+                )
+
             with (
                 mock.patch.object(
                     install_module, "_write_receipt", side_effect=fail_final_commit
@@ -557,9 +576,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 mock.patch.object(
                     install_module,
                     "_retire_owned_object",
-                    side_effect=install_module.InstallError(
-                        "injected link compensation failure"
-                    ),
+                    side_effect=fail_link_compensation,
                 ),
             ):
                 with self.assertRaisesRegex(
@@ -2346,11 +2363,11 @@ install_module.install_opencode(repo, config, state)
 
             pending = receipt(state)
             pending_anchor = Path(pending["pending_publish"]["candidate_anchor"])
-            pending_candidate = Path(pending["pending_publish"]["candidate"])
+            published_artifact = Path(pending["pending_publish"]["artifact"])
             self.assertTrue(pending_anchor.is_file())
             self.assertEqual(
                 pending_anchor.stat().st_ino,
-                (pending_candidate / "package.json").stat().st_ino,
+                (published_artifact / "package.json").stat().st_ino,
             )
 
             install_opencode(repo, config, state)
@@ -3004,21 +3021,31 @@ install_module.install_opencode(repo, config, state)
                             )
                         ]
                         if cleanup_boundary == "publication":
-                            real_publish = install_module._rename_noreplace
+                            real_publish = install_module._publish_workspace_candidate
 
                             def fail_initial_publication(
-                                source: Path, target: Path
+                                workspace: Path,
+                                workspace_identity: tuple[int, int],
+                                candidate: Path,
+                                candidate_identity: tuple[int, int],
+                                artifact: Path,
                             ) -> None:
-                                if ".next-" in source.name and target.name == "opencode-artifact":
+                                if artifact.name == "opencode-artifact":
                                     raise install_module.InstallError(
                                         "initial publication failed"
                                     )
-                                real_publish(source, target)
+                                real_publish(
+                                    workspace,
+                                    workspace_identity,
+                                    candidate,
+                                    candidate_identity,
+                                    artifact,
+                                )
 
                             patches.append(
                                 mock.patch.object(
                                     install_module,
-                                    "_rename_noreplace",
+                                    "_publish_workspace_candidate",
                                     side_effect=fail_initial_publication,
                                 )
                             )
@@ -3370,22 +3397,6 @@ install_module.install_opencode(repo, config, state)
                             ):
                                 install_opencode(repo, config, state)
                         self.assertTrue(injected)
-
-                        if boundary == "prepared" and failure_type is OSError:
-                            interrupted = receipt(state)
-                            self.assertEqual(
-                                interrupted["pending_swap"]["phase"],
-                                "rollback-prepared",
-                            )
-                            candidate = Path(
-                                interrupted["pending_swap"]["candidate"]
-                            )
-                            candidate_anchor = Path(
-                                interrupted["pending_swap"]["candidate_anchor"]
-                            )
-                            self.assertTrue(candidate.is_dir())
-                            self.assertFalse(candidate_anchor.exists())
-                            continue
 
                         owned = original["links"][0]
                         destination = Path(owned["destination"])
@@ -3831,40 +3842,54 @@ install_module.install_opencode(repo, config, state)
                 ),
                 encoding="utf-8",
             )
-            real_rename = install_module._rename_noreplace
+            real_publish = install_module._publish_workspace_candidate
             interrupted = False
 
-            def stop_after_candidate_exchange(source: Path, target: Path) -> None:
+            def stop_after_candidate_exchange(
+                workspace: Path,
+                workspace_identity: tuple[int, int],
+                candidate: Path,
+                candidate_identity: tuple[int, int],
+                artifact: Path,
+            ) -> None:
                 nonlocal interrupted
-                real_rename(source, target)
-                if (
-                    source.name.startswith(".opencode-artifact.next-")
-                    and target.name == "opencode-artifact"
-                    and not interrupted
-                ):
+                real_publish(
+                    workspace,
+                    workspace_identity,
+                    candidate,
+                    candidate_identity,
+                    artifact,
+                )
+                if artifact.name == "opencode-artifact" and not interrupted:
                     interrupted = True
                     raise SystemExit("after candidate directory exchange")
 
             with mock.patch.object(
-                install_module, "_rename_noreplace", side_effect=stop_after_candidate_exchange
+                install_module,
+                "_publish_workspace_candidate",
+                side_effect=stop_after_candidate_exchange,
             ):
                 with self.assertRaises(SystemExit):
                     install_opencode(repo, config, state)
 
             self.assertTrue(interrupted)
             observed_rollback = False
-            real_remove = install_module._remove_candidate_artifact_exact
+            real_remove = install_module._remove_opencode_artifact_exact
 
-            def observe_candidate_retirement(*args: object, **kwargs: object) -> None:
+            def observe_candidate_retirement(
+                path: Path, dev: int, ino: int
+            ) -> None:
                 nonlocal observed_rollback
-                observed_rollback = (
-                    receipt(state)["pending_swap"]["phase"] == "rollback-prepared"
-                )
-                real_remove(*args, **kwargs)
+                if path.name == "opencode-artifact":
+                    observed_rollback = (
+                        receipt(state)["pending_swap"]["phase"]
+                        == "rollback-prepared"
+                    )
+                real_remove(path, dev, ino)
 
             with mock.patch.object(
                 install_module,
-                "_remove_candidate_artifact_exact",
+                "_remove_opencode_artifact_exact",
                 side_effect=observe_candidate_retirement,
             ):
                 install_opencode(repo, config, state)
@@ -4228,8 +4253,11 @@ install_module.install_opencode(repo, config, state)
                         name: str,
                         expected: tuple[int, int],
                         label: str,
+                        **kwargs: object,
                     ) -> None:
-                        call = lambda: real_reclaim(bound, name, expected, label)
+                        call = lambda: real_reclaim(
+                            bound, name, expected, label, **kwargs
+                        )
                         if label == "receipt generation":
                             interrupt("reclaim", call)
                             return
@@ -4281,6 +4309,161 @@ install_module.install_opencode(repo, config, state)
                     finally:
                         install_module._STATE_BINDINGS.pop(key, None)
                         install_module._close_state_binding(binding)
+
+    def test_ordinary_receipt_replacement_before_reclaim_is_never_adopted(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            canonical = receipt_path(state)
+            old_identity = (canonical.stat().st_dev, canonical.stat().st_ino)
+            detached_published = root / "detached-published-receipt.json"
+            real_reclaim = install_module._unlink_private_state_inode
+            replacement_identity: tuple[int, int] | None = None
+            injected = False
+
+            def replace_public_before_reclaim(
+                binding: object,
+                name: str,
+                expected: tuple[int, int],
+                label: str,
+                **kwargs: object,
+            ) -> None:
+                nonlocal injected, replacement_identity
+                if label == "receipt generation" and not injected:
+                    injected = True
+                    published_bytes = canonical.read_bytes()
+                    canonical.rename(detached_published)
+                    descriptor = os.open(
+                        canonical,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                    try:
+                        os.write(descriptor, published_bytes)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                    replacement_identity = (
+                        canonical.stat().st_dev,
+                        canonical.stat().st_ino,
+                    )
+                real_reclaim(binding, name, expected, label, **kwargs)
+
+            with mock.patch.object(
+                install_module,
+                "_unlink_private_state_inode",
+                side_effect=replace_public_before_reclaim,
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertIsNotNone(replacement_identity)
+            assert replacement_identity is not None
+            self.assertEqual(canonical.read_bytes(), detached_published.read_bytes())
+            self.assertEqual(
+                (canonical.stat().st_dev, canonical.stat().st_ino),
+                replacement_identity,
+            )
+            generations = tuple(
+                canonical.parent.glob(".install-opencode.json.receipt-*.retire")
+            )
+            self.assertEqual(len(generations), 1)
+            self.assertEqual(
+                (generations[0].stat().st_dev, generations[0].stat().st_ino),
+                old_identity,
+            )
+
+            for entrypoint in (install_opencode, uninstall_opencode):
+                with self.subTest(entrypoint=entrypoint.__name__):
+                    with self.assertRaises(install_module.InstallError):
+                        entrypoint(repo, config, state)
+                    self.assertEqual(
+                        (canonical.stat().st_dev, canonical.stat().st_ino),
+                        replacement_identity,
+                    )
+                    self.assertEqual(
+                        (
+                            generations[0].stat().st_dev,
+                            generations[0].stat().st_ino,
+                        ),
+                        old_identity,
+                    )
+
+    def test_ordinary_receipt_pin_restores_authority_after_private_unlink(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            canonical = receipt_path(state)
+            old_identity = (canonical.stat().st_dev, canonical.stat().st_ino)
+            detached_published = root / "detached-after-unlink.json"
+            real_unlink = os.unlink
+            injected = False
+            foreign_identity: tuple[int, int] | None = None
+
+            def replace_after_private_unlink(
+                path: str | bytes | Path,
+                *args: object,
+                **kwargs: object,
+            ) -> None:
+                nonlocal injected, foreign_identity
+                real_unlink(path, *args, **kwargs)
+                name = os.fsdecode(path)
+                if (
+                    not injected
+                    and name.startswith(
+                        install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                    )
+                    and name.endswith(
+                        install_module.OPENCODE_RECEIPT_GENERATION_SUFFIX
+                    )
+                ):
+                    injected = True
+                    published_bytes = canonical.read_bytes()
+                    canonical.rename(detached_published)
+                    canonical.write_bytes(published_bytes)
+                    foreign_identity = (
+                        canonical.stat().st_dev,
+                        canonical.stat().st_ino,
+                    )
+
+            with mock.patch.object(
+                install_module.os, "unlink", side_effect=replace_after_private_unlink
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            assert foreign_identity is not None
+            self.assertEqual(
+                (canonical.stat().st_dev, canonical.stat().st_ino),
+                foreign_identity,
+            )
+            generations = tuple(
+                canonical.parent.glob(".install-opencode.json.receipt-*.retire")
+            )
+            self.assertEqual(len(generations), 1)
+            self.assertEqual(
+                (generations[0].stat().st_dev, generations[0].stat().st_ino),
+                old_identity,
+            )
+            self.assertFalse(
+                tuple(
+                    canonical.parent.glob(
+                        ".install-opencode.json.receipt-*.retire.pin"
+                    )
+                )
+            )
 
     def test_final_receipt_sidecar_recovers_every_low_level_boundary(self) -> None:
         boundaries = (
@@ -5759,10 +5942,18 @@ install_module._write_receipt_retirement_sidecar(sidecar, payload)
                                 tuple(canonical.parent.glob("*.retire"))
                             )
 
-    def test_first_receipt_descriptor_publication_crashes_recover_by_entrypoint(
+    def test_initial_workspace_process_death_recovers_by_entrypoint(
         self,
     ) -> None:
-        for boundary in ("descriptor-link", "parent-fsync"):
+        boundaries = (
+            "before-receipt-link",
+            "after-receipt-link",
+            "before-workspace-mkdir",
+            "after-workspace-mkdir",
+            "after-workspace-identity",
+            "after-candidate-build",
+        )
+        for boundary in boundaries:
             for retry_entrypoint in ("install", "uninstall"):
                 with (
                     self.subTest(
@@ -5785,29 +5976,35 @@ boundary = sys.argv[4]
 state_directory = state / "expskill"
 canonical = state_directory / install_module.OPENCODE_RECEIPT_FILENAME
 real_link = install_module._link_open_descriptor
-real_fsync = os.fsync
+real_mkdir = os.mkdir
+real_build = install_module.build_opencode_package
 
-if boundary == "descriptor-link":
-    def exit_after_receipt_link(source_fd, target_fd, target_name):
+if boundary in {"before-receipt-link", "after-receipt-link"}:
+    def exit_at_receipt_link(source_fd, target_fd, target_name):
+        if target_name == canonical.name and boundary == "before-receipt-link":
+            os._exit(79)
         real_link(source_fd, target_fd, target_name)
-        if (
-            target_name == canonical.name
-            or ".receipt-initial-" in target_name
-        ):
+        if target_name == canonical.name:
             os._exit(79)
-    install_module._link_open_descriptor = exit_after_receipt_link
-else:
-    def exit_after_receipt_parent_fsync(descriptor):
-        real_fsync(descriptor)
-        initial_stages = tuple(
-            state_directory.glob(".install-opencode.json.receipt-initial-*.stage")
-        ) if state_directory.exists() else ()
-        candidates = tuple(
-            state_directory.glob(".opencode-artifact.next-*")
-        ) if state_directory.exists() else ()
-        if candidates and (canonical.exists() or initial_stages):
+    install_module._link_open_descriptor = exit_at_receipt_link
+
+if boundary in {"before-workspace-mkdir", "after-workspace-mkdir"}:
+    def exit_at_workspace_mkdir(name, mode=0o777, *, dir_fd=None):
+        if str(name).startswith(".opencode-artifact.txn-"):
+            if boundary == "before-workspace-mkdir":
+                os._exit(79)
+            real_mkdir(name, mode=mode, dir_fd=dir_fd)
             os._exit(79)
-    install_module.os.fsync = exit_after_receipt_parent_fsync
+        return real_mkdir(name, mode=mode, dir_fd=dir_fd)
+    install_module.os.mkdir = exit_at_workspace_mkdir
+
+if boundary in {"after-workspace-identity", "after-candidate-build"}:
+    def exit_at_build(repo_root, output):
+        if boundary == "after-workspace-identity":
+            os._exit(79)
+        result = real_build(repo_root, output)
+        os._exit(79)
+    install_module.build_opencode_package = exit_at_build
 
 install_module.install_opencode(repo, config, state)
 '''
@@ -5828,20 +6025,45 @@ install_module.install_opencode(repo, config, state)
                     )
                     self.assertEqual(stopped.returncode, 79, stopped.stderr)
                     canonical = receipt_path(state)
-                    self.assertTrue(canonical.is_file())
-                    interrupted = json.loads(canonical.read_text(encoding="utf-8"))
-                    self.assertEqual(interrupted["pending_publish"]["phase"], "prepared")
-                    self.assertFalse(
-                        tuple(
-                            canonical.parent.glob(
-                                ".install-opencode.json.receipt-initial-*"
-                            )
+                    state_directory = state / "expskill"
+                    self.assertTrue(state_directory.is_dir())
+                    workspaces = tuple(
+                        state_directory.glob(".opencode-artifact.txn-*")
+                    )
+                    if boundary == "before-receipt-link":
+                        self.assertFalse(canonical.exists())
+                        self.assertFalse(workspaces)
+                    else:
+                        self.assertTrue(canonical.is_file())
+                        interrupted = json.loads(
+                            canonical.read_text(encoding="utf-8")
                         )
-                    )
-                    self.assertEqual(
-                        len(tuple(canonical.parent.glob(".opencode-artifact.next-*"))),
-                        1,
-                    )
+                        pending = interrupted["pending_publish"]
+                        if boundary in {
+                            "after-receipt-link",
+                            "before-workspace-mkdir",
+                            "after-workspace-mkdir",
+                        }:
+                            self.assertEqual(
+                                pending["phase"], "planned-unmaterialized"
+                            )
+                        else:
+                            self.assertEqual(pending["phase"], "workspace-recorded")
+                            self.assertGreater(pending["workspace_dev"], 0)
+                            self.assertGreater(pending["workspace_ino"], 0)
+                        self.assertNotIn("candidate_dev", pending)
+                        self.assertNotIn("candidate_ino", pending)
+                        expected_workspaces = (
+                            1
+                            if boundary
+                            in {
+                                "after-workspace-mkdir",
+                                "after-workspace-identity",
+                                "after-candidate-build",
+                            }
+                            else 0
+                        )
+                        self.assertEqual(len(workspaces), expected_workspaces)
 
                     entrypoint = (
                         install_opencode
@@ -5849,16 +6071,11 @@ install_module.install_opencode(repo, config, state)
                         else uninstall_opencode
                     )
                     entrypoint(repo, config, state)
+                    self.assertTrue(state_directory.is_dir())
                     self.assertFalse(
-                        tuple(
-                            canonical.parent.glob(
-                                ".install-opencode.json.receipt-initial-*"
-                            )
-                        )
+                        tuple(state_directory.glob(".opencode-artifact.txn-*"))
                     )
-                    self.assertFalse(
-                        tuple(canonical.parent.glob(".opencode-artifact.next-*"))
-                    )
+                    self.assertFalse(tuple(state_directory.glob(".opencode-artifact.next-*")))
                     if retry_entrypoint == "install":
                         self.assertTrue(canonical.is_file())
                         self.assertTrue(
@@ -5869,6 +6086,139 @@ install_module.install_opencode(repo, config, state)
                         self.assertFalse(
                             (canonical.parent / "opencode-artifact").exists()
                         )
+
+    def test_planned_workspace_schema_and_identity_fail_closed(self) -> None:
+        for scenario in ("malformed", "preoccupied", "recorded-replaced"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                canonical = receipt_path(state)
+                real_write = install_module._write_receipt
+                real_build = install_module.build_opencode_package
+                workspace: Path | None = None
+                detached: Path | None = None
+                foreign_identity: tuple[int, int] | None = None
+
+                if scenario == "malformed":
+                    def stop_before_workspace(
+                        receipt_file: Path, value: install_module._Receipt
+                    ) -> None:
+                        real_write(receipt_file, value)
+                        pending = value.pending_publish
+                        if (
+                            pending is not None
+                            and pending.phase == "planned-unmaterialized"
+                        ):
+                            raise SystemExit("planned receipt is durable")
+
+                    with mock.patch.object(
+                        install_module, "_write_receipt", side_effect=stop_before_workspace
+                    ):
+                        with self.assertRaises(SystemExit):
+                            install_opencode(repo, config, state)
+                    payload = json.loads(canonical.read_text(encoding="utf-8"))
+                    payload["pending_publish"]["workspace_dev"] = 1
+                    canonical.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaises(install_module.InstallError):
+                        install_opencode(repo, config, state)
+                    self.assertTrue(canonical.is_file())
+                    continue
+
+                if scenario == "preoccupied":
+                    def occupy_after_planned_write(
+                        receipt_file: Path, value: install_module._Receipt
+                    ) -> None:
+                        nonlocal workspace, foreign_identity
+                        real_write(receipt_file, value)
+                        pending = value.pending_publish
+                        if (
+                            pending is not None
+                            and pending.phase == "planned-unmaterialized"
+                            and workspace is None
+                        ):
+                            workspace = pending.workspace
+                            workspace.mkdir()
+                            (workspace / "foreign").write_text(
+                                "must survive\n", encoding="utf-8"
+                            )
+                            foreign_identity = (
+                                workspace.stat().st_dev,
+                                workspace.stat().st_ino,
+                            )
+
+                    with mock.patch.object(
+                        install_module,
+                        "_write_receipt",
+                        side_effect=occupy_after_planned_write,
+                    ):
+                        with self.assertRaises(install_module.InstallError):
+                            install_opencode(repo, config, state)
+                    assert workspace is not None and foreign_identity is not None
+                    self.assertEqual(
+                        (workspace.stat().st_dev, workspace.stat().st_ino),
+                        foreign_identity,
+                    )
+                    self.assertEqual(
+                        (workspace / "foreign").read_text(encoding="utf-8"),
+                        "must survive\n",
+                    )
+                    continue
+
+                def stop_after_workspace_identity(repo_root: Path, output: Path) -> Path:
+                    raise SystemExit("workspace identity is durable")
+
+                with mock.patch.object(
+                    install_module,
+                    "build_opencode_package",
+                    side_effect=stop_after_workspace_identity,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_opencode(repo, config, state)
+                payload = json.loads(canonical.read_text(encoding="utf-8"))
+                workspace = Path(payload["pending_publish"]["workspace"])
+                recorded_identity = (
+                    payload["pending_publish"]["workspace_dev"],
+                    payload["pending_publish"]["workspace_ino"],
+                )
+                detached = workspace.with_name("detached-recorded-workspace")
+                workspace.rename(detached)
+                workspace.mkdir()
+                (workspace / "foreign").write_text("must survive\n", encoding="utf-8")
+                foreign_identity = (workspace.stat().st_dev, workspace.stat().st_ino)
+                self.assertNotEqual(recorded_identity, foreign_identity)
+                for entrypoint in (install_opencode, uninstall_opencode):
+                    with self.subTest(entrypoint=entrypoint.__name__):
+                        with self.assertRaises(install_module.InstallError):
+                            entrypoint(repo, config, state)
+                        self.assertEqual(
+                            (workspace.stat().st_dev, workspace.stat().st_ino),
+                            foreign_identity,
+                        )
+                        self.assertTrue(detached.is_dir())
+
+    def test_state_lock_contends_for_both_entrypoints(self) -> None:
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            state_directory = state / "expskill"
+            descriptor = os.open(state_directory, install_module._directory_open_flags())
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                for entrypoint in (install_opencode, uninstall_opencode):
+                    with self.subTest(entrypoint=entrypoint.__name__):
+                        with self.assertRaises(install_module.InstallError):
+                            entrypoint(repo, config, state)
+                        self.assertTrue(receipt_path(state).is_file())
+                        self.assertTrue(state_directory.is_dir())
+            finally:
+                os.close(descriptor)
 
     def test_first_receipt_link_preserves_foreign_canonical_occupant(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
