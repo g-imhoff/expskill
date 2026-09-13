@@ -156,7 +156,7 @@ class ContractTests(unittest.TestCase):
                     readme.read_text(encoding="utf-8") + f"\nLegacy marker: {marker}\n",
                     encoding="utf-8",
                 )
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any("legacy project identity" in error.lower() for error in errors),
                     errors,
@@ -166,7 +166,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         skills_path = root / "plugins" / "expskill" / "skills"
         shutil.rmtree(skills_path)
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertIn(f"skills directory is missing: {skills_path}", errors)
 
     def test_skills_file_is_rejected(self) -> None:
@@ -174,7 +174,7 @@ class ContractTests(unittest.TestCase):
         skills_path = root / "plugins" / "expskill" / "skills"
         shutil.rmtree(skills_path, ignore_errors=True)
         skills_path.write_text("not a directory\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertIn(f"skills path must be a directory: {skills_path}", errors)
 
     def test_missing_required_skill_is_rejected(self) -> None:
@@ -184,7 +184,7 @@ class ContractTests(unittest.TestCase):
         if not missing.is_dir():
             return
         shutil.rmtree(missing)
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("brainstorm" in error and "missing" in error for error in errors))
 
     def test_missing_skill_builder_is_rejected(self) -> None:
@@ -193,7 +193,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         missing = root / "plugins" / "expskill" / "skills" / "skill-builder"
         shutil.rmtree(missing)
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertIn("required skill 'skill-builder' is missing", errors)
 
     def test_skill_builder_references_are_required_nonempty_utf8_regular_files(self) -> None:
@@ -230,7 +230,7 @@ class ContractTests(unittest.TestCase):
                         reference.symlink_to(outside)
                     else:
                         reference.write_bytes(b"\xff\xfe")
-                    errors = tuple(error.lower() for error in validate_repository(root))
+                    errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                     self.assertTrue(
                         any(
                             "skill 'skill-builder' required reference" in error
@@ -249,7 +249,7 @@ class ContractTests(unittest.TestCase):
             "---\nname: surprise\ndescription: Unexpected skill\n---\n\nBody.\n",
             encoding="utf-8",
         )
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("surprise" in error and "unexpected" in error for error in errors))
 
     def test_required_skill_file_is_rejected(self) -> None:
@@ -260,7 +260,7 @@ class ContractTests(unittest.TestCase):
             return
         shutil.rmtree(skill_path)
         skill_path.write_text("not a directory\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("brainstorm" in error and "directory" in error for error in errors))
 
     def test_required_skill_without_skill_markdown_is_rejected(self) -> None:
@@ -270,7 +270,7 @@ class ContractTests(unittest.TestCase):
         if not skill_path.is_dir():
             return
         (skill_path / "SKILL.md").unlink()
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("brainstorm" in error and "SKILL.md" in error for error in errors))
 
     def test_repository_contains_exact_required_skill_roster(self) -> None:
@@ -366,7 +366,7 @@ class ContractTests(unittest.TestCase):
             + "\nDocument acceptance criteria and the acceptance test suite here.\n",
             encoding="utf-8",
         )
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
 
     def test_reintroduced_acceptance_skill_is_rejected(self) -> None:
         """Regression: a stale acceptance directory must fail repository validation."""
@@ -392,7 +392,7 @@ class ContractTests(unittest.TestCase):
             "  allow_implicit_invocation: false\n",
             encoding="utf-8",
         )
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(
             any(REMOVED_PUBLIC_SKILL in error and "unexpected" in error for error in errors),
             errors,
@@ -406,7 +406,7 @@ class ContractTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["interface"]["longDescription"] += f" {REMOVED_PUBLIC_TOKEN}"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any(REMOVED_PUBLIC_TOKEN in error for error in errors), errors)
 
     def test_plugin_and_marketplace_identities_are_exact(self) -> None:
@@ -482,7 +482,7 @@ class ContractTests(unittest.TestCase):
                 else:
                     payload[section][field] = replacement
                 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any(section in error and (field is None or field in error) for error in errors),
                     errors,
@@ -495,7 +495,7 @@ class ContractTests(unittest.TestCase):
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 payload["interface"].pop(field)
                 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(any("interface" in error and field in error for error in errors), errors)
 
         wrong_types = {
@@ -514,7 +514,7 @@ class ContractTests(unittest.TestCase):
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 payload["interface"][field] = replacement
                 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(any("interface" in error and field in error for error in errors), errors)
 
         for token in sorted(PUBLIC_SKILL_TOKENS):
@@ -526,7 +526,7 @@ class ContractTests(unittest.TestCase):
                     token, token.removeprefix("$"),
                 )
                 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any("longDescription" in error and token in error for error in errors),
                     errors,
@@ -537,7 +537,7 @@ class ContractTests(unittest.TestCase):
         payload = json.loads(path.read_text(encoding="utf-8"))
         payload["interface"]["unexpected"] = True
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("interface" in error and "unexpected" in error for error in errors), errors)
 
     def test_readme_and_manifest_count_standalone_skills(self) -> None:
@@ -584,7 +584,7 @@ class ContractTests(unittest.TestCase):
                 else:
                     readme.write_bytes(b"\xff\xfe")
                 try:
-                    errors = tuple(error.lower() for error in validate_repository(root))
+                    errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 except UnicodeError as error:
                     self.fail(f"README mutation {mutation} leaked a decode exception: {error}")
                 self.assertTrue(
@@ -658,7 +658,7 @@ class ContractTests(unittest.TestCase):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["version"] = version
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-                self.assertEqual(validate_repository(root), ())
+                self.assertEqual(validate_repository(root, include_opencode=False), ())
 
     def test_invalid_codex_cachebuster_versions_are_rejected(self) -> None:
         invalid_versions = (
@@ -677,7 +677,7 @@ class ContractTests(unittest.TestCase):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["version"] = version
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(any("version" in error for error in errors))
 
     def test_agent_profiles_match_exact_roster_and_required_fields(self) -> None:
@@ -794,7 +794,7 @@ class ContractTests(unittest.TestCase):
                         contents + f"\nBanned {character} mark.\n",
                         encoding="utf-8",
                     )
-                    errors = validate_repository(root)
+                    errors = validate_repository(root, include_opencode=False)
                     relative = path.relative_to(root).as_posix()
                     self.assertTrue(
                         any(label in error.lower() and relative in error for error in errors),
@@ -833,7 +833,7 @@ class ContractTests(unittest.TestCase):
                     )
                 else:
                     (hook_root / "surprise.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(any("unslop hook" in error.lower() for error in errors), errors)
 
     def test_validator_rejects_tampered_pinned_upstream_source(self) -> None:
@@ -849,7 +849,7 @@ class ContractTests(unittest.TestCase):
             / "SKILL.md"
         )
         path.write_text(path.read_text(encoding="utf-8") + "\nTampered.\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("upstream" in error.lower() and "digest" in error.lower() for error in errors), errors)
 
     def test_validator_rejects_drift_in_public_third_party_derived_skills(self) -> None:
@@ -861,7 +861,7 @@ class ContractTests(unittest.TestCase):
                     path.read_text(encoding="utf-8") + "\nUntracked behavioral addition.\n",
                     encoding="utf-8",
                 )
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any(name in error.lower() and "derived" in error.lower() for error in errors),
                     errors,
@@ -870,7 +870,7 @@ class ContractTests(unittest.TestCase):
     def test_missing_profile_is_rejected(self) -> None:
         root = self.copy_repository()
         (root / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml").unlink()
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("expskill-review" in error and "missing" in error for error in errors))
 
     def test_unexpected_profile_is_rejected(self) -> None:
@@ -890,7 +890,7 @@ class ContractTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("expskill-surprise" in error and "unexpected" in error for error in errors))
 
     def test_duplicate_skill_name_is_rejected(self) -> None:
@@ -902,7 +902,7 @@ class ContractTests(unittest.TestCase):
                 "---\nname: duplicate-skill\ndescription: A test skill\n---\n\nBody.\n",
                 encoding="utf-8",
             )
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("duplicate-skill" in error and "duplicate" in error for error in errors))
 
     def test_wrong_explorer_model_is_rejected(self) -> None:
@@ -915,7 +915,7 @@ class ContractTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("explorer" in error.lower() and "model" in error.lower() for error in errors))
 
     def test_reviewer_must_be_read_only(self) -> None:
@@ -927,7 +927,7 @@ class ContractTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("expskill-review" in error and "read-only" in error for error in errors))
 
     def test_invalid_manifest_path_is_rejected(self) -> None:
@@ -936,14 +936,14 @@ class ContractTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["skills"] = "./missing-skills/"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("skills" in error and "path" in error for error in errors))
 
     def test_placeholder_text_is_rejected(self) -> None:
         root = self.copy_repository()
         path = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-spec.toml"
         path.write_text(path.read_text(encoding="utf-8") + "\n# [TODO: remove this]\n", encoding="utf-8")
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("placeholder" in error.lower() or "todo" in error.lower() for error in errors))
 
     def test_plan_graph_helper_is_unique_nonempty_and_package_owned(self) -> None:
@@ -966,7 +966,7 @@ class ContractTests(unittest.TestCase):
                 else:
                     shadow = plugin / "assets" / "plan_graph.py"
                     shadow.write_bytes(helper.read_bytes())
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any("plan graph helper" in error.lower() for error in errors),
                     errors,
@@ -982,7 +982,7 @@ class ContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "plugins" / "expskill" / "assets" / "agents" / "expskill-explorer.toml").unlink()
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         self.assertGreaterEqual(len(errors), 2)
         self.assertTrue(any("expskill-review" in error for error in errors))
         self.assertTrue(any("explorer" in error for error in errors))
@@ -1119,7 +1119,7 @@ class ContractTests(unittest.TestCase):
                 )
                 self.assertIn(
                     "skill 'brainstorm' contains private policy vocabulary",
-                    validate_repository(root),
+                    validate_repository(root, include_opencode=False),
                 )
 
             with self.subTest(token=token, surface="metadata"):
@@ -1146,7 +1146,7 @@ class ContractTests(unittest.TestCase):
                 metadata_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
                 self.assertIn(
                     "skill 'brainstorm' interface.short_description contains private policy vocabulary",
-                    validate_repository(root),
+                    validate_repository(root, include_opencode=False),
                 )
 
     def test_unsupported_read_only_agent_runner_is_removed(self) -> None:

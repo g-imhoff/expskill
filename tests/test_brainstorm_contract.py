@@ -239,7 +239,10 @@ class BrainstormContractTests(unittest.TestCase):
         )
         missing_catalog.unlink()
         self.assertTrue(
-            any("brainstorm" in error and "catalog" in error for error in validate_repository(missing_root))
+            any(
+                "brainstorm" in error and "catalog" in error
+                for error in validate_repository(missing_root, include_opencode=False)
+            )
         )
 
         mutations = tuple(
@@ -267,7 +270,7 @@ class BrainstormContractTests(unittest.TestCase):
                 self.assertTrue(
                     any(
                         "brainstorm" in error and "catalog" in error
-                        for error in validate_repository(changed_root)
+                        for error in validate_repository(changed_root, include_opencode=False)
                     )
                 )
 
