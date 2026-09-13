@@ -39,6 +39,15 @@ class FoundationLayoutTests(unittest.TestCase):
                 )
                 for name in PLATFORM_PLUGIN_FILES
             ],
+            (package_root / "opencode" / PLATFORM_PLUGIN_DIRECTORY / "unrelated.js", None),
+            (
+                package_root
+                / "opencode"
+                / PLATFORM_PLUGIN_DIRECTORY
+                / "nested"
+                / "unrelated.js",
+                None,
+            ),
             (package_root / "skills" / "unslop" / "SKILL.md", "skills/unslop/SKILL.md"),
             (package_root / "scripts" / "design_state.py", "scripts/design_state.py"),
             (package_root / "assets" / "execution-policy.json", "assets/execution-policy.json"),

@@ -38,7 +38,12 @@ def artifact_output_relative(source_relative: str | Path) -> str | None:
         return within.as_posix()
     if within.parts[:2] == COPY_LICENSES.parts:
         return within.as_posix()
-    if within.parts[:2] == ("opencode", PLATFORM_PLUGIN_DIRECTORY):
+    if (
+        len(within.parts) == 3
+        and within.parts[0] == "opencode"
+        and within.parts[1] == PLATFORM_PLUGIN_DIRECTORY
+        and within.parts[2] in PLATFORM_PLUGIN_FILES
+    ):
         return Path(*within.parts[1:]).as_posix()
     if (
         len(within.parts) == 2
