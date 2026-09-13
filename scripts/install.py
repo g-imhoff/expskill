@@ -100,12 +100,16 @@ OPENCODE_RECEIPT_PENDING_PHASES = frozenset(
         "none",
         "migration-prepared",
         "swap-prepared",
+        "swap-planned-unmaterialized",
+        "swap-workspace-recorded",
         "swap-anchor-recorded",
         "swap-backup-created",
         "swap-published",
         "swap-old-artifact-removed",
         "swap-old-anchor-removed",
         "publish-prepared",
+        "publish-planned-unmaterialized",
+        "publish-workspace-recorded",
         "publish-anchor-recorded",
         "publish-published",
         "publish-planned-links",
@@ -538,24 +542,38 @@ def _validate_pending_retirement_authority(
     for pending in (pending_swap, pending_publish):
         if pending is None:
             continue
-        authority.add(
-            (
-                "candidate",
-                pending.candidate,
-                pending.candidate_dev,
-                pending.candidate_ino,
+        if pending.candidate_dev is not None and pending.candidate_ino is not None:
+            authority.add(
+                (
+                    "candidate",
+                    pending.candidate,
+                    pending.candidate_dev,
+                    pending.candidate_ino,
+                )
             )
-        )
-        # A candidate can already occupy the public artifact pathname when the
-        # process stopped between rename and its outer phase write.
-        authority.add(
-            (
-                "candidate",
-                pending.artifact,
-                pending.candidate_dev,
-                pending.candidate_ino,
+            # A candidate can already occupy the public artifact pathname when the
+            # process stopped between rename and its outer phase write.
+            authority.add(
+                (
+                    "candidate",
+                    pending.artifact,
+                    pending.candidate_dev,
+                    pending.candidate_ino,
+                )
             )
-        )
+        if (
+            pending.workspace is not None
+            and pending.workspace_dev is not None
+            and pending.workspace_ino is not None
+        ):
+            authority.add(
+                (
+                    "candidate",
+                    pending.workspace,
+                    pending.workspace_dev,
+                    pending.workspace_ino,
+                )
+            )
         candidate_anchor = pending.candidate_anchor
         candidate_anchor_dev = pending.candidate_anchor_dev
         candidate_anchor_ino = pending.candidate_anchor_ino
@@ -649,9 +667,12 @@ class _PendingPublish:
     lineage: str
     artifact: Path
     candidate: Path
-    candidate_dev: int
-    candidate_ino: int
+    candidate_dev: int | None
+    candidate_ino: int | None
     phase: str
+    workspace: Path | None = None
+    workspace_dev: int | None = None
+    workspace_ino: int | None = None
     candidate_digest: str | None = None
     candidate_anchor: Path | None = None
     candidate_anchor_dev: int | None = None
@@ -666,14 +687,17 @@ class _PendingSwap:
     lineage: str
     artifact: Path
     candidate: Path
-    candidate_dev: int
-    candidate_ino: int
+    candidate_dev: int | None
+    candidate_ino: int | None
     backup: Path
     backup_dev: int
     backup_ino: int
     live_dev: int
     live_ino: int
     phase: str
+    workspace: Path | None = None
+    workspace_dev: int | None = None
+    workspace_ino: int | None = None
     candidate_digest: str | None = None
     backup_digest: str | None = None
     candidate_anchor: Path | None = None
@@ -691,13 +715,23 @@ def _pending_swap_payload(pending: _PendingSwap) -> dict[str, object]:
         "backup_dev": pending.backup_dev,
         "backup_ino": pending.backup_ino,
         "candidate": str(pending.candidate),
-        "candidate_dev": pending.candidate_dev,
-        "candidate_ino": pending.candidate_ino,
         "lineage": pending.lineage,
         "live_dev": pending.live_dev,
         "live_ino": pending.live_ino,
         "phase": pending.phase,
     }
+    if pending.candidate_dev is not None or pending.candidate_ino is not None:
+        if pending.candidate_dev is None or pending.candidate_ino is None:
+            raise InstallError("pending OpenCode candidate identity is incomplete")
+        payload["candidate_dev"] = pending.candidate_dev
+        payload["candidate_ino"] = pending.candidate_ino
+    if pending.workspace is not None:
+        payload["workspace"] = str(pending.workspace)
+        if pending.workspace_dev is not None or pending.workspace_ino is not None:
+            if pending.workspace_dev is None or pending.workspace_ino is None:
+                raise InstallError("pending OpenCode workspace identity is incomplete")
+            payload["workspace_dev"] = pending.workspace_dev
+            payload["workspace_ino"] = pending.workspace_ino
     if pending.candidate_digest is not None:
         payload["candidate_digest"] = pending.candidate_digest
     if pending.backup_digest is not None:
@@ -2491,6 +2525,9 @@ def _unlink_private_state_inode(
     name: str,
     expected: tuple[int, int],
     label: str,
+    *,
+    public_name: str | None = None,
+    public_expected: tuple[int, int] | None = None,
 ) -> None:
     metadata = _state_metadata(binding, name)
     if metadata is None:
@@ -2504,8 +2541,53 @@ def _unlink_private_state_inode(
     # particular, never unlink a canonical receipt pathname here.
     if name == OPENCODE_RECEIPT_FILENAME:
         raise InstallError(f"{label} attempted canonical receipt deletion")
+    if (public_name is None) != (public_expected is None):
+        raise InstallError(f"{label} public retirement guard is incomplete")
+    if public_name is None or public_expected is None:
+        os.unlink(name, dir_fd=binding.directory_fd)
+        os.fsync(binding.directory_fd)
+        return
+    public = _state_metadata(binding, public_name)
+    if public is None or (public.st_dev, public.st_ino) != public_expected:
+        raise InstallError(f"{label} public identity changed before reclaim")
+    pin_name = f"{name}.pin"
+    if _state_metadata(binding, pin_name) is not None:
+        raise InstallError(f"{label} private retirement pin is occupied")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=binding.directory_fd,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != expected
+        ):
+            raise InstallError(f"{label} private identity changed before reclaim")
+        _link_open_descriptor(descriptor, binding.directory_fd, pin_name)
+        os.fsync(binding.directory_fd)
+    finally:
+        os.close(descriptor)
+    public = _state_metadata(binding, public_name)
+    if public is None or (public.st_dev, public.st_ino) != public_expected:
+        _unlink_private_state_inode(binding, pin_name, expected, f"{label} pin")
+        raise InstallError(f"{label} public identity changed before unlink")
     os.unlink(name, dir_fd=binding.directory_fd)
     os.fsync(binding.directory_fd)
+    public = _state_metadata(binding, public_name)
+    if public is None or (public.st_dev, public.st_ino) != public_expected:
+        _renameat_noreplace(
+            binding.directory_fd,
+            pin_name,
+            binding.directory_fd,
+            name,
+        )
+        os.fsync(binding.directory_fd)
+        raise InstallError(f"{label} public identity changed during reclaim")
+    _unlink_private_state_inode(binding, pin_name, expected, f"{label} pin")
 
 
 def _recover_receipt_generations(
@@ -2518,6 +2600,34 @@ def _recover_receipt_generations(
 
     _verify_state_binding(binding)
     recovered = False
+    for pin_name in tuple(os.listdir(binding.directory_fd)):
+        if not pin_name.endswith(".pin"):
+            continue
+        generation_name = pin_name.removesuffix(".pin")
+        if _receipt_generation_descriptor(path, generation_name) is None:
+            continue
+        pin = _state_metadata(binding, pin_name)
+        if pin is None or not stat.S_ISREG(pin.st_mode):
+            continue
+        pin_identity = (pin.st_dev, pin.st_ino)
+        generation = _state_metadata(binding, generation_name)
+        if generation is None:
+            _renameat_noreplace(
+                binding.directory_fd,
+                pin_name,
+                binding.directory_fd,
+                generation_name,
+            )
+            os.fsync(binding.directory_fd)
+            recovered = True
+        elif (generation.st_dev, generation.st_ino) == pin_identity:
+            _unlink_private_state_inode(
+                binding,
+                pin_name,
+                pin_identity,
+                "receipt generation retirement pin",
+            )
+            recovered = True
     for name in tuple(os.listdir(binding.directory_fd)):
         descriptor = _receipt_generation_descriptor(path, name)
         if descriptor is None:
@@ -2664,7 +2774,16 @@ def _receipt_generation_names(
     return tuple(
         name
         for name in os.listdir(binding.directory_fd)
-        if _receipt_generation_descriptor(path, name) is not None
+        if (
+            _receipt_generation_descriptor(path, name) is not None
+            or (
+                name.endswith(".pin")
+                and _receipt_generation_descriptor(
+                    path, name.removesuffix(".pin")
+                )
+                is not None
+            )
+        )
         and _state_metadata(binding, name) is not None
     )
 
@@ -2885,6 +3004,8 @@ def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
                 generation_name,
                 current_identity,
                 "receipt generation",
+                public_name=path.name,
+                public_expected=generation_identity,
             )
         published = True
         os.fsync(binding.directory_fd)
@@ -2892,7 +3013,12 @@ def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
         written = os.stat(
             path.name, dir_fd=binding.directory_fd, follow_symlinks=False
         )
-        binding.validated_leaves[path.name] = (written.st_dev, written.st_ino)
+        if generation_identity is None or (
+            written.st_dev,
+            written.st_ino,
+        ) != generation_identity:
+            raise InstallError(f"receipt path identity changed after write: {path}")
+        binding.validated_leaves[path.name] = generation_identity
         return True
     except InstallError:
         raise
@@ -3105,8 +3231,6 @@ def _read_receipt(
             "lineage",
             "artifact",
             "candidate",
-            "candidate_dev",
-            "candidate_ino",
             "backup",
             "backup_dev",
             "backup_ino",
@@ -3114,6 +3238,9 @@ def _read_receipt(
             "live_ino",
             "phase",
         }
+        candidate_identity_keys = {"candidate_dev", "candidate_ino"}
+        workspace_path_keys = {"workspace"}
+        workspace_identity_keys = {"workspace_dev", "workspace_ino"}
         evidence_keys = {"candidate_digest", "backup_digest"}
         anchor_keys = {
             "candidate_anchor",
@@ -3121,20 +3248,21 @@ def _read_receipt(
             "candidate_anchor_ino",
         }
         old_anchor_keys = {"old_anchor", "old_anchor_dev", "old_anchor_ino"}
-        allowed_pending_shapes = {
-            frozenset(required | optional)
-            for optional in (
-                set(),
-                evidence_keys,
-                anchor_keys,
-                evidence_keys | anchor_keys,
-                old_anchor_keys,
-                evidence_keys | old_anchor_keys,
-                anchor_keys | old_anchor_keys,
-                evidence_keys | anchor_keys | old_anchor_keys,
-            )
-        }
-        if frozenset(pending_value) not in allowed_pending_shapes:
+        known_workspace_keys = (
+            required
+            | candidate_identity_keys
+            | workspace_path_keys
+            | workspace_identity_keys
+            | evidence_keys
+            | anchor_keys
+            | old_anchor_keys
+        )
+        workspace_protocol = "workspace" in pending_value
+        if (
+            not workspace_protocol
+            or not required.issubset(pending_value)
+            or not set(pending_value).issubset(known_workspace_keys)
+        ):
             raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
         if pending_value.get("lineage") != lineage:
             raise InstallError(f"receipt pending swap lineage mismatch: {receipt_path}")
@@ -3164,17 +3292,27 @@ def _read_receipt(
                 "live_ino",
             )
         }
+        phase = pending_value.get("phase")
+        base_numbers = {
+            key: numbers[key]
+            for key in (
+                "backup_dev",
+                "backup_ino",
+                "live_dev",
+                "live_ino",
+            )
+        }
         if (
             any(not isinstance(value, str) for value in paths.values())
-            or any(not isinstance(value, int) or value <= 0 for value in numbers.values())
+            or any(
+                not isinstance(value, int) or value <= 0
+                for value in base_numbers.values()
+            )
             or numbers["backup_dev"] != numbers["live_dev"]
             or numbers["backup_ino"] != numbers["live_ino"]
-            or (
-                numbers["candidate_dev"],
-                numbers["candidate_ino"],
-            )
-            == (numbers["live_dev"], numbers["live_ino"])
-            or pending_value.get("phase") not in {
+            or phase not in {
+                "planned-unmaterialized",
+                "workspace-recorded",
                 "prepared",
                 "anchor-recorded",
                 "backup-created",
@@ -3186,6 +3324,57 @@ def _read_receipt(
                 "rollback-anchor-removed",
                 "rollback-restored",
             }
+        ):
+            raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
+        workspace_dev = pending_value.get("workspace_dev")
+        workspace_ino = pending_value.get("workspace_ino")
+        if phase == "planned-unmaterialized":
+            if any(
+                key in pending_value
+                for key in candidate_identity_keys
+                | workspace_identity_keys
+                | evidence_keys
+                | anchor_keys
+            ):
+                raise InstallError(
+                    f"receipt pending swap planned state is malformed: {receipt_path}"
+                )
+        elif phase == "workspace-recorded" or (
+            phase == "rollback-prepared"
+            and not any(key in pending_value for key in candidate_identity_keys)
+        ):
+            if (
+                any(key in pending_value for key in candidate_identity_keys | evidence_keys | anchor_keys)
+                or
+                not isinstance(workspace_dev, int)
+                or workspace_dev <= 0
+                or not isinstance(workspace_ino, int)
+                or workspace_ino <= 0
+            ):
+                raise InstallError(
+                    f"receipt pending swap workspace state is malformed: {receipt_path}"
+                )
+        elif (
+            not isinstance(workspace_dev, int)
+            or workspace_dev <= 0
+            or not isinstance(workspace_ino, int)
+            or workspace_ino <= 0
+            or any(
+                not isinstance(numbers[key], int) or numbers[key] <= 0
+                for key in candidate_identity_keys
+            )
+        ):
+            raise InstallError(
+                f"receipt pending swap identity is malformed: {receipt_path}"
+            )
+        if (
+            isinstance(numbers["candidate_dev"], int)
+            and isinstance(numbers["candidate_ino"], int)
+            and (
+                numbers["candidate_dev"],
+                numbers["candidate_ino"],
+            )
+            == (numbers["live_dev"], numbers["live_ino"])
         ):
             raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
         candidate_digest = pending_value.get("candidate_digest")
@@ -3231,8 +3420,27 @@ def _read_receipt(
             raise InstallError(f"receipt old anchor is malformed: {receipt_path}")
         pending_paths = {key: _lexical_absolute(Path(value).expanduser()) for key, value in paths.items()}
         expected_artifact = _lexical_absolute(receipt_path.parent / OPENCODE_ARTIFACT_DIRECTORY)
-        if pending_paths["artifact"] != expected_artifact or any(
-            path.parent != expected_artifact.parent for path in pending_paths.values()
+        workspace_value = pending_value.get("workspace")
+        if not isinstance(workspace_value, str):
+            raise InstallError(f"receipt pending swap workspace is malformed: {receipt_path}")
+        raw_workspace = Path(workspace_value).expanduser()
+        if not raw_workspace.is_absolute() or _has_dot_components(raw_workspace):
+            raise InstallError(f"receipt pending swap workspace is malformed: {receipt_path}")
+        workspace = _lexical_absolute(raw_workspace)
+        prefix = f".{OPENCODE_ARTIFACT_DIRECTORY}.txn-"
+        token = workspace.name.removeprefix(prefix)
+        workspace_valid = (
+            workspace.parent == expected_artifact.parent
+            and workspace.name == f"{prefix}{token}"
+            and len(token) >= 32
+            and pending_paths["candidate"].parent == workspace
+            and pending_paths["candidate"].name
+            == f".{OPENCODE_ARTIFACT_DIRECTORY}.next-{token}"
+        )
+        if (
+            pending_paths["artifact"] != expected_artifact
+            or pending_paths["backup"].parent != expected_artifact.parent
+            or not workspace_valid
         ):
             raise InstallError(f"receipt pending swap path is outside owned state: {receipt_path}")
         if (
@@ -3252,7 +3460,18 @@ def _read_receipt(
             backup_ino=numbers["backup_ino"],
             live_dev=numbers["live_dev"],
             live_ino=numbers["live_ino"],
-            phase=pending_value["phase"],
+            phase=phase,
+            workspace=workspace,
+            workspace_dev=(
+                pending_value.get("workspace_dev")
+                if isinstance(pending_value.get("workspace_dev"), int)
+                else None
+            ),
+            workspace_ino=(
+                pending_value.get("workspace_ino")
+                if isinstance(pending_value.get("workspace_ino"), int)
+                else None
+            ),
             candidate_digest=candidate_digest,
             backup_digest=backup_digest,
             candidate_anchor=candidate_anchor,
@@ -3268,6 +3487,10 @@ def _read_receipt(
             "old-artifact-removed",
             "old-anchor-removed",
         }:
+            if pending.candidate_dev is None or pending.candidate_ino is None:
+                raise InstallError(
+                    f"receipt pending swap lost candidate identity: {receipt_path}"
+                )
             committed_pending_identities.add(
                 (pending.candidate_dev, pending.candidate_ino)
             )
@@ -3281,35 +3504,43 @@ def _read_receipt(
     publish_value = payload.get("pending_publish")
     pending_publish: _PendingPublish | None = None
     if publish_value is not None:
-        required_publish = {
-            "lineage",
-            "artifact",
-            "candidate",
-            "candidate_dev",
-            "candidate_ino",
-            "phase",
-        }
+        required_publish = {"lineage", "artifact", "candidate", "phase"}
+        identity_keys = {"candidate_dev", "candidate_ino"}
+        workspace_keys = {"workspace", "workspace_dev", "workspace_ino"}
         publish_anchor_keys = {
             "candidate_anchor",
             "candidate_anchor_dev",
             "candidate_anchor_ino",
             "planned_links",
         }
+        workspace_base = required_publish | {"workspace"}
+        workspace_recorded = workspace_base | {
+            "workspace_dev",
+            "workspace_ino",
+        }
+        workspace_candidate = workspace_recorded | identity_keys
+        workspace_shapes = {
+            frozenset(workspace_base),
+            frozenset(workspace_recorded),
+            frozenset(workspace_candidate),
+            frozenset(workspace_candidate | {"candidate_digest"}),
+            frozenset(workspace_candidate | publish_anchor_keys),
+            frozenset(
+                workspace_candidate
+                | {"candidate_digest"}
+                | publish_anchor_keys
+            ),
+        }
+        phase = publish_value.get("phase") if isinstance(publish_value, dict) else None
         if (
             not isinstance(publish_value, dict)
-            or frozenset(publish_value)
-            not in {
-                frozenset(required_publish),
-                frozenset(required_publish | {"candidate_digest"}),
-                frozenset(required_publish | publish_anchor_keys),
-                frozenset(
-                    required_publish | {"candidate_digest"} | publish_anchor_keys
-                ),
-            }
+            or frozenset(publish_value) not in workspace_shapes
             or lineage is None
             or pending is not None
             or publish_value.get("lineage") != lineage
-            or publish_value.get("phase") not in {
+            or phase not in {
+                "planned-unmaterialized",
+                "workspace-recorded",
                 "prepared",
                 "anchor-recorded",
                 "published",
@@ -3341,10 +3572,49 @@ def _read_receipt(
         publish_numbers = {
             key: publish_value.get(key) for key in ("candidate_dev", "candidate_ino")
         }
-        if any(not isinstance(value, str) for value in publish_paths.values()) or any(
-            not isinstance(value, int) or value <= 0 for value in publish_numbers.values()
-        ):
+        workspace_value = publish_value.get("workspace")
+        workspace_dev = publish_value.get("workspace_dev")
+        workspace_ino = publish_value.get("workspace_ino")
+        if any(not isinstance(value, str) for value in publish_paths.values()):
             raise InstallError(f"receipt pending publish is malformed: {receipt_path}")
+        if phase == "planned-unmaterialized":
+            if (
+                frozenset(publish_value) != frozenset(workspace_base)
+                or any(value is not None for value in publish_numbers.values())
+            ):
+                raise InstallError(
+                    f"receipt pending publish planned state is malformed: {receipt_path}"
+                )
+        elif phase == "workspace-recorded" or (
+            phase == "rollback-prepared"
+            and not any(key in publish_value for key in identity_keys)
+        ):
+            if (
+                frozenset(publish_value) != frozenset(workspace_recorded)
+                or any(value is not None for value in publish_numbers.values())
+            ):
+                raise InstallError(
+                    f"receipt pending publish workspace state is malformed: {receipt_path}"
+                )
+        elif any(
+            not isinstance(value, int) or value <= 0
+            for value in publish_numbers.values()
+        ):
+            raise InstallError(
+                f"receipt pending publish identity is malformed: {receipt_path}"
+            )
+        if (
+            phase != "planned-unmaterialized"
+            and (
+                not isinstance(workspace_dev, int)
+                or workspace_dev <= 0
+                or not isinstance(workspace_ino, int)
+                or workspace_ino <= 0
+            )
+        ):
+            raise InstallError(
+                f"receipt pending publish workspace identity is malformed: {receipt_path}"
+            )
         normalized_publish_paths = {
             key: _lexical_absolute(Path(value).expanduser())
             for key, value in publish_paths.items()
@@ -3352,12 +3622,32 @@ def _read_receipt(
         expected_artifact = _lexical_absolute(
             receipt_path.parent / OPENCODE_ARTIFACT_DIRECTORY
         )
+        if not isinstance(workspace_value, str):
+            raise InstallError(
+                f"receipt pending publish workspace path is invalid: {receipt_path}"
+            )
+        raw_workspace = Path(workspace_value).expanduser()
+        if not raw_workspace.is_absolute() or _has_dot_components(raw_workspace):
+            raise InstallError(
+                f"receipt pending publish workspace path is invalid: {receipt_path}"
+            )
+        workspace = _lexical_absolute(raw_workspace)
+        workspace_prefix = f".{OPENCODE_ARTIFACT_DIRECTORY}.txn-"
+        token = workspace.name.removeprefix(workspace_prefix)
+        valid_candidate = (
+            normalized_publish_paths["candidate"].parent == workspace
+            and normalized_publish_paths["candidate"].name
+            == f".{OPENCODE_ARTIFACT_DIRECTORY}.next-{token}"
+        )
+        valid_workspace = (
+            workspace.parent == expected_artifact.parent
+            and workspace.name == f"{workspace_prefix}{token}"
+            and len(token) >= 32
+        )
         if (
             normalized_publish_paths["artifact"] != expected_artifact
-            or normalized_publish_paths["candidate"].parent != expected_artifact.parent
-            or not normalized_publish_paths["candidate"].name.startswith(
-                f".{OPENCODE_ARTIFACT_DIRECTORY}.next-"
-            )
+            or not valid_workspace
+            or not valid_candidate
         ):
             raise InstallError(f"receipt pending publish path is invalid: {receipt_path}")
         pending_publish = _PendingPublish(
@@ -3366,7 +3656,10 @@ def _read_receipt(
             candidate=normalized_publish_paths["candidate"],
             candidate_dev=publish_numbers["candidate_dev"],
             candidate_ino=publish_numbers["candidate_ino"],
-            phase=publish_value["phase"],
+            phase=phase,
+            workspace=workspace,
+            workspace_dev=workspace_dev if isinstance(workspace_dev, int) else None,
+            workspace_ino=workspace_ino if isinstance(workspace_ino, int) else None,
             candidate_digest=publish_digest,
             candidate_anchor=publish_anchor,
             candidate_anchor_dev=publish_anchor_dev,
@@ -3527,11 +3820,47 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
         payload["pending_publish"] = {
             "artifact": str(pending_publish.artifact),
             "candidate": str(pending_publish.candidate),
-            "candidate_dev": pending_publish.candidate_dev,
-            "candidate_ino": pending_publish.candidate_ino,
             "lineage": pending_publish.lineage,
             "phase": pending_publish.phase,
         }
+        if (
+            pending_publish.candidate_dev is not None
+            or pending_publish.candidate_ino is not None
+        ):
+            if (
+                pending_publish.candidate_dev is None
+                or pending_publish.candidate_ino is None
+            ):
+                raise InstallError(
+                    f"pending OpenCode publication identity is incomplete: {receipt_path}"
+                )
+            payload["pending_publish"]["candidate_dev"] = (
+                pending_publish.candidate_dev
+            )
+            payload["pending_publish"]["candidate_ino"] = (
+                pending_publish.candidate_ino
+            )
+        if pending_publish.workspace is not None:
+            payload["pending_publish"]["workspace"] = str(
+                pending_publish.workspace
+            )
+            if (
+                pending_publish.workspace_dev is not None
+                or pending_publish.workspace_ino is not None
+            ):
+                if (
+                    pending_publish.workspace_dev is None
+                    or pending_publish.workspace_ino is None
+                ):
+                    raise InstallError(
+                        f"pending OpenCode workspace identity is incomplete: {receipt_path}"
+                    )
+                payload["pending_publish"]["workspace_dev"] = (
+                    pending_publish.workspace_dev
+                )
+                payload["pending_publish"]["workspace_ino"] = (
+                    pending_publish.workspace_ino
+                )
         if pending_publish.candidate_digest is not None:
             payload["pending_publish"]["candidate_digest"] = (
                 pending_publish.candidate_digest
@@ -5028,6 +5357,11 @@ def _remove_opencode_artifact_exact(path: Path, dev: int, ino: int) -> None:
                 ino,
             ) and str(path) in {pending.get("candidate"), pending.get("artifact")}:
                 role = "candidate"
+            if (pending.get("workspace_dev"), pending.get("workspace_ino")) == (
+                dev,
+                ino,
+            ) and str(path) == pending.get("workspace"):
+                role = "candidate"
             if key == "pending_swap" and (
                 pending.get("backup_dev"), pending.get("backup_ino")
             ) == (dev, ino) and str(path) == pending.get("backup"):
@@ -5048,6 +5382,122 @@ def _pending_identity(path: Path, dev: int, ino: int) -> bool:
     ):
         return True
     return False
+
+
+def _publication_workspace_path(parent: Path, token: str) -> Path:
+    return parent / f".{OPENCODE_ARTIFACT_DIRECTORY}.txn-{token}"
+
+
+def _publication_candidate_path(workspace: Path, token: str) -> Path:
+    return workspace / f".{OPENCODE_ARTIFACT_DIRECTORY}.next-{token}"
+
+
+def _workspace_identity(
+    workspace: Path, expected: tuple[int, int] | None = None
+) -> tuple[int, int] | None:
+    binding = _state_binding(workspace)
+    if binding is None:
+        raise InstallError("OpenCode publication workspace is outside bound state")
+    _verify_state_binding(binding)
+    metadata = _state_metadata(binding, workspace.name)
+    if metadata is None:
+        return None
+    identity = (metadata.st_dev, metadata.st_ino)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or (expected is not None and identity != expected)
+    ):
+        raise InstallError("OpenCode publication workspace identity changed")
+    return identity
+
+
+def _create_publication_workspace(workspace: Path) -> tuple[int, int]:
+    binding = _state_binding(workspace)
+    if binding is None:
+        raise InstallError("OpenCode publication workspace requires bound state")
+    _verify_state_binding(binding)
+    try:
+        os.mkdir(workspace.name, mode=0o700, dir_fd=binding.directory_fd)
+    except FileExistsError as error:
+        raise InstallError(
+            "OpenCode publication workspace was occupied during creation"
+        ) from error
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            workspace.name, _directory_open_flags(), dir_fd=binding.directory_fd
+        )
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        if _workspace_identity(workspace) != identity:
+            raise InstallError("OpenCode publication workspace changed after creation")
+        return identity
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _publish_workspace_candidate(
+    workspace: Path,
+    workspace_identity: tuple[int, int],
+    candidate: Path,
+    candidate_identity: tuple[int, int],
+    artifact: Path,
+) -> None:
+    binding = _state_binding(workspace)
+    if binding is None or _state_binding(artifact) != binding:
+        raise InstallError("OpenCode workspace publication requires bound state")
+    workspace_fd = -1
+    try:
+        _verify_state_binding(binding)
+        if _workspace_identity(workspace, workspace_identity) is None:
+            raise InstallError("OpenCode publication workspace disappeared")
+        workspace_fd = os.open(
+            workspace.name, _directory_open_flags(), dir_fd=binding.directory_fd
+        )
+        opened = os.fstat(workspace_fd)
+        if (opened.st_dev, opened.st_ino) != workspace_identity:
+            raise InstallError("OpenCode publication workspace identity changed")
+        candidate_metadata = os.stat(
+            candidate.name, dir_fd=workspace_fd, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISDIR(candidate_metadata.st_mode)
+            or stat.S_ISLNK(candidate_metadata.st_mode)
+            or (candidate_metadata.st_dev, candidate_metadata.st_ino)
+            != candidate_identity
+        ):
+            raise InstallError("OpenCode workspace candidate identity changed")
+        _renameat_noreplace(
+            workspace_fd,
+            candidate.name,
+            binding.directory_fd,
+            artifact.name,
+        )
+        os.fsync(workspace_fd)
+        os.fsync(binding.directory_fd)
+        if _workspace_identity(workspace, workspace_identity) is None or not _pending_identity(
+            artifact, candidate_identity[0], candidate_identity[1]
+        ):
+            raise InstallError("OpenCode workspace publication lost exact identity")
+    except FileExistsError as error:
+        raise InstallError(f"recovery target was replaced: {artifact}") from error
+    except OSError as error:
+        if error.errno == errno.EEXIST:
+            raise InstallError(f"recovery target was replaced: {artifact}") from error
+        raise InstallError(f"exclusive workspace publication failed: {error}") from error
+    finally:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
+
+
+def _remove_publication_workspace(
+    workspace: Path, workspace_dev: int, workspace_ino: int
+) -> None:
+    if _workspace_identity(workspace, (workspace_dev, workspace_ino)) is None:
+        return
+    _remove_opencode_artifact_exact(workspace, workspace_dev, workspace_ino)
 
 
 def _artifact_anchor_path(parent: Path, token: str) -> Path:
@@ -5229,34 +5679,6 @@ def _remove_artifact_anchor_exact(
         raise InstallError("OpenCode artifact anchor lost its exact inode relationship")
     assert anchor is not None and anchor_dev is not None and anchor_ino is not None
     _unlink_artifact_anchor_identity(anchor, anchor_dev, anchor_ino)
-
-
-def _remove_candidate_artifact_exact(
-    artifact: Path,
-    artifact_dev: int,
-    artifact_ino: int,
-    anchor: Path | None,
-    anchor_dev: int | None,
-    anchor_ino: int | None,
-) -> None:
-    """Remove a rollback candidate only while its lifetime anchor proves it."""
-
-    package = artifact / OPENCODE_ARTIFACT_ANCHOR_FILE
-    relationship_is_live = _artifact_anchor_matches(
-        artifact, anchor, anchor_dev, anchor_ino
-    )
-    # Once an exact removal attempt has begun, package.json may already be
-    # gone.  The durable rollback phase plus the still-exact standalone anchor
-    # retains authority to finish clearing the same frozen directory inode.
-    partially_removed_with_live_anchor = (
-        not _lexists(package)
-        and _artifact_anchor_identity_is_live(anchor, anchor_dev, anchor_ino)
-    )
-    if not relationship_is_live and not partially_removed_with_live_anchor:
-        raise InstallError(
-            "OpenCode rollback candidate lost its exact permanent anchor relationship"
-        )
-    _remove_opencode_artifact_exact(artifact, artifact_dev, artifact_ino)
 
 
 def _unlink_artifact_anchor_identity(anchor: Path, anchor_dev: int, anchor_ino: int) -> None:
@@ -5925,6 +6347,8 @@ def _rollback_pending_publish(
     pending = receipt.pending_publish
     if pending is None:
         return receipt
+    if pending.workspace is None:
+        raise InstallError("OpenCode publication lacks its workspace protocol")
     if pending.phase not in {
         "rollback-prepared",
         "rollback-artifact-removed",
@@ -5954,24 +6378,35 @@ def _rollback_pending_publish(
                 "OpenCode publication link rollback failed: "
                 + "; ".join(link_failures)
             )
-        target = None
-        if _pending_identity(
-            pending.candidate, pending.candidate_dev, pending.candidate_ino
-        ):
-            target = pending.candidate
-        elif _pending_identity(
-            pending.artifact, pending.candidate_dev, pending.candidate_ino
-        ):
-            target = pending.artifact
-        if target is not None:
-            _remove_candidate_artifact_exact(
-                target,
-                pending.candidate_dev,
-                pending.candidate_ino,
-                pending.candidate_anchor,
-                pending.candidate_anchor_dev,
-                pending.candidate_anchor_ino,
+        if pending.workspace is not None:
+            if pending.workspace_dev is None or pending.workspace_ino is None:
+                raise InstallError(
+                    "OpenCode publication rollback lacks workspace identity"
+                )
+            workspace_identity = _workspace_identity(
+                pending.workspace,
+                (pending.workspace_dev, pending.workspace_ino),
             )
+            if workspace_identity is not None:
+                _remove_publication_workspace(
+                    pending.workspace,
+                    pending.workspace_dev,
+                    pending.workspace_ino,
+                )
+            if (
+                pending.candidate_dev is not None
+                and pending.candidate_ino is not None
+                and _pending_identity(
+                    pending.artifact,
+                    pending.candidate_dev,
+                    pending.candidate_ino,
+                )
+            ):
+                _remove_opencode_artifact_exact(
+                    pending.artifact,
+                    pending.candidate_dev,
+                    pending.candidate_ino,
+                )
         pending = replace(pending, phase="rollback-artifact-removed")
         receipt = _receipt_with_pending_publish(receipt, pending)
         _write_receipt(receipt_path, receipt)
@@ -6003,6 +6438,8 @@ def _rollback_pending_swap_candidate(
     pending = receipt.pending_swap
     if pending is None:
         return receipt
+    if pending.workspace is None:
+        raise InstallError("OpenCode upgrade lacks its workspace protocol")
     if pending.phase not in {
         "rollback-prepared",
         "rollback-candidate-removed",
@@ -6013,24 +6450,33 @@ def _rollback_pending_swap_candidate(
         receipt = _receipt_with_pending(receipt, pending)
         _write_receipt(receipt_path, receipt)
     if pending.phase == "rollback-prepared":
-        candidate_path = None
-        if _pending_identity(
-            pending.candidate, pending.candidate_dev, pending.candidate_ino
-        ):
-            candidate_path = pending.candidate
-        elif _pending_identity(
-            pending.artifact, pending.candidate_dev, pending.candidate_ino
-        ):
-            candidate_path = pending.artifact
-        if candidate_path is not None:
-            _remove_candidate_artifact_exact(
-                candidate_path,
-                pending.candidate_dev,
-                pending.candidate_ino,
-                pending.candidate_anchor,
-                pending.candidate_anchor_dev,
-                pending.candidate_anchor_ino,
+        if pending.workspace is not None:
+            if pending.workspace_dev is None or pending.workspace_ino is None:
+                raise InstallError("OpenCode upgrade rollback lacks workspace identity")
+            workspace_identity = _workspace_identity(
+                pending.workspace,
+                (pending.workspace_dev, pending.workspace_ino),
             )
+            if workspace_identity is not None:
+                _remove_publication_workspace(
+                    pending.workspace,
+                    pending.workspace_dev,
+                    pending.workspace_ino,
+                )
+            if (
+                pending.candidate_dev is not None
+                and pending.candidate_ino is not None
+                and _pending_identity(
+                    pending.artifact,
+                    pending.candidate_dev,
+                    pending.candidate_ino,
+                )
+            ):
+                _remove_opencode_artifact_exact(
+                    pending.artifact,
+                    pending.candidate_dev,
+                    pending.candidate_ino,
+                )
         pending = replace(pending, phase="rollback-candidate-removed")
         receipt = _receipt_with_pending(receipt, pending)
         _write_receipt(receipt_path, receipt)
@@ -6084,230 +6530,83 @@ def _recover_pending_swap(
     pending = receipt.pending_swap
     if pending.phase.startswith("rollback-"):
         return _rollback_pending_swap_candidate(receipt_path, receipt)
-    permitted_receipt_identities = {(pending.live_dev, pending.live_ino)}
-    if pending.phase in {"published", "old-artifact-removed", "old-anchor-removed"}:
-        permitted_receipt_identities.add((pending.candidate_dev, pending.candidate_ino))
-    if (
-        receipt.artifact_dev is None
-        or receipt.artifact_ino is None
-        or (receipt.artifact_dev, receipt.artifact_ino)
-        not in permitted_receipt_identities
-    ):
-        raise InstallError(
-            "pending OpenCode swap lacks a committed live artifact identity"
+    if pending.workspace is not None and pending.phase in {
+        "planned-unmaterialized",
+        "workspace-recorded",
+    }:
+        if pending.phase == "planned-unmaterialized":
+            workspace_identity = _workspace_identity(pending.workspace)
+            if workspace_identity is None:
+                receipt = _receipt_with_pending(receipt, None)
+                _write_receipt(receipt_path, receipt)
+                return receipt
+            pending = replace(
+                pending,
+                phase="workspace-recorded",
+                workspace_dev=workspace_identity[0],
+                workspace_ino=workspace_identity[1],
+            )
+            receipt = _receipt_with_pending(receipt, pending)
+            _write_receipt(receipt_path, receipt)
+        elif pending.workspace_dev is None or pending.workspace_ino is None:
+            raise InstallError("pending OpenCode upgrade workspace identity is incomplete")
+        pending = replace(pending, phase="rollback-prepared")
+        receipt = _receipt_with_pending(receipt, pending)
+        _write_receipt(receipt_path, receipt)
+        return _rollback_pending_swap_candidate(receipt_path, receipt)
+    if pending.workspace is not None:
+        if (
+            pending.workspace_dev is None
+            or pending.workspace_ino is None
+            or pending.candidate_dev is None
+            or pending.candidate_ino is None
+        ):
+            raise InstallError("pending OpenCode upgrade identity is incomplete")
+        workspace_identity = _workspace_identity(
+            pending.workspace,
+            (pending.workspace_dev, pending.workspace_ino),
         )
-    expected_artifact = _lexical_absolute(receipt_path.parent / OPENCODE_ARTIFACT_DIRECTORY)
-    if (
-        pending.artifact != expected_artifact
-        or pending.candidate.parent != expected_artifact.parent
-        or pending.backup.parent != expected_artifact.parent
-        or not pending.candidate.name.startswith(f".{OPENCODE_ARTIFACT_DIRECTORY}.next-")
-        or not pending.backup.name.startswith(f".{OPENCODE_ARTIFACT_DIRECTORY}.old-")
-        or pending.candidate == pending.backup
-        or pending.phase not in {
-            "prepared",
-            "anchor-recorded",
-            "backup-created",
-            "published",
-            "old-artifact-removed",
-            "old-anchor-removed",
-        }
-        or min(
-            pending.candidate_dev, pending.candidate_ino, pending.backup_dev,
-            pending.backup_ino, pending.live_dev, pending.live_ino,
-        ) <= 0
-    ):
-        raise InstallError(f"receipt pending swap path or identity is invalid: {receipt_path}")
-    candidate_exists = _pending_identity(
-        pending.candidate, pending.candidate_dev, pending.candidate_ino
-    )
-    backup_exists = _pending_identity(pending.backup, pending.backup_dev, pending.backup_ino)
-    artifact_exists = _lexists(pending.artifact)
-    artifact_is_candidate = _pending_identity(
-        pending.artifact, pending.candidate_dev, pending.candidate_ino
-    )
-    artifact_is_live = _pending_identity(
-        pending.artifact, pending.live_dev, pending.live_ino
-    )
-    if (
-        candidate_exists
-        and pending.candidate_anchor is not None
-        and pending.candidate_anchor_dev is not None
-        and pending.candidate_anchor_ino is not None
-        and not _artifact_anchor_matches(
-            pending.candidate,
+        artifact_is_candidate = _pending_identity(
+            pending.artifact, pending.candidate_dev, pending.candidate_ino
+        )
+        artifact_is_live = _pending_identity(
+            pending.artifact, pending.live_dev, pending.live_ino
+        )
+        if pending.phase in {"prepared", "backup-created"}:
+            pending = replace(pending, phase="rollback-prepared")
+            receipt = _receipt_with_pending(receipt, pending)
+            _write_receipt(receipt_path, receipt)
+            return _rollback_pending_swap_candidate(receipt_path, receipt)
+        if not artifact_is_candidate:
+            if _lexists(pending.artifact) and not artifact_is_live:
+                raise InstallError(
+                    "OpenCode artifact was replaced by an unproven directory; preserving it"
+                )
+            raise InstallError("published OpenCode upgrade lost its exact candidate")
+        if not _artifact_matches_evidence(
+            pending.artifact, pending.candidate_digest
+        ):
+            raise InstallError("published OpenCode upgrade failed exact evidence validation")
+        if workspace_identity is not None:
+            _remove_publication_workspace(
+                pending.workspace, pending.workspace_dev, pending.workspace_ino
+            )
+        anchor_was_live = _artifact_anchor_matches(
+            pending.artifact,
             pending.candidate_anchor,
             pending.candidate_anchor_dev,
             pending.candidate_anchor_ino,
         )
-    ):
         anchor_token = pending.candidate_anchor.name.removeprefix(
             OPENCODE_ARTIFACT_ANCHOR_PREFIX
-        )
-        adopted = _create_artifact_anchor(pending.candidate, anchor_token)
-        if adopted != (
+        ) if pending.candidate_anchor is not None else ""
+        anchor = _create_artifact_anchor(pending.artifact, anchor_token)
+        if anchor != (
             pending.candidate_anchor,
             pending.candidate_anchor_dev,
             pending.candidate_anchor_ino,
         ):
             raise InstallError("pending OpenCode candidate anchor identity changed")
-    candidate_proven = candidate_exists and _artifact_anchor_matches(
-        pending.candidate,
-        pending.candidate_anchor,
-        pending.candidate_anchor_dev,
-        pending.candidate_anchor_ino,
-    ) and (
-        _artifact_matches_evidence(pending.candidate, pending.candidate_digest)
-        if pending.candidate_digest is not None
-        else _artifact_matches_sources(repo_root, pending.candidate)
-    )
-    backup_proven = backup_exists and (
-        _artifact_anchor_identity_is_live(
-            pending.old_anchor,
-            pending.old_anchor_dev,
-            pending.old_anchor_ino,
-        )
-        if pending.phase
-        in {"published", "old-artifact-removed", "old-anchor-removed"}
-        else _artifact_anchor_matches(
-            pending.backup,
-            pending.old_anchor,
-            pending.old_anchor_dev,
-            pending.old_anchor_ino,
-        )
-    )
-    artifact_candidate_owned = artifact_is_candidate and _artifact_anchor_matches(
-        pending.artifact,
-        pending.candidate_anchor,
-        pending.candidate_anchor_dev,
-        pending.candidate_anchor_ino,
-    )
-    artifact_candidate_proven = artifact_candidate_owned and (
-        _artifact_matches_evidence(pending.artifact, pending.candidate_digest)
-        if pending.candidate_digest is not None
-        else _artifact_matches_sources(repo_root, pending.artifact)
-    )
-    artifact_live_proven = artifact_is_live and _artifact_anchor_matches(
-        pending.artifact,
-        pending.old_anchor,
-        pending.old_anchor_dev,
-        pending.old_anchor_ino,
-    )
-    if artifact_exists and not artifact_is_candidate and not artifact_is_live:
-        raise InstallError("OpenCode artifact was replaced by an unproven directory; preserving it")
-    if pending.phase in {"prepared", "anchor-recorded"}:
-        if artifact_is_live and not backup_exists:
-            # Crash before the first rename: the candidate is private and the
-            # old live artifact remains authoritative.  Remove only exact
-            # candidate identity and clear the pending record.
-            if candidate_exists and not candidate_proven:
-                raise InstallError(
-                    "pending OpenCode candidate lacks independent ownership evidence"
-                )
-            if candidate_proven:
-                _remove_candidate_artifact_exact(
-                    pending.candidate,
-                    pending.candidate_dev,
-                    pending.candidate_ino,
-                    pending.candidate_anchor,
-                    pending.candidate_anchor_dev,
-                    pending.candidate_anchor_ino,
-                )
-                assert pending.candidate_anchor is not None
-                assert pending.candidate_anchor_dev is not None
-                assert pending.candidate_anchor_ino is not None
-                _unlink_artifact_anchor_identity(
-                    pending.candidate_anchor,
-                    pending.candidate_anchor_dev,
-                    pending.candidate_anchor_ino,
-                )
-            elif (
-                pending.candidate_anchor is not None
-                and pending.candidate_anchor_dev is not None
-                and pending.candidate_anchor_ino is not None
-            ):
-                _unlink_artifact_anchor_identity(
-                    pending.candidate_anchor,
-                    pending.candidate_anchor_dev,
-                    pending.candidate_anchor_ino,
-                )
-            receipt = _receipt_with_pending(receipt, None)
-            _write_receipt(receipt_path, receipt)
-            return receipt
-        if artifact_is_live and backup_exists:
-            # The first rename happened even though its status rewrite did not.
-            pending = _PendingSwap(**{**pending.__dict__, "phase": "backup-created"})
-        elif not artifact_exists and backup_exists:
-            pending = _PendingSwap(**{**pending.__dict__, "phase": "backup-created"})
-    if not artifact_exists and backup_exists:
-        if not backup_proven:
-            raise InstallError(
-                "pending OpenCode backup lacks independent ownership evidence"
-            )
-        if candidate_exists:
-            if not candidate_proven:
-                raise InstallError(
-                    "pending OpenCode candidate lacks independent ownership evidence"
-                )
-            # The durable status is still pre-publication.  Preserve the
-            # previous install rather than adopting an uncommitted candidate.
-            _remove_candidate_artifact_exact(
-                pending.candidate,
-                pending.candidate_dev,
-                pending.candidate_ino,
-                pending.candidate_anchor,
-                pending.candidate_anchor_dev,
-                pending.candidate_anchor_ino,
-            )
-            assert pending.candidate_anchor is not None
-            assert pending.candidate_anchor_dev is not None
-            assert pending.candidate_anchor_ino is not None
-            _unlink_artifact_anchor_identity(
-                pending.candidate_anchor,
-                pending.candidate_anchor_dev,
-                pending.candidate_anchor_ino,
-            )
-            _rename_noreplace(pending.backup, pending.artifact)
-            artifact_is_live = True
-            backup_exists = False
-            receipt = _receipt_with_pending(receipt, None)
-            _write_receipt(receipt_path, receipt)
-        else:
-            _rename_noreplace(pending.backup, pending.artifact)
-            artifact_is_live = True
-            backup_exists = False
-            receipt = _receipt_with_pending(receipt, None)
-            _write_receipt(receipt_path, receipt)
-        return receipt
-    elif (
-        artifact_is_candidate
-        and backup_exists
-        and pending.phase in {"prepared", "anchor-recorded", "backup-created"}
-    ):
-        if not artifact_candidate_proven or not backup_proven:
-            raise InstallError(
-                "pending OpenCode swap lacks independent ownership evidence"
-            )
-        # Candidate publication is not committed until the published receipt
-        # write is durable.  Persist rollback intent before retiring either
-        # candidate or anchor, then reuse the closed rollback state machine.
-        receipt = _receipt_with_pending(
-            receipt, replace(pending, phase="rollback-prepared")
-        )
-        _write_receipt(receipt_path, receipt)
-        return _rollback_pending_swap_candidate(receipt_path, receipt)
-    elif artifact_is_candidate and backup_exists:
-        if not artifact_candidate_proven or not backup_proven:
-            raise InstallError(
-                "pending OpenCode swap lacks independent ownership evidence"
-            )
-        # Candidate was published before receipt status rewrite.
-        pass
-    elif artifact_is_candidate and not backup_exists:
-        if not artifact_candidate_proven:
-            raise InstallError(
-                "pending OpenCode artifact lacks independent ownership evidence"
-            )
         receipt = replace(
             receipt,
             artifact_dev=pending.candidate_dev,
@@ -6316,40 +6615,21 @@ def _recover_pending_swap(
             artifact_anchor=pending.candidate_anchor,
             artifact_anchor_dev=pending.candidate_anchor_dev,
             artifact_anchor_ino=pending.candidate_anchor_ino,
-            pending_swap=replace(pending, phase="old-artifact-removed"),
         )
-        _write_receipt(receipt_path, receipt)
+        if pending.phase == "anchor-recorded":
+            pending = replace(pending, phase="published")
+            receipt = _receipt_with_pending(receipt, pending)
+        try:
+            _write_receipt(receipt_path, receipt)
+        except InstallError:
+            if not anchor_was_live:
+                try:
+                    _remove_artifact_anchor_exact(pending.artifact, *anchor)
+                except InstallError:
+                    pass
+            raise
         return receipt
-    elif artifact_is_live and not backup_exists:
-        if not artifact_live_proven:
-            raise InstallError(
-                "pending OpenCode live artifact lacks independent ownership evidence"
-            )
-        receipt = _receipt_with_pending(receipt, None)
-        _write_receipt(receipt_path, receipt)
-        return receipt
-    elif backup_exists and not artifact_is_candidate:
-        raise InstallError("OpenCode swap has an unproven live occupant; preserving state")
-    published = replace(pending, phase="published")
-    needs_commit = (
-        (receipt.artifact_dev, receipt.artifact_ino)
-        != (pending.candidate_dev, pending.candidate_ino)
-        or receipt.artifact_anchor != pending.candidate_anchor
-        or pending.phase != "published"
-    )
-    receipt = replace(
-        receipt,
-        artifact_dev=pending.candidate_dev,
-        artifact_ino=pending.candidate_ino,
-        artifact_digest=pending.candidate_digest,
-        artifact_anchor=pending.candidate_anchor,
-        artifact_anchor_dev=pending.candidate_anchor_dev,
-        artifact_anchor_ino=pending.candidate_anchor_ino,
-        pending_swap=published,
-    )
-    if needs_commit:
-        _write_receipt(receipt_path, receipt)
-    return receipt
+    raise InstallError("pending OpenCode upgrade lacks its workspace protocol")
 
 
 def _garbage_collect_opencode_backups(
@@ -6874,50 +7154,6 @@ def _migrate_artifact_identity(
     return _migrate_artifact_identity(repo_root, state_home, receipt_path, prepared)
 
 
-def _restore_opencode_artifact(
-    artifact: Path, backup: Path | None, pending: _PendingSwap | None = None
-) -> None:
-    if backup is None:
-        return
-    if pending is not None:
-        if not _pending_identity(backup, pending.backup_dev, pending.backup_ino):
-            raise InstallError(f"cannot restore unproven OpenCode backup: {backup}")
-        if _lexists(artifact):
-            if not _pending_identity(artifact, pending.candidate_dev, pending.candidate_ino):
-                raise InstallError(
-                    "cannot restore OpenCode artifact without proving live ownership"
-                )
-            candidate_anchor_owned = _artifact_anchor_matches(
-                artifact,
-                pending.candidate_anchor,
-                pending.candidate_anchor_dev,
-                pending.candidate_anchor_ino,
-            )
-            _remove_candidate_artifact_exact(
-                artifact,
-                pending.candidate_dev,
-                pending.candidate_ino,
-                pending.candidate_anchor,
-                pending.candidate_anchor_dev,
-                pending.candidate_anchor_ino,
-            )
-            if candidate_anchor_owned:
-                assert pending.candidate_anchor is not None
-                assert pending.candidate_anchor_dev is not None
-                assert pending.candidate_anchor_ino is not None
-                _unlink_artifact_anchor_identity(
-                    pending.candidate_anchor,
-                    pending.candidate_anchor_dev,
-                    pending.candidate_anchor_ino,
-                )
-    elif _lexists(artifact):
-        _remove_opencode_artifact(artifact)
-    try:
-        _rename_noreplace(backup, artifact)
-    except OSError as error:
-        raise InstallError(f"cannot restore opencode artifact: {artifact}: {error}") from error
-
-
 def _recover_pending_publish(
     repo_root: Path, state_home: Path, receipt: _Receipt | None
 ) -> tuple[_Receipt | None, bool]:
@@ -6929,131 +7165,118 @@ def _recover_pending_publish(
     receipt_path = _opencode_receipt_path(state_home)
     if pending.phase.startswith("rollback-"):
         return _rollback_pending_publish(receipt_path, receipt), False
-    candidate_exists = _pending_identity(
-        pending.candidate, pending.candidate_dev, pending.candidate_ino
-    )
-    artifact_exists = _lexists(pending.artifact)
-    artifact_is_candidate = _pending_identity(
-        pending.artifact, pending.candidate_dev, pending.candidate_ino
-    )
-    if (
-        candidate_exists
-        and pending.candidate_anchor is not None
-        and pending.candidate_anchor_dev is not None
-        and pending.candidate_anchor_ino is not None
-        and not _artifact_anchor_matches(
-            pending.candidate,
+    if pending.workspace is not None and pending.phase in {
+        "planned-unmaterialized",
+        "workspace-recorded",
+    }:
+        workspace_identity: tuple[int, int] | None
+        if pending.phase == "planned-unmaterialized":
+            workspace_identity = _workspace_identity(pending.workspace)
+            if workspace_identity is None:
+                _unlink_state_path(receipt_path)
+                return None, False
+            pending = replace(
+                pending,
+                phase="workspace-recorded",
+                workspace_dev=workspace_identity[0],
+                workspace_ino=workspace_identity[1],
+            )
+            receipt = _receipt_with_pending_publish(receipt, pending)
+            _write_receipt(receipt_path, receipt)
+        else:
+            if pending.workspace_dev is None or pending.workspace_ino is None:
+                raise InstallError("pending OpenCode workspace identity is incomplete")
+            workspace_identity = _workspace_identity(
+                pending.workspace,
+                (pending.workspace_dev, pending.workspace_ino),
+            )
+            if workspace_identity is None:
+                raise InstallError("pending OpenCode publication workspace disappeared")
+        assert pending.workspace_dev is not None and pending.workspace_ino is not None
+        _remove_publication_workspace(
+            pending.workspace, pending.workspace_dev, pending.workspace_ino
+        )
+        _unlink_state_path(receipt_path)
+        return None, False
+    if pending.workspace is not None:
+        if (
+            pending.workspace_dev is None
+            or pending.workspace_ino is None
+            or pending.candidate_dev is None
+            or pending.candidate_ino is None
+        ):
+            raise InstallError("pending OpenCode publication identity is incomplete")
+        workspace_expected = (pending.workspace_dev, pending.workspace_ino)
+        workspace_identity = _workspace_identity(
+            pending.workspace, workspace_expected
+        )
+        candidate_exists = workspace_identity is not None and _pending_identity(
+            pending.candidate, pending.candidate_dev, pending.candidate_ino
+        )
+        artifact_exists = _lexists(pending.artifact)
+        artifact_is_candidate = _pending_identity(
+            pending.artifact, pending.candidate_dev, pending.candidate_ino
+        )
+        if artifact_exists and not artifact_is_candidate:
+            raise InstallError(
+                "OpenCode initial publication has an unproven live occupant; preserving it"
+            )
+        if candidate_exists and artifact_exists:
+            raise InstallError("OpenCode initial publication state is inconsistent")
+        if candidate_exists:
+            if not _artifact_matches_evidence(
+                pending.candidate, pending.candidate_digest
+            ):
+                raise InstallError(
+                    "pending OpenCode publication failed exact evidence validation"
+                )
+            _publish_workspace_candidate(
+                pending.workspace,
+                workspace_expected,
+                pending.candidate,
+                (pending.candidate_dev, pending.candidate_ino),
+                pending.artifact,
+            )
+            pending = replace(pending, phase="published")
+            receipt = _receipt_with_pending_publish(receipt, pending)
+            _write_receipt(receipt_path, receipt)
+            artifact_is_candidate = True
+        if not artifact_is_candidate:
+            raise InstallError("OpenCode initial publication lost its exact candidate")
+        if not _artifact_matches_evidence(
+            pending.artifact, pending.candidate_digest
+        ):
+            raise InstallError(
+                "recovered OpenCode artifact failed exact evidence validation"
+            )
+        if workspace_identity is not None:
+            _remove_publication_workspace(
+                pending.workspace, pending.workspace_dev, pending.workspace_ino
+            )
+        anchor_was_live = _artifact_anchor_matches(
+            pending.artifact,
             pending.candidate_anchor,
             pending.candidate_anchor_dev,
             pending.candidate_anchor_ino,
         )
-    ):
-        adopted = _create_artifact_anchor(pending.candidate, pending.lineage)
-        if adopted != (
+        anchor = _create_artifact_anchor(pending.artifact, pending.lineage)
+        if anchor != (
             pending.candidate_anchor,
             pending.candidate_anchor_dev,
             pending.candidate_anchor_ino,
         ):
             raise InstallError("pending OpenCode publication anchor identity changed")
-    candidate_owned = candidate_exists and _artifact_anchor_matches(
-        pending.candidate,
-        pending.candidate_anchor,
-        pending.candidate_anchor_dev,
-        pending.candidate_anchor_ino,
-    )
-    artifact_anchor_owned = artifact_is_candidate and _artifact_anchor_matches(
-        pending.artifact,
-        pending.candidate_anchor,
-        pending.candidate_anchor_dev,
-        pending.candidate_anchor_ino,
-    )
-    artifact_links_owned = (
-        artifact_is_candidate
-        and pending.planned_links
-        and _receipt_has_complete_live_artifact_links(receipt, pending.artifact)
-    )
-    artifact_owned = artifact_anchor_owned or artifact_links_owned
-    candidate_proven = candidate_owned and (
-        _artifact_matches_evidence(pending.candidate, pending.candidate_digest)
-        if pending.candidate_digest is not None
-        else _artifact_matches_sources(repo_root, pending.candidate)
-    )
-    artifact_proven = artifact_owned and (
-        _artifact_matches_evidence(pending.artifact, pending.candidate_digest)
-        if pending.candidate_digest is not None
-        else _artifact_matches_sources(repo_root, pending.artifact)
-    )
-    if artifact_exists and not artifact_is_candidate:
-        raise InstallError(
-            "OpenCode initial publication has an unproven live occupant; preserving it"
-        )
-    if (
-        not candidate_exists
-        and not artifact_exists
-        and not receipt.links
-        and not pending.planned_links
-        and not _artifact_anchor_identity_is_live(
-            pending.candidate_anchor,
-            pending.candidate_anchor_dev,
-            pending.candidate_anchor_ino,
-        )
-    ):
-        # Rollback removed every receipt-owned publication object before a
-        # foreign deterministic quarantine collision blocked the final
-        # receipt rename.  Retry that same authenticated deletion boundary;
-        # no link inventory has been published or can be orphaned here.
-        _unlink_state_path(receipt_path)
-        return None, False
-    if candidate_exists and not artifact_exists and pending.phase in {
-        "prepared",
-        "anchor-recorded",
-    }:
-        if not candidate_proven:
-            raise InstallError(
-                "pending OpenCode publication lacks independent ownership evidence"
-            )
-        if pending.phase == "prepared":
-            pending = replace(pending, phase="anchor-recorded")
-            receipt = _receipt_with_pending_publish(receipt, pending)
-            _write_receipt(receipt_path, receipt)
-        _rename_noreplace(pending.candidate, pending.artifact)
-        if not _pending_identity(
-            pending.artifact, pending.candidate_dev, pending.candidate_ino
-        ):
-            raise InstallError("recovered OpenCode candidate identity changed")
-        pending = replace(pending, phase="published")
-        receipt = _receipt_with_pending_publish(receipt, pending)
-        _write_receipt(receipt_path, receipt)
-        return receipt, True
-    if candidate_exists or not artifact_is_candidate:
-        raise InstallError("OpenCode initial publication state is inconsistent")
-    if not artifact_proven:
-        raise InstallError("recovered OpenCode artifact failed exact evidence validation")
-    if not artifact_anchor_owned:
-        new_anchor = _create_artifact_anchor(pending.artifact, pending.lineage)
-        pending = _PendingPublish(
-            **{
-                **pending.__dict__,
-                "phase": "published",
-                "candidate_anchor": new_anchor[0],
-                "candidate_anchor_dev": new_anchor[1],
-                "candidate_anchor_ino": new_anchor[2],
-            }
-        )
-        receipt = _receipt_with_pending_publish(receipt, pending)
-        try:
-            _write_receipt(receipt_path, receipt)
-        except InstallError:
+        if not anchor_was_live:
             try:
-                _remove_artifact_anchor_exact(pending.artifact, *new_anchor)
+                _write_receipt(receipt_path, receipt)
             except InstallError:
-                pass
-            raise
-    elif pending.phase in {"prepared", "anchor-recorded"}:
-        pending = _PendingPublish(**{**pending.__dict__, "phase": "published"})
-        receipt = _receipt_with_pending_publish(receipt, pending)
-        _write_receipt(receipt_path, receipt)
-    return receipt, True
+                try:
+                    _remove_artifact_anchor_exact(pending.artifact, *anchor)
+                except InstallError:
+                    pass
+                raise
+        return receipt, True
+    raise InstallError("pending OpenCode publication lacks its workspace protocol")
 
 
 def _discard_prepublication_receipt(
@@ -7074,6 +7297,286 @@ def _remove_initial_publication_artifact(
     _rollback_pending_publish(receipt_path, receipt)
 
 
+def _with_workspace_publication(
+    receipt: _Receipt, pending: _PendingPublish | _PendingSwap
+) -> _Receipt:
+    if isinstance(pending, _PendingSwap):
+        return _receipt_with_pending(receipt, pending)
+    return _receipt_with_pending_publish(receipt, pending)
+
+
+def _prepare_opencode_workspace(
+    repo_root: Path,
+    receipt_path: Path,
+    receipt: _Receipt,
+    pending: _PendingPublish | _PendingSwap,
+    progress: list[_Receipt],
+) -> tuple[
+    _Receipt,
+    _PendingPublish | _PendingSwap,
+    tuple[int, int],
+    tuple[int, int],
+]:
+    """Create, bind, build, and freeze one already-journaled workspace."""
+
+    workspace = pending.workspace
+    if workspace is None or _workspace_identity(workspace) is not None:
+        raise InstallError("OpenCode publication workspace was occupied before creation")
+    workspace_identity = _create_publication_workspace(workspace)
+    pending = replace(
+        pending,
+        phase="workspace-recorded",
+        workspace_dev=workspace_identity[0],
+        workspace_ino=workspace_identity[1],
+    )
+    receipt = _with_workspace_publication(receipt, pending)
+    _write_receipt(receipt_path, receipt)
+    progress[0] = receipt
+    build_opencode_package(repo_root, pending.candidate)
+    if _workspace_identity(workspace, workspace_identity) is None:
+        raise InstallError("OpenCode publication workspace disappeared during build")
+    if not _artifact_matches_sources(repo_root, pending.candidate):
+        raise InstallError(
+            "fresh OpenCode artifact failed exact inventory or byte validation"
+        )
+    candidate_metadata = os.lstat(pending.candidate)
+    if not stat.S_ISDIR(candidate_metadata.st_mode) or stat.S_ISLNK(
+        candidate_metadata.st_mode
+    ):
+        raise InstallError("fresh OpenCode candidate is not a regular directory")
+    candidate_identity = (candidate_metadata.st_dev, candidate_metadata.st_ino)
+    candidate_digest = _artifact_evidence(pending.candidate)
+    if candidate_digest is None:
+        raise InstallError("fresh OpenCode artifact evidence could not be captured")
+    anchor_source = os.lstat(
+        pending.candidate / OPENCODE_ARTIFACT_ANCHOR_FILE
+    )
+    if not stat.S_ISREG(anchor_source.st_mode):
+        raise InstallError("fresh OpenCode candidate anchor is not a regular file")
+    token = workspace.name.removeprefix(
+        f".{OPENCODE_ARTIFACT_DIRECTORY}.txn-"
+    )
+    updates: dict[str, object] = {
+        "phase": "prepared",
+        "candidate_dev": candidate_identity[0],
+        "candidate_ino": candidate_identity[1],
+        "candidate_digest": candidate_digest,
+        "candidate_anchor": _artifact_anchor_path(workspace.parent, token),
+        "candidate_anchor_dev": anchor_source.st_dev,
+        "candidate_anchor_ino": anchor_source.st_ino,
+    }
+    if isinstance(pending, _PendingSwap):
+        updates["backup_digest"] = _artifact_evidence(pending.artifact)
+        if updates["backup_digest"] is None:
+            raise InstallError("live OpenCode artifact evidence could not be captured")
+    pending = replace(pending, **updates)
+    receipt = _with_workspace_publication(receipt, pending)
+    _write_receipt(receipt_path, receipt)
+    progress[0] = receipt
+    return receipt, pending, workspace_identity, candidate_identity
+
+
+def _publish_prepared_workspace(
+    receipt_path: Path,
+    receipt: _Receipt,
+    pending: _PendingPublish | _PendingSwap,
+    workspace_identity: tuple[int, int],
+    candidate_identity: tuple[int, int],
+    progress: list[_Receipt],
+) -> tuple[_Receipt, _PendingPublish | _PendingSwap]:
+    """Publish one frozen candidate and durably finish its workspace."""
+
+    if pending.workspace is None:
+        raise InstallError("prepared OpenCode publication lacks a workspace")
+    if isinstance(pending, _PendingSwap):
+        if not _pending_identity(
+            pending.artifact, pending.live_dev, pending.live_ino
+        ):
+            raise InstallError("live OpenCode artifact changed before swap")
+        _rename_noreplace(pending.artifact, pending.backup)
+        pending = replace(pending, phase="backup-created")
+        receipt = _with_workspace_publication(receipt, pending)
+        _write_receipt(receipt_path, receipt)
+        progress[0] = receipt
+    _publish_workspace_candidate(
+        pending.workspace,
+        workspace_identity,
+        pending.candidate,
+        candidate_identity,
+        pending.artifact,
+    )
+    token = pending.workspace.name.removeprefix(
+        f".{OPENCODE_ARTIFACT_DIRECTORY}.txn-"
+    )
+    anchor = _create_artifact_anchor(pending.artifact, token)
+    if anchor != (
+        pending.candidate_anchor,
+        pending.candidate_anchor_dev,
+        pending.candidate_anchor_ino,
+    ):
+        raise InstallError("candidate OpenCode anchor identity changed")
+    pending = replace(pending, phase="anchor-recorded")
+    receipt = _with_workspace_publication(receipt, pending)
+    _write_receipt(receipt_path, receipt)
+    progress[0] = receipt
+    pending = replace(pending, phase="published")
+    receipt = _with_workspace_publication(receipt, pending)
+    _write_receipt(receipt_path, receipt)
+    progress[0] = receipt
+    _remove_publication_workspace(pending.workspace, *workspace_identity)
+    return receipt, pending
+
+
+def _raise_workspace_publication_error(
+    receipt_path: Path, receipt: _Receipt, error: BaseException
+) -> None:
+    pending: _PendingPublish | _PendingSwap | None = (
+        receipt.pending_swap or receipt.pending_publish
+    )
+    if pending is not None and pending.phase != "planned-unmaterialized":
+        try:
+            pending = replace(pending, phase="rollback-prepared")
+            receipt = _with_workspace_publication(receipt, pending)
+            _write_receipt(receipt_path, receipt)
+            if isinstance(pending, _PendingSwap):
+                _rollback_pending_swap_candidate(receipt_path, receipt)
+            else:
+                _rollback_pending_publish(receipt_path, receipt)
+        except InstallError as cleanup_error:
+            raise InstallError(f"{error}; {cleanup_error}") from error
+    if isinstance(error, InstallError):
+        raise error
+    raise InstallError(f"cannot build OpenCode artifact: {error}") from error
+
+
+def _build_initial_opencode_workspace(
+    repo_root: Path,
+    artifact: Path,
+    receipt_path: Path,
+    receipt: _Receipt | None,
+) -> tuple[Path, bool, Path | None, _PendingSwap | None, _Receipt | None]:
+    """Journal a private workspace before any candidate directory can exist."""
+
+    token = uuid.uuid4().hex
+    workspace = _publication_workspace_path(artifact.parent, token)
+    candidate = _publication_candidate_path(workspace, token)
+    pending = _PendingPublish(
+        lineage=token,
+        artifact=artifact,
+        candidate=candidate,
+        candidate_dev=None,
+        candidate_ino=None,
+        phase="planned-unmaterialized",
+        workspace=workspace,
+    )
+    current = _Receipt(
+        repository_root=repo_root,
+        links=receipt.links if receipt is not None else (),
+        marketplace_added=False,
+        plugin_installed=True,
+        artifact_root=artifact,
+        lineage=token,
+        pending_publish=pending,
+    )
+    _write_receipt(receipt_path, current)
+    progress = [current]
+    try:
+        current, prepared, workspace_identity, candidate_identity = (
+            _prepare_opencode_workspace(
+                repo_root, receipt_path, current, pending, progress
+            )
+        )
+        current, published = _publish_prepared_workspace(
+            receipt_path,
+            current,
+            prepared,
+            workspace_identity,
+            candidate_identity,
+            progress,
+        )
+        if not isinstance(published, _PendingPublish):
+            raise InstallError(
+                "initial OpenCode publication changed transaction kind"
+            )
+        return artifact, True, None, None, current
+    except (OpencodeBuildError, OSError, InstallError) as error:
+        _raise_workspace_publication_error(receipt_path, progress[0], error)
+        raise AssertionError("unreachable")
+
+
+def _build_upgrade_opencode_workspace(
+    repo_root: Path,
+    artifact: Path,
+    receipt_path: Path,
+    receipt: _Receipt,
+) -> tuple[Path, bool, Path | None, _PendingSwap | None, _Receipt | None]:
+    """Build an upgrade only inside an identity-journaled private workspace."""
+
+    live_metadata = _state_lstat(artifact)
+    live_identity = (live_metadata.st_dev, live_metadata.st_ino)
+    live_digest = _artifact_evidence(artifact)
+    if live_digest is None:
+        raise InstallError("live OpenCode artifact evidence could not be captured")
+    if receipt.artifact_digest != live_digest:
+        receipt = _with_artifact_identity(receipt, live_identity, live_digest)
+        _write_receipt(receipt_path, receipt)
+    lineage = receipt.lineage or uuid.uuid4().hex
+    receipt_for_swap = replace(
+        receipt,
+        lineage=lineage,
+        teardown_phase="committed",
+        pending_swap=None,
+        pending_publish=None,
+        pending_retirement=None,
+    )
+    if receipt.lineage is None:
+        _write_receipt(receipt_path, receipt_for_swap)
+    token = uuid.uuid4().hex
+    workspace = _publication_workspace_path(artifact.parent, token)
+    candidate = _publication_candidate_path(workspace, token)
+    backup = artifact.parent / f".{artifact.name}.old-{token}"
+    pending = _PendingSwap(
+        lineage=lineage,
+        artifact=artifact,
+        candidate=candidate,
+        candidate_dev=None,
+        candidate_ino=None,
+        backup=backup,
+        backup_dev=live_identity[0],
+        backup_ino=live_identity[1],
+        live_dev=live_identity[0],
+        live_ino=live_identity[1],
+        phase="planned-unmaterialized",
+        workspace=workspace,
+        old_anchor=receipt.artifact_anchor,
+        old_anchor_dev=receipt.artifact_anchor_dev,
+        old_anchor_ino=receipt.artifact_anchor_ino,
+    )
+    current = _receipt_with_pending(receipt_for_swap, pending)
+    _write_receipt(receipt_path, current)
+    progress = [current]
+    try:
+        current, prepared, workspace_identity, candidate_identity = (
+            _prepare_opencode_workspace(
+                repo_root, receipt_path, current, pending, progress
+            )
+        )
+        current, published = _publish_prepared_workspace(
+            receipt_path,
+            current,
+            prepared,
+            workspace_identity,
+            candidate_identity,
+            progress,
+        )
+        if not isinstance(published, _PendingSwap):
+            raise InstallError("OpenCode upgrade changed transaction kind")
+        return artifact, False, backup, published, current
+    except (OpencodeBuildError, OSError, InstallError) as error:
+        _raise_workspace_publication_error(receipt_path, progress[0], error)
+        raise AssertionError("unreachable")
+
+
 def _ensure_opencode_artifact(
     repo_root: Path, state_home: Path, receipt: _Receipt | None = None
 ) -> tuple[Path, bool, Path | None, _PendingSwap | None, _Receipt | None]:
@@ -7081,7 +7584,6 @@ def _ensure_opencode_artifact(
 
     artifact = _fixed_opencode_artifact(state_home)
     receipt_path = _opencode_receipt_path(state_home)
-    had_receipt = receipt is not None
     receipt, recovered_initial = _recover_pending_publish(repo_root, state_home, receipt)
     if recovered_initial:
         return artifact, False, None, None, receipt
@@ -7121,262 +7623,15 @@ def _ensure_opencode_artifact(
         artifact.parent.mkdir(parents=True, exist_ok=True)
     else:
         _verify_state_binding(binding)
-    candidate = artifact.parent / f".{artifact.name}.next-{uuid.uuid4().hex}"
-    backup: Path | None = None
-    pending: _PendingSwap | None = None
-    candidate_identity: tuple[int, int] | None = None
-    candidate_digest: str | None = None
-    candidate_anchor: tuple[Path, int, int] | None = None
-    live_identity: tuple[int, int] | None = None
-    rollback_receipt: _Receipt | None = None
-    try:
-        build_opencode_package(repo_root, candidate)
-        if not _artifact_matches_sources(repo_root, candidate):
-            raise InstallError("fresh OpenCode artifact failed exact inventory or byte validation")
-        candidate_metadata = _state_lstat(candidate)
-        candidate_identity = (candidate_metadata.st_dev, candidate_metadata.st_ino)
-        candidate_digest = _artifact_evidence(candidate)
-        if candidate_digest is None:
-            raise InstallError("fresh OpenCode artifact evidence could not be captured")
-        if _lexists(artifact):
-            artifact_metadata = _state_lstat(artifact)
-            if stat.S_ISLNK(artifact_metadata.st_mode) or not stat.S_ISDIR(
-                artifact_metadata.st_mode
-            ):
-                raise InstallError(f"opencode artifact is not a regular directory: {artifact}")
-            if not _receipt_owns_artifact(receipt, artifact) or receipt is None:
-                raise InstallError(f"opencode artifact ownership changed: {artifact}")
-            live_metadata = artifact_metadata
-            live_identity = (live_metadata.st_dev, live_metadata.st_ino)
-            live_digest = _artifact_evidence(artifact)
-            if live_digest is None:
-                raise InstallError("live OpenCode artifact evidence could not be captured")
-            if receipt.artifact_digest != live_digest:
-                receipt = _with_artifact_identity(receipt, live_identity, live_digest)
-                _write_receipt(receipt_path, receipt)
-            lineage = receipt.lineage or uuid.uuid4().hex
-            receipt_for_swap = _Receipt(
-                repository_root=receipt.repository_root,
-                links=receipt.links,
-                marketplace_added=receipt.marketplace_added,
-                plugin_installed=receipt.plugin_installed,
-                artifact_root=artifact,
-                artifact_dev=receipt.artifact_dev,
-                artifact_ino=receipt.artifact_ino,
-                artifact_digest=receipt.artifact_digest,
-                lineage=lineage,
-                artifact_anchor=receipt.artifact_anchor,
-                artifact_anchor_dev=receipt.artifact_anchor_dev,
-                artifact_anchor_ino=receipt.artifact_anchor_ino,
-                teardown_phase="committed",
-                pending_swap=None,
-            )
-            if receipt.lineage is None:
-                _write_receipt(receipt_path, receipt_for_swap)
-            backup = artifact.parent / f".{artifact.name}.old-{uuid.uuid4().hex}"
-            anchor_token = candidate.name.removeprefix(f".{artifact.name}.next-")
-            anchor_source = os.lstat(candidate / OPENCODE_ARTIFACT_ANCHOR_FILE)
-            if not stat.S_ISREG(anchor_source.st_mode):
-                raise InstallError("fresh OpenCode candidate anchor is not a regular file")
-            deterministic_anchor = _artifact_anchor_path(candidate.parent, anchor_token)
-            pending = _PendingSwap(
-                lineage=lineage,
-                artifact=artifact,
-                candidate=candidate,
-                candidate_dev=candidate_identity[0],
-                candidate_ino=candidate_identity[1],
-                backup=backup,
-                backup_dev=live_identity[0],
-                backup_ino=live_identity[1],
-                live_dev=live_identity[0],
-                live_ino=live_identity[1],
-                phase="prepared",
-                candidate_digest=candidate_digest,
-                backup_digest=live_digest,
-                candidate_anchor=deterministic_anchor,
-                candidate_anchor_dev=anchor_source.st_dev,
-                candidate_anchor_ino=anchor_source.st_ino,
-                old_anchor=receipt.artifact_anchor,
-                old_anchor_dev=receipt.artifact_anchor_dev,
-                old_anchor_ino=receipt.artifact_anchor_ino,
-            )
-            # This write, including directory fsync, is mandatory before the
-            # anchor link and the first live->backup rename.
-            rollback_receipt = _receipt_with_pending(receipt_for_swap, pending)
-            _write_receipt(receipt_path, rollback_receipt)
-            candidate_anchor = _create_artifact_anchor(candidate, anchor_token)
-            if candidate_anchor != (
-                deterministic_anchor,
-                anchor_source.st_dev,
-                anchor_source.st_ino,
-            ):
-                raise InstallError("candidate OpenCode anchor identity changed")
-            pending = replace(pending, phase="anchor-recorded")
-            rollback_receipt = _receipt_with_pending(receipt_for_swap, pending)
-            _write_receipt(receipt_path, rollback_receipt)
-            if not _pending_identity(artifact, pending.live_dev, pending.live_ino):
-                raise InstallError("live OpenCode artifact changed before swap")
-            _rename_noreplace(artifact, backup)
-            pending = _PendingSwap(**{**pending.__dict__, "phase": "backup-created"})
-            rollback_receipt = _receipt_with_pending(receipt_for_swap, pending)
-            _write_receipt(receipt_path, rollback_receipt)
-            _rename_noreplace(candidate, artifact)
-            if not _pending_identity(artifact, pending.candidate_dev, pending.candidate_ino):
-                raise InstallError("published OpenCode candidate identity changed")
-            pending = _PendingSwap(**{**pending.__dict__, "phase": "published"})
-            rollback_receipt = _receipt_with_pending(receipt_for_swap, pending)
-            _write_receipt(receipt_path, rollback_receipt)
-            # Link staging/repair rewrites occur before the final merged
-            # receipt.  Keep the active swap journal attached to every such
-            # rewrite so a crash cannot expose the candidate while forgetting
-            # the backup and both anchor proofs.
-            return (
-                artifact,
-                False,
-                backup,
-                pending,
-                _receipt_with_pending(receipt_for_swap, pending),
-            )
-        lineage = uuid.uuid4().hex
-        anchor_source = os.lstat(candidate / OPENCODE_ARTIFACT_ANCHOR_FILE)
-        if not stat.S_ISREG(anchor_source.st_mode):
-            raise InstallError("fresh OpenCode anchor source is not a regular file")
-        deterministic_anchor = _artifact_anchor_path(candidate.parent, lineage)
-        pending_publish = _PendingPublish(
-            lineage=lineage,
-            artifact=artifact,
-            candidate=candidate,
-            candidate_dev=candidate_identity[0],
-            candidate_ino=candidate_identity[1],
-            phase="prepared",
-            candidate_digest=candidate_digest,
-            candidate_anchor=deterministic_anchor,
-            candidate_anchor_dev=anchor_source.st_dev,
-            candidate_anchor_ino=anchor_source.st_ino,
+    if not existing:
+        return _build_initial_opencode_workspace(
+            repo_root, artifact, receipt_path, receipt
         )
-        prepublication_receipt = _Receipt(
-            repository_root=repo_root,
-            links=receipt.links if receipt is not None else (),
-            marketplace_added=False,
-            plugin_installed=True,
-            artifact_root=artifact,
-            lineage=lineage,
-            pending_publish=pending_publish,
-        )
-        rollback_receipt = prepublication_receipt
-        _write_receipt(receipt_path, prepublication_receipt)
-        candidate_anchor = _create_artifact_anchor(candidate, lineage)
-        if candidate_anchor != (
-            deterministic_anchor,
-            anchor_source.st_dev,
-            anchor_source.st_ino,
-        ):
-            raise InstallError("fresh OpenCode anchor identity changed before publication")
-        pending_publish = replace(pending_publish, phase="anchor-recorded")
-        prepublication_receipt = _receipt_with_pending_publish(
-            prepublication_receipt, pending_publish
-        )
-        rollback_receipt = prepublication_receipt
-        _write_receipt(receipt_path, prepublication_receipt)
-        _rename_noreplace(candidate, artifact)
-        if not _pending_identity(artifact, candidate_identity[0], candidate_identity[1]):
-            raise InstallError("published OpenCode candidate identity changed")
-        pending_publish = _PendingPublish(
-            **{**pending_publish.__dict__, "phase": "published"}
-        )
-        prepublication_receipt = _receipt_with_pending_publish(
-            prepublication_receipt, pending_publish
-        )
-        rollback_receipt = prepublication_receipt
-        _write_receipt(receipt_path, prepublication_receipt)
-        return artifact, True, None, None, prepublication_receipt
-    except (OpencodeBuildError, OSError, InstallError) as error:
-        if rollback_receipt is not None and _lexists(receipt_path):
-            try:
-                if rollback_receipt.pending_publish is not None:
-                    _rollback_pending_publish(receipt_path, rollback_receipt)
-                    rollback_receipt = None
-                elif rollback_receipt.pending_swap is not None:
-                    rollback_receipt = _rollback_pending_swap_candidate(
-                        receipt_path, rollback_receipt
-                    )
-                else:
-                    raise InstallError("OpenCode rollback journal is incomplete")
-            except InstallError as cleanup_error:
-                raise InstallError(f"{error}; {cleanup_error}") from error
-            if isinstance(error, InstallError):
-                raise
-            raise InstallError(f"cannot build OpenCode artifact: {error}") from error
-        candidate_anchor_owned = (
-            candidate_anchor is not None
-            and _lexists(candidate)
-            and _artifact_anchor_matches(candidate, *candidate_anchor)
-        )
-        if _lexists(candidate) and candidate_identity is not None and _pending_identity(
-            candidate, candidate_identity[0], candidate_identity[1]
-        ):
-            try:
-                _remove_opencode_artifact_exact(
-                    candidate, candidate_identity[0], candidate_identity[1]
-                )
-            except InstallError:
-                pass
-        if candidate_anchor_owned and candidate_anchor is not None:
-            try:
-                _unlink_artifact_anchor_identity(
-                    candidate_anchor[0], candidate_anchor[1], candidate_anchor[2]
-                )
-            except InstallError:
-                pass
-        if (
-            not had_receipt
-            and not _lexists(artifact)
-            and _lexists(receipt_path)
-        ):
-            try:
-                _unlink_state_path(receipt_path)
-            except InstallError:
-                pass
-        if pending is not None and _lexists(pending.backup):
-            backup_owned = _pending_identity(
-                pending.backup, pending.backup_dev, pending.backup_ino
-            )
-            current_candidate = _pending_identity(
-                artifact, pending.candidate_dev, pending.candidate_ino
-            )
-            current_live = _pending_identity(artifact, pending.live_dev, pending.live_ino)
-            if backup_owned and not _lexists(artifact):
-                _rename_noreplace(pending.backup, artifact)
-                _rewrite_receipt_pending(receipt_path, None)
-            elif backup_owned and current_candidate:
-                # Remove the live directory only after proving it is exactly
-                # the published candidate.  A foreign replacement is left in
-                # place and the backup is never moved over it.
-                _remove_candidate_artifact_exact(
-                    artifact,
-                    pending.candidate_dev,
-                    pending.candidate_ino,
-                    pending.candidate_anchor,
-                    pending.candidate_anchor_dev,
-                    pending.candidate_anchor_ino,
-                )
-                assert pending.candidate_anchor is not None
-                assert pending.candidate_anchor_dev is not None
-                assert pending.candidate_anchor_ino is not None
-                _unlink_artifact_anchor_identity(
-                    pending.candidate_anchor,
-                    pending.candidate_anchor_dev,
-                    pending.candidate_anchor_ino,
-                )
-                _rename_noreplace(pending.backup, artifact)
-                _rewrite_receipt_pending(receipt_path, None)
-            elif backup_owned and not current_live:
-                raise InstallError(
-                    "cannot restore OpenCode artifact without proving live ownership"
-                ) from error
-        if isinstance(error, InstallError):
-            raise
-        raise InstallError(f"cannot build OpenCode artifact: {error}") from error
+    if receipt is None:
+        raise InstallError(f"opencode artifact ownership changed: {artifact}")
+    return _build_upgrade_opencode_workspace(
+        repo_root, artifact, receipt_path, receipt
+    )
 
 
 def _require_opencode_source(path: Path, label: str) -> Path:

@@ -173,26 +173,45 @@ class FoundationCorrectionTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     real_rename = install_module._rename_noreplace
+                    real_publish = install_module._publish_workspace_candidate
 
                     def crash_after_rename(source: Path, target: Path) -> None:
                         is_backup = (
                             source.name == "opencode-artifact"
                             and target.name.startswith(".opencode-artifact.old-")
                         )
-                        is_publish = (
-                            source.name.startswith(".opencode-artifact.next-")
-                            and target.name == "opencode-artifact"
-                        )
                         real_rename(source, target)
-                        if (crash_point == "backup" and is_backup) or (
-                            crash_point == "published" and is_publish
-                        ):
-                            raise SystemExit(f"injected {crash_point} crash")
+                        if crash_point == "backup" and is_backup:
+                            raise SystemExit("injected backup crash")
 
-                    with mock.patch.object(
-                        install_module,
-                        "_rename_noreplace",
-                        side_effect=crash_after_rename,
+                    def crash_after_publish(
+                        workspace: Path,
+                        workspace_identity: tuple[int, int],
+                        candidate: Path,
+                        candidate_identity: tuple[int, int],
+                        artifact: Path,
+                    ) -> None:
+                        real_publish(
+                            workspace,
+                            workspace_identity,
+                            candidate,
+                            candidate_identity,
+                            artifact,
+                        )
+                        if crash_point == "published":
+                            raise SystemExit("injected published crash")
+
+                    with (
+                        mock.patch.object(
+                            install_module,
+                            "_rename_noreplace",
+                            side_effect=crash_after_rename,
+                        ),
+                        mock.patch.object(
+                            install_module,
+                            "_publish_workspace_candidate",
+                            side_effect=crash_after_publish,
+                        ),
                     ):
                         with self.assertRaises(SystemExit):
                             install_opencode(repo, config, state)
@@ -247,7 +266,15 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertTrue(redirected.is_dir())
             self.assertEqual(list(redirected.iterdir()), [])
             self.assertTrue((moved / "expskill").is_dir())
-            self.assertEqual(list((moved / "expskill").iterdir()), [])
+            retained = tuple((moved / "expskill").iterdir())
+            self.assertEqual(
+                sum(path.name == "install-opencode.json" for path in retained),
+                1,
+            )
+            self.assertEqual(
+                sum(path.name.startswith(".opencode-artifact.txn-") for path in retained),
+                1,
+            )
 
     def test_uninstall_recovers_interrupted_initial_artifact_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -255,19 +282,27 @@ class FoundationCorrectionTests(unittest.TestCase):
             repo = seed_repository(root / "repo")
             config = root / "config"
             state = root / "state"
-            real_rename = install_module._rename_noreplace
+            real_publish = install_module._publish_workspace_candidate
 
-            def crash_after_initial_publish(source: Path, target: Path) -> None:
-                real_rename(source, target)
-                if (
-                    source.name.startswith(".opencode-artifact.next-")
-                    and target.name == "opencode-artifact"
-                ):
-                    raise SystemExit("injected initial publication crash")
+            def crash_after_initial_publish(
+                workspace: Path,
+                workspace_identity: tuple[int, int],
+                candidate: Path,
+                candidate_identity: tuple[int, int],
+                artifact: Path,
+            ) -> None:
+                real_publish(
+                    workspace,
+                    workspace_identity,
+                    candidate,
+                    candidate_identity,
+                    artifact,
+                )
+                raise SystemExit("injected initial publication crash")
 
             with mock.patch.object(
                 install_module,
-                "_rename_noreplace",
+                "_publish_workspace_candidate",
                 side_effect=crash_after_initial_publish,
             ):
                 with self.assertRaises(SystemExit):
@@ -280,22 +315,8 @@ class FoundationCorrectionTests(unittest.TestCase):
                 / f"{install_module.OPENCODE_ARTIFACT_ANCHOR_PREFIX}{payload['lineage']}"
             )
             self.assertEqual(payload["teardown_phase"], "committed")
-            self.assertTrue(anchor.is_file())
-            self.assertEqual(
-                (anchor.stat().st_dev, anchor.stat().st_ino),
-                (
-                    (
-                        state
-                        / "expskill/opencode-artifact"
-                        / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE
-                    ).stat().st_dev,
-                    (
-                        state
-                        / "expskill/opencode-artifact"
-                        / install_module.OPENCODE_ARTIFACT_ANCHOR_FILE
-                    ).stat().st_ino,
-                ),
-            )
+            self.assertEqual(payload["pending_publish"]["phase"], "prepared")
+            self.assertFalse(anchor.exists())
             uninstall_opencode(repo, config, state)
 
             self.assertFalse(receipt_path(state).exists())
@@ -313,19 +334,27 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             artifact = state / "expskill/opencode-artifact"
-            real_rename = install_module._rename_noreplace
+            real_publish = install_module._publish_workspace_candidate
 
-            def crash_after_initial_publish(source: Path, target: Path) -> None:
-                real_rename(source, target)
-                if (
-                    source.name.startswith(".opencode-artifact.next-")
-                    and target.name == "opencode-artifact"
-                ):
-                    raise SystemExit("injected initial publication crash")
+            def crash_after_initial_publish(
+                workspace: Path,
+                workspace_identity: tuple[int, int],
+                candidate: Path,
+                candidate_identity: tuple[int, int],
+                published_artifact: Path,
+            ) -> None:
+                real_publish(
+                    workspace,
+                    workspace_identity,
+                    candidate,
+                    candidate_identity,
+                    published_artifact,
+                )
+                raise SystemExit("injected initial publication crash")
 
             with mock.patch.object(
                 install_module,
-                "_rename_noreplace",
+                "_publish_workspace_candidate",
                 side_effect=crash_after_initial_publish,
             ):
                 with self.assertRaises(SystemExit):
@@ -370,15 +399,19 @@ class FoundationCorrectionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            original_rename = install_module._rename_noreplace
-
-            def crash_after_live_backup(source: Path, target: Path) -> None:
-                if source.name.startswith(".opencode-artifact.next-") and target.name == "opencode-artifact":
-                    raise SystemExit("simulated process crash")
-                original_rename(source, target)
+            def crash_after_live_backup(
+                workspace: Path,
+                workspace_identity: tuple[int, int],
+                candidate: Path,
+                candidate_identity: tuple[int, int],
+                published_artifact: Path,
+            ) -> None:
+                raise SystemExit("simulated process crash")
 
             with mock.patch.object(
-                install_module, "_rename_noreplace", side_effect=crash_after_live_backup
+                install_module,
+                "_publish_workspace_candidate",
+                side_effect=crash_after_live_backup,
             ):
                 with self.assertRaises(SystemExit):
                     install_opencode(repo, config, state)
@@ -1571,20 +1604,11 @@ class FoundationCorrectionTests(unittest.TestCase):
                 ):
                     install_opencode(repo, config, state)
 
-            self.assertTrue(receipt_path(state).is_file())
-            interrupted = json.loads(
-                receipt_path(state).read_text(encoding="utf-8")
-            )
-            self.assertEqual(
-                interrupted["pending_publish"]["phase"], "rollback-prepared"
-            )
-            self.assertTrue(
-                Path(interrupted["pending_publish"]["candidate"]).is_dir()
-            )
-            self.assertFalse(
-                Path(interrupted["pending_publish"]["candidate_anchor"]).exists()
-            )
+            self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertFalse(
+                any((state / "expskill").glob(".opencode-artifact.txn-*"))
+            )
             self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
 
     def test_crash_cleanup_preserves_retargeted_destination(self) -> None:
@@ -1808,15 +1832,19 @@ class FoundationCorrectionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            original_rename = install_module._rename_noreplace
-
-            def stop_after_live_backup(source: Path, target: Path) -> None:
-                if source.name.startswith(".opencode-artifact.next-"):
-                    raise SystemExit("simulated process stop")
-                original_rename(source, target)
+            def stop_after_live_backup(
+                workspace: Path,
+                workspace_identity: tuple[int, int],
+                candidate: Path,
+                candidate_identity: tuple[int, int],
+                artifact: Path,
+            ) -> None:
+                raise SystemExit("simulated process stop")
 
             with mock.patch.object(
-                install_module, "_rename_noreplace", side_effect=stop_after_live_backup
+                install_module,
+                "_publish_workspace_candidate",
+                side_effect=stop_after_live_backup,
             ):
                 with self.assertRaises(SystemExit):
                     install_opencode(repo, config, state)
