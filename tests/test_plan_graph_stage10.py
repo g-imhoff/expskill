@@ -377,6 +377,105 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertTrue(graph["proof"]["P1"]["fresh"] is False)
         self.assertTrue(graph["projections"]["U1"]["stale"] is True)
 
+    def test_preimplementation_proof_refresh_does_not_require_execution_evidence(self) -> None:
+        receipt = self._initialize()
+        stale = self.helper.apply_updates(
+            self.repo,
+            BRANCH,
+            receipt.workflow_id,
+            receipt.revision,
+            [
+                {
+                    "op": "set",
+                    "path": ["proof", "P1", "planned_method", "negative"],
+                    "value": "invalid or missing input is rejected",
+                }
+            ],
+            self.state_home,
+        )
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(stale.state, "stale")
+        self.assertFalse(graph["proof"]["P1"]["fresh"])
+        self.assertEqual(graph["proof"]["P1"]["evidence"], [])
+
+        proof = json.loads(json.dumps(graph["proof"]["P1"]))
+        proof["fresh"] = True
+        refreshed = self._typed_update(
+            receipt.workflow_id,
+            graph,
+            "refresh-proof",
+            ["proof", "P1"],
+            proof,
+        )
+        refreshed_graph = self.helper.load_workflow(
+            self.repo, BRANCH, self.state_home
+        )
+        self.assertTrue(refreshed_graph["proof"]["P1"]["fresh"])
+        self.assertEqual(refreshed_graph["proof"]["P1"]["evidence"], [])
+        self.assertEqual(refreshed.state, "stale")
+
+    def test_proof_refresh_rejects_execution_evidence_from_an_older_revision(self) -> None:
+        receipt = self._initialize()
+        stale = self.helper.apply_updates(
+            self.repo,
+            BRANCH,
+            receipt.workflow_id,
+            receipt.revision,
+            [
+                {
+                    "op": "set",
+                    "path": ["proof", "P1", "planned_method", "negative"],
+                    "value": "invalid or missing input is rejected",
+                }
+            ],
+            self.state_home,
+        )
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        proof = json.loads(json.dumps(graph["proof"]["P1"]))
+        proof.update(
+            fresh=True,
+            evidence=[
+                {
+                    "workflow_id": receipt.workflow_id,
+                    "graph_revision": receipt.revision,
+                    "node": "T1",
+                    "branch": BRANCH,
+                    "commit": self._git("rev-parse", "HEAD"),
+                    "check": "python3 -m unittest",
+                    "result": {"status": "pass", "exit_code": 0},
+                }
+            ],
+        )
+        operation_receipt = self.helper.issue_operation_receipt(
+            operation="refresh-proof",
+            workflow_id=receipt.workflow_id,
+            prior_graph_revision=stale.revision,
+            target=["proof", "P1"],
+            record_version=proof["record_version"],
+            value=proof,
+        )
+        with self.assertRaisesRegex(
+            self.helper.PlanGraphError,
+            "proof refresh requires current execution evidence",
+        ):
+            self.helper.apply_updates(
+                self.repo,
+                BRANCH,
+                receipt.workflow_id,
+                stale.revision,
+                [
+                    {
+                        "op": "refresh-proof",
+                        "path": ["proof", "P1"],
+                        "value": proof,
+                        "prior_graph_revision": stale.revision,
+                        "record_version": proof["record_version"],
+                        "receipt": operation_receipt,
+                    }
+                ],
+                self.state_home,
+            )
+
     def test_graph_requires_typed_conditional_audit_record(self) -> None:
         receipt = self._initialize()
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)

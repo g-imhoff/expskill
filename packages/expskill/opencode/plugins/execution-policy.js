@@ -364,3 +364,90 @@ export const ExecutionPolicyPlugin = async (_ctx) => {
     },
   };
 };
+
+function v2HookCall(event) {
+  const sessionID = event?.sessionID;
+  const id = event?.id;
+  if (typeof sessionID !== "string" || sessionID.length === 0) {
+    throw new Error("execution-policy requires tool hook sessionID");
+  }
+  if (typeof id !== "string" || id.length === 0) {
+    throw new Error("execution-policy requires tool hook id");
+  }
+  return { sessionID, callID: id, key: sessionID + "::" + id };
+}
+
+export default {
+  id: "expskill.execution-policy",
+  setup: async (ctx) => {
+    const policyPath = resolvePolicyPath(process.env, import.meta.url);
+    let policy = null;
+    let loadError = null;
+    try {
+      policy = loadPolicy(JSON.parse(await readFile(policyPath, "utf8")));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      loadError = new Error("execution-policy failed to load " + policyPath + ": " + detail);
+    }
+    if (loadError || !policy) {
+      const failure = loadError ?? new Error("execution-policy failed to load " + policyPath);
+      await ctx.tool.hook("execute.before", (event) => {
+        if (!TASK_TOOLS.has(event?.tool)) {
+          return;
+        }
+        const agent = requestedAgent(event?.input);
+        if (isExpSkillAgent(agent)) {
+          throw failure;
+        }
+      });
+      return;
+    }
+    const activePolicy = policy;
+    const trackers = new Map();
+    const activeCalls = new Map();
+    const trackerFor = (entry) => {
+      if (!trackers.has(entry.route)) {
+        trackers.set(entry.route, createBudgetTracker(entry.budget));
+      }
+      return trackers.get(entry.route);
+    };
+    await ctx.tool.hook("execute.before", (event) => {
+      if (!TASK_TOOLS.has(event?.tool)) {
+        return;
+      }
+      const agent = requestedAgent(event?.input);
+      if (!isExpSkillAgent(agent)) {
+        return;
+      }
+      if (!activePolicy.profiles.has(agent)) {
+        throw new Error("execution-policy denies undeclared agent: " + agent);
+      }
+      const entry = activePolicy.routeProfiles.get(agent);
+      if (!entry) {
+        return;
+      }
+      const call = v2HookCall(event);
+      if (activeCalls.has(call.key)) {
+        throw new Error("execution-policy received duplicate active callID: " + call.callID);
+      }
+      const tracker = trackerFor(entry);
+      tracker.beforeCall(call.sessionID, agent);
+      activeCalls.set(call.key, { sessionID: call.sessionID, tracker });
+    });
+    await ctx.tool.hook("execute.after", (event) => {
+      if (!TASK_TOOLS.has(event?.tool)) {
+        return;
+      }
+      if (typeof event?.sessionID !== "string" || typeof event?.id !== "string") {
+        return;
+      }
+      const key = event.sessionID + "::" + event.id;
+      const active = activeCalls.get(key);
+      if (!active) {
+        return;
+      }
+      activeCalls.delete(key);
+      active.tracker.afterCall(active.sessionID);
+    });
+  },
+};

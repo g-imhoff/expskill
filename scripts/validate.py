@@ -129,6 +129,8 @@ PUBLIC_SKILL_TOKENS = {
     "$brainstorm",
     "$plan",
     "$implement",
+    "$correct",
+    "$review",
     "$test",
     "$use-expskill",
     "$design",
@@ -137,7 +139,7 @@ PUBLIC_SKILL_TOKENS = {
     "$skill-builder",
     "$unslop",
 }
-PUBLIC_SKILL_COUNT_TEXT = "nine independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "eleven independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
@@ -184,6 +186,8 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "plan",
     "implement",
+    "correct",
+    "review",
     "test",
     "grill-me",
     "setup-ui-testing",
@@ -1286,7 +1290,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise nine independent skills and one optional "
+                "plugin description must advertise eleven independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
@@ -2156,9 +2160,9 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
     normalized = " ".join(readme.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "README must describe nine independent skills and one optional lifecycle router"
+            "README must describe eleven independent skills and one optional lifecycle router"
         )
-    if re.search(r"\b(?:seven|eight) independent skills\b", normalized):
+    if re.search(r"\b(?:seven|eight|nine|ten) independent skills\b", normalized):
         errors.append("README contains stale public-skill count wording")
     if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
         errors.append("README must advertise $skill-builder")
