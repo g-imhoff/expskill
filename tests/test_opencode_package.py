@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import scripts.build_opencode_package as build_module
-from scripts.build_opencode_package import build_opencode_package
+from scripts.build_opencode_package import BuildError, build_opencode_package
 
 ROOT = Path(__file__).resolve().parents[1]
 CODEX_ROOT = ROOT / "packages" / "expskill"
@@ -46,6 +46,97 @@ def run(
 
 
 class OpencodePackageTests(unittest.TestCase):
+    def _assert_descriptor_bound_source_parent_rejected(
+        self,
+        actual_parent: Path,
+        lexical_output: Path,
+        *,
+        watched_source_dirs: tuple[Path, ...],
+    ) -> None:
+        lexical_output.parent.mkdir(parents=True)
+        watched_before = {
+            directory: {entry.name for entry in directory.iterdir()}
+            for directory in (*watched_source_dirs, lexical_output.parent)
+        }
+        descriptor = os.open(actual_parent, build_module._directory_open_flags())
+        try:
+            try:
+                build_opencode_package(
+                    ROOT,
+                    lexical_output,
+                    output_parent_fd=descriptor,
+                )
+            except BuildError:
+                pass
+            else:
+                self.fail("descriptor-bound source parent was not rejected")
+            for directory, entries in watched_before.items():
+                self.assertEqual(
+                    {entry.name for entry in directory.iterdir()},
+                    entries,
+                    f"build created an entry in {directory}",
+                )
+            self.assertFalse(lexical_output.exists())
+            self.assertFalse(lexical_output.is_symlink())
+        finally:
+            os.close(descriptor)
+            # The RED assertion above intentionally leaves a successful build's
+            # source-side output behind; remove only this test's unique names so
+            # the next test starts from the original checkout.
+            output_name = lexical_output.name
+            for entry in actual_parent.iterdir():
+                if entry.name == output_name or entry.name.startswith(f".{output_name}."):
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+            if lexical_output.is_dir() and not lexical_output.is_symlink():
+                shutil.rmtree(lexical_output)
+            elif lexical_output.exists() or lexical_output.is_symlink():
+                lexical_output.unlink()
+
+    def test_descriptor_bound_output_rejects_canonical_package_parent_fd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            lexical_output = temporary_root / "canonical-decoy" / "artifact"
+            self._assert_descriptor_bound_source_parent_rejected(
+                CODEX_ROOT,
+                lexical_output,
+                watched_source_dirs=(ROOT, CODEX_ROOT),
+            )
+
+    def test_descriptor_bound_output_rejects_descendant_source_parent_fd(self) -> None:
+        source_descendant = CODEX_ROOT / ".descriptor-bound-source-parent"
+        source_descendant.mkdir()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                lexical_output = Path(temporary) / "descendant-decoy" / "artifact"
+                self._assert_descriptor_bound_source_parent_rejected(
+                    source_descendant,
+                    lexical_output,
+                    watched_source_dirs=(ROOT, CODEX_ROOT, source_descendant),
+                )
+        finally:
+            source_descendant.rmdir()
+
+    def test_descriptor_bound_output_rejects_repository_root_or_ancestor_parent_fd(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            lexical_output = temporary_root / "repository-decoy" / "artifact"
+            self._assert_descriptor_bound_source_parent_rejected(
+                ROOT,
+                lexical_output,
+                watched_source_dirs=(ROOT, CODEX_ROOT),
+            )
+            ancestor_output = temporary_root / "ancestor-decoy" / "artifact"
+            self._assert_descriptor_bound_source_parent_rejected(
+                ROOT.parent,
+                ancestor_output,
+                watched_source_dirs=(ROOT, CODEX_ROOT),
+            )
+
     def test_descriptor_bound_output_parent_ignores_replacement_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

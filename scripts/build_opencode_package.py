@@ -694,6 +694,74 @@ def _retain_output_parent(descriptor: int) -> tuple[int, tuple[int, int]]:
         raise
 
 
+def _directory_ancestry(descriptor: int) -> set[tuple[int, int]]:
+    """Return directory identities from ``descriptor`` through filesystem root."""
+
+    current: int | None = None
+    identities: set[tuple[int, int]] = set()
+    try:
+        current = os.dup(descriptor)
+        while True:
+            metadata = os.fstat(current)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise BuildError("directory ancestry descriptor is not a directory")
+            identities.add((metadata.st_dev, metadata.st_ino))
+            parent = os.open("..", _directory_open_flags(), dir_fd=current)
+            reached_root = False
+            try:
+                parent_metadata = os.fstat(parent)
+                if not stat.S_ISDIR(parent_metadata.st_mode):
+                    raise BuildError("directory ancestry parent is not a directory")
+                reached_root = _same_directory_identity(metadata, parent_metadata)
+                if not reached_root:
+                    os.close(current)
+                    current, parent = parent, None
+            finally:
+                if parent is not None:
+                    os.close(parent)
+            if reached_root:
+                break
+        return identities
+    except OSError as error:
+        raise BuildError(f"directory ancestry cannot be inspected: {error}") from error
+    finally:
+        if current is not None:
+            os.close(current)
+
+
+def _validate_descriptor_bound_parent(
+    root: Path,
+    canonical_root: Path,
+    parent_fd: int,
+) -> None:
+    """Reject a retained output parent related to either source root."""
+
+    source_descriptors: list[int] = []
+    try:
+        parent_metadata = os.fstat(parent_fd)
+        if not stat.S_ISDIR(parent_metadata.st_mode):
+            raise BuildError("bound output parent descriptor is not a directory")
+        parent_identity = (parent_metadata.st_dev, parent_metadata.st_ino)
+        parent_ancestry = _directory_ancestry(parent_fd)
+        for source_root in (root, canonical_root):
+            source_fd = _open_directory_chain(source_root, create=False)
+            source_descriptors.append(source_fd)
+            source_metadata = os.fstat(source_fd)
+            if not stat.S_ISDIR(source_metadata.st_mode):
+                raise BuildError(f"source root is not a directory: {source_root}")
+            source_identity = (source_metadata.st_dev, source_metadata.st_ino)
+            source_ancestry = _directory_ancestry(source_fd)
+            if source_identity in parent_ancestry or parent_identity in source_ancestry:
+                raise BuildError(
+                    "descriptor-bound output parent must be outside the repository source tree"
+                )
+    except OSError as error:
+        raise BuildError(f"descriptor-bound source roots cannot be inspected: {error}") from error
+    finally:
+        for source_fd in source_descriptors:
+            os.close(source_fd)
+
+
 def _binding_is_current(binding: _OutputBinding) -> bool:
     try:
         bound = os.fstat(binding.parent_fd)
@@ -1011,6 +1079,7 @@ def build_opencode_package(
         parent_fd, parent_identity = _retain_output_parent(output_parent_fd)
         require_lexical_parent = False
         try:
+            _validate_descriptor_bound_parent(root, canonical_root_resolved, parent_fd)
             _validate_output_target(
                 root,
                 canonical_root_resolved,
