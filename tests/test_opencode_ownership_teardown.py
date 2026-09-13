@@ -5662,6 +5662,265 @@ install_module._write_receipt_retirement_sidecar(sidecar, payload)
                     self.assertFalse(journals)
                     self.assertFalse(stages)
 
+    def test_reappeared_public_receipt_blocks_terminal_retirement_recovery(self) -> None:
+        for phase in ("reclaimed", "done"):
+            for retry_entrypoint in ("install", "uninstall"):
+                with (
+                    self.subTest(phase=phase, retry_entrypoint=retry_entrypoint),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    install_opencode(repo, config, state)
+                    canonical = receipt_path(state)
+                    original_bytes = canonical.read_bytes()
+                    original_identity = (
+                        canonical.stat().st_dev,
+                        canonical.stat().st_ino,
+                    )
+                    # Keep the retired inode allocated so the recreated public
+                    # receipt is guaranteed to have a distinct identity.
+                    original_pin = canonical.with_name("retired-receipt-pin")
+                    os.link(canonical, original_pin)
+                    real_write = install_module._write_receipt_retirement_sidecar
+                    interrupted = False
+
+                    def exit_after_phase(sidecar: Path, payload: object) -> None:
+                        nonlocal interrupted
+                        real_write(sidecar, payload)
+                        if (
+                            isinstance(payload, dict)
+                            and payload.get("phase") == phase
+                            and not interrupted
+                        ):
+                            interrupted = True
+                            raise SystemExit(f"after durable {phase} phase")
+
+                    with mock.patch.object(
+                        install_module,
+                        "_write_receipt_retirement_sidecar",
+                        side_effect=exit_after_phase,
+                    ):
+                        with self.assertRaises(SystemExit):
+                            uninstall_opencode(repo, config, state)
+                    self.assertTrue(interrupted)
+                    self.assertFalse(canonical.exists())
+                    journals = tuple(canonical.parent.glob("*.journal"))
+                    self.assertEqual(len(journals), 1)
+                    self.assertEqual(
+                        json.loads(journals[0].read_text(encoding="utf-8"))["phase"],
+                        phase,
+                    )
+
+                    canonical.write_bytes(original_bytes)
+                    foreign_identity = (
+                        canonical.stat().st_dev,
+                        canonical.stat().st_ino,
+                    )
+                    self.assertNotEqual(foreign_identity, original_identity)
+                    journal_identity = (
+                        journals[0].stat().st_dev,
+                        journals[0].stat().st_ino,
+                    )
+                    entrypoint = (
+                        install_opencode
+                        if retry_entrypoint == "install"
+                        else uninstall_opencode
+                    )
+                    for attempt in range(2):
+                        with self.subTest(attempt=attempt):
+                            with self.assertRaises(install_module.InstallError):
+                                entrypoint(repo, config, state)
+                            self.assertEqual(canonical.read_bytes(), original_bytes)
+                            self.assertEqual(
+                                (
+                                    canonical.stat().st_dev,
+                                    canonical.stat().st_ino,
+                                ),
+                                foreign_identity,
+                            )
+                            self.assertTrue(journals[0].is_file())
+                            self.assertEqual(
+                                (
+                                    journals[0].stat().st_dev,
+                                    journals[0].stat().st_ino,
+                                ),
+                                journal_identity,
+                            )
+                            self.assertEqual(
+                                json.loads(
+                                    journals[0].read_text(encoding="utf-8")
+                                )["phase"],
+                                phase,
+                            )
+                            self.assertFalse(
+                                tuple(canonical.parent.glob("*.retire"))
+                            )
+
+    def test_first_receipt_descriptor_publication_crashes_recover_by_entrypoint(
+        self,
+    ) -> None:
+        for boundary in ("descriptor-link", "parent-fsync"):
+            for retry_entrypoint in ("install", "uninstall"):
+                with (
+                    self.subTest(
+                        boundary=boundary, retry_entrypoint=retry_entrypoint
+                    ),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    script = r'''
+import os
+import sys
+from pathlib import Path
+import scripts.install as install_module
+
+repo, config, state = map(Path, sys.argv[1:4])
+boundary = sys.argv[4]
+state_directory = state / "expskill"
+canonical = state_directory / install_module.OPENCODE_RECEIPT_FILENAME
+real_link = install_module._link_open_descriptor
+real_fsync = os.fsync
+
+if boundary == "descriptor-link":
+    def exit_after_receipt_link(source_fd, target_fd, target_name):
+        real_link(source_fd, target_fd, target_name)
+        if (
+            target_name == canonical.name
+            or ".receipt-initial-" in target_name
+        ):
+            os._exit(79)
+    install_module._link_open_descriptor = exit_after_receipt_link
+else:
+    def exit_after_receipt_parent_fsync(descriptor):
+        real_fsync(descriptor)
+        initial_stages = tuple(
+            state_directory.glob(".install-opencode.json.receipt-initial-*.stage")
+        ) if state_directory.exists() else ()
+        candidates = tuple(
+            state_directory.glob(".opencode-artifact.next-*")
+        ) if state_directory.exists() else ()
+        if candidates and (canonical.exists() or initial_stages):
+            os._exit(79)
+    install_module.os.fsync = exit_after_receipt_parent_fsync
+
+install_module.install_opencode(repo, config, state)
+'''
+                    stopped = subprocess.run(
+                        [
+                            sys.executable,
+                            "-c",
+                            script,
+                            str(repo),
+                            str(config),
+                            str(state),
+                            boundary,
+                        ],
+                        cwd=ROOT,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(stopped.returncode, 79, stopped.stderr)
+                    canonical = receipt_path(state)
+                    self.assertTrue(canonical.is_file())
+                    interrupted = json.loads(canonical.read_text(encoding="utf-8"))
+                    self.assertEqual(interrupted["pending_publish"]["phase"], "prepared")
+                    self.assertFalse(
+                        tuple(
+                            canonical.parent.glob(
+                                ".install-opencode.json.receipt-initial-*"
+                            )
+                        )
+                    )
+                    self.assertEqual(
+                        len(tuple(canonical.parent.glob(".opencode-artifact.next-*"))),
+                        1,
+                    )
+
+                    entrypoint = (
+                        install_opencode
+                        if retry_entrypoint == "install"
+                        else uninstall_opencode
+                    )
+                    entrypoint(repo, config, state)
+                    self.assertFalse(
+                        tuple(
+                            canonical.parent.glob(
+                                ".install-opencode.json.receipt-initial-*"
+                            )
+                        )
+                    )
+                    self.assertFalse(
+                        tuple(canonical.parent.glob(".opencode-artifact.next-*"))
+                    )
+                    if retry_entrypoint == "install":
+                        self.assertTrue(canonical.is_file())
+                        self.assertTrue(
+                            (canonical.parent / "opencode-artifact").is_dir()
+                        )
+                    else:
+                        self.assertFalse(canonical.exists())
+                        self.assertFalse(
+                            (canonical.parent / "opencode-artifact").exists()
+                        )
+
+    def test_first_receipt_link_preserves_foreign_canonical_occupant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            canonical = receipt_path(state)
+            real_link = install_module._link_open_descriptor
+            occupied = False
+            foreign_identity: tuple[int, int] | None = None
+
+            def occupy_before_receipt_link(
+                source_fd: int, target_fd: int, target_name: str
+            ) -> None:
+                nonlocal occupied, foreign_identity
+                if (
+                    not occupied
+                    and (
+                        target_name == canonical.name
+                        or ".receipt-initial-" in target_name
+                    )
+                ):
+                    canonical.write_bytes(b"foreign canonical receipt\n")
+                    foreign_identity = (
+                        canonical.stat().st_dev,
+                        canonical.stat().st_ino,
+                    )
+                    occupied = True
+                real_link(source_fd, target_fd, target_name)
+
+            with mock.patch.object(
+                install_module,
+                "_link_open_descriptor",
+                side_effect=occupy_before_receipt_link,
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    install_opencode(repo, config, state)
+            self.assertTrue(occupied)
+            self.assertEqual(canonical.read_bytes(), b"foreign canonical receipt\n")
+            self.assertEqual(
+                (canonical.stat().st_dev, canonical.stat().st_ino),
+                foreign_identity,
+            )
+            self.assertFalse(
+                tuple(
+                    canonical.parent.glob(
+                        ".install-opencode.json.receipt-initial-*"
+                    )
+                )
+            )
+
     def test_receipt_deletion_requires_bound_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             receipt = Path(temporary) / "install-opencode.json"

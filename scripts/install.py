@@ -1649,6 +1649,8 @@ def _resume_receipt_retirement(
         _write_receipt_retirement_sidecar(sidecar_path, current)
         phase = "reclaimed"
     if phase == "reclaimed":
+        if metadata(source) is not None:
+            raise InstallError("receipt retirement public pathname reappeared")
         if metadata(private) is not None:
             raise InstallError("receipt retirement private path reappeared")
         current = dict(current)
@@ -1658,6 +1660,8 @@ def _resume_receipt_retirement(
         phase = "done"
     if phase != "done":
         raise InstallError("receipt retirement phase is not recoverable")
+    if metadata(source) is not None:
+        raise InstallError("receipt retirement public pathname reappeared")
     sidecar_metadata = _state_metadata(binding, sidecar_path.name)
     if sidecar_metadata is None or not stat.S_ISREG(sidecar_metadata.st_mode):
         raise InstallError("receipt retirement sidecar disappeared")
@@ -2804,22 +2808,30 @@ def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
     published = False
     try:
         if current_identity is None:
-            # There is no displaced generation on first publication.  Keep
-            # the candidate deterministic and private until the no-replace
-            # publication boundary.
-            digest = hashlib.sha256(encoded).hexdigest()
-            generation_name = f".{path.name}.receipt-initial-{digest}.stage"
-            generation_identity = _write_state_generation(
-                binding, generation_name, encoded
+            # There is no displaced generation on first publication.  Link
+            # the fully written and fsynced anonymous inode directly to the
+            # absent canonical name.  A process death can therefore expose
+            # only an ordinary recoverable receipt, never an unauthoritative
+            # intermediate pathname.
+            descriptor, generation_identity = _prepare_state_generation(
+                binding, encoded
             )
-            _renameat_noreplace(
-                binding.directory_fd,
-                generation_name,
-                binding.directory_fd,
-                path.name,
-            )
-            exchanged = True
+            try:
+                _link_open_descriptor(
+                    descriptor, binding.directory_fd, path.name
+                )
+            finally:
+                os.close(descriptor)
             published = True
+            os.fsync(binding.directory_fd)
+            live = _state_metadata(binding, path.name)
+            if live is None or (
+                live.st_dev,
+                live.st_ino,
+            ) != generation_identity:
+                raise InstallError(
+                    f"receipt path identity changed during first publication: {path}"
+                )
         else:
             generation_name, generation_identity = _write_named_state_generation(
                 binding,
