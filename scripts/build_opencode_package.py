@@ -79,12 +79,13 @@ class _OutputBinding:
     staging_identity: tuple[int, int]
     staging_fd: int
     require_lexical_parent: bool
+    source_root_fds: tuple[int, ...] = ()
 
 
 # ``_replace_output`` deliberately keeps a two-argument public seam for callers
 # and tests.  The builder registers the descriptor-bound context immediately
 # before calling it, so a caller cannot swap the lexical parent between staging
-# and publication and redirect the commit through a symlink.
+# and publication and redirect the commit through a symlink or a source tree.
 _OUTPUT_BINDINGS: dict[str, _OutputBinding] = {}
 
 
@@ -729,26 +730,22 @@ def _directory_ancestry(descriptor: int) -> set[tuple[int, int]]:
             os.close(current)
 
 
-def _validate_descriptor_bound_parent(
-    root: Path,
-    canonical_root: Path,
+def _validate_parent_against_source_descriptors(
     parent_fd: int,
+    source_descriptors: tuple[int, ...],
 ) -> None:
-    """Reject a retained output parent related to either source root."""
+    """Reject a retained output parent related to exact source descriptors."""
 
-    source_descriptors: list[int] = []
     try:
         parent_metadata = os.fstat(parent_fd)
         if not stat.S_ISDIR(parent_metadata.st_mode):
             raise BuildError("bound output parent descriptor is not a directory")
         parent_identity = (parent_metadata.st_dev, parent_metadata.st_ino)
         parent_ancestry = _directory_ancestry(parent_fd)
-        for source_root in (root, canonical_root):
-            source_fd = _open_directory_chain(source_root, create=False)
-            source_descriptors.append(source_fd)
+        for source_fd in source_descriptors:
             source_metadata = os.fstat(source_fd)
             if not stat.S_ISDIR(source_metadata.st_mode):
-                raise BuildError(f"source root is not a directory: {source_root}")
+                raise BuildError("retained source root descriptor is not a directory")
             source_identity = (source_metadata.st_dev, source_metadata.st_ino)
             source_ancestry = _directory_ancestry(source_fd)
             if source_identity in parent_ancestry or parent_identity in source_ancestry:
@@ -757,9 +754,34 @@ def _validate_descriptor_bound_parent(
                 )
     except OSError as error:
         raise BuildError(f"descriptor-bound source roots cannot be inspected: {error}") from error
+
+
+def _validate_descriptor_bound_parent(
+    root: Path,
+    canonical_root: Path,
+    parent_fd: int,
+) -> tuple[int, ...]:
+    """Retain exact source roots and reject a related output parent."""
+
+    source_descriptors: list[int] = []
+    valid = False
+    try:
+        for source_root in (root, canonical_root):
+            source_fd = _open_directory_chain(source_root, create=False)
+            source_descriptors.append(source_fd)
+            source_metadata = os.fstat(source_fd)
+            if not stat.S_ISDIR(source_metadata.st_mode):
+                raise BuildError(f"source root is not a directory: {source_root}")
+        retained = tuple(source_descriptors)
+        _validate_parent_against_source_descriptors(parent_fd, retained)
+        valid = True
+        return retained
+    except OSError as error:
+        raise BuildError(f"descriptor-bound source roots cannot be inspected: {error}") from error
     finally:
-        for source_fd in source_descriptors:
-            os.close(source_fd)
+        if not valid:
+            for source_fd in source_descriptors:
+                os.close(source_fd)
 
 
 def _binding_is_current(binding: _OutputBinding) -> bool:
@@ -772,6 +794,14 @@ def _binding_is_current(binding: _OutputBinding) -> bool:
         and (bound.st_dev, bound.st_ino) == binding.parent_identity
     ):
         return False
+    if binding.source_root_fds:
+        try:
+            _validate_parent_against_source_descriptors(
+                binding.parent_fd,
+                binding.source_root_fds,
+            )
+        except (OSError, BuildError):
+            return False
     if not binding.require_lexical_parent:
         return True
     observed_fd: int | None = None
@@ -902,6 +932,56 @@ def _fsync_tree_at(directory_fd: int) -> None:
     os.fsync(directory_fd)
 
 
+def _rollback_published_output(binding: _OutputBinding, output_name: str) -> None:
+    """Move the exact published artifact back or remove only that identity."""
+
+    try:
+        published = os.stat(
+            output_name,
+            dir_fd=binding.parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    if (
+        stat.S_ISLNK(published.st_mode)
+        or not stat.S_ISDIR(published.st_mode)
+        or (published.st_dev, published.st_ino) != binding.staging_identity
+    ):
+        return
+    try:
+        rolled_back = _renameat2_noreplace(
+            binding.parent_fd,
+            output_name,
+            binding.staging_name,
+        )
+    except (OSError, BuildError):
+        rolled_back = False
+    if rolled_back:
+        return
+
+    # A failed rollback must not recursively reopen either lexical name.  Recheck
+    # the published leaf and remove it only while its exact identity is intact.
+    try:
+        current = os.stat(
+            output_name,
+            dir_fd=binding.parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    if (
+        stat.S_ISLNK(current.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or (current.st_dev, current.st_ino) != binding.staging_identity
+    ):
+        return
+    try:
+        _remove_tree_at(binding.parent_fd, output_name, current)
+    except OSError:
+        pass
+
+
 def _replace_output(staging: Path, output: Path) -> None:
     """Publish one complete artifact with no target replacement."""
 
@@ -915,6 +995,7 @@ def _replace_output(staging: Path, output: Path) -> None:
                 staging.name, dir_fd=parent_fd, follow_symlinks=False
             )
         except OSError as error:
+            os.close(parent_fd)
             raise BuildError(f"staging directory cannot be inspected: {error}") from error
         try:
             staging_fd = os.open(
@@ -923,6 +1004,7 @@ def _replace_output(staging: Path, output: Path) -> None:
                 dir_fd=parent_fd,
             )
         except OSError as error:
+            os.close(parent_fd)
             raise BuildError(f"staging directory cannot be opened: {error}") from error
         binding = _OutputBinding(
             output.parent,
@@ -952,6 +1034,8 @@ def _replace_output(staging: Path, output: Path) -> None:
         ):
             raise BuildError(f"staging directory changed during publication: {staging}")
         output_name = output.name
+        if not _binding_is_current(binding):
+            raise BuildError(f"output parent changed during publication: {output.parent}")
         # Complete publication requires a platform-supported exclusive
         # directory rename.  A child-by-child publication cannot provide the same
         # complete-or-absent guarantee and is intentionally forbidden.
@@ -963,12 +1047,7 @@ def _replace_output(staging: Path, output: Path) -> None:
             raise BuildError("exclusive atomic directory publication is unavailable")
         os.fsync(binding.parent_fd)
         if not _binding_is_current(binding):
-            # The path moved after the commit.  Undo through the still-open
-            # descriptor, never through the potentially replaced lexical path.
-            try:
-                os.rename(output_name, binding.staging_name, src_dir_fd=binding.parent_fd, dst_dir_fd=binding.parent_fd)
-            except OSError:
-                pass
+            _rollback_published_output(binding, output_name)
             raise BuildError(f"output parent changed during publication: {output.parent}")
     finally:
         if temporary_binding:
@@ -1071,6 +1150,7 @@ def build_opencode_package(
     except (OSError, RuntimeError) as error:
         raise BuildError(f"canonical package cannot be resolved: {canonical_root}: {error}") from error
     staging_parent = output.parent
+    source_root_fds: tuple[int, ...] = ()
     if output_parent_fd is None:
         _validate_output_target(root, canonical_root_resolved, output)
         parent_fd, parent_identity = _open_output_parent(staging_parent)
@@ -1079,7 +1159,11 @@ def build_opencode_package(
         parent_fd, parent_identity = _retain_output_parent(output_parent_fd)
         require_lexical_parent = False
         try:
-            _validate_descriptor_bound_parent(root, canonical_root_resolved, parent_fd)
+            source_root_fds = _validate_descriptor_bound_parent(
+                root,
+                canonical_root_resolved,
+                parent_fd,
+            )
             _validate_output_target(
                 root,
                 canonical_root_resolved,
@@ -1087,6 +1171,8 @@ def build_opencode_package(
                 output_parent_fd=parent_fd,
             )
         except Exception:
+            for source_fd in source_root_fds:
+                os.close(source_fd)
             os.close(parent_fd)
             raise
     staging_prefix = f".{output.name}."
@@ -1099,12 +1185,23 @@ def build_opencode_package(
         except FileExistsError:
             continue
         except OSError as error:
+            for source_fd in source_root_fds:
+                os.close(source_fd)
             os.close(parent_fd)
             raise BuildError(f"cannot create private staging directory: {error}") from error
         staging_name = candidate_name
-        staging_identity = os.stat(candidate_name, dir_fd=parent_fd, follow_symlinks=False)
+        try:
+            staging_identity = os.stat(candidate_name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as error:
+            _remove_tree_at(parent_fd, candidate_name)
+            for source_fd in source_root_fds:
+                os.close(source_fd)
+            os.close(parent_fd)
+            raise BuildError(f"staging directory cannot be inspected: {error}") from error
         break
     if not staging_name or staging_identity is None:
+        for source_fd in source_root_fds:
+            os.close(source_fd)
         os.close(parent_fd)
         raise BuildError("cannot allocate a unique staging directory")
     staging = staging_parent / staging_name
@@ -1112,6 +1209,8 @@ def build_opencode_package(
         staging_fd = os.open(staging_name, _directory_open_flags(), dir_fd=parent_fd)
     except OSError as error:
         _remove_tree_at(parent_fd, staging_name, staging_identity)
+        for source_fd in source_root_fds:
+            os.close(source_fd)
         os.close(parent_fd)
         raise BuildError(f"staging directory cannot be opened: {error}") from error
     binding = _OutputBinding(
@@ -1122,6 +1221,7 @@ def build_opencode_package(
         (staging_identity.st_dev, staging_identity.st_ino),
         staging_fd,
         require_lexical_parent,
+        source_root_fds,
     )
     binding_key = os.path.abspath(os.fspath(staging))
     _OUTPUT_BINDINGS[binding_key] = binding
@@ -1161,6 +1261,8 @@ def build_opencode_package(
         _OUTPUT_BINDINGS.pop(binding_key, None)
         os.close(binding.staging_fd)
         os.close(parent_fd)
+        for source_fd in binding.source_root_fds:
+            os.close(source_fd)
     return output
 
 
