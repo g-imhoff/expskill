@@ -935,6 +935,9 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None =
         os.close(descriptor)
 
 
+_ALLOCATE_OBSERVATION_ATTEMPTS = 2
+
+
 def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[int, int], int]:
     for _attempt in range(32):
         name = f"{prefix}{uuid.uuid4().hex}"
@@ -943,21 +946,69 @@ def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[i
         except FileExistsError:
             continue
         metadata: os.stat_result | None = None
+        last_metadata: os.stat_result | None = None
         descriptor: int | None = None
-        try:
-            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise BuildError(f"private directory is not a directory: {name}")
-            descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
-            if _entry_identity(os.fstat(descriptor)) != _entry_identity(metadata):
-                raise BuildError(f"private directory changed during creation: {name}")
-            return name, _entry_identity(metadata), descriptor
-        except BaseException:
-            if descriptor is not None:
-                os.close(descriptor)
-            if metadata is not None:
-                _remove_tree_at(parent_fd, name, metadata)
-            raise
+        observation_error: OSError | None = None
+        for _observation in range(_ALLOCATE_OBSERVATION_ATTEMPTS):
+            metadata = None
+            try:
+                metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                last_metadata = metadata
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise BuildError(f"private directory is not a directory: {name}")
+                descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+                if _entry_identity(os.fstat(descriptor)) != _entry_identity(metadata):
+                    raise BuildError(f"private directory changed during creation: {name}")
+                return name, _entry_identity(metadata), descriptor
+            except OSError as error:
+                observation_error = error
+                if descriptor is not None:
+                    os.close(descriptor)
+                    descriptor = None
+                if _observation + 1 < _ALLOCATE_OBSERVATION_ATTEMPTS:
+                    continue
+                break
+            except BaseException:
+                if descriptor is not None:
+                    os.close(descriptor)
+                if last_metadata is not None:
+                    try:
+                        _reclaim_directory_identity(
+                            parent_fd,
+                            _entry_identity(last_metadata),
+                            (name,),
+                        )
+                    except BaseException:
+                        pass
+                raise
+        if descriptor is not None:
+            os.close(descriptor)
+        if last_metadata is None:
+            # Give a transient observation failure one more bounded chance to
+            # identify the directory before reclaiming it by identity.
+            for _cleanup_attempt in range(_ALLOCATE_OBSERVATION_ATTEMPTS):
+                try:
+                    last_metadata = os.stat(
+                        name,
+                        dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    observation_error = error
+                    continue
+                break
+        if last_metadata is not None:
+            try:
+                _reclaim_directory_identity(
+                    parent_fd,
+                    _entry_identity(last_metadata),
+                    (name,),
+                )
+            except BaseException:
+                pass
+        if observation_error is not None:
+            raise observation_error
+        raise BuildError(f"private directory could not be observed: {name}")
     raise BuildError(f"cannot allocate a unique private directory under descriptor {parent_fd}")
 
 
@@ -1097,8 +1148,8 @@ def _rollback_published_output(binding: _OutputBinding, output_name: str) -> Non
     mismatch it observes in place.
     """
 
+    placeholder_name = binding.placeholder_name
     try:
-        placeholder_name = binding.placeholder_name
         if placeholder_name:
             output = _stat_name(binding.parent_fd, output_name)
             placeholder = _stat_name(binding.parent_fd, placeholder_name)
@@ -1135,20 +1186,31 @@ def _rollback_published_output(binding: _OutputBinding, output_name: str) -> Non
                             )
                         except OSError:
                             pass
-        _reclaim_directory_identity(
-            binding.parent_fd,
+    except BaseException:
+        # Exchange observation is best effort.  The identity scans below are
+        # independent compensations and must still run after any observation
+        # failure while preserving the original build error.
+        pass
+
+    for expected, preferred_names in (
+        (
             binding.staging_identity,
             (binding.staging_name, output_name, placeholder_name),
-        )
-        _reclaim_directory_identity(
-            binding.parent_fd,
+        ),
+        (
             binding.placeholder_identity,
             (placeholder_name, output_name),
-        )
-    except BaseException:
-        # Rollback is best effort while preserving the original build error.
-        # Identity-bound helpers above never delete a mismatched foreign entry.
-        return
+        ),
+    ):
+        try:
+            _reclaim_directory_identity(
+                binding.parent_fd,
+                expected,
+                preferred_names,
+            )
+        except BaseException:
+            # One identity's cleanup failure must not suppress the other.
+            pass
 
 
 def _replace_output(staging: Path, output: Path) -> None:
@@ -1226,12 +1288,16 @@ def _replace_output(staging: Path, output: Path) -> None:
         # directory rename.  A child-by-child publication cannot provide the same
         # complete-or-absent guarantee and is intentionally forbidden.
         try:
-            published = _renameat2_noreplace(binding.parent_fd, binding.staging_name, output_name)
-        except OSError as error:
-            raise BuildError(f"cannot publish OpenCode artifact: {error}") from error
-        if not published:
-            raise BuildError("exclusive atomic directory publication is unavailable")
-        try:
+            try:
+                published = _renameat2_noreplace(
+                    binding.parent_fd,
+                    binding.staging_name,
+                    output_name,
+                )
+            except OSError as error:
+                raise BuildError(f"cannot publish OpenCode artifact: {error}") from error
+            if not published:
+                raise BuildError("exclusive atomic directory publication is unavailable")
             # Check ancestry immediately after the exclusive rename, before the
             # fallible parent fsync.  Every exception after this point must
             # leave through the exact rollback protocol below.
@@ -1254,7 +1320,7 @@ def _replace_output(staging: Path, output: Path) -> None:
         if temporary_binding:
             if not accepted:
                 try:
-                    _cleanup_placeholder(binding)
+                    _rollback_published_output(binding, output.name)
                 except BaseException:
                     pass
             _close_owned_descriptors(
