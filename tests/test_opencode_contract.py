@@ -30,14 +30,17 @@ AGENTS = (
 
 
 class OpencodeContractTests(unittest.TestCase):
-    def copy_repository(self) -> Path:
+    def copy_repository(self, *, include_git: bool = True) -> Path:
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
+        ignored = ["__pycache__", "*.pyc", "*.pyo"]
+        if not include_git:
+            ignored.append(".git")
         shutil.copytree(
             ROOT,
             temporary / "repo",
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            ignore=shutil.ignore_patterns(*ignored),
         )
         return temporary / "repo"
 
@@ -67,8 +70,7 @@ class OpencodeContractTests(unittest.TestCase):
                 )
 
     def test_default_validation_rejects_missing_opencode_in_non_git_export(self) -> None:
-        root = self.copy_repository()
-        (root / ".git").unlink()
+        root = self.copy_repository(include_git=False)
         shutil.rmtree(root / "packages" / "expskill" / "opencode")
         errors = validate_repository(root)
         self.assertTrue(
