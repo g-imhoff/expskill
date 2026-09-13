@@ -213,6 +213,112 @@ class OpencodePackageTests(unittest.TestCase):
             self.assertEqual(tuple(workspace.iterdir()), (marker,))
             self.assertEqual(marker.read_bytes(), b"must survive\n")
 
+    def test_descriptor_bound_output_rejects_workspace_moved_under_repository_after_staging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            copied_repo = temporary_root / "repository"
+            shutil.copytree(
+                ROOT,
+                copied_repo,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            descriptor = os.open(workspace, build_module._directory_open_flags())
+            moved_workspace = copied_repo / "moved-workspace"
+            lexical_output = workspace / "artifact"
+            real_snapshot = build_module._snapshot_sources
+            staging_started = False
+
+            def move_after_staging(source: Path) -> tuple[Path, Path]:
+                nonlocal staging_started
+                self.assertTrue(
+                    any(entry.name.startswith(".artifact.") for entry in workspace.iterdir())
+                )
+                workspace.rename(moved_workspace)
+                staging_started = True
+                return real_snapshot(source)
+
+            try:
+                with mock.patch.object(
+                    build_module,
+                    "_snapshot_sources",
+                    side_effect=move_after_staging,
+                ):
+                    try:
+                        build_opencode_package(
+                            copied_repo,
+                            lexical_output,
+                            output_parent_fd=descriptor,
+                        )
+                    except BuildError:
+                        pass
+                    else:
+                        self.fail(
+                            "publication succeeded after the retained workspace moved "
+                            f"under the repository: {moved_workspace / 'artifact'}"
+                        )
+            finally:
+                os.close(descriptor)
+
+            self.assertTrue(staging_started)
+            self.assertFalse((moved_workspace / "artifact").exists())
+            self.assertFalse(lexical_output.exists())
+            self.assertEqual(tuple(moved_workspace.iterdir()), ())
+
+    def test_descriptor_bound_output_rolls_back_workspace_moved_during_rename(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            copied_repo = temporary_root / "repository"
+            shutil.copytree(
+                ROOT,
+                copied_repo,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            descriptor = os.open(workspace, build_module._directory_open_flags())
+            moved_workspace = copied_repo / "moved-workspace"
+            lexical_output = workspace / "artifact"
+            real_rename = build_module._renameat2_noreplace
+            rename_window_entered = False
+            rename_calls = 0
+
+            def move_during_exclusive_rename(
+                parent_fd: int, source_name: str, destination_name: str
+            ) -> bool:
+                nonlocal rename_calls, rename_window_entered
+                rename_calls += 1
+                if not rename_window_entered:
+                    workspace.rename(moved_workspace)
+                    rename_window_entered = True
+                return real_rename(parent_fd, source_name, destination_name)
+
+            try:
+                with mock.patch.object(
+                    build_module,
+                    "_renameat2_noreplace",
+                    side_effect=move_during_exclusive_rename,
+                ):
+                    with self.assertRaises(BuildError):
+                        build_opencode_package(
+                            copied_repo,
+                            lexical_output,
+                            output_parent_fd=descriptor,
+                        )
+            finally:
+                os.close(descriptor)
+
+            self.assertTrue(rename_window_entered)
+            self.assertEqual(rename_calls, 2)
+            self.assertFalse((moved_workspace / "artifact").exists())
+            self.assertFalse(lexical_output.exists())
+            self.assertEqual(tuple(moved_workspace.iterdir()), ())
+
     @needs_node_and_npm
     def test_packed_package_is_publishable_installable_and_self_contained(self) -> None:
         assert NODE is not None
