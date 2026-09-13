@@ -201,6 +201,94 @@ class OpencodePackageTests(unittest.TestCase):
                 os.fstat(caller_fd)
                 os.close(caller_fd)
 
+    def test_placeholder_allocation_retries_after_post_mkdir_stat_failure(self) -> None:
+        """A transient post-mkdir stat error does not strand the placeholder."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            prefix = ".artifact.rollback-"
+            failed = False
+            descriptor = -1
+            real_stat = build_module.os.stat
+
+            def fail_first_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                nonlocal failed
+                if (
+                    not failed
+                    and isinstance(path, str)
+                    and path.startswith(prefix)
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    failed = True
+                    raise OSError("injected post-mkdir stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            try:
+                with mock.patch.object(build_module.os, "stat", side_effect=fail_first_stat):
+                    name, identity, descriptor = build_module._allocate_empty_directory(
+                        parent_fd, prefix
+                    )
+                self.assertTrue(failed)
+                self.assertTrue((parent / name).is_dir())
+                self.assertEqual(
+                    identity,
+                    (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino),
+                )
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                for entry in parent.iterdir():
+                    if entry.name.startswith(prefix):
+                        shutil.rmtree(entry)
+                os.close(parent_fd)
+
+    def test_placeholder_allocation_retries_after_post_mkdir_open_failure(self) -> None:
+        """A transient post-mkdir open error does not strand the placeholder."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            prefix = ".artifact.rollback-"
+            failed = False
+            descriptor = -1
+            real_open = build_module.os.open
+
+            def fail_first_open(
+                path: object, flags: int, *args: object, **kwargs: object
+            ) -> int:
+                nonlocal failed
+                if (
+                    not failed
+                    and isinstance(path, str)
+                    and path.startswith(prefix)
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    failed = True
+                    raise OSError("injected post-mkdir open failure")
+                return real_open(path, flags, *args, **kwargs)
+
+            try:
+                with mock.patch.object(build_module.os, "open", side_effect=fail_first_open):
+                    name, identity, descriptor = build_module._allocate_empty_directory(
+                        parent_fd, prefix
+                    )
+                self.assertTrue(failed)
+                self.assertTrue((parent / name).is_dir())
+                self.assertEqual(
+                    identity,
+                    (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino),
+                )
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                for entry in parent.iterdir():
+                    if entry.name.startswith(prefix):
+                        shutil.rmtree(entry)
+                os.close(parent_fd)
+
     def test_render_failure_reclaims_relocated_staging_and_placeholder(self) -> None:
         """Render-time relocation still cleans both builder-owned directories."""
 
@@ -316,6 +404,167 @@ class OpencodePackageTests(unittest.TestCase):
             self.assertFalse(lexical_output.exists())
             self.assertTrue(moved_workspace.is_dir())
             self.assertEqual(tuple(moved_workspace.iterdir()), ())
+
+    def test_publication_exception_after_real_rename_rolls_back(self) -> None:
+        """An exception after the real rename is treated as an ambiguous publish."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "artifact"
+            real_rename = build_module._renameat2_noreplace
+            renamed = False
+
+            def publish_then_raise(
+                parent_fd: int, source_name: str, destination_name: str
+            ) -> bool:
+                nonlocal renamed
+                published = real_rename(parent_fd, source_name, destination_name)
+                if destination_name == output.name:
+                    self.assertTrue(published)
+                    renamed = True
+                    raise RuntimeError("injected ambiguous publication result")
+                return published
+
+            with mock.patch.object(
+                build_module,
+                "_renameat2_noreplace",
+                side_effect=publish_then_raise,
+            ):
+                with self.assertRaises(RuntimeError):
+                    build_opencode_package(ROOT, output)
+
+            self.assertTrue(renamed)
+            self.assertFalse(output.exists())
+            self.assertEqual(tuple(output.parent.iterdir()), ())
+
+    def test_rollback_observation_failure_reclaims_both_identities(self) -> None:
+        """Exchange observation failure still reclaims both identities in each seam."""
+
+        for seam in ("descriptor-bound", "temporary"):
+            with self.subTest(seam=seam), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "artifact"
+                published = False
+                observation_failed = False
+                real_rename = build_module._renameat2_noreplace
+                real_stat = build_module.os.stat
+                real_fsync = build_module.os.fsync
+                reclaim_calls: list[tuple[str, ...]] = []
+                real_reclaim = build_module._reclaim_directory_identity
+
+                def publish_then_mark(
+                    parent_fd: int, source_name: str, destination_name: str
+                ) -> bool:
+                    nonlocal published
+                    result = real_rename(parent_fd, source_name, destination_name)
+                    if destination_name == output.name:
+                        published = result
+                    return result
+
+                def fail_exchange_observation_once(
+                    path: object, *args: object, **kwargs: object
+                ) -> os.stat_result:
+                    nonlocal observation_failed
+                    if (
+                        published
+                        and not observation_failed
+                        and path == output.name
+                        and kwargs.get("dir_fd") is not None
+                    ):
+                        observation_failed = True
+                        raise OSError("injected exchange observation failure")
+                    return real_stat(path, *args, **kwargs)
+
+                def fail_after_publish(parent_fd: int) -> None:
+                    if published:
+                        raise OSError("injected post-publication failure")
+                    real_fsync(parent_fd)
+
+                def record_reclaim(
+                    parent_fd: int,
+                    expected: tuple[int, int],
+                    preferred_names: object,
+                ) -> bool:
+                    names = tuple(preferred_names)  # type: ignore[arg-type]
+                    reclaim_calls.append(names)
+                    return real_reclaim(parent_fd, expected, names)
+
+                descriptor: int | None = None
+                try:
+                    if seam == "descriptor-bound":
+                        workspace = root / "workspace"
+                        workspace.mkdir()
+                        descriptor = os.open(workspace, build_module._directory_open_flags())
+                        with (
+                            mock.patch.object(
+                                build_module,
+                                "_renameat2_noreplace",
+                                side_effect=publish_then_mark,
+                            ),
+                            mock.patch.object(
+                                build_module.os,
+                                "stat",
+                                side_effect=fail_exchange_observation_once,
+                            ),
+                            mock.patch.object(
+                                build_module.os,
+                                "fsync",
+                                side_effect=fail_after_publish,
+                            ),
+                            mock.patch.object(
+                                build_module,
+                                "_reclaim_directory_identity",
+                                side_effect=record_reclaim,
+                            ),
+                        ):
+                            with self.assertRaises(BuildError):
+                                build_opencode_package(
+                                    ROOT,
+                                    workspace / "artifact",
+                                    output_parent_fd=descriptor,
+                                )
+                        parent = workspace
+                    else:
+                        staging = root / ".artifact.staging"
+                        staging.mkdir()
+                        with (
+                            mock.patch.object(
+                                build_module,
+                                "_renameat2_noreplace",
+                                side_effect=publish_then_mark,
+                            ),
+                            mock.patch.object(
+                                build_module.os,
+                                "stat",
+                                side_effect=fail_exchange_observation_once,
+                            ),
+                            mock.patch.object(
+                                build_module.os,
+                                "fsync",
+                                side_effect=fail_after_publish,
+                            ),
+                            mock.patch.object(
+                                build_module,
+                                "_reclaim_directory_identity",
+                                side_effect=record_reclaim,
+                            ),
+                        ):
+                            with self.assertRaises(BuildError):
+                                build_module._replace_output(staging, output)
+                        parent = root
+                finally:
+                    if descriptor is not None:
+                        os.close(descriptor)
+
+                self.assertTrue(published)
+                self.assertTrue(observation_failed)
+                self.assertTrue(
+                    any(output.name in names and len(names) == 3 for names in reclaim_calls)
+                )
+                self.assertTrue(
+                    any(output.name in names and len(names) == 2 for names in reclaim_calls)
+                )
+                self.assertFalse(output.exists())
+                self.assertEqual(tuple(parent.iterdir()), ())
 
     def test_rollback_exchange_preserves_foreign_public_replacement(self) -> None:
         """A public-name replacement cannot be moved into builder-owned staging."""
