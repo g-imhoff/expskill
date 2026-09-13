@@ -78,6 +78,7 @@ class _OutputBinding:
     staging_name: str
     staging_identity: tuple[int, int]
     staging_fd: int
+    require_lexical_parent: bool
 
 
 # ``_replace_output`` deliberately keeps a two-argument public seam for callers
@@ -142,7 +143,27 @@ def _output_path(value: Path | str) -> Path:
     return candidate
 
 
-def _validate_output_target(root: Path, canonical_root: Path, output: Path) -> None:
+def _bound_output_path(value: Path | str) -> Path:
+    """Normalize only the label for an output whose parent is already bound."""
+
+    if value is None:  # type: ignore[comparison-overlap]
+        raise BuildError("an explicit output directory is required")
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    output = Path(os.path.abspath(os.fspath(candidate)))
+    if not output.name:
+        raise BuildError("descriptor-bound output must name one child directory")
+    return output
+
+
+def _validate_output_target(
+    root: Path,
+    canonical_root: Path,
+    output: Path,
+    *,
+    output_parent_fd: int | None = None,
+) -> None:
     source_roots = (root.resolve(strict=True), canonical_root.resolve(strict=True))
     for source_root in source_roots:
         if output == source_root:
@@ -151,7 +172,20 @@ def _validate_output_target(root: Path, canonical_root: Path, output: Path) -> N
             raise BuildError("generated output must not be an ancestor of a source root")
         if source_root in output.parents:
             raise BuildError("generated output must be outside the repository source tree")
-    if output.exists() or output.is_symlink():
+    if output_parent_fd is None:
+        occupied = output.exists() or output.is_symlink()
+    else:
+        try:
+            os.stat(output.name, dir_fd=output_parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            occupied = False
+        except OSError as error:
+            raise BuildError(
+                f"output target cannot be inspected through its bound parent: {error}"
+            ) from error
+        else:
+            occupied = True
+    if occupied:
         raise BuildError(f"output target must not already exist: {output}")
 
 
@@ -643,22 +677,45 @@ def _open_output_parent(parent: Path) -> tuple[int, tuple[int, int]]:
         raise
 
 
+def _retain_output_parent(descriptor: int) -> tuple[int, tuple[int, int]]:
+    """Duplicate and validate a caller-retained exact output parent."""
+
+    try:
+        retained = os.dup(descriptor)
+    except OSError as error:
+        raise BuildError(f"bound output parent descriptor is invalid: {error}") from error
+    try:
+        metadata = os.fstat(retained)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise BuildError("bound output parent descriptor is not a directory")
+        return retained, (metadata.st_dev, metadata.st_ino)
+    except Exception:
+        os.close(retained)
+        raise
+
+
 def _binding_is_current(binding: _OutputBinding) -> bool:
-    observed_fd: int | None = None
     try:
         bound = os.fstat(binding.parent_fd)
+    except OSError:
+        return False
+    if not (
+        stat.S_ISDIR(bound.st_mode)
+        and (bound.st_dev, bound.st_ino) == binding.parent_identity
+    ):
+        return False
+    if not binding.require_lexical_parent:
+        return True
+    observed_fd: int | None = None
+    try:
         observed_fd = _open_directory_chain(binding.parent, create=False)
         observed = os.fstat(observed_fd)
-    except OSError:
+        return _same_directory_identity(bound, observed)
+    except (OSError, BuildError):
         return False
     finally:
         if observed_fd is not None:
             os.close(observed_fd)
-    return (
-        stat.S_ISDIR(bound.st_mode)
-        and _same_directory_identity(bound, observed)
-        and (bound.st_dev, bound.st_ino) == binding.parent_identity
-    )
 
 
 def _renameat2_noreplace(
@@ -736,6 +793,47 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None =
         os.close(descriptor)
 
 
+def _fsync_tree_at(directory_fd: int) -> None:
+    """Durably flush one exact descriptor-bound artifact tree."""
+
+    flags = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    for entry in sorted(os.scandir(directory_fd), key=lambda item: item.name):
+        metadata = entry.stat(follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child = os.open(
+                entry.name, _directory_open_flags(), dir_fd=directory_fd
+            )
+            try:
+                opened = os.fstat(child)
+                if not _same_directory_identity(metadata, opened):
+                    raise BuildError(
+                        f"artifact directory changed before fsync: {entry.name}"
+                    )
+                _fsync_tree_at(child)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(metadata.st_mode):
+            child = os.open(entry.name, os.O_RDONLY | flags, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_dev != metadata.st_dev
+                    or opened.st_ino != metadata.st_ino
+                ):
+                    raise BuildError(
+                        f"artifact file changed before fsync: {entry.name}"
+                    )
+                os.fsync(child)
+            finally:
+                os.close(child)
+        else:
+            raise BuildError(
+                f"artifact entry is not regular before fsync: {entry.name}"
+            )
+    os.fsync(directory_fd)
+
+
 def _replace_output(staging: Path, output: Path) -> None:
     """Publish one complete artifact with no target replacement."""
 
@@ -765,6 +863,7 @@ def _replace_output(staging: Path, output: Path) -> None:
             staging.name,
             (staging_metadata.st_dev, staging_metadata.st_ino),
             staging_fd,
+            True,
         )
         temporary_binding = True
     try:
@@ -794,6 +893,7 @@ def _replace_output(staging: Path, output: Path) -> None:
             raise BuildError(f"cannot publish OpenCode artifact: {error}") from error
         if not published:
             raise BuildError("exclusive atomic directory publication is unavailable")
+        os.fsync(binding.parent_fd)
         if not _binding_is_current(binding):
             # The path moved after the commit.  Undo through the still-open
             # descriptor, never through the potentially replaced lexical path.
@@ -863,13 +963,19 @@ def _cleanup_staging(
 def build_opencode_package(
     repo_root: Path | str | None = None,
     output_dir: Path | str | None = None,
+    *,
+    output_parent_fd: int | None = None,
 ) -> Path:
     """Build the package into an explicit output directory and return it."""
 
     if output_dir is None:
         raise BuildError("an explicit output directory is required")
     root = _resolve_root(repo_root)
-    output = _output_path(output_dir)
+    output = (
+        _output_path(output_dir)
+        if output_parent_fd is None
+        else _bound_output_path(output_dir)
+    )
     canonical_root = root / "packages" / "expskill"
     platform_root = canonical_root / "opencode"
     _reject_symlink_components(canonical_root, "canonical package")
@@ -896,10 +1002,24 @@ def build_opencode_package(
         canonical_root_resolved = canonical_root.resolve(strict=True)
     except (OSError, RuntimeError) as error:
         raise BuildError(f"canonical package cannot be resolved: {canonical_root}: {error}") from error
-    _validate_output_target(root, canonical_root_resolved, output)
-
     staging_parent = output.parent
-    parent_fd, parent_identity = _open_output_parent(staging_parent)
+    if output_parent_fd is None:
+        _validate_output_target(root, canonical_root_resolved, output)
+        parent_fd, parent_identity = _open_output_parent(staging_parent)
+        require_lexical_parent = True
+    else:
+        parent_fd, parent_identity = _retain_output_parent(output_parent_fd)
+        require_lexical_parent = False
+        try:
+            _validate_output_target(
+                root,
+                canonical_root_resolved,
+                output,
+                output_parent_fd=parent_fd,
+            )
+        except Exception:
+            os.close(parent_fd)
+            raise
     staging_prefix = f".{output.name}."
     staging_name = ""
     staging_identity: os.stat_result | None = None
@@ -932,6 +1052,7 @@ def build_opencode_package(
         staging_name,
         (staging_identity.st_dev, staging_identity.st_ino),
         staging_fd,
+        require_lexical_parent,
     )
     binding_key = os.path.abspath(os.fspath(staging))
     _OUTPUT_BINDINGS[binding_key] = binding
@@ -960,6 +1081,7 @@ def build_opencode_package(
         # the publication handoff so a mutation during render cannot publish a
         # candidate that no longer corresponds to the checkout.
         _verify_live_sources_against_snapshot(root, snapshot_root)
+        _fsync_tree_at(binding.staging_fd)
         _replace_output(staging, output)
     except (OSError, BuildError):
         _cleanup_staging(staging, staging_parent, staging_prefix, staging_identity)

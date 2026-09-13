@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import scripts.build_opencode_package as build_module
 import scripts.install as install_module
 from scripts.install import install_opencode, uninstall_opencode
 
@@ -5999,10 +6000,10 @@ if boundary in {"before-workspace-mkdir", "after-workspace-mkdir"}:
     install_module.os.mkdir = exit_at_workspace_mkdir
 
 if boundary in {"after-workspace-identity", "after-candidate-build"}:
-    def exit_at_build(repo_root, output):
+    def exit_at_build(repo_root, output, **kwargs):
         if boundary == "after-workspace-identity":
             os._exit(79)
-        result = real_build(repo_root, output)
+        result = real_build(repo_root, output, **kwargs)
         os._exit(79)
     install_module.build_opencode_package = exit_at_build
 
@@ -6166,7 +6167,9 @@ install_module.install_opencode(repo, config, state)
                     )
                     continue
 
-                def stop_after_workspace_identity(repo_root: Path, output: Path) -> Path:
+                def stop_after_workspace_identity(
+                    repo_root: Path, output: Path, **_kwargs: object
+                ) -> Path:
                     raise SystemExit("workspace identity is durable")
 
                 with mock.patch.object(
@@ -6277,6 +6280,425 @@ install_module.install_opencode(repo, config, state)
             receipt.write_text("{}\n", encoding="utf-8")
             with self.assertRaises(install_module.InstallError):
                 install_module._unlink_state_path(receipt)
+
+    def test_recovery_reclaim_preserves_replaced_canonical_for_both_relations(
+        self,
+    ) -> None:
+        for relation in ("unpublished-candidate", "displaced-old"):
+            with (
+                self.subTest(relation=relation),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                canonical = receipt_path(state)
+                state_directory = canonical.parent
+                payload = receipt(state)
+                payload["marketplace_added"] = not payload["marketplace_added"]
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                real_exchange = install_module._renameat_exchange
+                real_named_write = install_module._write_named_state_generation
+
+                def stop_at_exchange(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    if source_name.startswith(
+                        install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                    ):
+                        real_exchange(
+                            source_fd, source_name, target_fd, target_name
+                        )
+                        raise SystemExit(f"created {relation} relation")
+                    real_exchange(source_fd, source_name, target_fd, target_name)
+
+                def stop_after_candidate_write(
+                    bound: object,
+                    name_from_identity: object,
+                    encoded: bytes,
+                ) -> tuple[str, tuple[int, int]]:
+                    result = real_named_write(
+                        bound, name_from_identity, encoded
+                    )  # type: ignore[arg-type]
+                    raise SystemExit("created unpublished-candidate relation")
+
+                try:
+                    target = (
+                        "_write_named_state_generation"
+                        if relation == "unpublished-candidate"
+                        else "_renameat_exchange"
+                    )
+                    side_effect = (
+                        stop_after_candidate_write
+                        if relation == "unpublished-candidate"
+                        else stop_at_exchange
+                    )
+                    with mock.patch.object(install_module, target, side_effect=side_effect):
+                        with self.assertRaises(SystemExit):
+                            install_module._write_state_payload(canonical, payload)
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+                generations = tuple(
+                    state_directory.glob(
+                        ".install-opencode.json.receipt-*.retire"
+                    )
+                )
+                self.assertEqual(len(generations), 1)
+                generation = generations[0]
+                generation_identity = (
+                    generation.stat().st_dev,
+                    generation.stat().st_ino,
+                )
+                sampled_public_identity = (
+                    canonical.stat().st_dev,
+                    canonical.stat().st_ino,
+                )
+                expected_label = (
+                    "receipt generation candidate"
+                    if relation == "unpublished-candidate"
+                    else "receipt generation"
+                )
+                detached = root / f"detached-{relation}.json"
+                original_public_bytes = canonical.read_bytes()
+                replacement_identity: tuple[int, int] | None = None
+                replaced = False
+
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                real_reclaim = install_module._unlink_private_state_inode
+                real_link = install_module._link_open_descriptor
+
+                def require_public_guard(
+                    bound: object,
+                    name: str,
+                    expected: tuple[int, int],
+                    label: str,
+                    **kwargs: object,
+                ) -> None:
+                    if label == expected_label:
+                        self.assertEqual(kwargs.get("public_name"), canonical.name)
+                        self.assertEqual(
+                            kwargs.get("public_expected"), sampled_public_identity
+                        )
+                    real_reclaim(bound, name, expected, label, **kwargs)
+
+                def replace_public_after_pin(
+                    source_fd: int, target_fd: int, target_name: str
+                ) -> None:
+                    nonlocal replaced, replacement_identity
+                    real_link(source_fd, target_fd, target_name)
+                    if target_name.endswith(".pin") and not replaced:
+                        canonical.rename(detached)
+                        canonical.write_bytes(original_public_bytes)
+                        replacement_identity = (
+                            canonical.stat().st_dev,
+                            canonical.stat().st_ino,
+                        )
+                        replaced = True
+
+                try:
+                    with (
+                        mock.patch.object(
+                            install_module,
+                            "_unlink_private_state_inode",
+                            side_effect=require_public_guard,
+                        ),
+                        mock.patch.object(
+                            install_module,
+                            "_link_open_descriptor",
+                            side_effect=replace_public_after_pin,
+                        ),
+                    ):
+                        with self.assertRaises(install_module.InstallError):
+                            install_module._recover_receipt_generations(
+                                canonical, binding
+                            )
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+                self.assertTrue(replaced)
+                assert replacement_identity is not None
+                self.assertEqual(
+                    (canonical.stat().st_dev, canonical.stat().st_ino),
+                    replacement_identity,
+                )
+                self.assertEqual(canonical.read_bytes(), original_public_bytes)
+                self.assertEqual(
+                    (generation.stat().st_dev, generation.stat().st_ino),
+                    generation_identity,
+                )
+                self.assertFalse(
+                    tuple(
+                        state_directory.glob(
+                            ".install-opencode.json.receipt-*.retire.pin"
+                        )
+                    )
+                )
+                for entrypoint in (install_opencode, uninstall_opencode):
+                    with self.subTest(entrypoint=entrypoint.__name__):
+                        with self.assertRaises(install_module.InstallError):
+                            entrypoint(repo, config, state)
+                        self.assertEqual(
+                            (canonical.stat().st_dev, canonical.stat().st_ino),
+                            replacement_identity,
+                        )
+                        self.assertEqual(
+                            (generation.stat().st_dev, generation.stat().st_ino),
+                            generation_identity,
+                        )
+
+    def test_candidate_less_rollback_phases_reload_through_both_entrypoints(
+        self,
+    ) -> None:
+        boundaries = {
+            "publish": (
+                "rollback-prepared",
+                "rollback-links-restored",
+                "rollback-artifact-removed",
+                "rollback-anchor-removed",
+                "rollback-complete",
+            ),
+            "swap": (
+                "rollback-prepared",
+                "rollback-candidate-removed",
+                "rollback-anchor-removed",
+                "rollback-restored",
+                "rollback-complete",
+            ),
+        }
+        for transaction, transaction_boundaries in boundaries.items():
+            for boundary in transaction_boundaries:
+                for retry_entrypoint in ("install", "uninstall"):
+                    with (
+                        self.subTest(
+                            transaction=transaction,
+                            boundary=boundary,
+                            retry_entrypoint=retry_entrypoint,
+                        ),
+                        tempfile.TemporaryDirectory() as temporary,
+                    ):
+                        root = Path(temporary)
+                        repo = seed_repository(root / "repo")
+                        config = root / "config"
+                        state = root / "state"
+                        canonical = receipt_path(state)
+                        if transaction == "swap":
+                            install_opencode(repo, config, state)
+                            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                            skill.write_text(
+                                skill.read_text(encoding="utf-8")
+                                + "\ncandidate-less rollback marker\n",
+                                encoding="utf-8",
+                            )
+
+                        real_write = install_module._write_receipt
+                        real_rollback_links = install_module._rollback_links
+                        real_unlink = install_module._unlink_state_path
+                        rollback_seen = False
+                        crashed = False
+
+                        def write_and_crash(
+                            path: Path, value: install_module._Receipt
+                        ) -> None:
+                            nonlocal rollback_seen, crashed
+                            real_write(path, value)
+                            pending = value.pending_publish or value.pending_swap
+                            phase = pending.phase if pending is not None else None
+                            if phase is not None and phase.startswith("rollback-"):
+                                rollback_seen = True
+                            target = boundary
+                            if phase == target and not crashed:
+                                crashed = True
+                                raise SystemExit(f"after durable {phase}")
+                            if (
+                                boundary == "rollback-complete"
+                                and transaction == "swap"
+                                and rollback_seen
+                                and value.pending_swap is None
+                                and not crashed
+                            ):
+                                crashed = True
+                                raise SystemExit("after durable rollback completion")
+
+                        def rollback_links_and_crash(
+                            links: object,
+                        ) -> list[str]:
+                            nonlocal crashed
+                            result = real_rollback_links(links)  # type: ignore[arg-type]
+                            if (
+                                transaction == "publish"
+                                and boundary == "rollback-links-restored"
+                                and not crashed
+                            ):
+                                crashed = True
+                                raise SystemExit("after publication links were restored")
+                            return result
+
+                        def unlink_and_crash(
+                            path: Path, *args: object, **kwargs: object
+                        ) -> None:
+                            nonlocal crashed
+                            real_unlink(path, *args, **kwargs)
+                            if (
+                                transaction == "publish"
+                                and boundary == "rollback-complete"
+                                and path == canonical
+                                and not crashed
+                            ):
+                                crashed = True
+                                raise SystemExit("after publication rollback completion")
+
+                        with (
+                            mock.patch.object(
+                                install_module,
+                                "build_opencode_package",
+                                side_effect=install_module.OpencodeBuildError(
+                                    "candidate was never created"
+                                ),
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_write_receipt",
+                                side_effect=write_and_crash,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_rollback_links",
+                                side_effect=rollback_links_and_crash,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_unlink_state_path",
+                                side_effect=unlink_and_crash,
+                            ),
+                        ):
+                            with self.assertRaises(SystemExit):
+                                install_opencode(repo, config, state)
+                        self.assertTrue(crashed)
+
+                        entrypoint = (
+                            install_opencode
+                            if retry_entrypoint == "install"
+                            else uninstall_opencode
+                        )
+                        entrypoint(repo, config, state)
+                        artifact = state / "expskill/opencode-artifact"
+                        if retry_entrypoint == "install":
+                            self.assertTrue(canonical.is_file())
+                            self.assertTrue(artifact.is_dir())
+                        else:
+                            self.assertFalse(canonical.exists())
+                            self.assertFalse(artifact.exists())
+
+    def test_workspace_replacement_during_builder_never_writes_foreign_path(
+        self,
+    ) -> None:
+        for moment in ("before-builder", "after-builder-start"):
+            with (
+                self.subTest(moment=moment),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                real_build = install_module.build_opencode_package
+                real_snapshot = build_module._snapshot_sources
+                workspace: Path | None = None
+                detached: Path | None = None
+                marker: Path | None = None
+                replaced = False
+
+                def replace_workspace() -> None:
+                    nonlocal detached, marker, replaced
+                    assert workspace is not None
+                    detached = workspace.with_name(
+                        f"detached-{moment}-{workspace.name}"
+                    )
+                    workspace.rename(detached)
+                    workspace.mkdir()
+                    marker = workspace / "foreign-marker"
+                    marker.write_bytes(b"must survive\n")
+                    replaced = True
+
+                def snapshot_after_replacement(source: Path) -> tuple[Path, Path]:
+                    replace_workspace()
+                    return real_snapshot(source)
+
+                def build_with_replacement(
+                    source: Path,
+                    output: Path,
+                    *,
+                    output_parent_fd: int,
+                ) -> Path:
+                    nonlocal workspace
+                    workspace = output.parent
+                    if moment == "before-builder":
+                        replace_workspace()
+                    return real_build(
+                        source,
+                        output,
+                        output_parent_fd=output_parent_fd,
+                    )
+
+                snapshot_patch = (
+                    mock.patch.object(
+                        build_module,
+                        "_snapshot_sources",
+                        side_effect=snapshot_after_replacement,
+                    )
+                    if moment == "after-builder-start"
+                    else mock.patch.object(
+                        build_module,
+                        "_snapshot_sources",
+                        wraps=real_snapshot,
+                    )
+                )
+                with (
+                    snapshot_patch,
+                    mock.patch.object(
+                        install_module,
+                        "build_opencode_package",
+                        side_effect=build_with_replacement,
+                    ),
+                ):
+                    with self.assertRaises(install_module.InstallError):
+                        install_opencode(repo, config, state)
+
+                self.assertTrue(replaced)
+                assert workspace is not None
+                assert detached is not None
+                assert marker is not None
+                self.assertEqual(tuple(workspace.iterdir()), (marker,))
+                self.assertEqual(marker.read_bytes(), b"must survive\n")
+                candidate_names = tuple(
+                    path.name
+                    for path in detached.iterdir()
+                    if path.name.startswith(".opencode-artifact.next-")
+                )
+                self.assertEqual(len(candidate_names), 1)
+                self.assertTrue(
+                    (detached / candidate_names[0] / "package.json").is_file()
+                )
 
 
 if __name__ == "__main__":
