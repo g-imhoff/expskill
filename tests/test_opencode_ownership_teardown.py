@@ -35,6 +35,265 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_initial_rollback_preserves_same_target_planned_only_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            replacement: tuple[Path, Path, tuple[int, int]] | None = None
+
+            def fail_before_link_publication(
+                destination: Path,
+                source: Path,
+                _record_staged: object = None,
+            ) -> tuple[int, int] | None:
+                nonlocal replacement
+                planned = receipt(state)
+                self.assertTrue(planned["pending_publish"]["planned_links"])
+                self.assertNotIn("destination_dev", planned["links"][0])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.symlink_to(source)
+                replacement = (
+                    destination,
+                    source,
+                    (destination.lstat().st_dev, destination.lstat().st_ino),
+                )
+                raise install_module.InstallError("injected link creation failure")
+
+            with mock.patch.object(
+                install_module,
+                "_create_destination_link",
+                side_effect=fail_before_link_publication,
+            ):
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "injected link creation failure"
+                ):
+                    install_opencode(repo, config, state)
+
+            assert replacement is not None
+            destination, source, identity = replacement
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(Path(os.readlink(destination)), source)
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino), identity
+            )
+            self.assertFalse(receipt_path(state).exists())
+
+    def test_leaf_retirement_crash_after_exchange_is_recovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            victim = payload["links"][0]
+            destination = Path(victim["destination"])
+            quarantine = install_module._deletion_quarantine_path(
+                destination,
+                victim["destination_dev"],
+                victim["destination_ino"],
+            )
+            real_exchange = install_module._renameat_exchange
+            injected = False
+
+            def crash_after_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                real_exchange(source_fd, source_name, target_fd, target_name)
+                if (
+                    source_name == quarantine.name
+                    and target_name.endswith(".retire")
+                    and not injected
+                ):
+                    injected = True
+                    raise SystemExit("after successful leaf retirement exchange")
+
+            with mock.patch.object(
+                install_module, "_renameat_exchange", side_effect=crash_after_exchange
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertTrue(receipt_path(state).is_file())
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(
+                any(path.name.endswith((".retire", ".sentinel")) for path in config.rglob(".*"))
+            )
+
+    def test_directory_retirement_crash_after_exchange_is_recovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            artifact = Path(receipt(state)["artifact_root"])
+            real_exchange = install_module._renameat_exchange
+            injected = False
+
+            def crash_after_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                real_exchange(source_fd, source_name, target_fd, target_name)
+                if (
+                    source_name == artifact.name
+                    and target_name.endswith(".retire-dir")
+                    and not injected
+                ):
+                    injected = True
+                    raise SystemExit("after successful directory retirement exchange")
+
+            with mock.patch.object(
+                install_module, "_renameat_exchange", side_effect=crash_after_exchange
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertTrue(receipt_path(state).is_file())
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(
+                any(
+                    path.name.endswith((".retire-dir", ".sentinel-dir"))
+                    for path in artifact.parent.iterdir()
+                )
+            )
+
+    def test_terminal_leaf_unlink_preserves_private_name_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            victim = payload["links"][0]
+            destination = Path(victim["destination"])
+            expected = (victim["destination_dev"], victim["destination_ino"])
+            quarantine = install_module._deletion_quarantine_path(destination, *expected)
+            foreign_target = root / "foreign-target"
+            real_stat = install_module.os.stat
+            injected: tuple[Path, Path] | None = None
+
+            def replace_before_terminal_unlink(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                nonlocal injected
+                metadata = real_stat(path, *args, **kwargs)
+                name = os.fspath(path)
+                directory_fd = kwargs.get("dir_fd")
+                if (
+                    injected is None
+                    and isinstance(name, str)
+                    and name.startswith(f".{quarantine.name}.")
+                    and name.endswith(".sentinel")
+                    and isinstance(directory_fd, int)
+                ):
+                    retirement_name = next(
+                        item
+                        for item in os.listdir(directory_fd)
+                        if item.startswith(f".{quarantine.name}.")
+                        and item.endswith(".retire")
+                    )
+                    detached_name = f"{retirement_name}.owned"
+                    os.rename(
+                        retirement_name,
+                        detached_name,
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                    )
+                    os.symlink(foreign_target, retirement_name, dir_fd=directory_fd)
+                    injected = (
+                        quarantine.parent / retirement_name,
+                        quarantine.parent / detached_name,
+                    )
+                return metadata
+
+            with mock.patch.object(
+                install_module.os, "stat", side_effect=replace_before_terminal_unlink
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    uninstall_opencode(repo, config, state)
+
+            assert injected is not None
+            private, detached = injected
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertTrue(private.is_symlink())
+            self.assertEqual(Path(os.readlink(private)), foreign_target)
+            self.assertEqual((detached.lstat().st_dev, detached.lstat().st_ino), expected)
+
+    def test_terminal_directory_remove_preserves_private_name_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            artifact = Path(payload["artifact_root"])
+            expected = (payload["artifact_dev"], payload["artifact_ino"])
+            real_stat = install_module.os.stat
+            injected: tuple[Path, Path] | None = None
+
+            def replace_before_terminal_remove(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                nonlocal injected
+                metadata = real_stat(path, *args, **kwargs)
+                name = os.fspath(path)
+                directory_fd = kwargs.get("dir_fd")
+                if (
+                    injected is None
+                    and isinstance(name, str)
+                    and name.startswith(f".{artifact.name}.")
+                    and name.endswith(".sentinel-dir")
+                    and isinstance(directory_fd, int)
+                ):
+                    retirement_name = next(
+                        item
+                        for item in os.listdir(directory_fd)
+                        if item.startswith(f".{artifact.name}.")
+                        and item.endswith(".retire-dir")
+                    )
+                    detached_name = f"{retirement_name}.owned"
+                    os.rename(
+                        retirement_name,
+                        detached_name,
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                    )
+                    os.mkdir(retirement_name, dir_fd=directory_fd)
+                    injected = (
+                        artifact.parent / retirement_name,
+                        artifact.parent / detached_name,
+                    )
+                return metadata
+
+            with mock.patch.object(
+                install_module.os, "stat", side_effect=replace_before_terminal_remove
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    uninstall_opencode(repo, config, state)
+
+            assert injected is not None
+            private, detached = injected
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertTrue(private.is_dir())
+            self.assertEqual((detached.stat().st_dev, detached.stat().st_ino), expected)
+
     def test_candidate_rollback_requires_live_exact_anchor_relationship(self) -> None:
         for generation in ("initial", "upgrade"):
             for anchor_change in ("missing", "foreign"):
