@@ -16,7 +16,7 @@ import scripts.build_opencode_package as build_module
 from scripts.build_opencode_package import BuildError, build_opencode_package
 
 ROOT = Path(__file__).resolve().parents[1]
-CODEX_ROOT = ROOT / "packages" / "expskill"
+PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 
 
 class ProbeBase(BaseException):
@@ -1514,13 +1514,13 @@ class OpencodePackageTests(unittest.TestCase):
             temporary_root = Path(temporary)
             lexical_output = temporary_root / "canonical-decoy" / "artifact"
             self._assert_descriptor_bound_source_parent_rejected(
-                CODEX_ROOT,
+                PLUGIN_ROOT,
                 lexical_output,
-                watched_source_dirs=(ROOT, CODEX_ROOT),
+                watched_source_dirs=(ROOT, PLUGIN_ROOT),
             )
 
     def test_descriptor_bound_output_rejects_descendant_source_parent_fd(self) -> None:
-        source_descendant = CODEX_ROOT / ".descriptor-bound-source-parent"
+        source_descendant = PLUGIN_ROOT / ".descriptor-bound-source-parent"
         source_descendant.mkdir()
         try:
             with tempfile.TemporaryDirectory() as temporary:
@@ -1528,7 +1528,7 @@ class OpencodePackageTests(unittest.TestCase):
                 self._assert_descriptor_bound_source_parent_rejected(
                     source_descendant,
                     lexical_output,
-                    watched_source_dirs=(ROOT, CODEX_ROOT, source_descendant),
+                    watched_source_dirs=(ROOT, PLUGIN_ROOT, source_descendant),
                 )
         finally:
             source_descendant.rmdir()
@@ -1542,13 +1542,13 @@ class OpencodePackageTests(unittest.TestCase):
             self._assert_descriptor_bound_source_parent_rejected(
                 ROOT,
                 lexical_output,
-                watched_source_dirs=(ROOT, CODEX_ROOT),
+                watched_source_dirs=(ROOT, PLUGIN_ROOT),
             )
             ancestor_output = temporary_root / "ancestor-decoy" / "artifact"
             self._assert_descriptor_bound_source_parent_rejected(
                 ROOT.parent,
                 ancestor_output,
-                watched_source_dirs=(ROOT, CODEX_ROOT),
+                watched_source_dirs=(ROOT, PLUGIN_ROOT),
             )
 
     def test_descriptor_bound_output_parent_ignores_replacement_path(self) -> None:
@@ -1813,8 +1813,8 @@ class OpencodePackageTests(unittest.TestCase):
 
                 missing_skills: list[str] = []
                 changed_skills: list[str] = []
-                for source in sorted((CODEX_ROOT / "skills").rglob("*")):
-                    relative_path = source.relative_to(CODEX_ROOT / "skills")
+                for source in sorted((PLUGIN_ROOT / "skills").rglob("*")):
+                    relative_path = source.relative_to(PLUGIN_ROOT / "skills")
                     if is_python_cache(relative_path) or not source.is_file():
                         continue
                     relative = relative_path.as_posix()
@@ -1838,18 +1838,18 @@ class OpencodePackageTests(unittest.TestCase):
 
                 for helper in SHARED_HELPERS:
                     contents = packed_bytes(f"scripts/{helper}")
-                    source = CODEX_ROOT / "scripts" / helper
+                    source = PLUGIN_ROOT / "scripts" / helper
                     if contents is not None and contents != source.read_bytes():
                         problems.append(f"tarball changed shared helper scripts/{helper}")
 
                 policy = packed_bytes("assets/execution-policy.json")
-                policy_source = CODEX_ROOT / "assets" / "execution-policy.json"
+                policy_source = PLUGIN_ROOT / "assets" / "execution-policy.json"
                 if policy is not None and policy != policy_source.read_bytes():
                     problems.append("tarball changed assets/execution-policy.json")
 
                 for license_name in THIRD_PARTY_LICENSES:
                     contents = packed_bytes(f"third-party/licenses/{license_name}")
-                    source = CODEX_ROOT / "third-party" / "licenses" / license_name
+                    source = PLUGIN_ROOT / "third-party" / "licenses" / license_name
                     if contents is not None and contents != source.read_bytes():
                         problems.append(
                             f"tarball changed third-party license {license_name}"

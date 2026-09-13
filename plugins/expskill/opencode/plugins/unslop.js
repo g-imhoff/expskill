@@ -164,7 +164,7 @@ function buildBlock(contents) {
 function resolveSkillPath(env, pluginFile) {
   const home = env?.EXPSKILL_HOME;
   if (home) {
-    return path.resolve(home, "packages", "expskill", "skills", "unslop", "SKILL.md");
+    return path.resolve(home, "plugins", "expskill", "skills", "unslop", "SKILL.md");
   }
   const base = path.dirname(fileURLToPath(pluginFile));
   return path.resolve(base, "..", "skills", "unslop", "SKILL.md");

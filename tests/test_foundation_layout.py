@@ -19,11 +19,61 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FoundationLayoutTests(unittest.TestCase):
+    def test_plugin_tree_is_the_only_canonical_shared_source(self) -> None:
+        plugin_root = ROOT / "plugins" / "expskill"
+        self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
+        self.assertTrue((plugin_root / "opencode").is_dir())
+        self.assertEqual(len([path for path in (plugin_root / "skills").iterdir() if path.is_dir()]), 12)
+        self.assertEqual(len(list((plugin_root / "assets" / "agents").glob("expskill-*.toml"))), 7)
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "packages/codex", "packages/opencode", "packages/expskill"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        self.assertEqual(tracked, [])
+
+    def test_builder_uses_plugin_tree_when_legacy_package_mirror_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            shutil.copytree(ROOT, source)
+
+            # A stale checkout can still contain an untracked package-shaped
+            # mirror.  It must never become a second build input.
+            legacy = source / "packages" / "expskill"
+            shutil.copytree(source / "plugins" / "expskill", legacy, dirs_exist_ok=True)
+            legacy_skill = legacy / "skills" / "unslop" / "SKILL.md"
+            legacy_skill.write_text(
+                legacy_skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "legacy package mirror marker"
+                ),
+                encoding="utf-8",
+            )
+
+            artifact = source.parent / "artifact"
+            build_opencode_package(source, artifact)
+            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 12)
+            self.assertEqual(len(list((artifact / "commands").glob("*.md"))), 12)
+            self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
+            canonical_skill = source / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            self.assertEqual(
+                (artifact / "skills" / "unslop" / "SKILL.md").read_bytes(),
+                canonical_skill.read_bytes(),
+            )
+            self.assertNotIn(
+                "legacy package mirror marker",
+                (artifact / "commands" / "unslop.md").read_text(encoding="utf-8"),
+            )
+            provenance = json.loads((artifact / "provenance.json").read_text(encoding="utf-8"))
+            self.assertTrue(provenance["inputs"])
+            self.assertFalse(any(item["path"].startswith("packages/") for item in provenance["inputs"]))
+
     def test_build_is_universal_deterministic_and_provenance_bound(self) -> None:
-        self.assertTrue((ROOT / "packages" / "expskill" / ".codex-plugin" / "plugin.json").is_file())
-        self.assertTrue((ROOT / "packages" / "expskill").is_dir())
-        self.assertTrue((ROOT / "packages" / "expskill" / "opencode").is_dir())
-        platform_root = ROOT / "packages" / "expskill" / "opencode"
+        self.assertTrue((ROOT / "plugins" / "expskill" / ".codex-plugin" / "plugin.json").is_file())
+        self.assertTrue((ROOT / "plugins" / "expskill").is_dir())
+        self.assertTrue((ROOT / "plugins" / "expskill" / "opencode").is_dir())
+        platform_root = ROOT / "plugins" / "expskill" / "opencode"
         for name in ("agents.json", "package.json", "README.md", "LICENSE", "index.js"):
             self.assertTrue((platform_root / name).is_file(), name)
         self.assertFalse((platform_root / "agents").exists())
@@ -64,9 +114,9 @@ class FoundationLayoutTests(unittest.TestCase):
 
             source = temporary_root / "source"
             shutil.copytree(ROOT, source)
-            skill = source / "packages" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            skill = source / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
             skill.write_text(skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"), encoding="utf-8")
-            profile = source / "packages" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            profile = source / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
             profile.write_text(profile.read_text(encoding="utf-8").replace("Independently review", "Changed agent marker"), encoding="utf-8")
             changed = temporary_root / "changed"
             build_opencode_package(source, changed)
@@ -82,7 +132,7 @@ class FoundationLayoutTests(unittest.TestCase):
             shutil.copytree(ROOT, source)
             outside = temporary_root / "outside"
             outside.write_text("unsafe\n", encoding="utf-8")
-            link = source / "packages" / "expskill" / "skills" / "unslop" / "unsafe.txt"
+            link = source / "plugins" / "expskill" / "skills" / "unslop" / "unsafe.txt"
             link.symlink_to(outside)
             with self.assertRaises(BuildError):
                 build_opencode_package(source, temporary_root / "output")
@@ -92,10 +142,10 @@ class FoundationLayoutTests(unittest.TestCase):
             temporary_root = Path(temporary)
             source = temporary_root / "source"
             shutil.copytree(ROOT, source)
-            real_packages = temporary_root / "real-packages"
-            shutil.move(source / "packages", real_packages)
-            (source / "packages").symlink_to(real_packages, target_is_directory=True)
-            output = real_packages / "generated-output"
+            real_plugins = temporary_root / "real-plugins"
+            shutil.move(source / "plugins", real_plugins)
+            (source / "plugins").symlink_to(real_plugins, target_is_directory=True)
+            output = real_plugins / "generated-output"
             with self.assertRaises(BuildError):
                 build_opencode_package(source, output)
             self.assertFalse(output.exists())
@@ -169,7 +219,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             copied = Path(temporary) / "repo"
             shutil.copytree(ROOT, copied)
-            overlay = copied / "packages" / "expskill" / "opencode" / "agents.json"
+            overlay = copied / "plugins" / "expskill" / "opencode" / "agents.json"
             spec = json.loads(overlay.read_text(encoding="utf-8"))
             spec["agents"]["expskill-review"].pop("closing")
             overlay.write_text(json.dumps(spec), encoding="utf-8")
@@ -200,7 +250,7 @@ class FoundationLayoutTests(unittest.TestCase):
                         build_opencode_package(source, output)
                     self.assertEqual(source_marker.read_text(encoding="utf-8"), "source content\n")
 
-            canonical_output = source / "packages" / "expskill" / "generated-output"
+            canonical_output = source / "plugins" / "expskill" / "generated-output"
             with self.assertRaises(BuildError):
                 build_opencode_package(source, canonical_output)
             self.assertEqual(source_marker.read_text(encoding="utf-8"), "source content\n")
@@ -218,7 +268,7 @@ class FoundationLayoutTests(unittest.TestCase):
             temporary_root = Path(temporary)
             root = temporary_root / "root"
             shutil.copytree(ROOT, root)
-            spec_path = root / "packages" / "expskill" / "opencode" / "agents.json"
+            spec_path = root / "plugins" / "expskill" / "opencode" / "agents.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8"))
 
             missing = json.loads(json.dumps(spec))
@@ -234,9 +284,9 @@ class FoundationLayoutTests(unittest.TestCase):
                 render_agents(root)
 
             spec_path.write_text(json.dumps(spec), encoding="utf-8")
-            profile = root / "packages" / "expskill" / "assets" / "agents" / "expskill-extra.toml"
+            profile = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-extra.toml"
             profile.write_text(
-                (root / "packages" / "expskill" / "assets" / "agents" / "expskill-spec.toml")
+                (root / "plugins" / "expskill" / "assets" / "agents" / "expskill-spec.toml")
                 .read_text(encoding="utf-8")
                 .replace('name = "expskill-spec"', 'name = "expskill-extra"', 1),
                 encoding="utf-8",
@@ -272,14 +322,14 @@ class FoundationLayoutTests(unittest.TestCase):
             temporary_root = Path(temporary)
             root = temporary_root / "root"
             shutil.copytree(ROOT, root)
-            profile = root / "packages" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            profile = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
             profile.write_text(
                 profile.read_text(encoding="utf-8").replace(
                     "developer_instructions = \"\"\"", "developer_instructions = \"\"\"\nMutation marker: review prompt.\n", 1
                 ),
                 encoding="utf-8",
             )
-            skill = root / "packages" / "expskill" / "skills" / "plan" / "SKILL.md"
+            skill = root / "plugins" / "expskill" / "skills" / "plan" / "SKILL.md"
             skill_contents = skill.read_text(encoding="utf-8")
             description_line = next(
                 line for line in skill_contents.splitlines() if line.startswith("description:")
@@ -302,8 +352,8 @@ class FoundationLayoutTests(unittest.TestCase):
 
             skill.write_text(
                 skill_contents.replace(
-                    'opencode/autoinvoke: "false"',
-                    'opencode/autoinvoke: "true"',
+                    "\n---\n",
+                    '\nmetadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "true"\n---\n',
                     1,
                 ),
                 encoding="utf-8",

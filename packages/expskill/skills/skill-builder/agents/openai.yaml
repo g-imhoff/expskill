@@ -1,7 +1,0 @@
-interface:
-  display_name: "Skill Builder"
-  short_description: "Create and improve evidence-backed agent skills"
-  default_prompt: "Use $skill-builder to create, improve, redesign, or evaluate this agent skill."
-
-policy:
-  allow_implicit_invocation: false

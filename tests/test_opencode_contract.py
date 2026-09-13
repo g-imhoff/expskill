@@ -17,7 +17,7 @@ from scripts.validate import _parse_frontmatter, _parse_overlay_frontmatter, val
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CODEX_ROOT = ROOT / "packages" / "expskill"
+PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 AGENTS = (
     "expskill-explorer",
     "expskill-planner",
@@ -58,7 +58,7 @@ class OpencodeContractTests(unittest.TestCase):
     def test_default_validation_rejects_missing_whole_source_surfaces(self) -> None:
         for surface, expected_error in (
             ("plugins", "plugin directory is missing"),
-            ("packages", "opencode package directory is missing"),
+            ("plugins/expskill/opencode", "opencode package directory is missing"),
         ):
             with self.subTest(surface=surface):
                 root = self.copy_repository()
@@ -71,7 +71,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_default_validation_rejects_missing_opencode_in_non_git_export(self) -> None:
         root = self.copy_repository(include_git=False)
-        shutil.rmtree(root / "packages" / "expskill" / "opencode")
+        shutil.rmtree(root / "plugins" / "expskill" / "opencode")
         errors = validate_repository(root)
         self.assertTrue(
             any("opencode package directory is missing" in error for error in errors),
@@ -83,24 +83,20 @@ class OpencodeContractTests(unittest.TestCase):
         names = skill_inventory(ROOT)
         self.assertEqual(sorted(path.name for path in (artifact / "skills").iterdir()), list(names))
         for name in names:
-            source = CODEX_ROOT / "skills" / name / "SKILL.md"
+            source = PLUGIN_ROOT / "skills" / name / "SKILL.md"
             exposed = artifact / "skills" / name / "SKILL.md"
             self.assertFalse(exposed.is_symlink())
             self.assertEqual(exposed.read_bytes(), source.read_bytes())
 
-    def test_every_shared_skill_declares_exact_opencode_metadata(self) -> None:
+    def test_every_shared_skill_preserves_canonical_frontmatter(self) -> None:
         for name in skill_inventory(ROOT):
             with self.subTest(skill=name):
-                contents = (CODEX_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+                contents = (PLUGIN_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
                 errors: list[str] = []
                 frontmatter = _parse_frontmatter(contents, name, errors)
                 self.assertEqual(errors, [])
                 assert frontmatter is not None
-                expected_autoinvoke = "true" if name == "use-expskill" else "false"
-                self.assertEqual(
-                    frontmatter.get("metadata"),
-                    {"opencode/slash": "true", "opencode/autoinvoke": expected_autoinvoke},
-                )
+                self.assertNotIn("metadata", frontmatter)
 
     def test_every_command_routes_to_its_skill_and_catalog_description_is_bounded(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
@@ -125,13 +121,13 @@ class OpencodeContractTests(unittest.TestCase):
         _temporary, artifact = self.build_artifact(ROOT)
         rendered = render_agents(ROOT)
         self.assertEqual(set(rendered), set(AGENTS))
-        spec = json.loads((CODEX_ROOT / "opencode" / "agents.json").read_text(encoding="utf-8"))
+        spec = json.loads((PLUGIN_ROOT / "opencode" / "agents.json").read_text(encoding="utf-8"))
         active = spec["model_profiles"][spec["default_model_profile"]]
         catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
         for name in AGENTS:
             with self.subTest(agent=name):
                 profile = tomllib.loads(
-                    (CODEX_ROOT / "assets" / "agents" / f"{name}.toml").read_text(encoding="utf-8")
+                    (PLUGIN_ROOT / "assets" / "agents" / f"{name}.toml").read_text(encoding="utf-8")
                 )
                 contents = (artifact / "agents" / f"{name}.md").read_text(encoding="utf-8")
                 self.assertEqual(contents, rendered[name])
@@ -159,7 +155,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_provider_switch_renders_every_agent_with_new_model(self) -> None:
         root = self.copy_repository()
-        spec_path = root / "packages" / "expskill" / "opencode" / "agents.json"
+        spec_path = root / "plugins" / "expskill" / "opencode" / "agents.json"
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         spec["default_model_profile"] = "opencode-free"
         spec_path.write_text(json.dumps(spec), encoding="utf-8")
@@ -172,7 +168,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_dynamic_new_skill_is_included_without_hardcoded_inventory(self) -> None:
         root = self.copy_repository()
-        skill = root / "packages" / "expskill" / "skills" / "future-skill"
+        skill = root / "plugins" / "expskill" / "skills" / "future-skill"
         skill.mkdir()
         (skill / "SKILL.md").write_text(
             "---\nname: future-skill\ndescription: Future skill.\nmetadata:\n  opencode/slash: \"true\"\n  opencode/autoinvoke: \"false\"\n---\n\nFuture.\n",
@@ -185,7 +181,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_explorer_is_the_named_high_reasoning_external_research_route(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
-        spec = json.loads((CODEX_ROOT / "opencode" / "agents.json").read_text(encoding="utf-8"))
+        spec = json.loads((PLUGIN_ROOT / "opencode" / "agents.json").read_text(encoding="utf-8"))
         for profile in spec["model_profiles"].values():
             self.assertEqual(profile["reasoningEffort"], "xhigh")
         explorer = (artifact / "agents" / "expskill-explorer.md").read_text(encoding="utf-8").lower()
@@ -199,14 +195,14 @@ class OpencodeContractTests(unittest.TestCase):
             self.assertIn(phrase, explorer)
 
     def test_package_version_matches_codex_base_version(self) -> None:
-        package = json.loads((CODEX_ROOT / "opencode" / "package.json").read_text(encoding="utf-8"))
-        manifest = json.loads((CODEX_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        package = json.loads((PLUGIN_ROOT / "opencode" / "package.json").read_text(encoding="utf-8"))
+        manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(package["name"], "opencode-expskill")
         self.assertEqual(package["version"], str(manifest["version"]).split("+")[0])
 
     def test_execution_policy_is_copied_to_artifact(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
-        canonical = (CODEX_ROOT / "assets" / "execution-policy.json").read_bytes()
+        canonical = (PLUGIN_ROOT / "assets" / "execution-policy.json").read_bytes()
         self.assertEqual((artifact / "assets" / "execution-policy.json").read_bytes(), canonical)
         plugin = (artifact / "plugins" / "execution-policy.js").read_text(encoding="utf-8")
         self.assertIn("requestedAgent(output?.args)", plugin)
@@ -214,12 +210,12 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_validation_does_not_require_checked_in_generated_mirrors(self) -> None:
         self.assertEqual(validate_repository(ROOT), ())
-        self.assertFalse((CODEX_ROOT / "opencode" / "commands").exists())
-        self.assertFalse((CODEX_ROOT / "opencode" / "agents").exists())
+        self.assertFalse((PLUGIN_ROOT / "opencode" / "commands").exists())
+        self.assertFalse((PLUGIN_ROOT / "opencode" / "agents").exists())
 
     def test_validation_reports_malformed_overlay_closing(self) -> None:
         root = self.copy_repository()
-        overlay = root / "packages" / "expskill" / "opencode" / "agents.json"
+        overlay = root / "plugins" / "expskill" / "opencode" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
         del spec["agents"]["expskill-review"]["closing"]
         overlay.write_text(json.dumps(spec), encoding="utf-8")
@@ -228,7 +224,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_source_mutation_changes_fresh_artifact_only(self) -> None:
         root = self.copy_repository()
-        skill = root / "packages" / "expskill" / "skills" / "unslop" / "SKILL.md"
+        skill = root / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
         skill.write_text(
             skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"),
             encoding="utf-8",

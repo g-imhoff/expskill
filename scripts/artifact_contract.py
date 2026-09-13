@@ -28,7 +28,7 @@ def artifact_output_relative(source_relative: str | Path) -> str | None:
     """Map a repository source path to its published artifact path."""
 
     relative = Path(source_relative)
-    package_marker = Path("packages") / "expskill"
+    package_marker = Path("plugins") / "expskill"
     if relative.parts[:2] != package_marker.parts:
         return None
     within = Path(*relative.parts[2:])

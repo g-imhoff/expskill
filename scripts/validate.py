@@ -2220,7 +2220,7 @@ def _validate_skill_punctuation(repository_root: Path, errors: list[str]) -> Non
                 errors.append(f"skill text {relative} contains an em dash")
             if ";" in contents:
                 errors.append(f"skill text {relative} contains a semicolon")
-    opencode_root = repository_root / "packages" / "expskill" / "opencode"
+    opencode_root = repository_root / "plugins" / "expskill" / "opencode"
     if opencode_root.is_dir():
         for path in sorted(opencode_root.rglob("*")):
             if "skills" in path.relative_to(opencode_root).parts:
@@ -3005,7 +3005,7 @@ def _active_opencode_model(package_root: Path) -> tuple[str | None, str | None]:
 def _validator_source_inventory(root: Path) -> list[tuple[str, Path]]:
     """Walk the contract roster independently of the package builder."""
 
-    package_root = root / "packages" / "expskill"
+    package_root = root / "plugins" / "expskill"
     paths: list[tuple[str, Path]] = []
 
     def add(path: Path) -> None:
@@ -3101,7 +3101,7 @@ def _validate_built_opencode_artifact(
     """Validate the exact built bytes, provenance, inventory, and metadata."""
 
     expected_files: dict[str, bytes] = {}
-    package_root = repository_root / "packages" / "expskill"
+    package_root = repository_root / "plugins" / "expskill"
     platform_root = package_root / "opencode"
     try:
         for name in PLATFORM_FILES:
@@ -3212,7 +3212,7 @@ def _validate_built_opencode_artifact(
 
 
 def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None:
-    package_root = repository_root / "packages" / "expskill" / "opencode"
+    package_root = repository_root / "plugins" / "expskill" / "opencode"
     if not _validate_opencode_root(package_root, errors):
         return
     _validate_opencode_platform_source(package_root, errors)
@@ -3239,10 +3239,10 @@ def _validate_opencode_package(repository_root: Path, errors: list[str]) -> None
             errors.append(f"opencode artifact could not be built: {error}")
             return
         _validate_built_opencode_artifact(repository_root, artifact, rendered, errors)
-        _validate_opencode_shared_skills(repository_root / "packages" / "expskill", artifact, errors, skill_names)
+        _validate_opencode_shared_skills(repository_root / "plugins" / "expskill", artifact, errors, skill_names)
         _validate_opencode_commands(artifact, errors, skill_names)
-        _validate_opencode_agents(repository_root, repository_root / "packages" / "expskill", artifact, errors)
-        _validate_opencode_policy_asset(repository_root / "packages" / "expskill", artifact, errors)
+        _validate_opencode_agents(repository_root, repository_root / "plugins" / "expskill", artifact, errors)
+        _validate_opencode_policy_asset(repository_root / "plugins" / "expskill", artifact, errors)
         _validate_opencode_catalog(artifact, rendered, errors)
 
 
@@ -3378,17 +3378,18 @@ def _validate_opencode_shared_skills(
         if probe or frontmatter is None:
             continue
         metadata = frontmatter.get("metadata")
-        if not isinstance(metadata, dict) or set(metadata) != set(SHARED_SKILL_METADATA_KEYS):
-            errors.append(f"{label} frontmatter metadata must declare the exact opencode keys")
-            continue
-        if metadata.get("opencode/slash") != "true":
-            errors.append(f"{label} frontmatter metadata opencode/slash must be 'true'")
-        expected_autoinvoke = "true" if name == "use-expskill" else "false"
-        if metadata.get("opencode/autoinvoke") != expected_autoinvoke:
-            errors.append(
-                f"{label} frontmatter metadata opencode/autoinvoke must be "
-                f"{expected_autoinvoke!r}"
-            )
+        if metadata is not None:
+            if not isinstance(metadata, dict) or set(metadata) != set(SHARED_SKILL_METADATA_KEYS):
+                errors.append(f"{label} frontmatter metadata must declare the exact opencode keys")
+                continue
+            if metadata.get("opencode/slash") != "true":
+                errors.append(f"{label} frontmatter metadata opencode/slash must be 'true'")
+            expected_autoinvoke = "true" if name == "use-expskill" else "false"
+            if metadata.get("opencode/autoinvoke") != expected_autoinvoke:
+                errors.append(
+                    f"{label} frontmatter metadata opencode/autoinvoke must be "
+                    f"{expected_autoinvoke!r}"
+                )
         description = frontmatter.get("description")
         if isinstance(description, str) and len(description) > 1024:
             errors.append(f"{label} description exceeds the opencode discovery limit")
