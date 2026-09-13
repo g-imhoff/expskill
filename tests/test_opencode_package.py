@@ -46,6 +46,215 @@ def run(
 
 
 class OpencodePackageTests(unittest.TestCase):
+    def test_rollback_does_not_exchange_dual_foreign_occupants(self) -> None:
+        """Foreign public and private occupants stay under their own names."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            staging_name = ".artifact.staging"
+            placeholder_name = ".artifact.rollback"
+            staging = parent / staging_name
+            placeholder = parent / placeholder_name
+            staging.mkdir()
+            placeholder.mkdir()
+            staging_identity = (staging.stat().st_dev, staging.stat().st_ino)
+            placeholder_identity = (placeholder.stat().st_dev, placeholder.stat().st_ino)
+            output = parent / "artifact"
+            staging.rename(output)
+            output.rename(parent / "owned-away")
+            output.mkdir()
+            (output / "public-foreign").write_text("foreign\n", encoding="utf-8")
+            placeholder.rename(parent / "placeholder-owned-away")
+            placeholder.mkdir()
+            (placeholder / "private-foreign").write_text("foreign\n", encoding="utf-8")
+            binding = build_module._OutputBinding(
+                parent,
+                parent_fd,
+                (parent.stat().st_dev, parent.stat().st_ino),
+                staging_name,
+                staging_identity,
+                -1,
+                False,
+                (),
+                placeholder_name,
+                placeholder_identity,
+                -1,
+            )
+            try:
+                with mock.patch.object(
+                    build_module,
+                    "_renameat2_exchange",
+                    wraps=build_module._renameat2_exchange,
+                ) as exchange:
+                    build_module._rollback_published_output(binding, output.name)
+            finally:
+                os.close(parent_fd)
+            exchange.assert_not_called()
+            self.assertTrue((output / "public-foreign").is_file())
+            self.assertTrue((placeholder / "private-foreign").is_file())
+            self.assertFalse((parent / "owned-away").exists())
+            self.assertFalse((parent / "placeholder-owned-away").exists())
+
+    def test_reclaim_rescans_after_each_attempt_for_renamed_identity(self) -> None:
+        """Reclamation finds an owned directory moved after its first attempt."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            owned = parent / "preferred"
+            late = parent / "late-name"
+            owned.mkdir()
+            identity = (owned.stat().st_dev, owned.stat().st_ino)
+            calls: list[str] = []
+
+            def move_then_reclaim(
+                _parent_fd: int, name: str, _expected: object = None
+            ) -> None:
+                calls.append(name)
+                if name == owned.name:
+                    owned.rename(late)
+                    return
+                shutil.rmtree(late)
+
+            try:
+                with mock.patch.object(
+                    build_module,
+                    "_remove_tree_at",
+                    side_effect=move_then_reclaim,
+                ):
+                    reclaimed = build_module._reclaim_directory_identity(
+                        parent_fd, identity, (owned.name,)
+                    )
+            finally:
+                os.close(parent_fd)
+            self.assertTrue(reclaimed)
+            self.assertEqual(calls, [owned.name, late.name])
+            self.assertFalse(late.exists())
+
+    def test_placeholder_allocation_failure_reclaims_staging_and_closes_fds(self) -> None:
+        """A failed placeholder allocation does not strand staging or descriptors."""
+
+        def fd_snapshot() -> set[int]:
+            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            workspace = root / "workspace"
+            workspace.mkdir()
+            caller_fd = os.open(workspace, build_module._directory_open_flags())
+            before = fd_snapshot()
+
+            def fail_placeholder(parent_fd: int, prefix: str) -> tuple[str, tuple[int, int], int]:
+                self.assertTrue(prefix.startswith(".artifact.rollback-"))
+                raise OSError("injected placeholder allocation failure")
+
+            try:
+                with mock.patch.object(
+                    build_module, "_allocate_empty_directory", side_effect=fail_placeholder
+                ):
+                    with self.assertRaises(BuildError):
+                        build_opencode_package(repo, workspace / "artifact", output_parent_fd=caller_fd)
+            finally:
+                after = fd_snapshot()
+                self.assertEqual(after, before)
+                os.fstat(caller_fd)
+                os.close(caller_fd)
+            self.assertEqual(tuple(workspace.iterdir()), ())
+
+    def test_placeholder_allocation_cleanup_failure_still_closes_fds(self) -> None:
+        """Cleanup errors after placeholder failure are reported as BuildError."""
+
+        def fd_snapshot() -> set[int]:
+            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            workspace = root / "workspace"
+            workspace.mkdir()
+            caller_fd = os.open(workspace, build_module._directory_open_flags())
+            before = fd_snapshot()
+
+            def fail_placeholder(_parent_fd: int, _prefix: str) -> tuple[str, tuple[int, int], int]:
+                raise OSError("injected placeholder allocation failure")
+
+            try:
+                with (
+                    mock.patch.object(
+                        build_module, "_allocate_empty_directory", side_effect=fail_placeholder
+                    ),
+                    mock.patch.object(
+                        build_module,
+                        "_reclaim_directory_identity",
+                        side_effect=OSError("injected cleanup failure"),
+                    ),
+                ):
+                    with self.assertRaises(BuildError):
+                        build_opencode_package(repo, workspace / "artifact", output_parent_fd=caller_fd)
+            finally:
+                after = fd_snapshot()
+                self.assertEqual(after, before)
+                os.fstat(caller_fd)
+                os.close(caller_fd)
+
+    def test_render_failure_reclaims_relocated_staging_and_placeholder(self) -> None:
+        """Render-time relocation still cleans both builder-owned directories."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            workspace = root / "workspace"
+            workspace.mkdir()
+            output = workspace / "artifact"
+            relocated = workspace / ".relocated-staging"
+
+            def relocate_then_fail(_source: Path) -> dict[str, str]:
+                staging = next(
+                    path
+                    for path in workspace.iterdir()
+                    if path.name.startswith(".artifact.")
+                    and not path.name.startswith(".artifact.rollback-")
+                )
+                staging.rename(relocated)
+                raise build_module.RenderError("injected render failure")
+
+            with mock.patch.object(build_module, "render_all", side_effect=relocate_then_fail):
+                with self.assertRaises(BuildError):
+                    build_opencode_package(repo, output)
+            self.assertFalse(output.exists())
+            self.assertEqual(tuple(workspace.iterdir()), ())
+
+    def test_write_bytes_closes_nested_directory_when_leaf_open_fails(self) -> None:
+        """A leaf allocation error cannot leak the descriptor for its parent."""
+
+        def fd_snapshot() -> set[int]:
+            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            before = fd_snapshot()
+            real_open = build_module.os.open
+
+            def fail_leaf(path: object, flags: int, *args: object, **kwargs: object) -> int:
+                if path == "leaf.txt":
+                    raise OSError("injected leaf allocation failure")
+                return real_open(path, flags, *args, **kwargs)
+
+            try:
+                with mock.patch.object(build_module.os, "open", side_effect=fail_leaf):
+                    with self.assertRaises(OSError):
+                        build_module._write_bytes_at(parent_fd, Path("nested/leaf.txt"), b"x")
+                after = fd_snapshot()
+                self.assertEqual(after, before)
+            finally:
+                os.close(parent_fd)
+
     def test_post_publish_fsync_failure_rolls_back_after_parent_relocation(self) -> None:
         """A failure after rename must not strand output under a source root."""
 

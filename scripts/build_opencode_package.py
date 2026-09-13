@@ -270,25 +270,27 @@ def _mkdir_at(parent_fd: int, relative: Path) -> int:
 
 def _write_bytes_at(parent_fd: int, relative: Path, contents: bytes) -> None:
     directory_fd = _mkdir_at(parent_fd, relative.parent)
-    descriptor = os.open(
-        relative.name,
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_TRUNC
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-        mode=ARTIFACT_FILE_MODE,
-        dir_fd=directory_fd,
-    )
     try:
-        view = memoryview(contents)
-        while view:
-            written = os.write(descriptor, view)
-            view = view[written:]
-        os.fchmod(descriptor, ARTIFACT_FILE_MODE)
-        os.utime(descriptor, (ARTIFACT_MTIME, ARTIFACT_MTIME))
+        descriptor = os.open(
+            relative.name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_TRUNC
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            mode=ARTIFACT_FILE_MODE,
+            dir_fd=directory_fd,
+        )
+        try:
+            view = memoryview(contents)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fchmod(descriptor, ARTIFACT_FILE_MODE)
+            os.utime(descriptor, (ARTIFACT_MTIME, ARTIFACT_MTIME))
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(descriptor)
         if directory_fd != parent_fd:
             os.close(directory_fd)
 
@@ -871,8 +873,19 @@ def _renameat2_exchange(parent_fd: int, source_name: str, destination_name: str)
     raise OSError(error_number, os.strerror(error_number))
 
 
+def _entry_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _stat_name(parent_fd: int, name: str) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
 def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None = None) -> None:
-    """Remove one directory through its opened descriptor and parent binding."""
+    """Reclaim after identity checks; Linux has no inode-conditional rmdir/unlink."""
 
     try:
         metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -910,80 +923,16 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None =
                 # Unknown entries are preserved rather than guessed at.
                 continue
         try:
+            if _entry_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != _entry_identity(opened):
+                return
+        except OSError:
+            return
+        try:
             os.rmdir(name, dir_fd=parent_fd)
         except OSError:
             pass
     finally:
         os.close(descriptor)
-
-
-def _entry_identity(metadata: os.stat_result) -> tuple[int, int]:
-    return metadata.st_dev, metadata.st_ino
-
-
-def _stat_name(parent_fd: int, name: str) -> os.stat_result | None:
-    try:
-        return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return None
-
-
-def _remove_empty_identity_at(parent_fd: int, name: str, expected: tuple[int, int]) -> bool:
-    metadata = _stat_name(parent_fd, name)
-    if metadata is None or not stat.S_ISDIR(metadata.st_mode) or _entry_identity(metadata) != expected:
-        return False
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
-        opened = os.fstat(descriptor)
-        if _entry_identity(opened) != expected or os.listdir(descriptor):
-            return False
-    except OSError:
-        return False
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    current = _stat_name(parent_fd, name)
-    if current is None or not stat.S_ISDIR(current.st_mode) or _entry_identity(current) != expected:
-        return False
-    try:
-        os.rmdir(name, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _remove_tree_from_descriptor(directory_fd: int) -> None:
-    try:
-        entries = list(os.scandir(directory_fd))
-    except OSError:
-        return
-    for entry in entries:
-        try:
-            metadata = entry.stat(follow_symlinks=False)
-        except OSError:
-            continue
-        identity = _entry_identity(metadata)
-        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-            try:
-                child = os.open(entry.name, _directory_open_flags(), dir_fd=directory_fd)
-                try:
-                    if _entry_identity(os.fstat(child)) == identity:
-                        _remove_tree_from_descriptor(child)
-                finally:
-                    os.close(child)
-            except OSError:
-                continue
-            _remove_empty_identity_at(directory_fd, entry.name, identity)
-        elif stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            current = _stat_name(directory_fd, entry.name)
-            if current is not None and _entry_identity(current) == identity:
-                try:
-                    os.unlink(entry.name, dir_fd=directory_fd)
-                except OSError:
-                    pass
 
 
 def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[int, int], int]:
@@ -1007,7 +956,7 @@ def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[i
             if descriptor is not None:
                 os.close(descriptor)
             if metadata is not None:
-                _remove_empty_identity_at(parent_fd, name, _entry_identity(metadata))
+                _remove_tree_at(parent_fd, name, metadata)
             raise
     raise BuildError(f"cannot allocate a unique private directory under descriptor {parent_fd}")
 
@@ -1015,8 +964,8 @@ def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[i
 def _directory_names_with_identity(parent_fd: int, expected: tuple[int, int]) -> list[str]:
     try:
         names = os.listdir(parent_fd)
-    except OSError:
-        return []
+    except OSError as error:
+        raise BuildError(f"directory inventory cannot be read: {error}") from error
     return [
         name for name in names
         if (metadata := _stat_name(parent_fd, name)) is not None
@@ -1025,69 +974,28 @@ def _directory_names_with_identity(parent_fd: int, expected: tuple[int, int]) ->
     ]
 
 
-def _remove_exact_directory_path(
-    parent_fd: int, name: str, expected: tuple[int, int], _label: str
-) -> bool:
-    metadata = _stat_name(parent_fd, name)
-    if metadata is None or not stat.S_ISDIR(metadata.st_mode) or _entry_identity(metadata) != expected:
-        return False
-    sentinel_name, sentinel_identity, sentinel_fd = _allocate_empty_directory(
-        parent_fd, f".{name}.cleanup-"
-    )
-    try:
-        try:
-            _renameat2_exchange(parent_fd, name, sentinel_name)
-        except OSError:
-            return False
-        public = _stat_name(parent_fd, name)
-        quarantined = _stat_name(parent_fd, sentinel_name)
-        if (
-            public is None
-            or _entry_identity(public) != sentinel_identity
-            or quarantined is None
-            or not stat.S_ISDIR(quarantined.st_mode)
-            or _entry_identity(quarantined) != expected
-        ):
-            # Exchange back only when the sentinel is still at the original
-            # name.  Whatever occupies quarantine is then returned to its
-            # original public name without overwriting it.
-            if public is not None and _entry_identity(public) == sentinel_identity:
-                try:
-                    _renameat2_exchange(parent_fd, name, sentinel_name)
-                except OSError:
-                    pass
-            return False
-        try:
-            quarantined_fd = os.open(sentinel_name, _directory_open_flags(), dir_fd=parent_fd)
-        except OSError:
-            return False
-        try:
-            opened = os.fstat(quarantined_fd)
-            if _entry_identity(opened) != expected:
-                return False
-            _remove_tree_from_descriptor(quarantined_fd)
-        finally:
-            os.close(quarantined_fd)
-        if not _remove_empty_identity_at(parent_fd, sentinel_name, expected):
-            return False
-        _remove_empty_identity_at(parent_fd, name, sentinel_identity)
-        return True
-    finally:
-        _close_owned_descriptors(sentinel_fd)
-        _remove_empty_identity_at(parent_fd, sentinel_name, sentinel_identity)
+_RECLAIM_ATTEMPTS = 8
 
 
 def _reclaim_directory_identity(
     parent_fd: int,
     expected: tuple[int, int],
     preferred_names: Iterable[str],
-    label: str,
 ) -> bool:
-    candidates: list[str] = []
-    for name in (*preferred_names, *_directory_names_with_identity(parent_fd, expected)):
-        if name not in candidates:
-            candidates.append(name)
-    return any(_remove_exact_directory_path(parent_fd, name, expected, label) for name in candidates)
+    preferred = tuple(dict.fromkeys(preferred_names))
+    for _attempt in range(_RECLAIM_ATTEMPTS):
+        names = _directory_names_with_identity(parent_fd, expected)
+        if not names:
+            return True
+        ordered = [name for name in preferred if name in names]
+        ordered.extend(name for name in names if name not in ordered)
+        name = ordered[0]
+        metadata = _stat_name(parent_fd, name)
+        if metadata is not None and stat.S_ISDIR(metadata.st_mode) and _entry_identity(metadata) == expected:
+            _remove_tree_at(parent_fd, name, metadata)
+    # A known inode still visible after the bounded retry budget is a cleanup
+    # failure, not a successful reclaim.
+    return not _directory_names_with_identity(parent_fd, expected)
 
 
 def _close_owned_descriptors(*descriptors: int) -> None:
@@ -1102,14 +1010,39 @@ def _close_owned_descriptors(*descriptors: int) -> None:
 def _cleanup_placeholder(binding: _OutputBinding) -> None:
     if not binding.placeholder_name or binding.placeholder_identity == (0, 0):
         return
-    _reclaim_directory_identity(
+    reclaimed = _reclaim_directory_identity(
         binding.parent_fd,
         binding.placeholder_identity,
         (binding.placeholder_name,),
-        "rollback placeholder",
     )
-    if _directory_names_with_identity(binding.parent_fd, binding.placeholder_identity):
+    if not reclaimed:
         raise BuildError("rollback placeholder could not be reclaimed safely")
+
+
+def _handle_placeholder_allocation_failure(
+    parent_fd: int,
+    staging_name: str,
+    staging_identity: tuple[int, int],
+    error: BaseException,
+    owned_descriptors: tuple[int, ...],
+) -> None:
+    cleanup_error: BaseException | None = None
+    try:
+        if not _reclaim_directory_identity(
+            parent_fd,
+            staging_identity,
+            (staging_name,),
+        ):
+            raise BuildError("OpenCode staging could not be reclaimed safely")
+    except BaseException as raised:
+        cleanup_error = raised
+    finally:
+        _close_owned_descriptors(*owned_descriptors)
+    if cleanup_error is not None:
+        raise BuildError(
+            f"staging cleanup failed after placeholder allocation error: {cleanup_error}"
+        ) from cleanup_error
+    raise BuildError(f"rollback placeholder cannot be allocated: {error}") from error
 
 
 def _fsync_tree_at(directory_fd: int) -> None:
@@ -1154,14 +1087,14 @@ def _fsync_tree_at(directory_fd: int) -> None:
 
 
 def _rollback_published_output(binding: _OutputBinding, output_name: str) -> None:
-    """Rollback publication using exchange and identity-bound inventory.
+    """Rollback publication using checked exchange and bounded identity scans.
 
     ``renameat2(RENAME_NOREPLACE)`` cannot safely undo publication: a foreign
     replacement can win the public name between the observation and rename,
     causing that foreign inode to be moved into the builder's staging name.
     The retained empty placeholder gives rollback an atomic exchange point.
-    Every cleanup operation below proves the exact builder identity again and
-    leaves mismatches in place.
+    Every cleanup operation revalidates the builder identity and leaves every
+    mismatch it observes in place.
     """
 
     try:
@@ -1169,9 +1102,12 @@ def _rollback_published_output(binding: _OutputBinding, output_name: str) -> Non
         if placeholder_name:
             output = _stat_name(binding.parent_fd, output_name)
             placeholder = _stat_name(binding.parent_fd, placeholder_name)
-            if output is not None and placeholder is not None:
-                output_before = _entry_identity(output)
-                placeholder_before = _entry_identity(placeholder)
+            if (
+                output is not None
+                and placeholder is not None
+                and _entry_identity(output) == binding.staging_identity
+                and _entry_identity(placeholder) == binding.placeholder_identity
+            ):
                 try:
                     _renameat2_exchange(
                         binding.parent_fd,
@@ -1182,53 +1118,32 @@ def _rollback_published_output(binding: _OutputBinding, output_name: str) -> Non
                     pass
                 else:
                     exchanged_output = _stat_name(binding.parent_fd, output_name)
-                    exchanged_private = _stat_name(
-                        binding.parent_fd, placeholder_name
-                    )
-                    desired = (
-                        exchanged_output is not None
-                        and _entry_identity(exchanged_output)
-                        == binding.placeholder_identity
-                        and exchanged_private is not None
-                        and _entry_identity(exchanged_private)
-                        == binding.staging_identity
-                    )
-                    if not desired:
-                        # Restore the public occupant whenever the exchange
-                        # moved anything other than our staged inode there.
-                        # Exchange preserves the exact foreign inode; it never
-                        # overwrites one by pathname.
-                        if (
-                            exchanged_output is not None
-                            and exchanged_private is not None
-                            and (
-                                _entry_identity(exchanged_output)
-                                == binding.placeholder_identity
-                                or (
-                                    output_before == binding.staging_identity
-                                    and placeholder_before != binding.placeholder_identity
-                                )
+                    exchanged_private = _stat_name(binding.parent_fd, placeholder_name)
+                    if (
+                        exchanged_output is None
+                        or exchanged_private is None
+                        or _entry_identity(exchanged_output) != binding.placeholder_identity
+                        or _entry_identity(exchanged_private) != binding.staging_identity
+                    ) and exchanged_output is not None and exchanged_private is not None:
+                        # Reverse this exact exchange while both names remain;
+                        # this keeps a replacement out of the private namespace.
+                        try:
+                            _renameat2_exchange(
+                                binding.parent_fd,
+                                output_name,
+                                placeholder_name,
                             )
-                        ):
-                            try:
-                                _renameat2_exchange(
-                                    binding.parent_fd,
-                                    output_name,
-                                    placeholder_name,
-                                )
-                            except OSError:
-                                pass
+                        except OSError:
+                            pass
         _reclaim_directory_identity(
             binding.parent_fd,
             binding.staging_identity,
             (binding.staging_name, output_name, placeholder_name),
-            "published OpenCode artifact",
         )
         _reclaim_directory_identity(
             binding.parent_fd,
             binding.placeholder_identity,
             (placeholder_name, output_name),
-            "rollback placeholder",
         )
     except BaseException:
         # Rollback is best effort while preserving the original build error.
@@ -1265,12 +1180,14 @@ def _replace_output(staging: Path, output: Path) -> None:
             placeholder_name, placeholder_identity, placeholder_fd = _allocate_empty_directory(
                 parent_fd, f".{output.name}.rollback-"
             )
-        except BaseException:
-            try:
-                _remove_tree_at(parent_fd, staging.name, staging_metadata)
-            finally:
-                _close_owned_descriptors(staging_fd, parent_fd)
-            raise
+        except BaseException as error:
+            _handle_placeholder_allocation_failure(
+                parent_fd,
+                staging.name,
+                _entry_identity(staging_metadata),
+                error,
+                (staging_fd, parent_fd),
+            )
         binding = _OutputBinding(
             output.parent,
             parent_fd,
@@ -1354,55 +1271,42 @@ def _cleanup_staging(
     prefix: str,
     identity: os.stat_result | None = None,
 ) -> None:
-    """Remove only the builder-owned staging directory after a failed build."""
+    """Reclaim the owned staging identity and rollback placeholder after failure."""
 
     binding = _OUTPUT_BINDINGS.get(os.path.abspath(os.fspath(staging)))
     if binding is not None:
         try:
-            try:
-                metadata = os.stat(
-                    binding.staging_name,
-                    dir_fd=binding.parent_fd,
-                    follow_symlinks=False,
-                )
-            except OSError:
+            expected = binding.staging_identity
+            if identity is not None and _entry_identity(identity) != expected:
                 return
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                return
-            if identity is not None and (
-                metadata.st_dev != identity.st_dev or metadata.st_ino != identity.st_ino
+            if not _reclaim_directory_identity(
+                binding.parent_fd,
+                expected,
+                (binding.staging_name,),
             ):
-                return
-            _remove_tree_at(binding.parent_fd, binding.staging_name, metadata)
+                raise BuildError("OpenCode staging could not be reclaimed safely")
         finally:
-            try:
-                _cleanup_placeholder(binding)
-            except BaseException:
-                pass
+            _cleanup_placeholder(binding)
         return
 
     if staging.parent != staging_parent or not staging.name.startswith(prefix):
         return
     try:
-        metadata = os.lstat(staging)
-    except FileNotFoundError:
-        return
-    except OSError:
-        return
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        return
-    if identity is not None:
-        if metadata.st_dev != identity.st_dev or metadata.st_ino != identity.st_ino:
-            return
-    # This path is used only by the public two-argument seam.  Re-open and
-    # re-verify the exact leaf identity immediately before descriptor-bound
-    # cleanup; never recursively reopen an untrusted lexical name.
-    try:
         parent_fd = _open_directory_chain(staging_parent, create=False)
     except BuildError:
         return
     try:
-        _remove_tree_at(parent_fd, staging.name, metadata)
+        if identity is not None:
+            if not _reclaim_directory_identity(
+                parent_fd,
+                _entry_identity(identity),
+                (staging.name,),
+            ):
+                raise BuildError("OpenCode staging could not be reclaimed safely")
+        else:
+            metadata = os.lstat(staging)
+            if not stat.S_ISLNK(metadata.st_mode) and stat.S_ISDIR(metadata.st_mode):
+                _remove_tree_at(parent_fd, staging.name, metadata)
     finally:
         os.close(parent_fd)
 
@@ -1527,9 +1431,14 @@ def build_opencode_package(
             placeholder_identity,
             placeholder_fd,
         ) = _allocate_empty_directory(parent_fd, f".{output.name}.rollback-")
-    except BaseException:
-        _close_owned_descriptors(staging_fd, *source_root_fds, parent_fd)
-        raise
+    except BaseException as error:
+        _handle_placeholder_allocation_failure(
+            parent_fd,
+            staging_name,
+            _entry_identity(staging_identity),
+            error,
+            (staging_fd, *source_root_fds, parent_fd),
+        )
     binding = _OutputBinding(
         staging_parent,
         parent_fd,
