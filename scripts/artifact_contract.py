@@ -8,6 +8,7 @@ responsible for independently walking and checking the bytes.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -24,27 +25,29 @@ ARTIFACT_FILE_MODE = 0o644
 ARTIFACT_MTIME = 0
 
 
-def artifact_output_relative(source_relative: str | Path) -> str | None:
+def artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | None:
     """Map a repository source path to its published artifact path."""
 
-    # Validate the spelling that the caller can actually observe before Path
-    # normalizes any raw string input.  A Path object may already have lost
-    # repeated separators or explicit ``.`` components; those spellings are
-    # intentionally not reconstructed here, while preserved ``..`` segments
-    # remain rejectable through this same lexical check.
-    lexical = str(source_relative)
-    lexical_parts = lexical.replace("\\", "/").split("/")
-    absolute = lexical.startswith(("/", "\\")) or (
-        len(lexical) >= 3 and lexical[1] == ":" and lexical[2] in "/\\"
-    )
-    if (
-        not lexical
-        or absolute
-        or any(part in {"", ".", ".."} for part in lexical_parts)
-    ):
+    try:
+        lexical = os.fspath(source_relative)
+    except TypeError:
+        return None
+    if not isinstance(lexical, str):
         return None
 
-    relative = Path(source_relative)
+    # Validate the exact text returned by os.fspath before Path can normalize
+    # any lexical spelling.  The artifact contract uses portable forward
+    # slash paths, so backslashes and NULs are never valid source text.
+    if not lexical or "\\" in lexical or "\x00" in lexical:
+        return None
+    components = lexical.split("/")
+    absolute = lexical.startswith("/") or (
+        len(lexical) >= 3 and lexical[1] == ":" and lexical[2] == "/"
+    )
+    if absolute or any(component in {"", ".", ".."} for component in components):
+        return None
+
+    relative = Path(*components)
     package_marker = Path("plugins") / "expskill"
     if relative.parts[:2] != package_marker.parts:
         return None

@@ -80,8 +80,14 @@ class FoundationLayoutTests(unittest.TestCase):
             (f"/{package_root}/opencode/agents.json", None),
             (f"{package_root}/opencode/agents.json/", None),
             (f"{package_root}/opencode//agents.json", None),
+            (f"{package_root}\\opencode\\agents.json", None),
+            (Path(r"plugins\expskill\opencode\agents.json"), None),
+            (Path(package_root) / "opencode" / "agents.json\\", None),
             (f"{package_root}/skills/../skills/unslop/SKILL.md", None),
             (Path(package_root) / "skills" / ".." / "skills" / "unslop" / "SKILL.md", None),
+            (f"{package_root}/opencode/agents\x00.json", None),
+            (Path(package_root) / "opencode" / "agents\x00.json", None),
+            ("", None),
             (f"{package_root}/skills", None),
             (f"{package_root}/scripts", None),
             (f"{package_root}/third-party/licenses", None),
@@ -92,6 +98,38 @@ class FoundationLayoutTests(unittest.TestCase):
         for source, expected in adversarial:
             with self.subTest(source=source):
                 self.assertEqual(artifact_output_relative(source), expected)
+
+    def test_artifact_output_relative_uses_one_text_fspath_result(self) -> None:
+        class ConflictingPath(os.PathLike[str]):
+            def __init__(self) -> None:
+                self.fspath_calls = 0
+
+            def __str__(self) -> str:
+                return "plugins/expskill/skills/unslop/SKILL.md"
+
+            def __fspath__(self) -> str:
+                self.fspath_calls += 1
+                return "plugins/expskill/skills/../escape.txt"
+
+        source = ConflictingPath()
+        self.assertIsNone(artifact_output_relative(source))
+        self.assertEqual(source.fspath_calls, 1)
+
+    def test_artifact_output_relative_rejects_non_text_path_values(self) -> None:
+        class BytesPath(os.PathLike[bytes]):
+            def __fspath__(self) -> bytes:
+                return b"plugins/expskill/opencode/agents.json"
+
+        unsupported: tuple[object, ...] = (
+            b"plugins/expskill/opencode/agents.json",
+            BytesPath(),
+            None,
+            42,
+            object(),
+        )
+        for source in unsupported:
+            with self.subTest(source=source):
+                self.assertIsNone(artifact_output_relative(source))  # type: ignore[arg-type]
 
     def test_plugin_tree_is_the_only_canonical_shared_source(self) -> None:
         plugin_root = ROOT / "plugins" / "expskill"
