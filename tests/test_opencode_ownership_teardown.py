@@ -2827,6 +2827,253 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             self.assertEqual(anchor.read_text(), "foreign anchor\n")
             self.assertTrue(receipt_path(state).is_file())
 
+    def test_initial_rollback_retries_after_package_child_destruction(self) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(retry_entrypoint=retry_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                real_remove = install_module._remove_opencode_artifact_exact
+                interrupted = False
+
+                def stop_after_child_removal(path: Path, dev: int, ino: int) -> None:
+                    nonlocal interrupted
+                    if path.name == "opencode-artifact" and not interrupted:
+                        interrupted = True
+                        (path / "package.json").unlink()
+                        raise SystemExit("after rollback package.json removal")
+                    real_remove(path, dev, ino)
+
+                with (
+                    mock.patch.object(
+                        install_module,
+                        "preflight_opencode_links",
+                        side_effect=install_module.InstallError("preflight failed"),
+                    ),
+                    mock.patch.object(
+                        install_module,
+                        "_remove_opencode_artifact_exact",
+                        side_effect=stop_after_child_removal,
+                    ),
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_opencode(repo, config, state)
+
+                self.assertTrue(interrupted)
+                pending = receipt(state)["pending_publish"]
+                self.assertEqual(pending["phase"], "rollback-prepared")
+                if retry_entrypoint == "install":
+                    install_opencode(repo, config, state)
+                    uninstall_opencode(repo, config, state)
+                else:
+                    uninstall_opencode(repo, config, state)
+                self.assertFalse(receipt_path(state).exists())
+                self.assertFalse((state / "expskill/opencode-artifact").exists())
+                self.assertEqual(
+                    tuple((state / "expskill").glob(".opencode-artifact.anchor-*.delete-*")),
+                    (),
+                )
+
+    def test_receipt_replacement_before_delete_rename_is_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            canonical = receipt_path(state)
+            owned_bytes: bytes | None = None
+            owned_identity: tuple[int, int] | None = None
+            displaced = canonical.with_name("displaced-owned-receipt")
+            real_rename = install_module._renameat_noreplace
+            raced = False
+
+            def replace_before_rename(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal raced, owned_bytes, owned_identity
+                if source_name == canonical.name and target_name.endswith(".delete") and not raced:
+                    raced = True
+                    owned_bytes = canonical.read_bytes()
+                    owned_identity = (canonical.lstat().st_dev, canonical.lstat().st_ino)
+                    canonical.rename(displaced)
+                    canonical.write_text("foreign receipt\n", encoding="utf-8")
+                real_rename(source_fd, source_name, target_fd, target_name)
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_noreplace",
+                side_effect=replace_before_rename,
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(raced)
+            assert owned_bytes is not None and owned_identity is not None
+            foreign_identity = (canonical.lstat().st_dev, canonical.lstat().st_ino)
+            self.assertEqual(canonical.read_text(encoding="utf-8"), "foreign receipt\n")
+            pins = tuple(canonical.parent.glob(f".{canonical.name}.*.pin"))
+            self.assertEqual(len(pins), 1)
+            self.assertEqual(pins[0].read_bytes(), owned_bytes)
+            self.assertEqual((pins[0].lstat().st_dev, pins[0].lstat().st_ino), owned_identity)
+
+            canonical.unlink()
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(canonical.exists())
+            self.assertFalse(pins[0].exists())
+            self.assertNotEqual(foreign_identity, owned_identity)
+
+    def test_quarantined_receipt_replacement_before_recovery_rename_is_restored(
+        self,
+    ) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(retry_entrypoint=retry_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                canonical = receipt_path(state)
+                real_rename = install_module._renameat_noreplace
+                stopped = False
+
+                def stop_after_initial_rename(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal stopped
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    if source_name == canonical.name and not stopped:
+                        stopped = True
+                        raise SystemExit("after receipt quarantine rename")
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_noreplace",
+                    side_effect=stop_after_initial_rename,
+                ):
+                    with self.assertRaises(SystemExit):
+                        uninstall_opencode(repo, config, state)
+
+                quarantine = next(canonical.parent.glob("*.anchor-removed.delete"))
+                pin = next(canonical.parent.glob("*.anchor-removed.pin"))
+                owned_bytes = pin.read_bytes()
+                owned_identity = (pin.lstat().st_dev, pin.lstat().st_ino)
+                displaced = quarantine.with_name("displaced-owned-quarantine")
+                raced = False
+
+                def replace_before_recovery_rename(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal raced
+                    if (
+                        source_name == quarantine.name
+                        and target_name == canonical.name
+                        and not raced
+                    ):
+                        raced = True
+                        quarantine.rename(displaced)
+                        quarantine.write_text("foreign quarantine\n", encoding="utf-8")
+                    real_rename(source_fd, source_name, target_fd, target_name)
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_noreplace",
+                    side_effect=replace_before_recovery_rename,
+                ):
+                    with self.assertRaises(install_module.InstallError):
+                        uninstall_opencode(repo, config, state)
+
+                self.assertTrue(raced)
+                self.assertFalse(canonical.exists())
+                self.assertEqual(
+                    quarantine.read_text(encoding="utf-8"), "foreign quarantine\n"
+                )
+                self.assertEqual(pin.read_bytes(), owned_bytes)
+                self.assertEqual(
+                    (pin.lstat().st_dev, pin.lstat().st_ino), owned_identity
+                )
+                displaced.unlink()
+                quarantine.unlink()
+                if retry_entrypoint == "install":
+                    install_opencode(repo, config, state)
+                    uninstall_opencode(repo, config, state)
+                else:
+                    uninstall_opencode(repo, config, state)
+                self.assertFalse(canonical.exists())
+                self.assertFalse(pin.exists())
+
+    def test_upgrade_rollback_retries_after_candidate_child_destruction(self) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(retry_entrypoint=retry_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                skill.write_text(
+                    skill.read_text(encoding="utf-8").replace(
+                        "Cut AI tells", "upgrade rollback destruction marker"
+                    ),
+                    encoding="utf-8",
+                )
+                real_remove = install_module._remove_opencode_artifact_exact
+                interrupted = False
+
+                def stop_after_child_removal(path: Path, dev: int, ino: int) -> None:
+                    nonlocal interrupted
+                    if path.name == "opencode-artifact" and not interrupted:
+                        interrupted = True
+                        (path / "package.json").unlink()
+                        raise SystemExit("after upgrade rollback package.json removal")
+                    real_remove(path, dev, ino)
+
+                with (
+                    mock.patch.object(
+                        install_module,
+                        "preflight_opencode_links",
+                        side_effect=install_module.InstallError("preflight failed"),
+                    ),
+                    mock.patch.object(
+                        install_module,
+                        "_remove_opencode_artifact_exact",
+                        side_effect=stop_after_child_removal,
+                    ),
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_opencode(repo, config, state)
+
+                self.assertTrue(interrupted)
+                pending = receipt(state)["pending_swap"]
+                self.assertEqual(pending["phase"], "rollback-prepared")
+                self.assertTrue(Path(pending["backup"]).is_dir())
+                if retry_entrypoint == "install":
+                    install_opencode(repo, config, state)
+                    uninstall_opencode(repo, config, state)
+                else:
+                    uninstall_opencode(repo, config, state)
+                self.assertFalse(receipt_path(state).exists())
+                self.assertFalse((state / "expskill/opencode-artifact").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
