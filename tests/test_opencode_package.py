@@ -17,6 +17,15 @@ from scripts.build_opencode_package import BuildError, build_opencode_package
 ROOT = Path(__file__).resolve().parents[1]
 CODEX_ROOT = ROOT / "packages" / "expskill"
 
+
+class ProbeBase(BaseException):
+    """Fault-injection exception that is outside the normal exception tree."""
+
+
+def fd_snapshot() -> set[int]:
+    return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+
+
 NODE = shutil.which("node")
 NPM = shutil.which("npm")
 needs_node_and_npm = unittest.skipUnless(
@@ -46,6 +55,429 @@ def run(
 
 
 class OpencodePackageTests(unittest.TestCase):
+    def test_direct_replace_rejects_cross_parent_staging_leaf_without_touching_either(self) -> None:
+        """The public seam must bind staging and output to one lexical parent."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            left = root / "left"
+            right = root / "right"
+            left.mkdir()
+            right.mkdir()
+            staging_name = ".artifact.staging"
+            left_staging = left / staging_name
+            right_staging = right / staging_name
+            left_staging.mkdir()
+            right_staging.mkdir()
+            (left_staging / "left-marker").write_text("left\n", encoding="utf-8")
+            (right_staging / "foreign-marker").write_text("foreign\n", encoding="utf-8")
+
+            with self.assertRaises(BuildError):
+                build_module._replace_output(left_staging, right / "artifact")
+
+            self.assertTrue((left_staging / "left-marker").is_file())
+            self.assertTrue((right_staging / "foreign-marker").is_file())
+            self.assertFalse((right / "artifact").exists())
+            self.assertEqual(
+                {entry.name for entry in left.iterdir()},
+                {staging_name},
+            )
+            self.assertEqual(
+                {entry.name for entry in right.iterdir()},
+                {staging_name},
+            )
+
+    def test_placeholder_allocator_preserves_first_identity_after_replacement(self) -> None:
+        """A retry must not bind or reclaim a foreign replacement."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            prefix = ".artifact.rollback-"
+            moved_owned = parent / "owned-away"
+            injected = False
+            descriptor = -1
+            real_open = build_module.os.open
+
+            def replace_after_first_observation(
+                path: object, flags: int, *args: object, **kwargs: object
+            ) -> int:
+                nonlocal injected
+                if (
+                    not injected
+                    and isinstance(path, str)
+                    and path.startswith(prefix)
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    candidate = parent / path
+                    candidate.rename(moved_owned)
+                    candidate.mkdir()
+                    (candidate / "foreign-marker").write_text("foreign\n", encoding="utf-8")
+                    injected = True
+                    raise OSError("injected open failure after first identity observation")
+                return real_open(path, flags, *args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    build_module.os,
+                    "open",
+                    side_effect=replace_after_first_observation,
+                ):
+                    with self.assertRaises(BuildError):
+                        build_module._allocate_empty_directory(parent_fd, prefix)
+            finally:
+                os.close(parent_fd)
+
+            self.assertTrue(injected)
+            foreign = next(name for name in os.listdir(parent) if name.startswith(prefix))
+            self.assertTrue((parent / foreign / "foreign-marker").is_file())
+            self.assertFalse(moved_owned.exists())
+
+    def test_placeholder_allocator_uses_open_fstat_when_stat_persistently_fails(self) -> None:
+        """Persistent name-stat failures do not block descriptor identity capture."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            prefix = ".artifact.rollback-"
+            descriptor = -1
+            real_stat = build_module.os.stat
+
+            def fail_name_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+                if (
+                    isinstance(path, str)
+                    and path.startswith(prefix)
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    raise OSError("persistent post-mkdir stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            try:
+                with mock.patch.object(build_module.os, "stat", side_effect=fail_name_stat):
+                    name, identity, descriptor = build_module._allocate_empty_directory(
+                        parent_fd, prefix
+                    )
+                opened = os.fstat(descriptor)
+                self.assertEqual(identity, (opened.st_dev, opened.st_ino))
+                self.assertTrue((parent / name).is_dir())
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                for entry in parent.iterdir():
+                    if entry.name.startswith(prefix):
+                        shutil.rmtree(entry)
+                os.close(parent_fd)
+
+    def test_reclaim_staging_survives_unobservable_placeholder(self) -> None:
+        """An unobservable placeholder cannot hide visible staging cleanup."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            staging = parent / ".artifact.staging"
+            placeholder = parent / ".artifact.rollback-placeholder"
+            staging.mkdir()
+            placeholder.mkdir()
+            identity = (staging.stat().st_dev, staging.stat().st_ino)
+            real_stat = build_module.os.stat
+
+            def fail_unrelated_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                if path == placeholder.name and kwargs.get("dir_fd") == parent_fd:
+                    raise OSError("injected placeholder stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            try:
+                with mock.patch.object(build_module.os, "stat", side_effect=fail_unrelated_stat):
+                    self.assertTrue(
+                        build_module._reclaim_directory_identity(
+                            parent_fd, identity, (staging.name,)
+                        )
+                    )
+            finally:
+                os.close(parent_fd)
+
+            self.assertFalse(staging.exists())
+            self.assertTrue(placeholder.is_dir())
+
+    def test_reclaim_reports_target_that_survives_bounded_attempts(self) -> None:
+        """A visible target after the retry bound is a cleanup failure."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            target = parent / "target"
+            target.mkdir()
+            identity = (target.stat().st_dev, target.stat().st_ino)
+            try:
+                with mock.patch.object(build_module, "_remove_tree_at"):
+                    self.assertFalse(
+                        build_module._reclaim_directory_identity(
+                            parent_fd, identity, (target.name,)
+                        )
+                    )
+            finally:
+                os.close(parent_fd)
+            self.assertTrue(target.is_dir())
+
+    def test_render_baseexceptions_reclaim_staging_and_placeholder(self) -> None:
+        """Every render failure class gets the same prepublication cleanup."""
+
+        for failure in (RuntimeError("runtime render failure"), ProbeBase("base render failure")):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = root / "repository"
+                shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+                workspace = root / "workspace"
+                workspace.mkdir()
+                with mock.patch.object(build_module, "render_all", side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        build_opencode_package(repo, workspace / "artifact")
+                self.assertEqual(tuple(workspace.iterdir()), ())
+
+    def test_snapshot_reader_runtimeerror_removes_private_snapshot(self) -> None:
+        """A source-reader exception cannot strand its private snapshot tree."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            created: list[Path] = []
+            real_mkdtemp = build_module.tempfile.mkdtemp
+
+            def track_mkdtemp(*args: object, **kwargs: object) -> str:
+                path = real_mkdtemp(*args, **kwargs)
+                created.append(Path(path))
+                return path
+
+            with (
+                mock.patch.object(build_module.tempfile, "mkdtemp", side_effect=track_mkdtemp),
+                mock.patch.object(Path, "read_bytes", side_effect=RuntimeError("reader failed")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    build_module._snapshot_sources(repo)
+
+            self.assertEqual(len(created), 1)
+            self.assertFalse(created[0].exists())
+
+    def test_mkdir_at_closes_child_when_close_raises_baseexception(self) -> None:
+        """A post-acquisition BaseException cannot leak a nested descriptor."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            (parent / "nested" / "deeper").mkdir(parents=True)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            before = fd_snapshot()
+            real_open = build_module.os.open
+            real_close = build_module.os.close
+            nested_fd: int | None = None
+
+            def record_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+                nonlocal nested_fd
+                descriptor = real_open(path, flags, *args, **kwargs)
+                if path == "nested":
+                    nested_fd = descriptor
+                return descriptor
+
+            def fail_nested_close(descriptor: int) -> None:
+                if descriptor == nested_fd:
+                    real_close(descriptor)
+                    raise ProbeBase("injected close failure")
+                real_close(descriptor)
+
+            try:
+                with (
+                    mock.patch.object(build_module.os, "open", side_effect=record_open),
+                    mock.patch.object(build_module.os, "close", side_effect=fail_nested_close),
+                ):
+                    with self.assertRaises(ProbeBase):
+                        build_module._mkdir_at(parent_fd, Path("nested/deeper"))
+                self.assertEqual(fd_snapshot(), before)
+            finally:
+                os.close(parent_fd)
+
+    def test_open_parent_and_retain_parent_close_descriptors_on_baseexception(self) -> None:
+        """Identity validation compensates descriptor acquisition on BaseException."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "parent"
+            parent.mkdir()
+            caller_fd = os.open(parent, build_module._directory_open_flags())
+            before = fd_snapshot()
+            real_fstat = build_module.os.fstat
+            injected = False
+
+            def fail_fstat(descriptor: int) -> os.stat_result:
+                nonlocal injected
+                if not injected:
+                    injected = True
+                    raise ProbeBase("injected identity failure")
+                return real_fstat(descriptor)
+
+            try:
+                with mock.patch.object(build_module.os, "fstat", side_effect=fail_fstat):
+                    with self.assertRaises(ProbeBase):
+                        build_module._open_output_parent(parent)
+                self.assertEqual(fd_snapshot(), before)
+            finally:
+                os.fstat(caller_fd)
+
+            before = fd_snapshot()
+            injected = False
+            try:
+                with mock.patch.object(build_module.os, "fstat", side_effect=fail_fstat):
+                    with self.assertRaises(ProbeBase):
+                        build_module._retain_output_parent(caller_fd)
+                self.assertEqual(fd_snapshot(), before)
+            finally:
+                os.fstat(caller_fd)
+                os.close(caller_fd)
+
+    def test_open_directory_chain_closes_children_on_baseexception(self) -> None:
+        """A chain-transfer fault closes both the old and newly opened child."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "nested" / "deeper"
+            target.mkdir(parents=True)
+            before = fd_snapshot()
+            real_open = build_module.os.open
+            real_close = build_module.os.close
+            nested_fd: int | None = None
+
+            def record_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+                nonlocal nested_fd
+                descriptor = real_open(path, flags, *args, **kwargs)
+                if path == "nested":
+                    nested_fd = descriptor
+                return descriptor
+
+            def fail_nested_close(descriptor: int) -> None:
+                if descriptor == nested_fd:
+                    real_close(descriptor)
+                    raise ProbeBase("injected chain transfer failure")
+                real_close(descriptor)
+
+            with (
+                mock.patch.object(build_module.os, "open", side_effect=record_open),
+                mock.patch.object(build_module.os, "close", side_effect=fail_nested_close),
+            ):
+                with self.assertRaises(ProbeBase):
+                    build_module._open_directory_chain(target, create=False)
+            self.assertEqual(fd_snapshot(), before)
+
+    def test_descriptor_bound_setup_closes_retained_parent_on_baseexception(self) -> None:
+        """Descriptor-bound validation compensates its retained parent on fault."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            workspace = root / "workspace"
+            workspace.mkdir()
+            caller_fd = os.open(workspace, build_module._directory_open_flags())
+            before = fd_snapshot()
+            try:
+                with mock.patch.object(
+                    build_module,
+                    "_validate_descriptor_bound_parent",
+                    side_effect=ProbeBase("injected bound-parent validation failure"),
+                ):
+                    with self.assertRaises(ProbeBase):
+                        build_opencode_package(
+                            repo,
+                            workspace / "artifact",
+                            output_parent_fd=caller_fd,
+                        )
+                self.assertEqual(fd_snapshot(), before)
+                os.fstat(caller_fd)
+            finally:
+                os.close(caller_fd)
+
+    def test_direct_seam_and_initial_staging_close_descriptors_on_baseexception(self) -> None:
+        """Direct and builder staging probes preserve the original fault and fd set."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parent = root / "parent"
+            parent.mkdir()
+            staging = parent / ".artifact.staging"
+            staging.mkdir()
+            before = fd_snapshot()
+            real_stat = build_module.os.stat
+
+            def fail_direct_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+                if path == staging.name and kwargs.get("dir_fd") is not None:
+                    raise ProbeBase("injected direct seam stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(build_module.os, "stat", side_effect=fail_direct_stat):
+                with self.assertRaises(ProbeBase):
+                    build_module._replace_output(staging, parent / "artifact")
+            self.assertEqual(fd_snapshot(), before)
+            self.assertTrue(staging.is_dir())
+
+            real_open = build_module.os.open
+
+            def fail_direct_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+                if path == staging.name and kwargs.get("dir_fd") is not None:
+                    raise ProbeBase("injected direct seam open failure")
+                return real_open(path, flags, *args, **kwargs)
+
+            with mock.patch.object(build_module.os, "open", side_effect=fail_direct_open):
+                with self.assertRaises(ProbeBase):
+                    build_module._replace_output(staging, parent / "artifact")
+            self.assertEqual(fd_snapshot(), before)
+            self.assertTrue(staging.is_dir())
+
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            workspace = root / "workspace"
+            workspace.mkdir()
+            before = fd_snapshot()
+
+            def fail_initial_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+                nonlocal injected_initial_stat
+                if (
+                    not injected_initial_stat
+                    and isinstance(path, str)
+                    and path.startswith(".artifact.")
+                    and kwargs.get("dir_fd") is not None
+                ):
+                    injected_initial_stat = True
+                    raise ProbeBase("injected initial staging stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            injected_initial_stat = False
+            with mock.patch.object(build_module.os, "stat", side_effect=fail_initial_stat):
+                with self.assertRaises(ProbeBase):
+                    build_opencode_package(repo, workspace / "artifact")
+            self.assertEqual(fd_snapshot(), before)
+            self.assertEqual(tuple(workspace.iterdir()), ())
+
+            before = fd_snapshot()
+            real_open = build_module.os.open
+            injected_initial_open = False
+
+            def fail_initial_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+                nonlocal injected_initial_open
+                if (
+                    not injected_initial_open
+                    and isinstance(path, str)
+                    and path.startswith(".artifact-2.")
+                    and kwargs.get("dir_fd") is not None
+                ):
+                    injected_initial_open = True
+                    raise ProbeBase("injected initial staging open failure")
+                return real_open(path, flags, *args, **kwargs)
+
+            with mock.patch.object(build_module.os, "open", side_effect=fail_initial_open):
+                with self.assertRaises(ProbeBase):
+                    build_opencode_package(repo, workspace / "artifact-2")
+            self.assertEqual(fd_snapshot(), before)
+            self.assertEqual(tuple(workspace.iterdir()), ())
+
     def test_rollback_does_not_exchange_dual_foreign_occupants(self) -> None:
         """Foreign public and private occupants stay under their own names."""
 
@@ -135,9 +567,6 @@ class OpencodePackageTests(unittest.TestCase):
     def test_placeholder_allocation_failure_reclaims_staging_and_closes_fds(self) -> None:
         """A failed placeholder allocation does not strand staging or descriptors."""
 
-        def fd_snapshot() -> set[int]:
-            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
@@ -166,9 +595,6 @@ class OpencodePackageTests(unittest.TestCase):
 
     def test_placeholder_allocation_cleanup_failure_still_closes_fds(self) -> None:
         """Cleanup errors after placeholder failure are reported as BuildError."""
-
-        def fd_snapshot() -> set[int]:
-            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -319,9 +745,6 @@ class OpencodePackageTests(unittest.TestCase):
 
     def test_write_bytes_closes_nested_directory_when_leaf_open_fails(self) -> None:
         """A leaf allocation error cannot leak the descriptor for its parent."""
-
-        def fd_snapshot() -> set[int]:
-            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
 
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
@@ -736,9 +1159,6 @@ class OpencodePackageTests(unittest.TestCase):
 
     def test_staging_failure_cleanup_closes_duplicated_descriptors(self) -> None:
         """Staging inspection/open failures close all builder-owned descriptors."""
-
-        def fd_snapshot() -> set[int]:
-            return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
 
         for failure in ("stat", "open"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
