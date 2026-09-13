@@ -1009,7 +1009,7 @@ class TestSkillContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = self.write_catalog(root, copy.deepcopy(VALID_CATALOG))
         self.write_evidence_contract(root, copy.deepcopy(VALID_EVIDENCE_CONTRACT))
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
         return root, path
 
     def copy_with_valid_evidence_contract(self) -> tuple[Path, Path]:
@@ -1017,11 +1017,11 @@ class TestSkillContractTests(unittest.TestCase):
         path = self.write_evidence_contract(
             root, copy.deepcopy(VALID_EVIDENCE_CONTRACT)
         )
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
         return root, path
 
     def assert_catalog_rejected(self, root: Path, marker: str) -> None:
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         matching = [
             error
             for error in errors
@@ -1030,7 +1030,7 @@ class TestSkillContractTests(unittest.TestCase):
         self.assertTrue(matching, f"missing {marker!r} catalog error in {errors!r}")
 
     def assert_evidence_contract_rejected(self, root: Path, marker: str) -> None:
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         matching = [
             error
             for error in errors
@@ -3880,7 +3880,7 @@ class TestSkillContractTests(unittest.TestCase):
 
         self.assertIn(
             "skill 'test' protected Boundary contract drift",
-            validate_repository(root),
+            validate_repository(root, include_opencode=False),
         )
 
 

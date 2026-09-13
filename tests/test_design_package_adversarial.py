@@ -69,7 +69,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 "from __future__ import annotations\n",
                 encoding="utf-8",
             )
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
 
     def test_validator_rejects_skill_builder_integration_mutations(self) -> None:
         """Regression: public visibility, isolation, package bounds, and duplicate removal fail closed."""
@@ -167,7 +167,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         "Removed duplicate.\n",
                         encoding="utf-8",
                     )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(all(fragment in error for fragment in fragments) for error in errors),
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
@@ -201,7 +201,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     contract.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "skill-builder" in error
@@ -236,7 +236,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     router.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "use-expskill" in error and "must not name skill-builder" in error
@@ -282,7 +282,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 else:
                     contents += replacement
                 contract.write_text(contents, encoding="utf-8")
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "skill-builder" in error
@@ -321,7 +321,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     json.dumps(manifest, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "longdescription" in error
@@ -360,7 +360,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         f"skill '{skill}'" in error
@@ -395,7 +395,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     json.dumps(manifest, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "defaultprompt" in error and "invoke $use-expskill" in error
@@ -426,7 +426,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "readme" in error
@@ -452,7 +452,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     readme_path.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "readme" in error
@@ -490,7 +490,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     outside.write_text("outside\n", encoding="utf-8")
                     helper.unlink()
                     helper.symlink_to(outside)
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any("design state helper" in error.lower() for error in errors),
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",

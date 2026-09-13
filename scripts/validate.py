@@ -1016,7 +1016,7 @@ def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_resu
 
 
 def validate_repository(
-    root: Path, *, include_opencode: bool | None = None, include_main: bool = True
+    root: Path, *, include_opencode: bool = True, include_main: bool = True
 ) -> tuple[str, ...]:
     repository_root = Path(root).expanduser()
     try:
@@ -1024,12 +1024,6 @@ def validate_repository(
     except (OSError, RuntimeError):
         repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
-    if include_opencode is None:
-        # A real checkout carries the OpenCode source contract even when its
-        # package tree was deleted.  Package-only callers declare that intent
-        # with include_main=False.  Sparse main-only fixtures intentionally
-        # carry neither signal, so copied build helpers do not opt them in.
-        include_opencode = include_main is False or os.path.lexists(repository_root / ".git")
     if include_main:
         marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
         marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
@@ -3672,8 +3666,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--include-opencode",
         action=argparse.BooleanOptionalAction,
-        default=None,
-        help="validate the OpenCode package surface (default: infer from repository capability)",
+        default=True,
+        help="validate the OpenCode package surface (default: enabled)",
     )
     args = parser.parse_args(argv)
     errors = validate_repository(

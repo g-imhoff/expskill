@@ -66,6 +66,16 @@ class OpencodeContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_default_validation_rejects_missing_opencode_in_non_git_export(self) -> None:
+        root = self.copy_repository()
+        (root / ".git").unlink()
+        shutil.rmtree(root / "packages" / "expskill" / "opencode")
+        errors = validate_repository(root)
+        self.assertTrue(
+            any("opencode package directory is missing" in error for error in errors),
+            errors,
+        )
+
     def test_artifact_contains_regular_dynamic_shared_skill_inventory(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
         names = skill_inventory(ROOT)
