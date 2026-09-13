@@ -5,8 +5,10 @@ import ctypes
 import errno
 import fcntl
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import stat
 import subprocess
@@ -123,6 +125,14 @@ OPENCODE_RETIREMENT_KINDS = frozenset({"leaf", "directory"})
 OPENCODE_RETIREMENT_ROLES = frozenset(
     {"final-link", "staged-link", "anchor", "artifact", "candidate", "backup"}
 )
+OPENCODE_RETIREMENT_SECRET_BYTES = 32
+OPENCODE_RETIREMENT_TOKEN_BYTES = 32
+OPENCODE_RECEIPT_GENERATION_PREFIX = ".install-opencode.json.receipt-"
+OPENCODE_RECEIPT_GENERATION_SUFFIX = ".retire"
+OPENCODE_RECEIPT_RETIREMENT_SCHEMA = "opencode-receipt-retirement.v1"
+OPENCODE_RECEIPT_RETIREMENT_PHASES = frozenset(
+    {"prepared", "exchanged", "reclaimed", "done"}
+)
 # Exact source/destination roster emitted by the parent-repository installer
 # before receipt-owned artifacts were introduced.  These names are deliberately
 # frozen: receipt migration must not turn arbitrary receipt text into deletion
@@ -209,6 +219,64 @@ class _PendingRetirement:
     source_kind: str = "public"
     placeholder_dev: int | None = None
     placeholder_ino: int | None = None
+    # The authority is intentionally serialized only while this exact
+    # retirement is pending.  Public and anchor names contain no part of it.
+    # ``auth`` authenticates every mutable field, including the phase, so a
+    # torn or hand-edited receipt cannot grant a new pathname capability.
+    secret: str | None = field(default=None, compare=False)
+    auth: str | None = field(default=None, compare=False)
+
+
+def _retirement_secret() -> str:
+    """Allocate one receipt-bound secret capability for a retirement."""
+
+    return secrets.token_hex(OPENCODE_RETIREMENT_SECRET_BYTES)
+
+
+def _retirement_secret_bytes(secret: str) -> bytes:
+    if (
+        not isinstance(secret, str)
+        or len(secret) != OPENCODE_RETIREMENT_SECRET_BYTES * 2
+        or any(character not in "0123456789abcdef" for character in secret)
+    ):
+        raise InstallError("OpenCode retirement secret is malformed")
+    try:
+        return bytes.fromhex(secret)
+    except ValueError as error:
+        raise InstallError("OpenCode retirement secret is malformed") from error
+
+
+def _retirement_message(
+    lineage: str,
+    role: str,
+    kind: str,
+    source: Path,
+    expected_dev: int,
+    expected_ino: int,
+    token: str,
+    phase: str,
+    source_kind: str,
+    private: Path | None = None,
+    placeholder_dev: int | None = None,
+    placeholder_ino: int | None = None,
+) -> bytes:
+    """Serialize the closed retirement facts authenticated by ``secret``."""
+
+    values = {
+        "expected_dev": expected_dev,
+        "expected_ino": expected_ino,
+        "kind": kind,
+        "lineage": lineage,
+        "phase": phase,
+        "placeholder_dev": placeholder_dev,
+        "placeholder_ino": placeholder_ino,
+        "private": None if private is None else str(_lexical_absolute(private)),
+        "role": role,
+        "source": str(_lexical_absolute(source)),
+        "source_kind": source_kind,
+        "token": token,
+    }
+    return json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
 
 
 def _retirement_token(
@@ -218,21 +286,52 @@ def _retirement_token(
     source: Path,
     expected_dev: int,
     expected_ino: int,
+    secret: str,
 ) -> str:
-    """Derive the unguessable capability token from frozen receipt facts."""
+    """Return a retirement token bound to the secret capability."""
 
-    return hashlib.sha256(
-        b"opencode-retirement.v3\0"
-        + lineage.encode()
-        + b"\0"
-        + role.encode()
-        + b"\0"
-        + kind.encode()
-        + b"\0"
-        + os.fsencode(_lexical_absolute(source))
-        + b"\0"
-        + f"{expected_dev:x}-{expected_ino:x}".encode()
-    ).hexdigest()[:32]
+    return hmac.new(
+        _retirement_secret_bytes(secret),
+        b"opencode-retirement.v4\0"
+        + _retirement_message(
+            lineage,
+            role,
+            kind,
+            source,
+            expected_dev,
+            expected_ino,
+            "",
+            "",
+            "",
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _retirement_auth(pending: _PendingRetirement) -> str:
+    """Authenticate a complete serialized pending retirement."""
+
+    if pending.secret is None:
+        raise InstallError("OpenCode retirement secret is missing")
+    return hmac.new(
+        _retirement_secret_bytes(pending.secret),
+        b"opencode-retirement-auth.v1\0"
+        + _retirement_message(
+            pending.lineage,
+            pending.role,
+            pending.kind,
+            pending.source,
+            pending.expected_dev,
+            pending.expected_ino,
+            pending.token,
+            pending.phase,
+            pending.source_kind,
+            pending.private,
+            pending.placeholder_dev,
+            pending.placeholder_ino,
+        ),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _retirement_private_path(source: Path, token: str, kind: str) -> Path:
@@ -255,6 +354,14 @@ def _pending_retirement_payload(
         "phase": pending.phase,
         "source_kind": pending.source_kind,
     }
+    if pending.secret is None:
+        raise InstallError("OpenCode retirement secret is missing")
+    # Compute the authentication tag at serialization time so phase
+    # transitions cannot accidentally retain a tag for the previous phase.
+    # The secret itself never participates in any public name.
+    serialized = replace(pending, auth=None)
+    payload["secret"] = pending.secret
+    payload["auth"] = _retirement_auth(serialized)
     if pending.placeholder_dev is not None or pending.placeholder_ino is not None:
         if pending.placeholder_dev is None or pending.placeholder_ino is None:
             raise InstallError("OpenCode retirement placeholder identity is incomplete")
@@ -264,9 +371,9 @@ def _pending_retirement_payload(
 
 
 def _pending_retirement_from_payload(
-    value: object, lineage: str
+    value: object, lineage: str, *, require_secret: bool = False
 ) -> _PendingRetirement:
-    """Decode only the closed, recomputable retirement capability shape."""
+    """Decode the closed, authenticated retirement capability shape."""
 
     if not isinstance(value, dict):
         raise InstallError("OpenCode pending retirement is malformed")
@@ -283,8 +390,18 @@ def _pending_retirement_from_payload(
         "source_kind",
     }
     placeholder = {"placeholder_dev", "placeholder_ino"}
-    if frozenset(value) not in {frozenset(required), frozenset(required | placeholder)}:
+    authenticated = {"secret", "auth"}
+    allowed_shapes = {
+        frozenset(required | authenticated),
+        frozenset(required | placeholder | authenticated),
+    }
+    if frozenset(value) not in allowed_shapes:
         raise InstallError("OpenCode pending retirement is malformed")
+    has_secret = "secret" in value or "auth" in value
+    if has_secret != ("secret" in value and "auth" in value):
+        raise InstallError("OpenCode pending retirement authentication is incomplete")
+    if not has_secret:
+        raise InstallError("OpenCode pending retirement lacks secret authority")
     role = value.get("role")
     kind = value.get("kind")
     phase = value.get("phase")
@@ -294,6 +411,8 @@ def _pending_retirement_from_payload(
     expected_dev = value.get("expected_dev")
     expected_ino = value.get("expected_ino")
     token = value.get("token")
+    secret = value.get("secret")
+    auth = value.get("auth")
     if (
         role not in OPENCODE_RETIREMENT_ROLES
         or kind not in OPENCODE_RETIREMENT_KINDS
@@ -307,10 +426,24 @@ def _pending_retirement_from_payload(
         or not isinstance(expected_ino, int)
         or expected_ino <= 0
         or not isinstance(token, str)
-        or len(token) != 32
+        or len(token)
+        not in {
+            OPENCODE_RETIREMENT_TOKEN_BYTES,
+            OPENCODE_RETIREMENT_TOKEN_BYTES * 2,
+        }
         or any(character not in "0123456789abcdef" for character in token)
     ):
         raise InstallError("OpenCode pending retirement is malformed")
+    if has_secret:
+        if not isinstance(secret, str) or not isinstance(auth, str):
+            raise InstallError("OpenCode pending retirement authentication is malformed")
+        _retirement_secret_bytes(secret)
+        if len(auth) != hashlib.sha256().digest_size * 2 or any(
+            character not in "0123456789abcdef" for character in auth
+        ):
+            raise InstallError("OpenCode pending retirement authentication is malformed")
+        if len(token) != OPENCODE_RETIREMENT_TOKEN_BYTES * 2:
+            raise InstallError("OpenCode pending retirement token is malformed")
     source_raw = Path(source_value).expanduser()
     private_raw = Path(private_value).expanduser()
     if (
@@ -323,7 +456,13 @@ def _pending_retirement_from_payload(
     source = _lexical_absolute(source_raw)
     private = _lexical_absolute(private_raw)
     expected_token = _retirement_token(
-        lineage, role, kind, source, expected_dev, expected_ino
+        lineage,
+        role,
+        kind,
+        source,
+        expected_dev,
+        expected_ino,
+        secret,
     )
     if token != expected_token or private != _retirement_private_path(
         source, token, kind
@@ -341,7 +480,7 @@ def _pending_retirement_from_payload(
             raise InstallError("OpenCode retirement placeholder identity is malformed")
     if (kind == "directory") != (role in {"artifact", "candidate", "backup"}):
         raise InstallError("OpenCode pending retirement role and kind disagree")
-    return _PendingRetirement(
+    pending = _PendingRetirement(
         role=role,
         kind=kind,
         source=source,
@@ -354,7 +493,12 @@ def _pending_retirement_from_payload(
         token=token,
         phase=phase,
         source_kind=source_kind,
+        secret=secret,
+        auth=auth,
     )
+    if has_secret and not hmac.compare_digest(auth or "", _retirement_auth(pending)):
+        raise InstallError("OpenCode pending retirement authentication failed")
+    return pending
 
 
 def _validate_pending_retirement_authority(
@@ -940,203 +1084,460 @@ def _receipt_deletion_descriptor(
     return lineage, current_phase, pending_phase
 
 
-def _unlink_state_path(path: Path) -> None:
-    binding = _state_binding(path)
+def _receipt_retirement_token(
+    path: Path, expected: tuple[int, int], secret: str
+) -> str:
+    return hmac.new(
+        _retirement_secret_bytes(secret),
+        b"opencode-receipt-retirement.v1\0"
+        + os.fsencode(_lexical_absolute(path))
+        + b"\0"
+        + f"{expected[0]:x}-{expected[1]:x}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _receipt_retirement_private_path(
+    path: Path, expected: tuple[int, int], secret: str
+) -> Path:
+    token = _receipt_retirement_token(path, expected, secret)
+    return path.parent / f".{path.name}.{token}.retire"
+
+
+def _receipt_retirement_sidecar_path(
+    path: Path, expected: tuple[int, int], secret: str
+) -> Path:
+    token = _receipt_retirement_token(path, expected, secret)
+    return path.parent / f".{path.name}.{token}.journal"
+
+
+def _receipt_retirement_message(payload: Mapping[str, object]) -> bytes:
+    values = {
+        key: payload[key]
+        for key in (
+            "expected_dev",
+            "expected_ino",
+            "phase",
+            "private",
+            "schema",
+            "secret",
+            "sidecar",
+            "source",
+            "token",
+        )
+    }
+    return json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _receipt_retirement_auth(payload: Mapping[str, object]) -> str:
+    secret = payload.get("secret")
+    if not isinstance(secret, str):
+        raise InstallError("receipt retirement sidecar secret is malformed")
+    return hmac.new(
+        _retirement_secret_bytes(secret),
+        b"opencode-receipt-retirement-auth.v1\0"
+        + _receipt_retirement_message(payload),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _receipt_retirement_payload(
+    path: Path,
+    expected: tuple[int, int],
+    secret: str,
+    phase: str,
+) -> dict[str, object]:
+    private = _receipt_retirement_private_path(path, expected, secret)
+    sidecar = _receipt_retirement_sidecar_path(path, expected, secret)
+    payload: dict[str, object] = {
+        "expected_dev": expected[0],
+        "expected_ino": expected[1],
+        "phase": phase,
+        "private": str(private),
+        "schema": OPENCODE_RECEIPT_RETIREMENT_SCHEMA,
+        "secret": secret,
+        "sidecar": str(sidecar),
+        "source": str(_lexical_absolute(path)),
+        "token": _receipt_retirement_token(path, expected, secret),
+    }
+    payload["auth"] = _receipt_retirement_auth(payload)
+    return payload
+
+
+def _receipt_retirement_from_payload(
+    value: object, sidecar_path: Path
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise InstallError("receipt retirement sidecar is malformed")
+    required = {
+        "expected_dev",
+        "expected_ino",
+        "phase",
+        "private",
+        "schema",
+        "secret",
+        "sidecar",
+        "source",
+        "token",
+        "auth",
+    }
+    if set(value) != required:
+        raise InstallError("receipt retirement sidecar is malformed")
+    expected_dev = value.get("expected_dev")
+    expected_ino = value.get("expected_ino")
+    phase = value.get("phase")
+    source_value = value.get("source")
+    private_value = value.get("private")
+    sidecar_value = value.get("sidecar")
+    secret = value.get("secret")
+    token = value.get("token")
+    auth = value.get("auth")
+    if (
+        not isinstance(expected_dev, int)
+        or expected_dev <= 0
+        or not isinstance(expected_ino, int)
+        or expected_ino <= 0
+        or phase not in OPENCODE_RECEIPT_RETIREMENT_PHASES
+        or value.get("schema") != OPENCODE_RECEIPT_RETIREMENT_SCHEMA
+        or not isinstance(source_value, str)
+        or not isinstance(private_value, str)
+        or not isinstance(sidecar_value, str)
+        or not isinstance(secret, str)
+        or not isinstance(token, str)
+        or not isinstance(auth, str)
+        or len(token) != hashlib.sha256().digest_size * 2
+        or any(character not in "0123456789abcdef" for character in token)
+        or len(auth) != hashlib.sha256().digest_size * 2
+        or any(character not in "0123456789abcdef" for character in auth)
+    ):
+        raise InstallError("receipt retirement sidecar is malformed")
+    _retirement_secret_bytes(secret)
+    source_raw = Path(source_value).expanduser()
+    private_raw = Path(private_value).expanduser()
+    sidecar_raw = Path(sidecar_value).expanduser()
+    if (
+        not source_raw.is_absolute()
+        or not private_raw.is_absolute()
+        or not sidecar_raw.is_absolute()
+        or _has_dot_components(source_raw)
+        or _has_dot_components(private_raw)
+        or _has_dot_components(sidecar_raw)
+    ):
+        raise InstallError("receipt retirement sidecar path is malformed")
+    source = _lexical_absolute(source_raw)
+    private = _lexical_absolute(private_raw)
+    sidecar = _lexical_absolute(sidecar_raw)
+    if source.name != OPENCODE_RECEIPT_FILENAME:
+        raise InstallError("receipt retirement source is not the canonical receipt")
+    expected = (expected_dev, expected_ino)
+    expected_token = _receipt_retirement_token(source, expected, secret)
+    if (
+        sidecar != _lexical_absolute(sidecar_path)
+        or sidecar.parent != source.parent
+        or private != _receipt_retirement_private_path(source, expected, secret)
+        or sidecar != _receipt_retirement_sidecar_path(source, expected, secret)
+        or token != expected_token
+    ):
+        raise InstallError("receipt retirement sidecar token or path is invalid")
+    normalized = dict(value)
+    if not hmac.compare_digest(auth, _receipt_retirement_auth(normalized)):
+        raise InstallError("receipt retirement sidecar authentication failed")
+    return normalized
+
+
+def _write_receipt_retirement_sidecar(
+    sidecar_path: Path, payload: Mapping[str, object]
+) -> None:
+    """Durably publish one authenticated sidecar phase without random names."""
+
+    binding = _state_binding(sidecar_path)
     if binding is None:
-        path.unlink()
-        return
+        raise InstallError("receipt retirement sidecar requires the installer lock")
     _verify_state_binding(binding)
-    descriptor = -1
+    expected_sidecar = _lexical_absolute(Path(str(payload.get("sidecar"))))
+    if expected_sidecar != _lexical_absolute(sidecar_path):
+        raise InstallError("receipt retirement sidecar path changed")
+    next_payload = _receipt_retirement_from_payload(payload, sidecar_path)
+    encoded = (json.dumps(dict(payload), indent=2, sort_keys=True) + "\n").encode()
+    sidecar_name = sidecar_path.name
+    current = _state_metadata(binding, sidecar_name)
+    if current is None:
+        _write_state_generation(binding, sidecar_name, encoded)
+        os.fsync(binding.directory_fd)
+        binding.validated_leaves.pop(sidecar_name, None)
+        return
+    if not stat.S_ISREG(current.st_mode):
+        raise InstallError("receipt retirement sidecar is occupied")
     try:
-        descriptor = os.open(
-            path.name,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            dir_fd=binding.directory_fd,
+        current_value = json.loads(
+            _read_state_text(sidecar_path)
         )
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            raise InstallError(f"receipt path is not a regular file: {path}")
-        expected = (opened.st_dev, opened.st_ino)
-        validated = binding.validated_leaves.get(path.name)
-        if validated is not None and validated != expected:
-            raise InstallError(f"receipt path identity changed before deletion: {path}")
-        with os.fdopen(os.dup(descriptor), "r", encoding="utf-8") as stream:
-            contents = stream.read()
-        lineage, current_phase, pending_phase = _receipt_deletion_descriptor(
-            path, contents
+        current_payload = _receipt_retirement_from_payload(
+            current_value, sidecar_path
         )
-    except OSError as error:
-        if descriptor >= 0:
-            os.close(descriptor)
-            descriptor = -1
-        raise InstallError(f"cannot open exact receipt for deletion: {path}: {error}") from error
-    except BaseException:
-        if descriptor >= 0:
-            os.close(descriptor)
-            descriptor = -1
-        raise
-    quarantine_path = _receipt_deletion_quarantine_path(
-        path,
-        *expected,
-        lineage,
-        current_phase,
-        pending_phase,
-    )
-    quarantine = quarantine_path.name
-    pin_path = _receipt_deletion_pin_path(
-        path,
-        *expected,
-        lineage,
-        current_phase,
-        pending_phase,
-    )
-    pin = pin_path.name
-
-    def metadata(name: str) -> os.stat_result | None:
+    except (OSError, json.JSONDecodeError, InstallError) as error:
+        raise InstallError("receipt retirement sidecar is not authenticated") from error
+    if any(
+        current_payload[key] != next_payload[key]
+        for key in ("source", "private", "secret", "sidecar", "token")
+    ):
+        raise InstallError("receipt retirement sidecar belongs to another record")
+    current_identity = (current.st_dev, current.st_ino)
+    stage_name = f".{sidecar_name}.stage"
+    stage = _state_metadata(binding, stage_name)
+    if stage is not None:
+        if not stat.S_ISREG(stage.st_mode):
+            raise InstallError("receipt retirement sidecar stage is occupied")
+        # A prior crash left the old sidecar generation at the deterministic
+        # stage name.  It is private, but do not reclaim a foreign inode.
         try:
-            return os.stat(
-                name, dir_fd=binding.directory_fd, follow_symlinks=False
+            stage_value = json.loads(
+                _read_state_text(sidecar_path.parent / stage_name)
             )
-        except FileNotFoundError:
-            return None
-
+            stage_payload = _receipt_retirement_from_payload(
+                stage_value, sidecar_path
+            )
+        except (OSError, json.JSONDecodeError, InstallError) as error:
+            raise InstallError(
+                "receipt retirement sidecar stage is not authenticated"
+            ) from error
+        if any(
+            stage_payload[key] != next_payload[key]
+            for key in ("source", "private", "secret", "sidecar", "token")
+        ):
+            raise InstallError("receipt retirement sidecar stage belongs to another record")
+        _unlink_private_state_inode(
+            binding,
+            stage_name,
+            (stage.st_dev, stage.st_ino),
+            "receipt retirement sidecar generation",
+        )
+    stage_identity = _write_state_generation(binding, stage_name, encoded)
+    exchanged = False
     try:
-        pinned = metadata(pin)
-        if pinned is None:
-            _link_open_descriptor(descriptor, binding.directory_fd, pin)
-            pinned = metadata(pin)
-            if (
-                pinned is None
-                or not stat.S_ISREG(pinned.st_mode)
-                or (pinned.st_dev, pinned.st_ino) != expected
-                or (opened.st_dev, opened.st_ino) != expected
-            ):
-                # A replacement at the pin name is foreign regardless of its
-                # type or contents.  The opened receipt descriptor remains the
-                # authority; never turn the replacement's observed identity
-                # into deletion permission.
-                os.fsync(binding.directory_fd)
-                raise InstallError(
-                    f"receipt path identity changed while creating deletion pin: {path}"
-                )
-            os.fsync(binding.directory_fd)
-        elif (
-            not stat.S_ISREG(pinned.st_mode)
-            or (pinned.st_dev, pinned.st_ino) != expected
-        ):
+        exchanged = True
+        _renameat_exchange(
+            binding.directory_fd,
+            stage_name,
+            binding.directory_fd,
+            sidecar_name,
+        )
+        os.fsync(binding.directory_fd)
+        live = _state_metadata(binding, sidecar_name)
+        if live is None or (live.st_dev, live.st_ino) != stage_identity:
             raise InstallError(
-                f"receipt deletion pin is occupied by a foreign object: {pin_path}"
+                "receipt retirement sidecar was replaced during exchange"
             )
-        original = metadata(path.name)
-        quarantined = metadata(quarantine)
-        original_is_exact = original is not None and (
-            original.st_dev,
-            original.st_ino,
-        ) == expected
-        quarantine_is_exact = quarantined is not None and (
-            quarantined.st_dev,
-            quarantined.st_ino,
-        ) == expected
-        if original is not None and (
-            not original_is_exact or not stat.S_ISREG(original.st_mode)
-        ):
+        displaced = _state_metadata(binding, stage_name)
+        if displaced is None:
+            raise InstallError("receipt retirement sidecar generation disappeared")
+        if (displaced.st_dev, displaced.st_ino) != current_identity:
             raise InstallError(
-                f"receipt path identity changed before deletion: {path}"
+                "receipt retirement sidecar was replaced during exchange"
             )
-        if quarantine_is_exact and not stat.S_ISREG(quarantined.st_mode):
-            raise InstallError(
-                f"receipt quarantine identity changed before deletion: {quarantine_path}"
-            )
-        if quarantined is not None and not quarantine_is_exact:
-            raise InstallError(
-                f"receipt quarantine is occupied by a foreign object: {quarantine_path}"
-            )
-        if original_is_exact and quarantine_is_exact:
-            # An authenticated hard-link alias still does not permit bypassing
-            # the rename boundary by directly unlinking the canonical name.
-            # Retire the redundant alias first, then run the same
-            # canonical->quarantine protocol as every other deletion.
-            _unlink_exact_leaf_via_exchange(
-                binding.directory_fd,
-                quarantine,
-                expected,
-                "receipt quarantine",
-            )
-            os.fsync(binding.directory_fd)
-            if metadata(quarantine) is not None:
-                raise InstallError(
-                    f"receipt quarantine was replaced during deletion: {quarantine_path}"
-                )
-            quarantined = None
-            quarantine_is_exact = False
-        if original_is_exact and quarantined is None:
+        # The displaced sidecar is itself private and exact.  Reclaiming it is
+        # separate from the receipt object retirement below.
+        _unlink_private_state_inode(
+            binding,
+            stage_name,
+            (displaced.st_dev, displaced.st_ino),
+            "receipt retirement sidecar",
+        )
+        binding.validated_leaves.pop(sidecar_name, None)
+    except (OSError, InstallError) as error:
+        if exchanged:
+            # Keep the old stage generation for the locked recovery pass.  A
+            # phase transition is never silently converted into direct
+            # canonical deletion.
+            raise
+        raise InstallError(f"cannot write receipt retirement sidecar: {error}") from error
+    _verify_state_binding(binding)
+
+
+def _resume_receipt_retirement(
+    sidecar_path: Path, payload: Mapping[str, object]
+) -> None:
+    binding = _state_binding(sidecar_path)
+    if binding is None:
+        raise InstallError("receipt retirement recovery requires the installer lock")
+    current = _receipt_retirement_from_payload(payload, sidecar_path)
+    source = Path(str(current["source"]))
+    private = Path(str(current["private"]))
+    expected = (int(current["expected_dev"]), int(current["expected_ino"]))
+
+    def metadata(path: Path) -> os.stat_result | None:
+        return _state_metadata(binding, path.name)
+
+    def exact(value: os.stat_result | None) -> bool:
+        return value is not None and (value.st_dev, value.st_ino) == expected
+
+    phase = str(current["phase"])
+    if phase == "prepared":
+        source_metadata = metadata(source)
+        private_metadata = metadata(private)
+        if private_metadata is not None and not exact(private_metadata):
+            raise InstallError(f"receipt retirement private name is occupied: {private}")
+        if source_metadata is not None and not exact(source_metadata):
+            raise InstallError("receipt path was replaced before retirement exchange")
+        if exact(source_metadata):
+            if private_metadata is not None:
+                raise InstallError("receipt retirement has two occupied names")
             _renameat_noreplace(
                 binding.directory_fd,
-                path.name,
+                source.name,
                 binding.directory_fd,
-                quarantine,
+                private.name,
             )
             os.fsync(binding.directory_fd)
-            moved = metadata(quarantine)
-            if (
-                moved is None
-                or not stat.S_ISREG(moved.st_mode)
-                or (moved.st_dev, moved.st_ino) != expected
-            ):
-                if moved is not None and metadata(path.name) is None:
-                    try:
-                        _renameat_noreplace(
-                            binding.directory_fd,
-                            quarantine,
-                            binding.directory_fd,
-                            path.name,
-                        )
-                        os.fsync(binding.directory_fd)
-                    except OSError:
-                        pass
-                raise InstallError(
-                    f"receipt path identity changed before deletion: {path}"
-                )
-            quarantine_is_exact = True
-            original_is_exact = False
-        if quarantine_is_exact:
-            _unlink_exact_leaf_via_exchange(
-                binding.directory_fd,
-                quarantine,
+            private_metadata = metadata(private)
+            if not exact(private_metadata):
+                raise InstallError("receipt retirement exchange lost exact identity")
+        elif private_metadata is None:
+            # The source may have vanished after the authenticated sidecar was
+            # committed.  Retain the sidecar and require explicit recovery
+            # evidence rather than treating arbitrary absence as ownership.
+            raise InstallError("receipt retirement source disappeared before exchange")
+        current = dict(current)
+        current["phase"] = "exchanged"
+        current["auth"] = _receipt_retirement_auth(current)
+        _write_receipt_retirement_sidecar(sidecar_path, current)
+        phase = "exchanged"
+    if phase == "exchanged":
+        private_metadata = metadata(private)
+        if private_metadata is not None and not exact(private_metadata):
+            raise InstallError(f"receipt retirement private identity changed: {private}")
+        if private_metadata is not None:
+            _unlink_private_state_inode(
+                binding,
+                private.name,
                 expected,
-                "receipt quarantine",
+                "receipt retirement",
             )
-            os.fsync(binding.directory_fd)
-            if metadata(quarantine) is not None:
-                raise InstallError(
-                    f"receipt quarantine was replaced during deletion: {quarantine_path}"
-                )
-        pinned = metadata(pin)
-        if pinned is not None:
-            if (
-                not stat.S_ISREG(pinned.st_mode)
-                or (pinned.st_dev, pinned.st_ino) != expected
-            ):
-                raise InstallError(
-                    f"receipt deletion pin was replaced during deletion: {pin_path}"
-                )
-            _unlink_exact_leaf_via_exchange(
-                binding.directory_fd,
-                pin,
-                expected,
-                "receipt deletion pin",
-            )
-            os.fsync(binding.directory_fd)
-        # A retry that observes absence still supplies the durability barrier
-        # for the preceding rename/unlink attempt.
-        os.fsync(binding.directory_fd)
-    except OSError as error:
-        raise InstallError(f"cannot conditionally remove receipt: {path}: {error}") from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        current = dict(current)
+        current["phase"] = "reclaimed"
+        current["auth"] = _receipt_retirement_auth(current)
+        _write_receipt_retirement_sidecar(sidecar_path, current)
+        phase = "reclaimed"
+    if phase == "reclaimed":
+        if metadata(private) is not None:
+            raise InstallError("receipt retirement private path reappeared")
+        current = dict(current)
+        current["phase"] = "done"
+        current["auth"] = _receipt_retirement_auth(current)
+        _write_receipt_retirement_sidecar(sidecar_path, current)
+        phase = "done"
+    if phase != "done":
+        raise InstallError("receipt retirement phase is not recoverable")
+    sidecar_metadata = _state_metadata(binding, sidecar_path.name)
+    if sidecar_metadata is None or not stat.S_ISREG(sidecar_metadata.st_mode):
+        raise InstallError("receipt retirement sidecar disappeared")
+    try:
+        sidecar_value = json.loads(_read_state_text(sidecar_path))
+        live_sidecar = _receipt_retirement_from_payload(
+            sidecar_value, sidecar_path
+        )
+    except (OSError, json.JSONDecodeError, InstallError) as error:
+        raise InstallError("receipt retirement sidecar was replaced") from error
+    if any(
+        live_sidecar[key] != current[key]
+        for key in (
+            "expected_dev",
+            "expected_ino",
+            "phase",
+            "private",
+            "schema",
+            "secret",
+            "sidecar",
+            "source",
+            "token",
+            "auth",
+        )
+    ):
+        raise InstallError("receipt retirement sidecar phase changed during cleanup")
+    refreshed = _state_metadata(binding, sidecar_path.name)
+    if refreshed is None or (
+        refreshed.st_dev,
+        refreshed.st_ino,
+    ) != (sidecar_metadata.st_dev, sidecar_metadata.st_ino):
+        raise InstallError("receipt retirement sidecar identity changed during cleanup")
+    _unlink_private_state_inode(
+        binding,
+        sidecar_path.name,
+        (sidecar_metadata.st_dev, sidecar_metadata.st_ino),
+        "receipt retirement sidecar",
+    )
+    _verify_state_binding(binding)
+
+
+def _unlink_state_path(path: Path) -> None:
+    """Retire a receipt through the authenticated sidecar protocol only."""
+
+    binding = _state_binding(path)
+    if binding is None:
+        raise InstallError("OpenCode receipt deletion requires the installer lock")
+    _verify_state_binding(binding)
+    # An ordinary receipt rewrite may have exchanged the canonical inode just
+    # before process death.  Resolve that private generation before creating a
+    # final-retirement authority; otherwise final deletion could strand the
+    # displaced generation outside the closed protocol.
+    recovered_generation = _recover_receipt_generations(path, binding)
+    if recovered_generation:
+        # The recovery pass has proved the canonical inode from the exact
+        # generation record.  A prior read may still cache the displaced
+        # identity in the binding; discard that stale observation before the
+        # final-retirement identity check below.
+        binding.validated_leaves.pop(path.name, None)
+    pending_generations = _receipt_generation_names(path, binding)
+    if pending_generations:
+        raise InstallError(
+            "cannot delete receipt while a generation is pending: "
+            + ", ".join(sorted(pending_generations))
+        )
+    current = _state_metadata(binding, path.name)
+    if current is None or not stat.S_ISREG(current.st_mode):
+        raise InstallError(f"receipt path is not a regular file: {path}")
+    expected = (current.st_dev, current.st_ino)
+    validated = binding.validated_leaves.get(path.name)
+    if validated is not None and validated != expected:
+        raise InstallError(f"receipt path identity changed before deletion: {path}")
+    try:
+        contents = _read_state_text(path)
+        _receipt_deletion_descriptor(path, contents)
+        receipt_payload = json.loads(contents)
+    except (OSError, InstallError) as error:
+        if isinstance(error, InstallError):
+            raise
+        raise InstallError(f"cannot open exact receipt for deletion: {path}: {error}") from error
+    if not isinstance(receipt_payload, dict):
+        raise InstallError(f"receipt is malformed: {path}")
+    secret_value = receipt_payload.get("receipt_secret")
+    if secret_value is None:
+        # Receipts written before this protocol acquire one durable secret
+        # before any final-retirement name is derived.  A retry therefore
+        # never has to reconstruct authority from public inode/path facts.
+        secret = _retirement_secret()
+        receipt_payload["receipt_secret"] = secret
+        if not _write_state_payload(path, receipt_payload):
+            raise InstallError("receipt secret migration requires the installer lock")
+        current = _state_metadata(binding, path.name)
+        if current is None or not stat.S_ISREG(current.st_mode):
+            raise InstallError(f"receipt path disappeared during secret migration: {path}")
+        expected = (current.st_dev, current.st_ino)
+        binding.validated_leaves[path.name] = expected
+    else:
+        if not isinstance(secret_value, str):
+            raise InstallError("receipt retirement secret is malformed")
+        _retirement_secret_bytes(secret_value)
+        secret = secret_value
+    sidecar_path = _receipt_retirement_sidecar_path(path, expected, secret)
+    private_path = _receipt_retirement_private_path(path, expected, secret)
+    if _state_metadata(binding, sidecar_path.name) is not None:
+        raise InstallError(f"receipt retirement sidecar is occupied: {sidecar_path}")
+    if _state_metadata(binding, private_path.name) is not None:
+        raise InstallError(f"receipt retirement private name is occupied: {private_path}")
+    payload = _receipt_retirement_payload(path, expected, secret, "prepared")
+    _write_receipt_retirement_sidecar(sidecar_path, payload)
+    _resume_receipt_retirement(sidecar_path, payload)
     binding.validated_leaves.pop(path.name, None)
     _verify_state_binding(binding)
 
@@ -1781,14 +2182,265 @@ def _read_state_text(path: Path) -> str:
     return contents
 
 
+def _receipt_generation_token(
+    path: Path, expected: tuple[int, int], secret: str
+) -> str:
+    """Derive a deterministic private generation name from receipt authority."""
+
+    return hmac.new(
+        _retirement_secret_bytes(secret),
+        b"opencode-receipt-generation.v1\0"
+        + os.fsencode(_lexical_absolute(path))
+        + b"\0"
+        + f"{expected[0]:x}-{expected[1]:x}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _receipt_generation_path(
+    path: Path, expected: tuple[int, int], secret: str
+) -> Path:
+    token = _receipt_generation_token(path, expected, secret)
+    return path.parent / (
+        f".{path.name}.receipt-{expected[0]:x}-{expected[1]:x}.{token}"
+        f"{OPENCODE_RECEIPT_GENERATION_SUFFIX}"
+    )
+
+
+def _receipt_generation_descriptor(
+    path: Path, name: str
+) -> tuple[tuple[int, int], str] | None:
+    prefix = f".{path.name}.receipt-"
+    suffix = OPENCODE_RECEIPT_GENERATION_SUFFIX
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return None
+    encoded = name[len(prefix) : -len(suffix)]
+    try:
+        identity, token = encoded.split(".", 1)
+        dev_text, ino_text = identity.split("-", 1)
+        expected = (int(dev_text, 16), int(ino_text, 16))
+    except (TypeError, ValueError):
+        return None
+    if (
+        min(expected) <= 0
+        or len(token) != hashlib.sha256().digest_size * 2
+        or any(character not in "0123456789abcdef" for character in token)
+    ):
+        return None
+    return expected, token
+
+
+def _payload_receipt_secret(
+    payload: Mapping[str, object], previous: Mapping[str, object] | None = None
+) -> str:
+    value = payload.get("receipt_secret")
+    if value is None and previous is not None:
+        value = previous.get("receipt_secret")
+    if value is None:
+        return _retirement_secret()
+    if not isinstance(value, str):
+        raise InstallError("receipt generation secret is malformed")
+    _retirement_secret_bytes(value)
+    return value
+
+
+def _state_metadata(
+    binding: _StateBinding, name: str
+) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=binding.directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _unlink_private_state_inode(
+    binding: _StateBinding,
+    name: str,
+    expected: tuple[int, int],
+    label: str,
+) -> None:
+    metadata = _state_metadata(binding, name)
+    if metadata is None:
+        return
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != expected
+    ):
+        raise InstallError(f"{label} private identity changed")
+    # All reclaim paths point beneath the locked state directory.  In
+    # particular, never unlink a canonical receipt pathname here.
+    if name == OPENCODE_RECEIPT_FILENAME:
+        raise InstallError(f"{label} attempted canonical receipt deletion")
+    os.unlink(name, dir_fd=binding.directory_fd)
+    os.fsync(binding.directory_fd)
+
+
+def _recover_receipt_generations(
+    path: Path,
+    binding: _StateBinding,
+    *,
+    expected_payload: Mapping[str, object] | None = None,
+) -> bool:
+    """Reclaim displaced receipt generations left by a crashed exchange."""
+
+    _verify_state_binding(binding)
+    recovered = False
+    for name in tuple(os.listdir(binding.directory_fd)):
+        descriptor = _receipt_generation_descriptor(path, name)
+        if descriptor is None:
+            continue
+        expected, token = descriptor
+        metadata = _state_metadata(binding, name)
+        if metadata is None:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            # A foreign object at a private name is never deletion authority.
+            continue
+        private = path.parent / name
+        private_identity = (metadata.st_dev, metadata.st_ino)
+        try:
+            candidate_payload = json.loads(_read_state_text(private))
+        except (OSError, json.JSONDecodeError):
+            # An occupied private name is foreign, even if it happens to be a
+            # regular file.  Preserve it and let the next write report the
+            # collision rather than turning its bytes into authority.
+            continue
+        if not isinstance(candidate_payload, dict):
+            continue
+        try:
+            secret = candidate_payload.get("receipt_secret")
+            if not isinstance(secret, str):
+                continue
+            expected_token = _receipt_generation_token(path, expected, secret)
+        except InstallError:
+            continue
+        if not hmac.compare_digest(token, expected_token):
+            continue
+        canonical = _state_metadata(binding, path.name)
+        if (
+            private_identity != expected
+            and expected_payload is not None
+            and canonical is not None
+            and (canonical.st_dev, canonical.st_ino) == expected
+            and candidate_payload == dict(expected_payload)
+        ):
+            # A crash before the exchange returned left the newly-written
+            # candidate at the receipt-bound private name.  It is safe to
+            # reclaim only that exact inode and only when the retry carries
+            # the same authenticated receipt generation bytes.
+            _unlink_private_state_inode(
+                binding,
+                name,
+                private_identity,
+                "receipt generation candidate",
+            )
+            recovered = True
+            continue
+        if private_identity != expected:
+            # A non-exact inode at the receipt-bound name is either a
+            # candidate from a pre-exchange crash (handled above when the
+            # retry bytes match) or a foreign replacement.  Preserve it and
+            # let the caller report the unresolved private generation.
+            continue
+        if canonical is None:
+            # This is the only recovery branch that restores a canonical
+            # pathname.  The private inode is exact and its record is
+            # authenticated by the receipt payload it carries.
+            _renameat_noreplace(
+                binding.directory_fd,
+                name,
+                binding.directory_fd,
+                path.name,
+            )
+            os.fsync(binding.directory_fd)
+            canonical = _state_metadata(binding, path.name)
+            if canonical is None or (
+                canonical.st_dev,
+                canonical.st_ino,
+            ) != expected:
+                raise InstallError("receipt generation recovery lost exact identity")
+            recovered = True
+            continue
+        # A canonical replacement is preserved.  The displaced generation is
+        # now private and can be reclaimed only after an exact identity check.
+        _unlink_private_state_inode(binding, name, expected, "receipt generation")
+        recovered = True
+    _verify_state_binding(binding)
+    return recovered
+
+
+def _receipt_generation_names(
+    path: Path, binding: _StateBinding
+) -> tuple[str, ...]:
+    """Return still-occupied names in the receipt-generation namespace."""
+
+    return tuple(
+        name
+        for name in os.listdir(binding.directory_fd)
+        if _receipt_generation_descriptor(path, name) is not None
+        and _state_metadata(binding, name) is not None
+    )
+
+
+def _write_state_generation(
+    binding: _StateBinding,
+    name: str,
+    encoded: bytes,
+) -> tuple[int, int]:
+    """Create and fsync one private regular-file generation."""
+
+    descriptor = -1
+    identity: tuple[int, int] | None = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=binding.directory_fd,
+        )
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise InstallError("receipt generation write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        return metadata.st_dev, metadata.st_ino
+    except BaseException:
+        if identity is not None:
+            try:
+                current = _state_metadata(binding, name)
+                if current is not None and (
+                    current.st_dev,
+                    current.st_ino,
+                ) == identity:
+                    os.unlink(name, dir_fd=binding.directory_fd)
+                    os.fsync(binding.directory_fd)
+            except OSError:
+                pass
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
-    """Write through the retained state descriptor; return false if unbound."""
+    """Write through the retained state descriptor with receipt generation recovery."""
 
     binding = _state_binding(path)
     if binding is None:
         return False
     _verify_state_binding(binding)
     current_identity: tuple[int, int] | None = None
+    previous_payload: dict[str, object] | None = None
+    validated_identity: tuple[int, int] | None = None
     try:
         current = os.stat(path.name, dir_fd=binding.directory_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -1798,109 +2450,152 @@ def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
             raise InstallError(f"receipt path is not a regular file: {path}")
         current_identity = (current.st_dev, current.st_ino)
         validated = binding.validated_leaves.get(path.name)
-        if validated is not None and current_identity != validated:
-            raise InstallError(f"receipt path identity changed before write: {path}")
-    temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
-    descriptor = -1
-    published = False
-    temporary_identity: tuple[int, int] | None = None
-    try:
-        descriptor = os.open(
-            temporary_name,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=binding.directory_fd,
+        validated_identity = validated
+        try:
+            observed_payload = json.loads(_read_state_text(path))
+        except (OSError, json.JSONDecodeError) as error:
+            raise InstallError(
+                f"cannot read current receipt generation: {path}: {error}"
+            ) from error
+        if isinstance(observed_payload, dict):
+            previous_payload = observed_payload
+    secret = _payload_receipt_secret(payload, previous_payload)
+    output_payload = dict(payload)
+    output_payload["receipt_secret"] = secret
+    encoded = (json.dumps(output_payload, indent=2, sort_keys=True) + "\n").encode()
+    recovered_generation = _recover_receipt_generations(
+        path,
+        binding,
+        expected_payload=output_payload,
+    )
+    pending_generations = _receipt_generation_names(path, binding)
+    if pending_generations:
+        raise InstallError(
+            "receipt generation recovery is incomplete: "
+            + ", ".join(sorted(pending_generations))
         )
-        encoded = (json.dumps(dict(payload), indent=2, sort_keys=True) + "\n").encode()
-        view = memoryview(encoded)
-        while view:
-            written = os.write(descriptor, view)
-            view = view[written:]
-        os.fsync(descriptor)
-        temporary_metadata = os.fstat(descriptor)
-        temporary_identity = (temporary_metadata.st_dev, temporary_metadata.st_ino)
-        os.close(descriptor)
-        descriptor = -1
+    if recovered_generation and current_identity is None:
+        recovered = _state_metadata(binding, path.name)
+        if recovered is None or not stat.S_ISREG(recovered.st_mode):
+            raise InstallError(f"receipt path disappeared during recovery: {path}")
+        current_identity = (recovered.st_dev, recovered.st_ino)
+    if validated_identity is not None and current_identity != validated_identity:
+        if not recovered_generation:
+            raise InstallError(f"receipt path identity changed before write: {path}")
+        current = _state_metadata(binding, path.name)
+        if current is None or not stat.S_ISREG(current.st_mode):
+            raise InstallError(f"receipt path disappeared during recovery: {path}")
+        current_identity = (current.st_dev, current.st_ino)
+    generation_name: str | None = None
+    generation_identity: tuple[int, int] | None = None
+    exchanged = False
+    published = False
+    try:
         if current_identity is None:
+            # There is no displaced generation on first publication.  Keep
+            # the candidate deterministic and private until the no-replace
+            # publication boundary.
+            digest = hashlib.sha256(encoded).hexdigest()
+            generation_name = f".{path.name}.receipt-initial-{digest}.stage"
+            generation_identity = _write_state_generation(
+                binding, generation_name, encoded
+            )
             _renameat_noreplace(
                 binding.directory_fd,
-                temporary_name,
+                generation_name,
                 binding.directory_fd,
                 path.name,
             )
+            exchanged = True
+            published = True
         else:
+            generation_path = _receipt_generation_path(path, current_identity, secret)
+            generation_name = generation_path.name
+            if _state_metadata(binding, generation_name) is not None:
+                raise InstallError(
+                    f"receipt generation private name is occupied: {generation_path}"
+                )
+            generation_identity = _write_state_generation(
+                binding, generation_name, encoded
+            )
+            # The displaced generation lands directly in its deterministic
+            # private retirement namespace.  No random .tmp pathname can
+            # become an orphaned authority after the exchange.
+            # Mark the boundary before invoking the syscall: test and fault
+            # injectors may raise immediately after a successful exchange,
+            # and that old inode must remain for crash recovery.
+            exchanged = True
             _renameat_exchange(
                 binding.directory_fd,
-                temporary_name,
+                generation_name,
                 binding.directory_fd,
                 path.name,
             )
-            displaced = os.stat(
-                temporary_name,
-                dir_fd=binding.directory_fd,
-                follow_symlinks=False,
-            )
-            if (displaced.st_dev, displaced.st_ino) != current_identity:
+            os.fsync(binding.directory_fd)
+            displaced = _state_metadata(binding, generation_name)
+            if displaced is None or (
+                displaced.st_dev,
+                displaced.st_ino,
+            ) != current_identity:
                 try:
                     _renameat_exchange(
                         binding.directory_fd,
-                        temporary_name,
+                        generation_name,
                         binding.directory_fd,
                         path.name,
                     )
                 except (OSError, InstallError) as reverse_error:
-                    # After the first exchange the installer-created inode is
-                    # live and the foreign replacement occupies our temporary
-                    # name.  If exchange itself cannot put them back, rotate
-                    # only the exact installer inode out of the way, then
-                    # restore the displaced foreign inode without overwrite.
-                    live = os.stat(
-                        path.name,
-                        dir_fd=binding.directory_fd,
-                        follow_symlinks=False,
-                    )
-                    if (live.st_dev, live.st_ino) != temporary_identity:
+                    # Preserve a foreign canonical replacement without
+                    # overwrite.  The new installer generation is moved to a
+                    # deterministic private recovery name and reclaimed only
+                    # there after the foreign inode is restored.
+                    live = _state_metadata(binding, path.name)
+                    if live is None or generation_identity is None or (
+                        live.st_dev,
+                        live.st_ino,
+                    ) != generation_identity:
                         raise InstallError(
                             f"receipt recovery found an unproven live object: {path}"
                         ) from reverse_error
-                    recovery_name = f".{path.name}.{uuid.uuid4().hex}.rollback"
+                    rollback_name = (
+                        f".{path.name}.receipt-rollback-"
+                        f"{generation_identity[0]:x}-{generation_identity[1]:x}.retire"
+                    )
+                    if _state_metadata(binding, rollback_name) is not None:
+                        raise InstallError(
+                            f"receipt rollback private name is occupied: {path}"
+                        ) from reverse_error
                     _renameat_noreplace(
                         binding.directory_fd,
                         path.name,
                         binding.directory_fd,
-                        recovery_name,
+                        rollback_name,
                     )
                     try:
                         _renameat_noreplace(
                             binding.directory_fd,
-                            temporary_name,
+                            generation_name,
                             binding.directory_fd,
                             path.name,
                         )
                     except (OSError, InstallError) as restore_error:
-                        # Both objects retain recoverable names and neither is
-                        # deleted when the foreign inode cannot be restored.
                         os.fsync(binding.directory_fd)
                         raise InstallError(
                             f"receipt replacement recovery failed: {path}: {restore_error}"
                         ) from reverse_error
-                    recovered = os.stat(
-                        recovery_name,
-                        dir_fd=binding.directory_fd,
-                        follow_symlinks=False,
+                    _unlink_private_state_inode(
+                        binding,
+                        rollback_name,
+                        generation_identity,
+                        "receipt rollback",
                     )
-                    if (recovered.st_dev, recovered.st_ino) != temporary_identity:
-                        raise InstallError(
-                            f"receipt recovery object identity changed: {path}"
-                        ) from reverse_error
-                    os.unlink(recovery_name, dir_fd=binding.directory_fd)
-                    os.fsync(binding.directory_fd)
                 raise InstallError(f"receipt path identity changed during write: {path}")
-            os.unlink(temporary_name, dir_fd=binding.directory_fd)
+            _unlink_private_state_inode(
+                binding,
+                generation_name,
+                current_identity,
+                "receipt generation",
+            )
         published = True
         os.fsync(binding.directory_fd)
         _verify_state_binding(binding)
@@ -1914,17 +2609,30 @@ def _write_state_payload(path: Path, payload: Mapping[str, object]) -> bool:
     except OSError as error:
         raise InstallError(f"cannot durably write receipt: {path}: {error}") from error
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if not published and temporary_identity is not None:
+        if not published and generation_name is not None and generation_identity is not None:
             try:
-                remaining = os.stat(
-                    temporary_name,
-                    dir_fd=binding.directory_fd,
-                    follow_symlinks=False,
-                )
-                if (remaining.st_dev, remaining.st_ino) == temporary_identity:
-                    os.unlink(temporary_name, dir_fd=binding.directory_fd)
+                remaining = _state_metadata(binding, generation_name)
+                # After a successful exchange the private name contains the
+                # displaced old identity.  Retain that generation for the
+                # retry.  A failed syscall (or a compensated exchange) leaves
+                # the newly-created candidate identity, which is safe to
+                # reclaim in the private namespace.
+                if remaining is not None and (
+                    not exchanged
+                    or (remaining.st_dev, remaining.st_ino) == generation_identity
+                ):
+                    _unlink_private_state_inode(
+                        binding,
+                        generation_name,
+                        generation_identity,
+                        "receipt generation",
+                    )
+                elif exchanged and remaining is None:
+                    # A fault immediately after exact old-generation reclaim
+                    # leaves the canonical candidate as the only generation.
+                    # A real process restart has no cached leaf identity; make
+                    # an in-process SystemExit retry observe the same state.
+                    binding.validated_leaves.pop(path.name, None)
             except OSError:
                 pass
 
@@ -1982,6 +2690,8 @@ def _read_receipt(
     receipt_path: Path,
     repository_root: Path,
     expected_links: Sequence[ProfileLink],
+    *,
+    require_retirement_secret: bool = False,
 ) -> _Receipt | None:
     if not _lexists(receipt_path):
         return None
@@ -2055,6 +2765,11 @@ def _read_receipt(
         lineage = lineage_value
     else:
         raise InstallError(f"receipt lineage is malformed: {receipt_path}")
+    receipt_secret_value = payload.get("receipt_secret")
+    if receipt_secret_value is not None:
+        if not isinstance(receipt_secret_value, str):
+            raise InstallError(f"receipt generation secret is malformed: {receipt_path}")
+        _retirement_secret_bytes(receipt_secret_value)
     anchor_values = tuple(
         payload.get(key)
         for key in ("artifact_anchor", "artifact_anchor_dev", "artifact_anchor_ino")
@@ -2396,7 +3111,9 @@ def _read_receipt(
             raise InstallError(f"receipt pending retirement lacks lineage: {receipt_path}")
         try:
             pending_retirement = _pending_retirement_from_payload(
-                retirement_value, lineage
+                retirement_value,
+                lineage,
+                require_secret=require_retirement_secret,
             )
             _validate_pending_retirement_authority(
                 pending_retirement,
@@ -4372,36 +5089,10 @@ def _write_receipt_raw(receipt_path: Path, payload: Mapping[str, object]) -> Non
 
     if _write_state_payload(receipt_path, payload):
         return
-    receipt_directory = receipt_path.parent
-    temporary_path: Path | None = None
-    try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{receipt_path.name}.", suffix=".tmp", dir=receipt_directory
-        )
-        temporary_path = Path(temporary_name)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(dict(payload), stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_path, receipt_path)
-        temporary_path = None
-        directory_fd = os.open(
-            receipt_directory,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except OSError as error:
-        raise InstallError(f"cannot durably write receipt: {receipt_path}: {error}") from error
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink()
-            except OSError:
-                pass
+    raise InstallError(
+        "receipt writes require the descriptor-bound state protocol: "
+        f"{receipt_path}"
+    )
 
 
 def _rewrite_receipt_retirement(
@@ -4422,7 +5113,9 @@ def _rewrite_receipt_retirement(
         raise InstallError(f"receipt retirement lineage is malformed: {receipt_path}")
     current_value = payload.get("pending_retirement")
     current = (
-        _pending_retirement_from_payload(current_value, lineage)
+        _pending_retirement_from_payload(
+            current_value, lineage, require_secret=True
+        )
         if current_value is not None
         else None
     )
@@ -4527,7 +5220,9 @@ def _resume_pending_retirement(
     durable_value = receipt_payload.get("pending_retirement")
     if not isinstance(lineage, str) or durable_value is None:
         raise InstallError("OpenCode retirement recovery lacks a durable entry")
-    durable = _pending_retirement_from_payload(durable_value, lineage)
+    durable = _pending_retirement_from_payload(
+        durable_value, lineage, require_secret=True
+    )
     if durable != pending:
         raise InstallError("OpenCode retirement recovery entry changed")
     parent_fd, verify_parent = _retirement_parent(pending)
@@ -4744,7 +5439,15 @@ def _retire_owned_object(
         if receipt is None or receipt.pending_retirement is not None:
             raise InstallError("OpenCode retirement recovery did not close")
     kind = "directory" if directory else "leaf"
-    token = _retirement_token(lineage, role, kind, source, *expected)
+    secret = _retirement_secret()
+    token = _retirement_token(
+        lineage,
+        role,
+        kind,
+        source,
+        *expected,
+        secret=secret,
+    )
     pending = _PendingRetirement(
         role=role,
         kind=kind,
@@ -4756,6 +5459,7 @@ def _retire_owned_object(
         token=token,
         phase="prepared",
         source_kind=source_kind,
+        secret=secret,
     )
     _validate_pending_retirement_authority(
         pending,
@@ -6981,6 +7685,8 @@ def _read_opencode_receipt(
             allowed_keys.add("pending_migration")
         if "pending_retirement" in payload:
             allowed_keys.add("pending_retirement")
+        if "receipt_secret" in payload:
+            allowed_keys.add("receipt_secret")
         if set(payload) != allowed_keys:
             raise InstallError(f"current OpenCode receipt is inconsistent: {receipt_path}")
         pending_publish_payload = payload.get("pending_publish")
@@ -7002,10 +7708,17 @@ def _read_opencode_receipt(
         if frozenset(payload) not in {
             frozenset(base_keys),
             frozenset(base_keys | {"lineage"}),
+            frozenset(base_keys | {"receipt_secret"}),
+            frozenset(base_keys | {"lineage", "receipt_secret"}),
         }:
             raise InstallError(f"legacy OpenCode receipt is inconsistent: {receipt_path}")
         expected = _legacy_opencode_expected_links(repository_root, config_dir)
-    receipt = _read_receipt(receipt_path, repository_root, expected)
+    receipt = _read_receipt(
+        receipt_path,
+        repository_root,
+        expected,
+        require_retirement_secret=True,
+    )
     if receipt is None:
         return None
     if receipt.artifact_root is not None:
@@ -7096,7 +7809,7 @@ def _receipt_deletion_quarantine_identity(
     return dev, ino, token, current_phase, pending_phase
 
 
-def _recover_receipt_deletion(
+def _recover_receipt_deletion_legacy(
     repository_root: Path,
     config_dir: Path,
     state_home: Path,
@@ -7366,6 +8079,107 @@ def _recover_receipt_deletion(
         _verify_state_binding(binding)
     # Recovery also supplies an absence-confirmation barrier when the exact
     # quarantine disappeared after its durable unlink.
+    os.fsync(binding.directory_fd)
+    _verify_state_binding(binding)
+
+
+def _recover_receipt_deletion(
+    repository_root: Path,
+    config_dir: Path,
+    state_home: Path,
+    receipt_path: Path,
+) -> None:
+    """Recover authenticated receipt sidecars before either entrypoint reads state."""
+
+    binding = _state_binding(receipt_path)
+    if binding is None:
+        return
+    _verify_state_binding(binding)
+    # Accept recovery records written by the immediately preceding release.
+    # New deletions never create them, but an upgrade must not strand an exact
+    # receipt that was already moved into the old closed protocol.
+    _recover_receipt_deletion_legacy(
+        repository_root, config_dir, state_home, receipt_path
+    )
+    prefix = f".{receipt_path.name}."
+    for name in tuple(os.listdir(binding.directory_fd)):
+        if not name.startswith(prefix) or not name.endswith(".journal"):
+            continue
+        sidecar_path = receipt_path.parent / name
+        metadata = _state_metadata(binding, name)
+        if metadata is None:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            # A foreign sidecar replacement cannot become deletion authority.
+            continue
+        try:
+            value = json.loads(_read_state_text(sidecar_path))
+            payload = _receipt_retirement_from_payload(value, sidecar_path)
+        except (OSError, json.JSONDecodeError, InstallError) as error:
+            # Every matching journal pathname is in the closed private
+            # namespace.  Treat malformed or unauthenticated bytes as a
+            # tamper/replacement failure; silently skipping them would leave
+            # the canonical receipt permanently stranded behind an orphan.
+            raise InstallError(
+                f"receipt retirement sidecar is malformed: {sidecar_path}"
+            ) from error
+        if Path(str(payload["source"])) != _lexical_absolute(receipt_path):
+            raise InstallError(
+                f"receipt retirement sidecar names another source: {sidecar_path}"
+            )
+        canonical = _state_metadata(binding, receipt_path.name)
+        expected = (
+            int(payload["expected_dev"]),
+            int(payload["expected_ino"]),
+        )
+        if canonical is not None and (
+            canonical.st_dev,
+            canonical.st_ino,
+        ) == expected:
+            try:
+                canonical_payload = json.loads(_read_state_text(receipt_path))
+            except (OSError, json.JSONDecodeError) as error:
+                raise InstallError(
+                    f"cannot authenticate receipt retirement sidecar: {sidecar_path}"
+                ) from error
+            if (
+                not isinstance(canonical_payload, dict)
+                or canonical_payload.get("receipt_secret") != payload["secret"]
+            ):
+                raise InstallError(
+                    f"receipt retirement sidecar lacks receipt authority: {sidecar_path}"
+                )
+        # Sidecar phase writes may have left a previous generation at the
+        # deterministic stage name.  It is safe to clear only a regular file
+        # that is not the live sidecar inode; a foreign replacement survives.
+        stage_name = f".{name}.stage"
+        stage = _state_metadata(binding, stage_name)
+        if stage is not None and stat.S_ISREG(stage.st_mode):
+            if (stage.st_dev, stage.st_ino) != (metadata.st_dev, metadata.st_ino):
+                stage_path = receipt_path.parent / stage_name
+                try:
+                    stage_value = json.loads(_read_state_text(stage_path))
+                    stage_payload = _receipt_retirement_from_payload(
+                        stage_value, sidecar_path
+                    )
+                except (OSError, json.JSONDecodeError, InstallError) as error:
+                    raise InstallError(
+                        f"receipt retirement sidecar stage is malformed: {stage_path}"
+                    ) from error
+                if any(
+                    stage_payload[key] != payload[key]
+                    for key in ("source", "private", "secret", "sidecar", "token")
+                ):
+                    raise InstallError(
+                        f"receipt retirement sidecar stage belongs to another record: {stage_path}"
+                    )
+                _unlink_private_state_inode(
+                    binding,
+                    stage_name,
+                    (stage.st_dev, stage.st_ino),
+                    "receipt retirement sidecar generation",
+                )
+        _resume_receipt_retirement(sidecar_path, payload)
     os.fsync(binding.directory_fd)
     _verify_state_binding(binding)
 

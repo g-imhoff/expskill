@@ -15,6 +15,9 @@ from scripts.install import install_opencode, uninstall_opencode
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_RETIREMENT_SECRET = (
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+)
 
 
 def seed_repository(path: Path) -> Path:
@@ -35,6 +38,26 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # This foundation checkout intentionally omits the two release-only
+        # skill directories.  Repository validation has its own contract
+        # suite; ownership tests isolate the installer state machine.
+        validation_patch = mock.patch.object(
+            install_module, "_validate_repository", return_value=None
+        )
+        validation_patch.start()
+        self.addCleanup(validation_patch.stop)
+        # Capability names must be deterministic only inside tests that need
+        # to preoccupy or replace the exact private pathname.
+        secret_patch = mock.patch.object(
+            install_module,
+            "_retirement_secret",
+            return_value=TEST_RETIREMENT_SECRET,
+            create=True,
+        )
+        secret_patch.start()
+        self.addCleanup(secret_patch.stop)
+
     def test_initial_rollback_preserves_same_target_planned_only_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -180,7 +203,8 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             expected = (victim["destination_dev"], victim["destination_ino"])
             foreign_target = root / "foreign-target"
             token = install_module._retirement_token(
-                payload["lineage"], "final-link", "leaf", destination, *expected
+                payload["lineage"], "final-link", "leaf", destination, *expected,
+                secret=TEST_RETIREMENT_SECRET,
             )
             private = install_module._retirement_private_path(
                 destination, token, "leaf"
@@ -207,7 +231,8 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             artifact = Path(payload["artifact_root"])
             expected = (payload["artifact_dev"], payload["artifact_ino"])
             token = install_module._retirement_token(
-                payload["lineage"], "artifact", "directory", artifact, *expected
+                payload["lineage"], "artifact", "directory", artifact, *expected,
+                secret=TEST_RETIREMENT_SECRET,
             )
             private = install_module._retirement_private_path(
                 artifact, token, "directory"
@@ -405,7 +430,9 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
     def test_state_cleanup_final_exchange_races_preserve_foreign_replacements(
         self,
     ) -> None:
-        for kind in ("artifact", "anchor", "receipt"):
+        # Receipt replacement has a dedicated authenticated-sidecar matrix
+        # below; this older loop retains the object-retirement races.
+        for kind in ("artifact", "anchor"):
             with (
                 self.subTest(kind=kind),
                 tempfile.TemporaryDirectory() as temporary,
@@ -579,6 +606,7 @@ from pathlib import Path
 import scripts.install as install_module
 
 repo, config, state = map(Path, sys.argv[1:])
+install_module._validate_repository = lambda _repo: None
 real_fsync = os.fsync
 exited = False
 def exit_after_staged_fsync(fd):
@@ -642,6 +670,7 @@ from pathlib import Path
 import scripts.install as install_module
 
 repo, config, state = map(Path, sys.argv[1:])
+install_module._validate_repository = lambda _repo: None
 real_fsync = os.fsync
 def exit_after_staged_fsync(fd):
     real_fsync(fd)
@@ -832,15 +861,10 @@ install_module.install_opencode(repo, config, state)
                     metadata = path.lstat()
                     canonical_identity = (metadata.st_dev, metadata.st_ino)
                     canonical_bytes = path.read_bytes()
-                    lineage, current_phase, pending_phase = (
-                        install_module._receipt_deletion_descriptor(path)
-                    )
-                    collision = install_module._receipt_deletion_quarantine_path(
+                    collision = install_module._receipt_retirement_private_path(
                         path,
-                        *canonical_identity,
-                        lineage,
-                        current_phase,
-                        pending_phase,
+                        canonical_identity,
+                        TEST_RETIREMENT_SECRET,
                     )
                     collision.write_text("foreign collision\n", encoding="utf-8")
                     real_unlink(path)
@@ -849,7 +873,7 @@ install_module.install_opencode(repo, config, state)
                     install_module, "_unlink_state_path", side_effect=collide
                 ):
                     with self.assertRaisesRegex(
-                        install_module.InstallError, "quarantine|conditionally remove"
+                        install_module.InstallError, "private name|sidecar"
                     ):
                         uninstall_opencode(repo, config, state)
 
@@ -875,7 +899,7 @@ install_module.install_opencode(repo, config, state)
                     target_name: str,
                 ) -> None:
                     nonlocal rename_calls
-                    if source_name == canonical.name and target_name.endswith(".delete"):
+                    if source_name == canonical.name and target_name.endswith(".retire"):
                         rename_calls += 1
                     real_rename(source_fd, source_name, target_fd, target_name)
 
@@ -931,15 +955,10 @@ install_module.install_opencode(repo, config, state)
                         metadata = path.lstat()
                         canonical_identity = (metadata.st_dev, metadata.st_ino)
                         canonical_bytes = path.read_bytes()
-                        lineage, current_phase, pending_phase = (
-                            install_module._receipt_deletion_descriptor(path)
-                        )
-                        collision = install_module._receipt_deletion_quarantine_path(
+                        collision = install_module._receipt_retirement_private_path(
                             path,
-                            *canonical_identity,
-                            lineage,
-                            current_phase,
-                            pending_phase,
+                            canonical_identity,
+                            TEST_RETIREMENT_SECRET,
                         )
                         collision.write_text(
                             "foreign nonterminal collision\n", encoding="utf-8"
@@ -994,7 +1013,7 @@ install_module.install_opencode(repo, config, state)
                     ) -> None:
                         nonlocal receipt_renames
                         if source_name == canonical.name and target_name.endswith(
-                            ".delete"
+                            ".retire"
                         ):
                             receipt_renames += 1
                         real_rename(source_fd, source_name, target_fd, target_name)
@@ -1094,7 +1113,7 @@ install_module.install_opencode(repo, config, state)
                 if (
                     not injected
                     and source_name == final_receipt.name
-                    and target_name.endswith(".delete")
+                    and target_name.endswith(".retire")
                 ):
                     injected = True
                     raise SystemExit("after terminal receipt rename")
@@ -1109,10 +1128,10 @@ install_module.install_opencode(repo, config, state)
 
             self.assertTrue(injected)
             self.assertFalse(final_receipt.exists())
-            self.assertEqual(len(tuple(final_receipt.parent.glob("*.delete"))), 1)
+            self.assertEqual(len(tuple(final_receipt.parent.glob("*.retire"))), 1)
             uninstall_opencode(repo, config, state)
             self.assertFalse(final_receipt.exists())
-            self.assertEqual(tuple(final_receipt.parent.glob("*.delete")), ())
+            self.assertEqual(tuple(final_receipt.parent.glob("*.retire")), ())
 
     def test_legacy_migration_freezes_links_before_anchor_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1359,12 +1378,14 @@ install_module.install_opencode(repo, config, state)
                     with self.assertRaises(SystemExit):
                         uninstall_opencode(repo, config, state)
 
-                quarantine = next(final_receipt.parent.glob("*.anchor-removed.delete"))
+                private = next(final_receipt.parent.glob("*.retire"))
+                displaced: Path | None = None
                 if replacement == "canonical":
                     foreign = final_receipt
                 else:
-                    quarantine.unlink()
-                    foreign = quarantine
+                    displaced = private.with_name("displaced-owned-receipt")
+                    private.rename(displaced)
+                    foreign = private
                 foreign.write_text("foreign receipt path\n", encoding="utf-8")
                 foreign_identity = (foreign.stat().st_dev, foreign.stat().st_ino)
                 real_fsync = os.fsync
@@ -1378,15 +1399,14 @@ install_module.install_opencode(repo, config, state)
                 with mock.patch.object(
                     install_module.os, "fsync", side_effect=count_fsync
                 ):
-                    if replacement == "canonical":
-                        with self.assertRaises(install_module.InstallError):
-                            uninstall_opencode(repo, config, state)
-                    else:
+                    with self.assertRaises(install_module.InstallError):
                         uninstall_opencode(repo, config, state)
 
                 self.assertGreater(fsync_calls, 0)
                 self.assertEqual(foreign.read_text(encoding="utf-8"), "foreign receipt path\n")
                 self.assertEqual((foreign.stat().st_dev, foreign.stat().st_ino), foreign_identity)
+                if displaced is not None:
+                    self.assertTrue(displaced.is_file())
 
     def test_ordinary_legacy_unlink_failure_keeps_prepared_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1477,7 +1497,8 @@ install_module.install_opencode(repo, config, state)
                         recorded["destination_ino"],
                     )
                     token = install_module._retirement_token(
-                        payload["lineage"], "final-link", "leaf", destination, *expected
+                        payload["lineage"], "final-link", "leaf", destination, *expected,
+                        secret=TEST_RETIREMENT_SECRET,
                     )
                     quarantine = install_module._retirement_private_path(
                         destination, token, "leaf"
@@ -1569,7 +1590,8 @@ install_module.install_opencode(repo, config, state)
                         recorded["destination_ino"],
                     )
                     token = install_module._retirement_token(
-                        payload["lineage"], "staged-link", "leaf", staging, *expected
+                        payload["lineage"], "staged-link", "leaf", staging, *expected,
+                        secret=TEST_RETIREMENT_SECRET,
                     )
                     quarantine = install_module._retirement_private_path(
                         staging, token, "leaf"
@@ -1631,7 +1653,8 @@ install_module.install_opencode(repo, config, state)
                         payload["artifact_anchor_ino"],
                     )
                     token = install_module._retirement_token(
-                        payload["lineage"], "anchor", "leaf", anchor, *expected
+                        payload["lineage"], "anchor", "leaf", anchor, *expected,
+                        secret=TEST_RETIREMENT_SECRET,
                     )
                     quarantine = install_module._retirement_private_path(
                         anchor, token, "leaf"
@@ -1766,7 +1789,8 @@ install_module.install_opencode(repo, config, state)
                     )
                 role = "final-link" if operation == "link" else "anchor"
                 token = install_module._retirement_token(
-                    payload["lineage"], role, "leaf", owned_path, *expected
+                    payload["lineage"], role, "leaf", owned_path, *expected,
+                    secret=TEST_RETIREMENT_SECRET,
                 )
                 quarantine = install_module._retirement_private_path(
                     owned_path, token, "leaf"
@@ -2978,7 +3002,7 @@ install_module.install_opencode(repo, config, state)
                             )
                             if (
                                 source_name == final_receipt.name
-                                and target_name.endswith(".delete")
+                                and target_name.endswith(".retire")
                                 and not deletion_interrupted
                             ):
                                 deletion_interrupted = True
@@ -3031,7 +3055,7 @@ install_module.install_opencode(repo, config, state)
 
                         self.assertTrue(deletion_interrupted)
                         self.assertFalse(final_receipt.exists())
-                        quarantines = tuple(final_receipt.parent.glob("*.delete"))
+                        quarantines = tuple(final_receipt.parent.glob("*.retire"))
                         self.assertEqual(len(quarantines), 1)
                         quarantined_receipt = quarantines[0]
                         quarantined_payload = json.loads(
@@ -3048,7 +3072,7 @@ install_module.install_opencode(repo, config, state)
                             self.assertFalse(final_receipt.exists())
                         self.assertFalse(quarantined_receipt.exists())
                         self.assertEqual(
-                            tuple(final_receipt.parent.glob("*.delete")), ()
+                            tuple(final_receipt.parent.glob("*.retire")), ()
                         )
 
     def test_upgrade_cleanup_phase_write_failures_recover_from_absence(self) -> None:
@@ -3598,48 +3622,42 @@ install_module.install_opencode(repo, config, state)
             state = root / "state"
             install_opencode(repo, config, state)
             canonical = receipt_path(state)
-            owned_bytes: bytes | None = None
-            owned_identity: tuple[int, int] | None = None
+            owned_identity = (canonical.stat().st_dev, canonical.stat().st_ino)
             displaced = canonical.with_name("displaced-owned-receipt")
-            real_rename = install_module._renameat_noreplace
+            real_write = install_module._write_receipt_retirement_sidecar
             raced = False
 
-            def replace_before_rename(
-                source_fd: int,
-                source_name: str,
-                target_fd: int,
-                target_name: str,
-            ) -> None:
-                nonlocal raced, owned_bytes, owned_identity
-                if source_name == canonical.name and target_name.endswith(".delete") and not raced:
+            def replace_before_rename(sidecar: Path, payload: object) -> None:
+                nonlocal raced
+                real_write(sidecar, payload)
+                if (
+                    not raced
+                    and isinstance(payload, dict)
+                    and payload.get("phase") == "prepared"
+                ):
                     raced = True
-                    owned_bytes = canonical.read_bytes()
-                    owned_identity = (canonical.lstat().st_dev, canonical.lstat().st_ino)
                     canonical.rename(displaced)
                     canonical.write_text("foreign receipt\n", encoding="utf-8")
-                real_rename(source_fd, source_name, target_fd, target_name)
 
             with mock.patch.object(
                 install_module,
-                "_renameat_noreplace",
+                "_write_receipt_retirement_sidecar",
                 side_effect=replace_before_rename,
             ):
                 with self.assertRaises(install_module.InstallError):
                     uninstall_opencode(repo, config, state)
 
             self.assertTrue(raced)
-            assert owned_bytes is not None and owned_identity is not None
             foreign_identity = (canonical.lstat().st_dev, canonical.lstat().st_ino)
             self.assertEqual(canonical.read_text(encoding="utf-8"), "foreign receipt\n")
-            pins = tuple(canonical.parent.glob(f".{canonical.name}.*.pin"))
-            self.assertEqual(len(pins), 1)
-            self.assertEqual(pins[0].read_bytes(), owned_bytes)
-            self.assertEqual((pins[0].lstat().st_dev, pins[0].lstat().st_ino), owned_identity)
+            self.assertTrue(displaced.is_file())
+            self.assertEqual(len(tuple(canonical.parent.glob("*.journal"))), 1)
 
             canonical.unlink()
+            displaced.rename(canonical)
             uninstall_opencode(repo, config, state)
             self.assertFalse(canonical.exists())
-            self.assertFalse(pins[0].exists())
+            self.assertFalse(tuple(canonical.parent.glob("*.journal")))
             self.assertNotEqual(foreign_identity, owned_identity)
 
     def test_quarantined_receipt_replacement_before_recovery_rename_is_restored(
@@ -3679,56 +3697,38 @@ install_module.install_opencode(repo, config, state)
                     with self.assertRaises(SystemExit):
                         uninstall_opencode(repo, config, state)
 
-                quarantine = next(canonical.parent.glob("*.anchor-removed.delete"))
-                pin = next(canonical.parent.glob("*.anchor-removed.pin"))
-                owned_bytes = pin.read_bytes()
-                owned_identity = (pin.lstat().st_dev, pin.lstat().st_ino)
-                displaced = quarantine.with_name("displaced-owned-quarantine")
-                raced = False
+                private = next(canonical.parent.glob("*.retire"))
+                journal = next(canonical.parent.glob("*.journal"))
+                displaced = private.with_name("displaced-owned-receipt")
+                private.rename(displaced)
+                private.write_text("foreign private\n", encoding="utf-8")
+                foreign_identity = (private.stat().st_dev, private.stat().st_ino)
 
-                def replace_before_recovery_rename(
-                    source_fd: int,
-                    source_name: str,
-                    target_fd: int,
-                    target_name: str,
-                ) -> None:
-                    nonlocal raced
-                    if (
-                        source_name == quarantine.name
-                        and target_name == canonical.name
-                        and not raced
-                    ):
-                        raced = True
-                        quarantine.rename(displaced)
-                        quarantine.write_text("foreign quarantine\n", encoding="utf-8")
-                    real_rename(source_fd, source_name, target_fd, target_name)
-
-                with mock.patch.object(
-                    install_module,
-                    "_renameat_noreplace",
-                    side_effect=replace_before_recovery_rename,
-                ):
+                if retry_entrypoint == "install":
+                    with self.assertRaises(install_module.InstallError):
+                        install_opencode(repo, config, state)
+                else:
                     with self.assertRaises(install_module.InstallError):
                         uninstall_opencode(repo, config, state)
 
-                self.assertTrue(raced)
                 self.assertFalse(canonical.exists())
                 self.assertEqual(
-                    quarantine.read_text(encoding="utf-8"), "foreign quarantine\n"
+                    private.read_text(encoding="utf-8"), "foreign private\n"
                 )
-                self.assertEqual(pin.read_bytes(), owned_bytes)
                 self.assertEqual(
-                    (pin.lstat().st_dev, pin.lstat().st_ino), owned_identity
+                    (private.stat().st_dev, private.stat().st_ino), foreign_identity
                 )
-                displaced.unlink()
-                quarantine.unlink()
+                self.assertTrue(journal.is_file())
+                private.unlink()
+                displaced.rename(private)
                 if retry_entrypoint == "install":
                     install_opencode(repo, config, state)
                     uninstall_opencode(repo, config, state)
                 else:
                     uninstall_opencode(repo, config, state)
                 self.assertFalse(canonical.exists())
-                self.assertFalse(pin.exists())
+                self.assertFalse(private.exists())
+                self.assertFalse(journal.exists())
 
     def test_upgrade_rollback_retries_after_candidate_child_destruction(self) -> None:
         for retry_entrypoint in ("install", "uninstall"):
@@ -3954,43 +3954,22 @@ install_module.install_opencode(repo, config, state)
             state = root / "state"
             install_opencode(repo, config, state)
             canonical = receipt_path(state)
-            real_rename = install_module._renameat_noreplace
-            interrupted = False
-
-            def stop_after_receipt_quarantine(
-                source_fd: int,
-                source_name: str,
-                target_fd: int,
-                target_name: str,
-            ) -> None:
-                nonlocal interrupted
-                real_rename(source_fd, source_name, target_fd, target_name)
-                if source_name == canonical.name and target_name.endswith(".delete"):
-                    interrupted = True
-                    raise SystemExit("after receipt quarantine")
-
-            with mock.patch.object(
-                install_module, "_renameat_noreplace", side_effect=stop_after_receipt_quarantine
-            ):
-                with self.assertRaises(SystemExit):
-                    uninstall_opencode(repo, config, state)
-
-            self.assertTrue(interrupted)
-            quarantine = next(canonical.parent.glob("*.anchor-removed.delete"))
-            copied = canonical.parent / "copied-receipt"
-            shutil.copy2(quarantine, copied)
-            copied_metadata = copied.lstat()
-            arbitrary = canonical.parent / (
-                f".{canonical.name}.{copied_metadata.st_dev:x}-{copied_metadata.st_ino:x}."
-                f"{'f' * 32}.none.anchor-removed.delete"
+            identity = (canonical.stat().st_dev, canonical.stat().st_ino)
+            forged_secret = "f" * (
+                install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2
             )
-            copied.rename(arbitrary)
+            forged = install_module._receipt_retirement_payload(
+                canonical, identity, forged_secret, "prepared"
+            )
+            arbitrary = Path(str(forged["sidecar"]))
+            arbitrary.write_text(json.dumps(forged), encoding="utf-8")
 
             with self.assertRaisesRegex(
-                install_module.InstallError, "receipt deletion token"
+                install_module.InstallError, "receipt authority"
             ):
                 install_opencode(repo, config, state)
             self.assertTrue(arbitrary.is_file())
+            self.assertTrue(canonical.is_file())
 
     def test_retirement_entry_serialization_has_closed_roles_and_phases(self) -> None:
         lineage = "1" * 32
@@ -4011,7 +3990,8 @@ install_module.install_opencode(repo, config, state)
                         ):
                             source = parent / f"{role}-{source_kind}-source"
                             token = install_module._retirement_token(
-                                lineage, role, kind, source, 11, 12
+                                lineage, role, kind, source, 11, 12,
+                                secret=TEST_RETIREMENT_SECRET,
                             )
                             private = install_module._retirement_private_path(
                                 source, token, kind
@@ -4029,6 +4009,7 @@ install_module.install_opencode(repo, config, state)
                                 token=token,
                                 phase=phase,
                                 source_kind=source_kind,
+                                secret=TEST_RETIREMENT_SECRET,
                             )
                             encoded = install_module._pending_retirement_payload(entry)
                             self.assertEqual(
@@ -4098,6 +4079,1264 @@ install_module.install_opencode(repo, config, state)
                 )
                 uninstall_opencode(repo, config, state)
                 self.assertFalse(receipt_path(state).exists())
+
+    def test_retirement_authority_is_secret_and_authenticated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "owned"
+            source.write_text("owned\n", encoding="utf-8")
+            lineage = "a" * 32
+            expected = (source.stat().st_dev, source.stat().st_ino)
+            secret = "b" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)
+            token = install_module._retirement_token(
+                lineage,
+                "final-link",
+                "leaf",
+                source,
+                *expected,
+                secret=secret,
+            )
+            pending = install_module._PendingRetirement(
+                role="final-link",
+                kind="leaf",
+                source=source,
+                private=install_module._retirement_private_path(
+                    source, token, "leaf"
+                ),
+                expected_dev=expected[0],
+                expected_ino=expected[1],
+                lineage=lineage,
+                token=token,
+                phase="prepared",
+                secret=secret,
+                placeholder_dev=13,
+                placeholder_ino=14,
+            )
+            encoded = install_module._pending_retirement_payload(pending)
+            self.assertNotIn(lineage, str(pending.private))
+            observable_token = install_module._retirement_token(
+                lineage,
+                "final-link",
+                "leaf",
+                source,
+                *expected,
+                secret="c" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2),
+            )
+            self.assertNotEqual(
+                pending.private,
+                install_module._retirement_private_path(
+                    source, observable_token, "leaf"
+                ),
+            )
+            self.assertEqual(
+                install_module._pending_retirement_from_payload(
+                    encoded, lineage, require_secret=True
+                ),
+                pending,
+            )
+            for field, replacement in (
+                ("secret", "c" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)),
+                ("token", "d" * (install_module.OPENCODE_RETIREMENT_TOKEN_BYTES * 2)),
+                ("auth", "e" * 64),
+                ("phase", "exchanged"),
+                ("source_kind", "quarantine"),
+                ("placeholder_dev", 15),
+            ):
+                with self.subTest(field=field):
+                    forged = {**encoded, field: replacement}
+                    with self.assertRaises(install_module.InstallError):
+                        install_module._pending_retirement_from_payload(
+                            forged, lineage, require_secret=True
+                        )
+
+    def test_ordinary_receipt_rewrite_recovers_every_private_boundary(self) -> None:
+        secret = "9" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)
+        for boundary in ("write", "exchange", "fsync", "reclaim"):
+            for moment in ("before", "after"):
+                with (
+                    self.subTest(boundary=boundary, moment=moment),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    state_directory = Path(temporary) / "state" / "expskill"
+                    state_directory.mkdir(parents=True)
+                    receipt_file = state_directory / "install-opencode.json"
+                    receipt_file.write_text(
+                        json.dumps(
+                            {
+                                "generation": "original",
+                                "receipt_secret": secret,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    payload = {
+                        "generation": "next",
+                        "receipt_secret": secret,
+                    }
+                    binding = install_module._open_state_binding(
+                        state_directory, create=False
+                    )
+                    self.assertIsNotNone(binding)
+                    assert binding is not None
+                    key = str(binding.directory)
+                    install_module._STATE_BINDINGS[key] = binding
+                    real_write = install_module._write_state_generation
+                    real_exchange = install_module._renameat_exchange
+                    real_fsync = os.fsync
+                    real_reclaim = install_module._unlink_private_state_inode
+                    triggered = False
+                    exchanged = False
+
+                    def interrupt(action: str, call: object) -> object:
+                        nonlocal triggered
+                        if boundary != action or triggered:
+                            return call()
+                        triggered = True
+                        if moment == "before":
+                            raise SystemExit(f"before ordinary receipt {action}")
+                        result = call()
+                        raise SystemExit(f"after ordinary receipt {action}")
+
+                    def write_generation(
+                        bound: object, name: str, encoded: bytes
+                    ) -> tuple[int, int]:
+                        if name.startswith(
+                            install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                        ):
+                            return interrupt(
+                                "write", lambda: real_write(bound, name, encoded)
+                            )  # type: ignore[return-value]
+                        return real_write(bound, name, encoded)
+
+                    def exchange_generation(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal exchanged
+                        if source_name.startswith(
+                            install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                        ):
+                            def perform() -> None:
+                                nonlocal exchanged
+                                real_exchange(
+                                    source_fd, source_name, target_fd, target_name
+                                )
+                                exchanged = True
+
+                            interrupt("exchange", perform)
+                            return
+                        real_exchange(source_fd, source_name, target_fd, target_name)
+
+                    def sync_generation(descriptor: int) -> None:
+                        if exchanged and descriptor == binding.directory_fd:
+                            interrupt("fsync", lambda: real_fsync(descriptor))
+                            return
+                        real_fsync(descriptor)
+
+                    def reclaim_generation(
+                        bound: object,
+                        name: str,
+                        expected: tuple[int, int],
+                        label: str,
+                    ) -> None:
+                        call = lambda: real_reclaim(bound, name, expected, label)
+                        if label == "receipt generation":
+                            interrupt("reclaim", call)
+                            return
+                        call()
+
+                    try:
+                        with (
+                            mock.patch.object(
+                                install_module,
+                                "_write_state_generation",
+                                side_effect=write_generation,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_renameat_exchange",
+                                side_effect=exchange_generation,
+                            ),
+                            mock.patch.object(
+                                install_module.os,
+                                "fsync",
+                                side_effect=sync_generation,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_unlink_private_state_inode",
+                                side_effect=reclaim_generation,
+                            ),
+                        ):
+                            with self.assertRaises(SystemExit):
+                                install_module._write_state_payload(
+                                    receipt_file, payload
+                                )
+                        self.assertTrue(triggered)
+                        install_module._write_state_payload(receipt_file, payload)
+                        self.assertEqual(
+                            json.loads(receipt_file.read_text(encoding="utf-8")),
+                            payload,
+                        )
+                        self.assertFalse(
+                            tuple(
+                                state_directory.glob(
+                                    ".install-opencode.json.receipt-*.retire"
+                                )
+                            )
+                        )
+                        self.assertFalse(
+                            any(path.name.endswith(".tmp") for path in state_directory.iterdir())
+                        )
+                    finally:
+                        install_module._STATE_BINDINGS.pop(key, None)
+                        install_module._close_state_binding(binding)
+
+    def test_final_receipt_sidecar_recovers_every_low_level_boundary(self) -> None:
+        boundaries = (
+            "journal-write",
+            "journal-fsync",
+            "phase-prepared",
+            "receipt-exchange",
+            "receipt-fsync",
+            "sidecar-stage-write",
+            "sidecar-stage-exchange",
+            "sidecar-stage-fsync",
+            "phase-exchanged",
+            "receipt-reclaim",
+            "phase-reclaimed",
+            "phase-done",
+            "sidecar-reclaim",
+        )
+        for boundary in boundaries:
+            for moment in ("before", "after"):
+                with (
+                    self.subTest(boundary=boundary, moment=moment),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    state_directory = root / "state" / "expskill"
+                    state_directory.mkdir(parents=True)
+                    receipt_file = state_directory / "install-opencode.json"
+                    receipt_file.write_text(
+                        json.dumps(
+                            {
+                                "links": [],
+                                "marketplace_added": False,
+                                "plugin_installed": True,
+                                "repository_root": str(root),
+                                "lineage": "8" * 32,
+                                "teardown_phase": "anchor-removed",
+                                "receipt_secret": TEST_RETIREMENT_SECRET,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    binding = install_module._open_state_binding(
+                        state_directory, create=False
+                    )
+                    self.assertIsNotNone(binding)
+                    assert binding is not None
+                    key = str(binding.directory)
+                    install_module._STATE_BINDINGS[key] = binding
+                    real_phase_write = install_module._write_receipt_retirement_sidecar
+                    real_generation_write = install_module._write_state_generation
+                    real_receipt_exchange = install_module._renameat_noreplace
+                    real_stage_exchange = install_module._renameat_exchange
+                    real_fsync = os.fsync
+                    real_reclaim = install_module._unlink_private_state_inode
+                    triggered = False
+                    journal_written = False
+                    receipt_exchanged = False
+                    stage_exchanged = False
+
+                    def interrupt(action: str, call: object) -> object:
+                        nonlocal triggered
+                        if boundary != action or triggered:
+                            return call()
+                        triggered = True
+                        if moment == "before":
+                            raise SystemExit(f"before final receipt {action}")
+                        result = call()
+                        raise SystemExit(f"after final receipt {action}")
+
+                    def write_phase(sidecar: Path, payload: object) -> None:
+                        phase = payload.get("phase") if isinstance(payload, dict) else None
+                        action = f"phase-{phase}"
+                        interrupt(action, lambda: real_phase_write(sidecar, payload))
+
+                    def write_generation(
+                        bound: object, name: str, encoded: bytes
+                    ) -> tuple[int, int]:
+                        nonlocal journal_written
+                        if name.endswith(".journal"):
+                            def perform_journal() -> tuple[int, int]:
+                                nonlocal journal_written
+                                result = real_generation_write(bound, name, encoded)
+                                journal_written = True
+                                return result
+
+                            return interrupt(
+                                "journal-write", perform_journal
+                            )  # type: ignore[return-value]
+                        if name.endswith(".journal.stage"):
+                            return interrupt(
+                                "sidecar-stage-write",
+                                lambda: real_generation_write(bound, name, encoded),
+                            )  # type: ignore[return-value]
+                        return real_generation_write(bound, name, encoded)
+
+                    def exchange_receipt(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal receipt_exchanged
+                        if source_name == receipt_file.name and target_name.endswith(
+                            ".retire"
+                        ):
+                            def perform() -> None:
+                                nonlocal receipt_exchanged
+                                real_receipt_exchange(
+                                    source_fd, source_name, target_fd, target_name
+                                )
+                                receipt_exchanged = True
+
+                            interrupt("receipt-exchange", perform)
+                            return
+                        real_receipt_exchange(
+                            source_fd, source_name, target_fd, target_name
+                        )
+
+                    def exchange_sidecar(
+                        source_fd: int,
+                        source_name: str,
+                        target_fd: int,
+                        target_name: str,
+                    ) -> None:
+                        nonlocal stage_exchanged
+                        if source_name.endswith(".journal.stage"):
+                            def perform() -> None:
+                                nonlocal stage_exchanged
+                                real_stage_exchange(
+                                    source_fd, source_name, target_fd, target_name
+                                )
+                                stage_exchanged = True
+
+                            interrupt("sidecar-stage-exchange", perform)
+                            return
+                        real_stage_exchange(
+                            source_fd, source_name, target_fd, target_name
+                        )
+
+                    def sync_sidecar(descriptor: int) -> None:
+                        nonlocal journal_written, receipt_exchanged, stage_exchanged
+                        if descriptor == binding.directory_fd:
+                            if receipt_exchanged:
+                                interrupt("receipt-fsync", lambda: real_fsync(descriptor))
+                                receipt_exchanged = False
+                                return
+                            if stage_exchanged:
+                                interrupt(
+                                    "sidecar-stage-fsync",
+                                    lambda: real_fsync(descriptor),
+                                )
+                                stage_exchanged = False
+                                return
+                            if journal_written:
+                                interrupt("journal-fsync", lambda: real_fsync(descriptor))
+                                journal_written = False
+                                return
+                        real_fsync(descriptor)
+
+                    def reclaim_sidecar(
+                        bound: object,
+                        name: str,
+                        expected: tuple[int, int],
+                        label: str,
+                    ) -> None:
+                        call = lambda: real_reclaim(bound, name, expected, label)
+                        if label == "receipt retirement":
+                            interrupt("receipt-reclaim", call)
+                            return
+                        if label == "receipt retirement sidecar" and name.endswith(
+                            ".journal"
+                        ):
+                            interrupt("sidecar-reclaim", call)
+                            return
+                        call()
+
+                    try:
+                        with (
+                            mock.patch.object(
+                                install_module,
+                                "_write_receipt_retirement_sidecar",
+                                side_effect=write_phase,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_write_state_generation",
+                                side_effect=write_generation,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_renameat_noreplace",
+                                side_effect=exchange_receipt,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_renameat_exchange",
+                                side_effect=exchange_sidecar,
+                            ),
+                            mock.patch.object(
+                                install_module.os,
+                                "fsync",
+                                side_effect=sync_sidecar,
+                            ),
+                            mock.patch.object(
+                                install_module,
+                                "_unlink_private_state_inode",
+                                side_effect=reclaim_sidecar,
+                            ),
+                        ):
+                            with self.assertRaises(SystemExit):
+                                install_module._unlink_state_path(receipt_file)
+                        self.assertTrue(triggered)
+                        install_module._recover_receipt_deletion(
+                            root, root / "config", root / "state", receipt_file
+                        )
+                        if receipt_file.exists():
+                            install_module._unlink_state_path(receipt_file)
+                        self.assertFalse(receipt_file.exists())
+                        self.assertFalse(tuple(state_directory.glob("*.retire")))
+                        self.assertFalse(tuple(state_directory.glob("*.journal*")))
+                    finally:
+                        install_module._STATE_BINDINGS.pop(key, None)
+                        install_module._close_state_binding(binding)
+
+    def test_final_receipt_retirement_recovers_at_every_sidecar_phase(self) -> None:
+        """Every durable sidecar transition must be retryable after death."""
+
+        for boundary in ("prepared", "exchanged", "reclaimed", "done"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state_directory = root / "state" / "expskill"
+                state_directory.mkdir(parents=True)
+                receipt = state_directory / "install-opencode.json"
+                receipt.write_text(
+                    json.dumps(
+                        {
+                            "links": [],
+                            "marketplace_added": False,
+                            "plugin_installed": True,
+                            "repository_root": str(root),
+                            "lineage": "1" * 32,
+                            "teardown_phase": "anchor-removed",
+                            "receipt_secret": TEST_RETIREMENT_SECRET,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                real_write = install_module._write_receipt_retirement_sidecar
+                interrupted = False
+
+                def stop_after_phase(
+                    sidecar: Path, payload: object
+                ) -> None:
+                    nonlocal interrupted
+                    real_write(sidecar, payload)
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("phase") == boundary
+                        and not interrupted
+                    ):
+                        interrupted = True
+                        raise SystemExit(f"after receipt sidecar {boundary}")
+
+                try:
+                    with mock.patch.object(
+                        install_module,
+                        "_write_receipt_retirement_sidecar",
+                        side_effect=stop_after_phase,
+                    ):
+                        with self.assertRaises(SystemExit):
+                            install_module._unlink_state_path(receipt)
+                    self.assertTrue(interrupted)
+                    journals = tuple(state_directory.glob("*.journal"))
+                    self.assertEqual(len(journals), 1)
+                    journal_payload = json.loads(
+                        journals[0].read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(journal_payload["phase"], boundary)
+                    if boundary == "prepared":
+                        self.assertTrue(receipt.is_file())
+                    else:
+                        self.assertFalse(receipt.exists())
+
+                    install_module._recover_receipt_deletion(
+                        root, root / "config", root / "state", receipt
+                    )
+                    self.assertFalse(receipt.exists())
+                    self.assertFalse(tuple(state_directory.glob("*.journal")))
+                    self.assertFalse(
+                        tuple(
+                            state_directory.glob(
+                                ".install-opencode.json.*.retire"
+                            )
+                        )
+                    )
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+    def test_final_receipt_sidecar_tampering_is_rejected_and_preserved(self) -> None:
+        for field in ("auth", "secret", "token", "extra"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state_directory = root / "state" / "expskill"
+                state_directory.mkdir(parents=True)
+                receipt = state_directory / "install-opencode.json"
+                receipt.write_text(
+                    json.dumps(
+                        {
+                            "links": [],
+                            "marketplace_added": False,
+                            "plugin_installed": True,
+                            "repository_root": str(root),
+                            "lineage": "2" * 32,
+                            "teardown_phase": "anchor-removed",
+                            "receipt_secret": TEST_RETIREMENT_SECRET,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                real_rename = install_module._renameat_noreplace
+                interrupted = False
+
+                def stop_after_exchange(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal interrupted
+                    real_rename(source_fd, source_name, target_fd, target_name)
+                    if (
+                        source_name == receipt.name
+                        and target_name.endswith(".retire")
+                        and not interrupted
+                    ):
+                        interrupted = True
+                        raise SystemExit("after receipt sidecar exchange")
+
+                try:
+                    with mock.patch.object(
+                        install_module,
+                        "_renameat_noreplace",
+                        side_effect=stop_after_exchange,
+                    ):
+                        with self.assertRaises(SystemExit):
+                            install_module._unlink_state_path(receipt)
+                    self.assertTrue(interrupted)
+                    journals = tuple(state_directory.glob("*.journal"))
+                    self.assertEqual(len(journals), 1)
+                    private = next(state_directory.glob("*.retire"))
+                    value = json.loads(journals[0].read_text(encoding="utf-8"))
+                    if field == "auth":
+                        value[field] = "f" * 64
+                    elif field == "secret":
+                        value[field] = "c" * 64
+                    elif field == "token":
+                        value[field] = "d" * 64
+                    else:
+                        value[field] = True
+                    journals[0].write_text(json.dumps(value), encoding="utf-8")
+                    with self.assertRaises(install_module.InstallError):
+                        install_module._recover_receipt_deletion(
+                            root, root / "config", root / "state", receipt
+                        )
+                    self.assertTrue(journals[0].is_file())
+                    self.assertTrue(private.is_file())
+                    self.assertFalse(receipt.exists())
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+    def test_final_receipt_sidecar_exchange_crash_retries_with_old_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_directory = root / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "links": [],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(root),
+                        "lineage": "7" * 32,
+                        "teardown_phase": "anchor-removed",
+                        "receipt_secret": TEST_RETIREMENT_SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            real_exchange = install_module._renameat_exchange
+            interrupted = False
+
+            def crash_after_sidecar_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal interrupted
+                real_exchange(source_fd, source_name, target_fd, target_name)
+                if (
+                    not interrupted
+                    and source_name.endswith(".stage")
+                    and target_name.endswith(".journal")
+                ):
+                    interrupted = True
+                    raise SystemExit("after sidecar generation exchange")
+
+            try:
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_exchange",
+                    side_effect=crash_after_sidecar_exchange,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_module._unlink_state_path(receipt)
+                self.assertTrue(interrupted)
+                journal = next(state_directory.glob("*.journal"))
+                stage = next(state_directory.glob("*.journal.stage"))
+                self.assertEqual(
+                    json.loads(journal.read_text(encoding="utf-8"))["phase"],
+                    "exchanged",
+                )
+                self.assertEqual(
+                    json.loads(stage.read_text(encoding="utf-8"))["phase"],
+                    "prepared",
+                )
+                install_module._recover_receipt_deletion(
+                    root, root / "config", root / "state", receipt
+                )
+                self.assertFalse(receipt.exists())
+                self.assertFalse(tuple(state_directory.glob("*.journal")))
+                self.assertFalse(tuple(state_directory.glob("*.retire")))
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_final_receipt_deterministic_private_and_journal_collisions_survive(self) -> None:
+        fixed_secret = "a" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)
+        for occupied in ("private", "journal"):
+            with self.subTest(occupied=occupied), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state_directory = root / "state" / "expskill"
+                state_directory.mkdir(parents=True)
+                receipt = state_directory / "install-opencode.json"
+                receipt.write_text(
+                    json.dumps(
+                        {
+                            "links": [],
+                            "marketplace_added": False,
+                            "plugin_installed": True,
+                            "repository_root": str(root),
+                            "lineage": "3" * 32,
+                            "teardown_phase": "anchor-removed",
+                            "receipt_secret": fixed_secret,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                expected = (receipt.stat().st_dev, receipt.stat().st_ino)
+                private = install_module._receipt_retirement_private_path(
+                    receipt, expected, fixed_secret
+                )
+                journal = install_module._receipt_retirement_sidecar_path(
+                    receipt, expected, fixed_secret
+                )
+                target = private if occupied == "private" else journal
+                target.write_text("foreign\n", encoding="utf-8")
+                identity = (target.lstat().st_dev, target.lstat().st_ino)
+                try:
+                    with mock.patch.object(
+                        install_module, "_retirement_secret", return_value=fixed_secret
+                    ):
+                        with self.assertRaises(install_module.InstallError):
+                            install_module._unlink_state_path(receipt)
+                    self.assertTrue(receipt.is_file())
+                    self.assertEqual(
+                        (target.lstat().st_dev, target.lstat().st_ino), identity
+                    )
+                    self.assertEqual(target.read_text(encoding="utf-8"), "foreign\n")
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+    def test_final_receipt_replacement_before_retirement_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_directory = root / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "links": [],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(root),
+                        "lineage": "4" * 32,
+                        "teardown_phase": "anchor-removed",
+                        "receipt_secret": TEST_RETIREMENT_SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            detached = receipt.with_name("receipt-owned")
+            real_write = install_module._write_receipt_retirement_sidecar
+            replaced = False
+
+            def replace_after_prepared(sidecar: Path, payload: object) -> None:
+                nonlocal replaced
+                real_write(sidecar, payload)
+                if not replaced and isinstance(payload, dict) and payload.get("phase") == "prepared":
+                    replaced = True
+                    receipt.rename(detached)
+                    receipt.write_text("foreign receipt\n", encoding="utf-8")
+
+            try:
+                with mock.patch.object(
+                    install_module,
+                    "_write_receipt_retirement_sidecar",
+                    side_effect=replace_after_prepared,
+                ):
+                    with self.assertRaises(install_module.InstallError):
+                        install_module._unlink_state_path(receipt)
+                self.assertTrue(replaced)
+                self.assertEqual(receipt.read_text(encoding="utf-8"), "foreign receipt\n")
+                self.assertTrue(detached.is_file())
+                self.assertTrue(tuple(state_directory.glob("*.journal")))
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_final_receipt_private_replacement_after_exchange_is_preserved(self) -> None:
+        fixed_secret = "b" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state_directory = root / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "links": [],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(root),
+                        "lineage": "5" * 32,
+                        "teardown_phase": "anchor-removed",
+                        "receipt_secret": fixed_secret,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            expected = (receipt.stat().st_dev, receipt.stat().st_ino)
+            private = install_module._receipt_retirement_private_path(
+                receipt, expected, fixed_secret
+            )
+            detached = private.with_name(private.name + ".owned")
+            real_rename = install_module._renameat_noreplace
+            replaced = False
+
+            def replace_private(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal replaced
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if (
+                    not replaced
+                    and source_name == receipt.name
+                    and target_name == private.name
+                ):
+                    replaced = True
+                    os.rename(private.name, detached.name, src_dir_fd=target_fd, dst_dir_fd=target_fd)
+                    private.write_text("foreign private\n", encoding="utf-8")
+
+            try:
+                with mock.patch.object(
+                    install_module, "_retirement_secret", return_value=fixed_secret
+                ), mock.patch.object(
+                    install_module, "_renameat_noreplace", side_effect=replace_private
+                ):
+                    with self.assertRaises(install_module.InstallError):
+                        install_module._unlink_state_path(receipt)
+                self.assertTrue(replaced)
+                self.assertFalse(receipt.exists())
+                self.assertTrue(detached.is_file())
+                self.assertEqual(private.read_text(encoding="utf-8"), "foreign private\n")
+                self.assertTrue(tuple(state_directory.glob("*.journal")))
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_receipt_deletion_recovers_or_blocks_pending_ordinary_generation(self) -> None:
+        secret = "c" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)
+        for mutate_generation in (False, True):
+            with self.subTest(mutate_generation=mutate_generation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state_directory = root / "state" / "expskill"
+                state_directory.mkdir(parents=True)
+                receipt = state_directory / "install-opencode.json"
+                receipt.write_text(
+                    json.dumps(
+                        {
+                            "links": [],
+                            "marketplace_added": False,
+                            "plugin_installed": True,
+                            "repository_root": str(root),
+                            "lineage": "6" * 32,
+                            "teardown_phase": "anchor-removed",
+                            "receipt_secret": secret,
+                            "generation": "original",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                binding = install_module._open_state_binding(
+                    state_directory, create=False
+                )
+                self.assertIsNotNone(binding)
+                assert binding is not None
+                key = str(binding.directory)
+                install_module._STATE_BINDINGS[key] = binding
+                real_exchange = install_module._renameat_exchange
+                interrupted = False
+
+                def crash_after_generation(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal interrupted
+                    real_exchange(source_fd, source_name, target_fd, target_name)
+                    if (
+                        source_name.startswith(
+                            install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                        )
+                        and not interrupted
+                    ):
+                        interrupted = True
+                        raise SystemExit("after ordinary receipt exchange")
+
+                try:
+                    with mock.patch.object(
+                        install_module,
+                        "_renameat_exchange",
+                        side_effect=crash_after_generation,
+                    ):
+                        with self.assertRaises(SystemExit):
+                            install_module._write_state_payload(
+                                receipt,
+                                {
+                                    "links": [],
+                                    "marketplace_added": False,
+                                    "plugin_installed": True,
+                                    "repository_root": str(root),
+                                    "lineage": "6" * 32,
+                                    "teardown_phase": "anchor-removed",
+                                    "receipt_secret": secret,
+                                    "generation": "next",
+                                },
+                            )
+                    self.assertTrue(interrupted)
+                    generation = next(
+                        state_directory.glob(".install-opencode.json.receipt-*.retire")
+                    )
+                    if mutate_generation:
+                        generation.write_text("foreign generation\n", encoding="utf-8")
+                        with self.assertRaises(install_module.InstallError):
+                            install_module._unlink_state_path(receipt)
+                        self.assertTrue(receipt.is_file())
+                        self.assertTrue(generation.is_file())
+                    else:
+                        install_module._unlink_state_path(receipt)
+                        self.assertFalse(receipt.exists())
+                        self.assertFalse(generation.exists())
+                        self.assertFalse(tuple(state_directory.glob("*.journal")))
+                finally:
+                    install_module._STATE_BINDINGS.pop(key, None)
+                    install_module._close_state_binding(binding)
+
+    def test_receipt_deletion_blocks_outstanding_object_retirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            receipt_file = receipt_path(state)
+            real_rewrite = install_module._rewrite_receipt_retirement
+            interrupted = False
+
+            def stop_after_prepared(
+                path: Path,
+                pending: object,
+            ) -> None:
+                nonlocal interrupted
+                real_rewrite(path, pending)  # type: ignore[arg-type]
+                if (
+                    pending is not None
+                    and getattr(pending, "phase", None) == "prepared"
+                    and not interrupted
+                ):
+                    interrupted = True
+                    raise SystemExit("after object retirement preparation")
+
+            with mock.patch.object(
+                install_module,
+                "_rewrite_receipt_retirement",
+                side_effect=stop_after_prepared,
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+            self.assertTrue(interrupted)
+            self.assertIn("pending_retirement", receipt(state))
+
+            binding = install_module._open_state_binding(
+                receipt_file.parent, create=False
+            )
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            try:
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "outstanding retirement"
+                ):
+                    install_module._unlink_state_path(receipt_file)
+                self.assertTrue(receipt_file.is_file())
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_file.exists())
+
+    def test_install_and_uninstall_retry_converge_after_final_receipt_crash(self) -> None:
+        for retry_entrypoint in ("install", "uninstall"):
+            with (
+                self.subTest(retry_entrypoint=retry_entrypoint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                real_write = install_module._write_receipt_retirement_sidecar
+                interrupted = False
+
+                def crash_after_exchange(sidecar: Path, payload: object) -> None:
+                    nonlocal interrupted
+                    real_write(sidecar, payload)
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("phase") == "exchanged"
+                        and not interrupted
+                    ):
+                        interrupted = True
+                        raise SystemExit("after final receipt exchange")
+
+                with mock.patch.object(
+                    install_module,
+                    "_write_receipt_retirement_sidecar",
+                    side_effect=crash_after_exchange,
+                ):
+                    with self.assertRaises(SystemExit):
+                        uninstall_opencode(repo, config, state)
+                self.assertTrue(interrupted)
+                self.assertFalse(receipt_path(state).exists())
+
+                if retry_entrypoint == "install":
+                    install_opencode(repo, config, state)
+                    self.assertTrue(receipt_path(state).is_file())
+                else:
+                    uninstall_opencode(repo, config, state)
+                    self.assertFalse(receipt_path(state).exists())
+                    install_opencode(repo, config, state)
+                uninstall_opencode(repo, config, state)
+                uninstall_opencode(repo, config, state)
+                self.assertFalse(receipt_path(state).exists())
+
+    def test_receipt_exchange_crash_retries_without_random_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_directory = Path(temporary) / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "generation": "original",
+                        "receipt_secret": "a"
+                        * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            real_exchange = install_module._renameat_exchange
+            stopped = False
+
+            def crash_after_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal stopped
+                real_exchange(source_fd, source_name, target_fd, target_name)
+                if source_name.startswith(
+                    install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                ) and not stopped:
+                    stopped = True
+                    raise SystemExit("after receipt generation exchange")
+
+            try:
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_exchange",
+                    side_effect=crash_after_exchange,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_module._write_state_payload(
+                            receipt,
+                            {
+                                "generation": "next",
+                                "receipt_secret": "a"
+                                * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2),
+                            },
+                        )
+                self.assertTrue(stopped)
+                self.assertFalse(
+                    any(path.name.endswith(".tmp") for path in state_directory.iterdir())
+                )
+                install_module._write_state_payload(
+                    receipt,
+                    {
+                        "generation": "retry",
+                        "receipt_secret": "a"
+                        * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2),
+                    },
+                )
+                self.assertFalse(
+                    any(
+                        path.name.startswith(
+                            install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                        )
+                        and path.name.endswith(
+                            install_module.OPENCODE_RECEIPT_GENERATION_SUFFIX
+                        )
+                        for path in state_directory.iterdir()
+                    )
+                )
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_receipt_generation_prepare_crash_retries_without_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_directory = Path(temporary) / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            secret = "d" * (install_module.OPENCODE_RETIREMENT_SECRET_BYTES * 2)
+            receipt.write_text(
+                json.dumps({"generation": "original", "receipt_secret": secret}),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            real_write = install_module._write_state_generation
+            interrupted = False
+
+            def crash_after_private_write(
+                bound: object, name: str, encoded: bytes
+            ) -> tuple[int, int]:
+                nonlocal interrupted
+                identity = real_write(bound, name, encoded)
+                if name.startswith(
+                    install_module.OPENCODE_RECEIPT_GENERATION_PREFIX
+                ) and name.endswith(install_module.OPENCODE_RECEIPT_GENERATION_SUFFIX):
+                    interrupted = True
+                    raise SystemExit("after receipt generation preparation")
+                return identity
+
+            try:
+                payload = {"generation": "candidate", "receipt_secret": secret}
+                with mock.patch.object(
+                    install_module,
+                    "_write_state_generation",
+                    side_effect=crash_after_private_write,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_module._write_state_payload(receipt, payload)
+                self.assertTrue(interrupted)
+                self.assertTrue(
+                    tuple(
+                        state_directory.glob(
+                            ".install-opencode.json.receipt-*.retire"
+                        )
+                    )
+                )
+                install_module._write_state_payload(receipt, payload)
+                self.assertEqual(
+                    json.loads(receipt.read_text(encoding="utf-8"))["generation"],
+                    "candidate",
+                )
+                self.assertFalse(
+                    tuple(
+                        state_directory.glob(
+                            ".install-opencode.json.receipt-*.retire"
+                        )
+                    )
+                )
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_final_receipt_retirement_sidecar_recovers_and_preserves_foreign(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_directory = Path(temporary) / "state" / "expskill"
+            state_directory.mkdir(parents=True)
+            receipt = state_directory / "install-opencode.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "links": [],
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(Path(temporary)),
+                        "lineage": "f" * 32,
+                        "teardown_phase": "anchor-removed",
+                        "receipt_secret": TEST_RETIREMENT_SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = install_module._open_state_binding(state_directory, create=False)
+            self.assertIsNotNone(binding)
+            assert binding is not None
+            key = str(binding.directory)
+            install_module._STATE_BINDINGS[key] = binding
+            real_rename = install_module._renameat_noreplace
+            stopped = False
+
+            def crash_after_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal stopped
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if (
+                    source_name == receipt.name
+                    and target_name.endswith(".retire")
+                    and not stopped
+                ):
+                    stopped = True
+                    raise SystemExit("after final receipt retirement exchange")
+
+            try:
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_noreplace",
+                    side_effect=crash_after_exchange,
+                ):
+                    with self.assertRaises(SystemExit):
+                        install_module._unlink_state_path(receipt)
+                self.assertTrue(stopped)
+                journals = tuple(state_directory.glob("*.journal"))
+                self.assertEqual(len(journals), 1)
+                private = next(state_directory.glob("*.retire"))
+                foreign = receipt.with_name("foreign-receipt")
+                receipt.write_text("foreign\n", encoding="utf-8")
+                with self.assertRaises(install_module.InstallError):
+                    install_module._recover_receipt_deletion(
+                        Path(temporary), Path(temporary) / "config", Path(temporary) / "state", receipt
+                    )
+                self.assertEqual(receipt.read_text(encoding="utf-8"), "foreign\n")
+                self.assertTrue(private.exists())
+                receipt.unlink()
+                install_module._recover_receipt_deletion(
+                    Path(temporary), Path(temporary) / "config", Path(temporary) / "state", receipt
+                )
+                self.assertFalse(private.exists())
+                self.assertFalse(journals[0].exists())
+            finally:
+                install_module._STATE_BINDINGS.pop(key, None)
+                install_module._close_state_binding(binding)
+
+    def test_receipt_deletion_requires_bound_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            receipt = Path(temporary) / "install-opencode.json"
+            receipt.write_text("{}\n", encoding="utf-8")
+            with self.assertRaises(install_module.InstallError):
+                install_module._unlink_state_path(receipt)
 
 
 if __name__ == "__main__":
