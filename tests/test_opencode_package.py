@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -55,6 +56,41 @@ def run(
 
 
 class OpencodePackageTests(unittest.TestCase):
+    def test_direct_replace_rejects_same_staging_and_output_without_touching_marker(self) -> None:
+        """The public seam must reject an identical normalized source and target."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            staging = parent / ".artifact.staging"
+            marker = staging / "must-survive.txt"
+            staging.mkdir()
+            marker.write_text("must survive\n", encoding="utf-8")
+            before = {
+                entry.name: entry.stat(follow_symlinks=False)
+                for entry in parent.iterdir()
+            }
+            before_fds = fd_snapshot()
+
+            with self.assertRaises(BuildError):
+                build_module._replace_output(
+                    staging,
+                    parent / "nested" / ".." / staging.name,
+                )
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
+            self.assertEqual(
+                {
+                    entry.name: entry.stat(follow_symlinks=False)
+                    for entry in parent.iterdir()
+                },
+                before,
+            )
+            self.assertEqual(
+                {entry.name for entry in staging.iterdir()},
+                {marker.name},
+            )
+            self.assertEqual(fd_snapshot(), before_fds)
+
     def test_direct_replace_rejects_cross_parent_staging_leaf_without_touching_either(self) -> None:
         """The public seam must bind staging and output to one lexical parent."""
 
@@ -563,6 +599,188 @@ class OpencodePackageTests(unittest.TestCase):
             self.assertTrue(reclaimed)
             self.assertEqual(calls, [owned.name, late.name])
             self.assertFalse(late.exists())
+
+    def test_directory_inventory_falls_back_to_open_fstat_for_persistent_stat_failure(self) -> None:
+        """Inventory can identify an owned directory through its no-follow descriptor."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owned = parent / "owned"
+            unrelated = parent / "unrelated"
+            owned.mkdir()
+            unrelated.mkdir()
+            (unrelated / "must-survive.txt").write_text("foreign\n", encoding="utf-8")
+            expected = (owned.stat().st_dev, owned.stat().st_ino)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            real_stat = build_module.os.stat
+            before = fd_snapshot()
+
+            def fail_name_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                if (
+                    isinstance(path, str)
+                    and path == owned.name
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    raise OSError(errno.EACCES, "persistent owned-name stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            try:
+                with mock.patch.object(build_module.os, "stat", side_effect=fail_name_stat):
+                    matches, unobservable = build_module._directory_inventory_with_errors(
+                        parent_fd, expected
+                    )
+                self.assertEqual(matches, [owned.name])
+                self.assertEqual(unobservable, set())
+                self.assertEqual(fd_snapshot(), before)
+            finally:
+                os.close(parent_fd)
+
+            self.assertTrue((unrelated / "must-survive.txt").is_file())
+
+    def test_directory_inventory_fallback_closes_fd_when_fstat_raises_baseexception(self) -> None:
+        """A fallback fstat fault cannot leak its newly opened descriptor."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owned = parent / "owned"
+            owned.mkdir()
+            expected = (owned.stat().st_dev, owned.stat().st_ino)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            before = fd_snapshot()
+            real_stat = build_module.os.stat
+            real_open = build_module.os.open
+            opened: list[int] = []
+
+            def fail_name_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                if (
+                    isinstance(path, str)
+                    and path == owned.name
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    raise OSError(errno.EACCES, "persistent owned-name stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            def record_open(
+                path: object, flags: int, *args: object, **kwargs: object
+            ) -> int:
+                descriptor = real_open(path, flags, *args, **kwargs)
+                if path == owned.name and kwargs.get("dir_fd") == parent_fd:
+                    opened.append(descriptor)
+                return descriptor
+
+            def fail_fstat(descriptor: int) -> os.stat_result:
+                if descriptor in opened:
+                    raise ProbeBase("injected fallback fstat failure")
+                return os.fstat(descriptor)
+
+            try:
+                with (
+                    mock.patch.object(build_module.os, "stat", side_effect=fail_name_stat),
+                    mock.patch.object(build_module.os, "open", side_effect=record_open),
+                    mock.patch.object(build_module.os, "fstat", side_effect=fail_fstat),
+                ):
+                    with self.assertRaises(ProbeBase):
+                        build_module._directory_inventory_with_errors(parent_fd, expected)
+                self.assertEqual(fd_snapshot(), before)
+            finally:
+                os.close(parent_fd)
+
+    def test_directory_inventory_fallback_closes_fd_before_later_identity_observation(self) -> None:
+        """A post-fstat identity fault cannot retain the fallback descriptor."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            owned = parent / "owned"
+            owned.mkdir()
+            expected = (owned.stat().st_dev, owned.stat().st_ino)
+            parent_fd = os.open(parent, build_module._directory_open_flags())
+            before = fd_snapshot()
+            real_stat = build_module.os.stat
+
+            def fail_name_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                if (
+                    isinstance(path, str)
+                    and path == owned.name
+                    and kwargs.get("dir_fd") == parent_fd
+                ):
+                    raise OSError(errno.EACCES, "persistent owned-name stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            def fail_identity(_metadata: os.stat_result) -> tuple[int, int]:
+                raise ProbeBase("injected later identity observation failure")
+
+            try:
+                with (
+                    mock.patch.object(build_module.os, "stat", side_effect=fail_name_stat),
+                    mock.patch.object(
+                        build_module,
+                        "_entry_identity",
+                        side_effect=fail_identity,
+                    ),
+                ):
+                    with self.assertRaises(ProbeBase):
+                        build_module._directory_inventory_with_errors(parent_fd, expected)
+                self.assertEqual(fd_snapshot(), before)
+            finally:
+                os.close(parent_fd)
+
+    def test_render_runtimeerror_reclaims_relocated_staging_with_stat_failure(self) -> None:
+        """A relocated owned directory is reclaimed through open/fstat identity."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repository"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            workspace = root / "workspace"
+            workspace.mkdir()
+            unrelated = workspace / "unrelated"
+            unrelated.mkdir()
+            foreign_marker = unrelated / "must-survive.txt"
+            foreign_marker.write_text("foreign\n", encoding="utf-8")
+            output = workspace / "artifact"
+            relocated = workspace / ".relocated-staging"
+
+            def relocate_then_fail(_source: Path) -> dict[str, str]:
+                staging = next(
+                    path
+                    for path in workspace.iterdir()
+                    if path.name.startswith(".artifact.")
+                    and not path.name.startswith(".artifact.rollback-")
+                )
+                (staging / "owned-marker.txt").write_text("owned\n", encoding="utf-8")
+                staging.rename(relocated)
+                raise RuntimeError("injected render failure")
+
+            real_stat = build_module.os.stat
+
+            def fail_relocated_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                if (
+                    isinstance(path, str)
+                    and path == relocated.name
+                    and kwargs.get("dir_fd") is not None
+                ):
+                    raise OSError(errno.EACCES, "persistent relocated-name stat failure")
+                return real_stat(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(build_module, "render_all", side_effect=relocate_then_fail),
+                mock.patch.object(build_module.os, "stat", side_effect=fail_relocated_stat),
+            ):
+                with self.assertRaises(RuntimeError):
+                    build_opencode_package(repo, output)
+
+            self.assertFalse(relocated.exists())
+            self.assertTrue(foreign_marker.is_file())
+            self.assertFalse(output.exists())
+            self.assertEqual({entry.name for entry in workspace.iterdir()}, {unrelated.name})
 
     def test_placeholder_allocation_failure_reclaims_staging_and_closes_fds(self) -> None:
         """A failed placeholder allocation does not strand staging or descriptors."""
