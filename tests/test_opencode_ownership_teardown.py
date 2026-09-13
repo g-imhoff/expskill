@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +35,479 @@ def receipt(state: Path) -> dict[str, object]:
 
 
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
+    def test_candidate_rollback_requires_live_exact_anchor_relationship(self) -> None:
+        for generation in ("initial", "upgrade"):
+            for anchor_change in ("missing", "foreign"):
+                with (
+                    self.subTest(generation=generation, anchor_change=anchor_change),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    config = root / "config"
+                    state = root / "state"
+                    if generation == "upgrade":
+                        install_opencode(repo, config, state)
+                        skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+                        skill.write_text(
+                            skill.read_text(encoding="utf-8").replace(
+                                "Cut AI tells", "rollback anchor relationship"
+                            ),
+                            encoding="utf-8",
+                        )
+
+                    changed_anchor: Path | None = None
+                    detached_anchor: Path | None = None
+
+                    def invalidate_anchor(*_args: object, **_kwargs: object) -> None:
+                        nonlocal changed_anchor, detached_anchor
+                        payload = receipt(state)
+                        pending = payload[
+                            "pending_publish" if generation == "initial" else "pending_swap"
+                        ]
+                        changed_anchor = Path(pending["candidate_anchor"])
+                        if anchor_change == "foreign":
+                            detached_anchor = changed_anchor.with_name(
+                                f"{changed_anchor.name}.detached"
+                            )
+                            changed_anchor.rename(detached_anchor)
+                            changed_anchor.write_text("foreign anchor\n", encoding="utf-8")
+                        else:
+                            changed_anchor.unlink()
+                        raise install_module.InstallError("injected preflight failure")
+
+                    with mock.patch.object(
+                        install_module,
+                        "preflight_opencode_links",
+                        side_effect=invalidate_anchor,
+                    ):
+                        with self.assertRaises(install_module.InstallError):
+                            install_opencode(repo, config, state)
+
+                    self.assertTrue(receipt_path(state).is_file())
+                    interrupted = receipt(state)
+                    pending = interrupted[
+                        "pending_publish" if generation == "initial" else "pending_swap"
+                    ]
+                    self.assertEqual(pending["phase"], "rollback-prepared")
+                    candidate_identity = (
+                        pending["candidate_dev"],
+                        pending["candidate_ino"],
+                    )
+                    candidate_paths = (Path(pending["candidate"]), Path(pending["artifact"]))
+                    self.assertTrue(
+                        any(
+                            path.is_dir()
+                            and (path.stat().st_dev, path.stat().st_ino)
+                            == candidate_identity
+                            for path in candidate_paths
+                        ),
+                        "the unproven rollback candidate was deleted",
+                    )
+                    assert changed_anchor is not None
+                    if anchor_change == "foreign":
+                        self.assertEqual(
+                            changed_anchor.read_text(encoding="utf-8"),
+                            "foreign anchor\n",
+                        )
+                        assert detached_anchor is not None
+                        self.assertTrue(detached_anchor.is_file())
+
+    def test_anchorless_recovery_rejects_same_target_replacement_inode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            artifact = Path(payload["artifact_root"])
+            Path(payload["artifact_anchor"]).unlink()
+            for key in (
+                "artifact_anchor",
+                "artifact_anchor_dev",
+                "artifact_anchor_ino",
+            ):
+                payload.pop(key)
+            victim = payload["links"][0]
+            destination = Path(victim["destination"])
+            source = Path(victim["source"])
+            displaced = destination.with_name(f"{destination.name}.owned")
+            destination.rename(displaced)
+            destination.symlink_to(source)
+            replacement_identity = (
+                destination.lstat().st_dev,
+                destination.lstat().st_ino,
+            )
+            self.assertNotEqual(
+                replacement_identity,
+                (victim["destination_dev"], victim["destination_ino"]),
+            )
+            receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                install_module.InstallError, "ownership evidence|link identity"
+            ):
+                uninstall_opencode(repo, config, state)
+
+            self.assertTrue(artifact.is_dir())
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
+
+    def test_link_final_exchange_race_restores_foreign_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            victim = payload["links"][0]
+            destination = Path(victim["destination"])
+            expected = (victim["destination_dev"], victim["destination_ino"])
+            quarantine = install_module._deletion_quarantine_path(destination, *expected)
+            detached = quarantine.with_name(f"{quarantine.name}.owned")
+            foreign_target = root / "foreign-target"
+            real_exchange = install_module._renameat_exchange
+            injected = False
+
+            def replace_at_final_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal injected
+                if source_name == quarantine.name and not injected:
+                    injected = True
+                    os.rename(
+                        source_name,
+                        detached.name,
+                        src_dir_fd=source_fd,
+                        dst_dir_fd=source_fd,
+                    )
+                    os.symlink(foreign_target, source_name, dir_fd=source_fd)
+                real_exchange(source_fd, source_name, target_fd, target_name)
+
+            with mock.patch.object(
+                install_module,
+                "_renameat_exchange",
+                side_effect=replace_at_final_exchange,
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(injected, "cleanup never used a reversible final exchange")
+            self.assertTrue(receipt_path(state).is_file())
+            self.assertTrue(quarantine.is_symlink())
+            self.assertEqual(Path(os.readlink(quarantine)), foreign_target)
+            self.assertTrue(detached.is_symlink())
+            self.assertEqual(
+                (detached.lstat().st_dev, detached.lstat().st_ino), expected
+            )
+
+    def test_state_cleanup_final_exchange_races_preserve_foreign_replacements(
+        self,
+    ) -> None:
+        for kind in ("artifact", "anchor", "receipt"):
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                payload = receipt(state)
+                artifact = Path(payload["artifact_root"])
+                anchor = Path(payload["artifact_anchor"])
+                receipt_file = receipt_path(state)
+                anchor_quarantine = install_module._deletion_quarantine_path(
+                    anchor,
+                    payload["artifact_anchor_dev"],
+                    payload["artifact_anchor_ino"],
+                )
+                real_exchange = install_module._renameat_exchange
+                injected = False
+                raced_path: Path | None = None
+                detached: Path | None = None
+
+                def replace_at_final_exchange(
+                    source_fd: int,
+                    source_name: str,
+                    target_fd: int,
+                    target_name: str,
+                ) -> None:
+                    nonlocal injected, raced_path, detached
+                    matches = (
+                        (kind == "artifact" and source_name == artifact.name)
+                        or (kind == "anchor" and source_name == anchor_quarantine.name)
+                        or (
+                            kind == "receipt"
+                            and source_name.startswith(f".{receipt_file.name}.")
+                            and source_name.endswith(".anchor-removed.delete")
+                        )
+                    )
+                    if matches and not injected:
+                        injected = True
+                        raced_path = (
+                            artifact
+                            if kind == "artifact"
+                            else anchor_quarantine
+                            if kind == "anchor"
+                            else receipt_file.parent / source_name
+                        )
+                        detached = raced_path.with_name(f"{raced_path.name}.owned")
+                        os.rename(
+                            raced_path.name,
+                            detached.name,
+                            src_dir_fd=source_fd,
+                            dst_dir_fd=source_fd,
+                        )
+                        if kind == "artifact":
+                            os.mkdir(raced_path.name, dir_fd=source_fd)
+                            (raced_path / "foreign").write_text(
+                                "foreign artifact\n", encoding="utf-8"
+                            )
+                        else:
+                            descriptor = os.open(
+                                raced_path.name,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                0o600,
+                                dir_fd=source_fd,
+                            )
+                            os.write(descriptor, f"foreign {kind}\n".encode())
+                            os.close(descriptor)
+                    real_exchange(source_fd, source_name, target_fd, target_name)
+
+                with mock.patch.object(
+                    install_module,
+                    "_renameat_exchange",
+                    side_effect=replace_at_final_exchange,
+                ):
+                    with self.assertRaises(install_module.InstallError):
+                        uninstall_opencode(repo, config, state)
+
+                self.assertTrue(injected)
+                assert raced_path is not None and detached is not None
+                if kind == "artifact":
+                    self.assertEqual(
+                        (raced_path / "foreign").read_text(encoding="utf-8"),
+                        "foreign artifact\n",
+                    )
+                else:
+                    self.assertEqual(
+                        raced_path.read_text(encoding="utf-8"),
+                        f"foreign {kind}\n",
+                    )
+                self.assertTrue(detached.exists())
+                self.assertTrue(
+                    receipt_file.exists()
+                    or any(receipt_file.parent.glob(f".{receipt_file.name}.*.pin"))
+                )
+
+    def test_initial_rollback_link_failure_retains_all_ownership_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            real_write = install_module._write_receipt
+
+            def fail_final_commit(path: Path, value: object) -> None:
+                if (
+                    getattr(value, "artifact_root", None) is not None
+                    and getattr(value, "pending_publish", None) is None
+                    and getattr(value, "pending_swap", None) is None
+                ):
+                    raise install_module.InstallError("injected final commit failure")
+                real_write(path, value)
+
+            with (
+                mock.patch.object(
+                    install_module, "_write_receipt", side_effect=fail_final_commit
+                ),
+                mock.patch.object(
+                    install_module,
+                    "_unlink_destination",
+                    side_effect=install_module.InstallError(
+                        "injected link compensation failure"
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "link compensation failure"
+                ):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(receipt_path(state).is_file())
+            retained = receipt(state)
+            self.assertIn("pending_publish", retained)
+            self.assertEqual(retained["pending_publish"]["phase"], "rollback-prepared")
+            artifact = Path(retained["pending_publish"]["artifact"])
+            anchor = Path(retained["pending_publish"]["candidate_anchor"])
+            self.assertTrue(artifact.is_dir())
+            self.assertTrue(anchor.is_file())
+            self.assertTrue(retained["links"])
+            self.assertTrue(
+                all(
+                    "destination_dev" in link
+                    and "destination_ino" in link
+                    and "staged_destination" in link
+                    for link in retained["links"]
+                )
+            )
+
+    def test_staged_link_authority_is_durable_before_directory_fsync(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            script = """
+import os
+import sys
+from pathlib import Path
+import scripts.install as install_module
+
+repo, config, state = map(Path, sys.argv[1:])
+real_fsync = os.fsync
+exited = False
+def exit_after_staged_fsync(fd):
+    global exited
+    real_fsync(fd)
+    staged = tuple(config.rglob("*.link")) if config.exists() else ()
+    try:
+        synced_path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+    except OSError:
+        synced_path = None
+    if staged and synced_path == staged[0].parent and not exited:
+        exited = True
+        os._exit(79)
+install_module.os.fsync = exit_after_staged_fsync
+install_module.install_opencode(repo, config, state)
+"""
+            stopped = subprocess.run(
+                [sys.executable, "-c", script, str(repo), str(config), str(state)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(stopped.returncode, 79, stopped.stderr)
+            staged_paths = tuple(config.rglob("*.link"))
+            self.assertEqual(len(staged_paths), 1)
+            interrupted = receipt(state)
+            staged_record = next(
+                link
+                for link in interrupted["links"]
+                if link.get("staged_destination") == str(staged_paths[0])
+            )
+            self.assertEqual(
+                (
+                    staged_record["destination_dev"],
+                    staged_record["destination_ino"],
+                ),
+                (
+                    staged_paths[0].lstat().st_dev,
+                    staged_paths[0].lstat().st_ino,
+                ),
+            )
+
+            install_opencode(repo, config, state)
+            self.assertFalse(any(config.rglob("*.link")))
+            install_opencode(repo, config, state)
+
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+
+    def test_staged_crash_uninstall_does_not_adopt_same_target_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            script = """
+import os
+import sys
+from pathlib import Path
+import scripts.install as install_module
+
+repo, config, state = map(Path, sys.argv[1:])
+real_fsync = os.fsync
+def exit_after_staged_fsync(fd):
+    real_fsync(fd)
+    staged = tuple(config.rglob("*.link")) if config.exists() else ()
+    try:
+        synced_path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+    except OSError:
+        synced_path = None
+    if staged and synced_path == staged[0].parent:
+        os._exit(79)
+install_module.os.fsync = exit_after_staged_fsync
+install_module.install_opencode(repo, config, state)
+"""
+            stopped = subprocess.run(
+                [sys.executable, "-c", script, str(repo), str(config), str(state)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(stopped.returncode, 79, stopped.stderr)
+            staged = next(config.rglob("*.link"))
+            interrupted = receipt(state)
+            recorded = next(
+                link
+                for link in interrupted["links"]
+                if link.get("staged_destination") == str(staged)
+            )
+            source = Path(recorded["source"])
+            staged.unlink()
+            staged.symlink_to(source)
+            replacement_identity = (staged.lstat().st_dev, staged.lstat().st_ino)
+            self.assertNotEqual(
+                replacement_identity,
+                (recorded["destination_dev"], recorded["destination_ino"]),
+            )
+
+            install_opencode(repo, config, state)
+            committed = receipt(state)
+            final = Path(recorded["destination"])
+            committed_link = next(
+                link
+                for link in committed["links"]
+                if link["destination"] == str(final)
+            )
+            self.assertTrue(final.is_symlink())
+            self.assertNotEqual(
+                (
+                    committed_link["destination_dev"],
+                    committed_link["destination_ino"],
+                ),
+                replacement_identity,
+            )
+            self.assertTrue(staged.is_symlink())
+            self.assertEqual(
+                (staged.lstat().st_dev, staged.lstat().st_ino),
+                replacement_identity,
+            )
+
+            uninstall_opencode(repo, config, state)
+
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+            self.assertTrue(staged.is_symlink())
+            self.assertEqual(
+                (staged.lstat().st_dev, staged.lstat().st_ino),
+                replacement_identity,
+            )
+
     def test_source_changing_upgrade_waits_for_prior_retirement(self) -> None:
         for blocked_entrypoint in ("install", "uninstall"):
             with (
@@ -452,9 +927,6 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 "teardown_phase",
             ):
                 payload.pop(key, None)
-            for link in payload["links"]:
-                link.pop("destination_dev", None)
-                link.pop("destination_ino", None)
             receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")
             victim = payload["links"][0]
             destination = Path(victim["destination"])
@@ -2660,6 +3132,22 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                                 install_opencode(repo, config, state)
                         self.assertTrue(injected)
 
+                        if boundary == "prepared" and failure_type is OSError:
+                            interrupted = receipt(state)
+                            self.assertEqual(
+                                interrupted["pending_swap"]["phase"],
+                                "rollback-prepared",
+                            )
+                            candidate = Path(
+                                interrupted["pending_swap"]["candidate"]
+                            )
+                            candidate_anchor = Path(
+                                interrupted["pending_swap"]["candidate_anchor"]
+                            )
+                            self.assertTrue(candidate.is_dir())
+                            self.assertFalse(candidate_anchor.exists())
+                            continue
+
                         owned = original["links"][0]
                         destination = Path(owned["destination"])
                         target = Path(os.readlink(destination))
@@ -2720,9 +3208,6 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 payload.pop("artifact_anchor_dev")
                 payload.pop("artifact_anchor_ino")
                 payload.pop("teardown_phase")
-                for link in payload["links"]:
-                    link.pop("destination_dev")
-                    link.pop("destination_ino")
                 if remove_link:
                     Path(payload["links"][0]["destination"]).unlink()
                 receipt_path(state).write_text(json.dumps(payload), encoding="utf-8")

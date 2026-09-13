@@ -56,6 +56,39 @@ def receipt_path(state: Path) -> Path:
     return state / "expskill" / "install-opencode.json"
 
 
+def original_feature_legacy_links(repo: Path, config: Path) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    for name in SKILLS:
+        links.append(
+            {
+                "source": str(repo / "packages" / "codex" / "skills" / name),
+                "destination": str(config / "skills" / name),
+            }
+        )
+    for name in SKILLS:
+        links.append(
+            {
+                "source": str(repo / "packages" / "opencode" / "commands" / f"{name}.md"),
+                "destination": str(config / "commands" / f"{name}.md"),
+            }
+        )
+    for name in AGENTS:
+        links.append(
+            {
+                "source": str(repo / "packages" / "opencode" / "agents" / f"{name}.md"),
+                "destination": str(config / "agents" / f"{name}.md"),
+            }
+        )
+    for name in PLUGINS:
+        links.append(
+            {
+                "source": str(repo / "packages" / "opencode" / "plugins" / name),
+                "destination": str(config / "plugins" / name),
+            }
+        )
+    return links
+
+
 class FoundationCorrectionTests(unittest.TestCase):
     def test_receipt_reverse_exchange_failure_restores_foreign_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1514,7 +1547,19 @@ class FoundationCorrectionTests(unittest.TestCase):
                 ):
                     install_opencode(repo, config, state)
 
-            self.assertFalse(receipt_path(state).exists())
+            self.assertTrue(receipt_path(state).is_file())
+            interrupted = json.loads(
+                receipt_path(state).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                interrupted["pending_publish"]["phase"], "rollback-prepared"
+            )
+            self.assertTrue(
+                Path(interrupted["pending_publish"]["candidate"]).is_dir()
+            )
+            self.assertFalse(
+                Path(interrupted["pending_publish"]["candidate_anchor"]).exists()
+            )
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
 
@@ -1800,22 +1845,17 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertNotEqual((artifact / "plugins" / "unslop.js").read_text(), "tampered\n")
             self.assertFalse((artifact / "unexpected.txt").exists())
 
-    def test_legacy_receipt_migrates_and_uninstall_accepts_missing_old_sources(self) -> None:
+    def test_original_feature_legacy_receipt_installs_with_missing_old_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             config = root / "config"
             state = root / "state"
-            legacy_root = repo / "packages" / "expskill"
-            links = []
-            for name in SKILLS:
-                links.append({"source": str(legacy_root / "skills" / name), "destination": str(config / "skills" / name)})
-            for name in SKILLS:
-                links.append({"source": str(legacy_root / "opencode" / "commands" / f"{name}.md"), "destination": str(config / "commands" / f"{name}.md")})
-            for name in AGENTS:
-                links.append({"source": str(legacy_root / "opencode" / "agents" / f"{name}.md"), "destination": str(config / "agents" / f"{name}.md")})
-            for name in PLUGINS:
-                links.append({"source": str(legacy_root / "opencode" / "plugins" / name), "destination": str(config / "plugins" / name)})
+            links = original_feature_legacy_links(repo, config)
+            self.assertTrue(
+                all(not Path(entry["source"]).exists() for entry in links),
+                "the migration proof requires the removed original source tree",
+            )
             for entry in links:
                 destination = Path(entry["destination"])
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1832,6 +1872,35 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertIn("artifact_root", payload)
             self.assertTrue(all(Path(entry["source"]).is_relative_to(state / "expskill") for entry in payload["links"]))
             uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+
+    def test_original_feature_legacy_receipt_uninstalls_with_missing_old_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            links = original_feature_legacy_links(repo, config)
+            for entry in links:
+                destination = Path(entry["destination"])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.symlink_to(entry["source"])
+            state.joinpath("expskill").mkdir(parents=True)
+            receipt_path(state).write_text(
+                json.dumps(
+                    {
+                        "links": links,
+                        "marketplace_added": False,
+                        "plugin_installed": True,
+                        "repository_root": str(repo.resolve()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            uninstall_opencode(repo, config, state)
+
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
 
