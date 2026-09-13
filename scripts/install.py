@@ -137,6 +137,17 @@ OPENCODE_RECEIPT_RETIREMENT_SCHEMA = "opencode-receipt-retirement.v1"
 OPENCODE_RECEIPT_RETIREMENT_PHASES = frozenset(
     {"prepared", "exchanged", "reclaimed", "done"}
 )
+_PUBLISH_CANDIDATELESS_ROLLBACK_PHASES = frozenset(
+    {"rollback-prepared", "rollback-artifact-removed", "rollback-anchor-removed"}
+)
+_SWAP_CANDIDATELESS_ROLLBACK_PHASES = frozenset(
+    {
+        "rollback-prepared",
+        "rollback-candidate-removed",
+        "rollback-anchor-removed",
+        "rollback-restored",
+    }
+)
 # Exact source/destination roster emitted by the parent-repository installer
 # before receipt-owned artifacts were introduced.  These names are deliberately
 # frozen: receipt migration must not turn arbitrary receipt text into deletion
@@ -2706,6 +2717,8 @@ def _recover_receipt_generations(
                 name,
                 published,
                 "receipt generation candidate",
+                public_name=path.name,
+                public_expected=expected,
             )
             recovered = True
             continue
@@ -2757,7 +2770,14 @@ def _recover_receipt_generations(
             # Only the exact published generation authorizes reclamation of
             # the exact displaced generation.  Byte equality at the public
             # name is intentionally irrelevant.
-            _unlink_private_state_inode(binding, name, expected, "receipt generation")
+            _unlink_private_state_inode(
+                binding,
+                name,
+                expected,
+                "receipt generation",
+                public_name=path.name,
+                public_expected=published,
+            )
             recovered = True
             continue
         # A newer public occupant and the displaced installer receipt are both
@@ -3102,6 +3122,26 @@ def _pending_anchor(
     return anchor, dev, ino
 
 
+def _workspace_phase_identity_mode(
+    phase: object,
+    payload: Mapping[str, object],
+    candidate_identity_keys: set[str],
+    candidate_less_rollback_phases: frozenset[str],
+) -> str:
+    """Classify the exact identity schema for one workspace phase."""
+
+    if phase == "planned-unmaterialized":
+        return "planned"
+    if phase == "workspace-recorded":
+        return "workspace"
+    if (
+        phase in candidate_less_rollback_phases
+        and candidate_identity_keys.isdisjoint(payload)
+    ):
+        return "workspace"
+    return "candidate"
+
+
 def _read_receipt(
     receipt_path: Path,
     repository_root: Path,
@@ -3328,7 +3368,13 @@ def _read_receipt(
             raise InstallError(f"receipt pending swap is malformed: {receipt_path}")
         workspace_dev = pending_value.get("workspace_dev")
         workspace_ino = pending_value.get("workspace_ino")
-        if phase == "planned-unmaterialized":
+        identity_mode = _workspace_phase_identity_mode(
+            phase,
+            pending_value,
+            candidate_identity_keys,
+            _SWAP_CANDIDATELESS_ROLLBACK_PHASES,
+        )
+        if identity_mode == "planned":
             if any(
                 key in pending_value
                 for key in candidate_identity_keys
@@ -3339,12 +3385,20 @@ def _read_receipt(
                 raise InstallError(
                     f"receipt pending swap planned state is malformed: {receipt_path}"
                 )
-        elif phase == "workspace-recorded" or (
-            phase == "rollback-prepared"
-            and not any(key in pending_value for key in candidate_identity_keys)
-        ):
+        elif identity_mode == "workspace":
+            workspace_recorded = (
+                required | workspace_path_keys | workspace_identity_keys
+            )
+            workspace_shapes = {
+                frozenset(workspace_recorded),
+                frozenset(workspace_recorded | old_anchor_keys),
+            }
             if (
-                any(key in pending_value for key in candidate_identity_keys | evidence_keys | anchor_keys)
+                frozenset(pending_value) not in workspace_shapes
+                or any(
+                    key in pending_value
+                    for key in candidate_identity_keys | evidence_keys | anchor_keys
+                )
                 or
                 not isinstance(workspace_dev, int)
                 or workspace_dev <= 0
@@ -3577,7 +3631,13 @@ def _read_receipt(
         workspace_ino = publish_value.get("workspace_ino")
         if any(not isinstance(value, str) for value in publish_paths.values()):
             raise InstallError(f"receipt pending publish is malformed: {receipt_path}")
-        if phase == "planned-unmaterialized":
+        identity_mode = _workspace_phase_identity_mode(
+            phase,
+            publish_value,
+            identity_keys,
+            _PUBLISH_CANDIDATELESS_ROLLBACK_PHASES,
+        )
+        if identity_mode == "planned":
             if (
                 frozenset(publish_value) != frozenset(workspace_base)
                 or any(value is not None for value in publish_numbers.values())
@@ -3585,10 +3645,7 @@ def _read_receipt(
                 raise InstallError(
                     f"receipt pending publish planned state is malformed: {receipt_path}"
                 )
-        elif phase == "workspace-recorded" or (
-            phase == "rollback-prepared"
-            and not any(key in publish_value for key in identity_keys)
-        ):
+        elif identity_mode == "workspace":
             if (
                 frozenset(publish_value) != frozenset(workspace_recorded)
                 or any(value is not None for value in publish_numbers.values())
@@ -3604,7 +3661,7 @@ def _read_receipt(
                 f"receipt pending publish identity is malformed: {receipt_path}"
             )
         if (
-            phase != "planned-unmaterialized"
+            identity_mode != "planned"
             and (
                 not isinstance(workspace_dev, int)
                 or workspace_dev <= 0
@@ -5436,6 +5493,47 @@ def _create_publication_workspace(workspace: Path) -> tuple[int, int]:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _open_publication_workspace(
+    workspace: Path, expected: tuple[int, int]
+) -> int:
+    """Retain the exact recorded workspace without reopening it lexically."""
+
+    binding = _state_binding(workspace)
+    if binding is None:
+        raise InstallError("OpenCode publication workspace requires bound state")
+    _verify_state_binding(binding)
+    metadata = _state_metadata(binding, workspace.name)
+    if (
+        metadata is None
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != expected
+    ):
+        raise InstallError("OpenCode publication workspace identity changed")
+    try:
+        descriptor = os.open(
+            workspace.name, _directory_open_flags(), dir_fd=binding.directory_fd
+        )
+    except OSError as error:
+        raise InstallError(
+            f"OpenCode publication workspace cannot be retained: {error}"
+        ) from error
+    try:
+        opened = os.fstat(descriptor)
+        current = _state_metadata(binding, workspace.name)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != expected
+            or current is None
+            or (current.st_dev, current.st_ino) != expected
+        ):
+            raise InstallError("OpenCode publication workspace identity changed")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
 
 
 def _publish_workspace_candidate(
@@ -7332,27 +7430,77 @@ def _prepare_opencode_workspace(
     receipt = _with_workspace_publication(receipt, pending)
     _write_receipt(receipt_path, receipt)
     progress[0] = receipt
-    build_opencode_package(repo_root, pending.candidate)
-    if _workspace_identity(workspace, workspace_identity) is None:
-        raise InstallError("OpenCode publication workspace disappeared during build")
-    if not _artifact_matches_sources(repo_root, pending.candidate):
-        raise InstallError(
-            "fresh OpenCode artifact failed exact inventory or byte validation"
+    workspace_fd = _open_publication_workspace(workspace, workspace_identity)
+    candidate_fd = -1
+    try:
+        opened_workspace = os.fstat(workspace_fd)
+        if (opened_workspace.st_dev, opened_workspace.st_ino) != workspace_identity:
+            raise InstallError("OpenCode publication workspace identity changed")
+        build_opencode_package(
+            repo_root,
+            pending.candidate,
+            output_parent_fd=workspace_fd,
         )
-    candidate_metadata = os.lstat(pending.candidate)
-    if not stat.S_ISDIR(candidate_metadata.st_mode) or stat.S_ISLNK(
-        candidate_metadata.st_mode
-    ):
-        raise InstallError("fresh OpenCode candidate is not a regular directory")
-    candidate_identity = (candidate_metadata.st_dev, candidate_metadata.st_ino)
-    candidate_digest = _artifact_evidence(pending.candidate)
-    if candidate_digest is None:
-        raise InstallError("fresh OpenCode artifact evidence could not be captured")
-    anchor_source = os.lstat(
-        pending.candidate / OPENCODE_ARTIFACT_ANCHOR_FILE
-    )
-    if not stat.S_ISREG(anchor_source.st_mode):
-        raise InstallError("fresh OpenCode candidate anchor is not a regular file")
+        try:
+            candidate_metadata = os.stat(
+                pending.candidate.name,
+                dir_fd=workspace_fd,
+                follow_symlinks=False,
+            )
+            candidate_fd = os.open(
+                pending.candidate.name,
+                _directory_open_flags(),
+                dir_fd=workspace_fd,
+            )
+        except OSError as error:
+            raise InstallError(
+                f"fresh OpenCode candidate cannot be retained: {error}"
+            ) from error
+        opened_candidate = os.fstat(candidate_fd)
+        if (
+            not stat.S_ISDIR(candidate_metadata.st_mode)
+            or stat.S_ISLNK(candidate_metadata.st_mode)
+            or (candidate_metadata.st_dev, candidate_metadata.st_ino)
+            != (opened_candidate.st_dev, opened_candidate.st_ino)
+        ):
+            raise InstallError("fresh OpenCode candidate is not a regular directory")
+        candidate_identity = (
+            opened_candidate.st_dev,
+            opened_candidate.st_ino,
+        )
+        descriptor_candidate = (
+            Path("/proc/self/fd") / str(workspace_fd) / pending.candidate.name
+        )
+        if not _artifact_matches_sources(repo_root, descriptor_candidate):
+            raise InstallError(
+                "fresh OpenCode artifact failed exact inventory or byte validation"
+            )
+        candidate_digest = _artifact_evidence(descriptor_candidate)
+        if candidate_digest is None:
+            raise InstallError("fresh OpenCode artifact evidence could not be captured")
+        anchor_source = os.stat(
+            OPENCODE_ARTIFACT_ANCHOR_FILE,
+            dir_fd=candidate_fd,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(anchor_source.st_mode):
+            raise InstallError("fresh OpenCode candidate anchor is not a regular file")
+        current_candidate = os.stat(
+            pending.candidate.name,
+            dir_fd=workspace_fd,
+            follow_symlinks=False,
+        )
+        if (
+            current_candidate.st_dev,
+            current_candidate.st_ino,
+        ) != candidate_identity:
+            raise InstallError("fresh OpenCode candidate identity changed")
+        if _workspace_identity(workspace, workspace_identity) is None:
+            raise InstallError("OpenCode publication workspace disappeared during build")
+    finally:
+        if candidate_fd >= 0:
+            os.close(candidate_fd)
+        os.close(workspace_fd)
     token = workspace.name.removeprefix(
         f".{OPENCODE_ARTIFACT_DIRECTORY}.txn-"
     )

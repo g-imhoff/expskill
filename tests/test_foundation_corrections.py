@@ -249,7 +249,9 @@ class FoundationCorrectionTests(unittest.TestCase):
             outside.mkdir()
             redirected = outside / "expskill"
 
-            def redirect_state_then_fail(_source: Path, _candidate: Path) -> Path:
+            def redirect_state_then_fail(
+                _source: Path, _candidate: Path, **_kwargs: object
+            ) -> Path:
                 state.rename(moved)
                 state.symlink_to(outside, target_is_directory=True)
                 redirected.mkdir()

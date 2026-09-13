@@ -9,7 +9,9 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import scripts.build_opencode_package as build_module
 from scripts.build_opencode_package import build_opencode_package
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,82 @@ def run(
 
 
 class OpencodePackageTests(unittest.TestCase):
+    def test_descriptor_bound_output_parent_ignores_replacement_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            descriptor = os.open(workspace, build_module._directory_open_flags())
+            detached = root / "detached-workspace"
+            workspace.rename(detached)
+            workspace.mkdir()
+            foreign_output = workspace / "artifact"
+            foreign_output.mkdir()
+            marker = foreign_output / "foreign.txt"
+            marker.write_bytes(b"must survive\n")
+            foreign_identity = (
+                foreign_output.stat().st_dev,
+                foreign_output.stat().st_ino,
+            )
+
+            try:
+                result = build_opencode_package(
+                    ROOT,
+                    workspace / "artifact",
+                    output_parent_fd=descriptor,
+                )
+            finally:
+                os.close(descriptor)
+
+            self.assertEqual(result, workspace / "artifact")
+            self.assertTrue((detached / "artifact/package.json").is_file())
+            self.assertEqual(marker.read_bytes(), b"must survive\n")
+            self.assertEqual(
+                (foreign_output.stat().st_dev, foreign_output.stat().st_ino),
+                foreign_identity,
+            )
+
+    def test_descriptor_bound_output_writes_stay_bound_after_build_begins(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            descriptor = os.open(workspace, build_module._directory_open_flags())
+            detached = root / "detached-workspace"
+            marker = workspace / "foreign.txt"
+            real_snapshot = build_module._snapshot_sources
+            replaced = False
+
+            def replace_after_staging(source: Path) -> tuple[Path, Path]:
+                nonlocal replaced
+                workspace.rename(detached)
+                workspace.mkdir()
+                marker.write_bytes(b"must survive\n")
+                replaced = True
+                return real_snapshot(source)
+
+            try:
+                with mock.patch.object(
+                    build_module,
+                    "_snapshot_sources",
+                    side_effect=replace_after_staging,
+                ):
+                    result = build_opencode_package(
+                        ROOT,
+                        workspace / "artifact",
+                        output_parent_fd=descriptor,
+                    )
+            finally:
+                os.close(descriptor)
+
+            self.assertTrue(replaced)
+            self.assertEqual(result, workspace / "artifact")
+            self.assertTrue((detached / "artifact/package.json").is_file())
+            self.assertEqual(tuple(workspace.iterdir()), (marker,))
+            self.assertEqual(marker.read_bytes(), b"must survive\n")
+
     @needs_node_and_npm
     def test_packed_package_is_publishable_installable_and_self_contained(self) -> None:
         assert NODE is not None
