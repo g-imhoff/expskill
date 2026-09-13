@@ -258,13 +258,18 @@ def _mkdir_at(parent_fd: int, relative: Path) -> int:
             except FileNotFoundError:
                 os.mkdir(component, mode=ARTIFACT_DIRECTORY_MODE, dir_fd=descriptor)
                 child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
-            if descriptor != parent_fd:
-                os.close(descriptor)
+            previous = descriptor
             descriptor = child
+            if previous != parent_fd:
+                try:
+                    os.close(previous)
+                except BaseException:
+                    _close_owned_descriptors(previous, descriptor)
+                    raise
         return descriptor
-    except Exception:
+    except BaseException:
         if descriptor != parent_fd:
-            os.close(descriptor)
+            _close_owned_descriptors(descriptor)
         raise
 
 
@@ -289,10 +294,10 @@ def _write_bytes_at(parent_fd: int, relative: Path, contents: bytes) -> None:
             os.fchmod(descriptor, ARTIFACT_FILE_MODE)
             os.utime(descriptor, (ARTIFACT_MTIME, ARTIFACT_MTIME))
         finally:
-            os.close(descriptor)
+            _close_owned_descriptors(descriptor)
     finally:
         if directory_fd != parent_fd:
-            os.close(directory_fd)
+            _close_owned_descriptors(directory_fd)
 
 
 def _stat_at(parent_fd: int, relative: Path) -> os.stat_result:
@@ -301,7 +306,7 @@ def _stat_at(parent_fd: int, relative: Path) -> os.stat_result:
         return os.stat(relative.name, dir_fd=directory_fd, follow_symlinks=False)
     finally:
         if directory_fd != parent_fd:
-            os.close(directory_fd)
+            _close_owned_descriptors(directory_fd)
 
 
 def _safe_copy_file(source: Path, target: Path, label: str) -> None:
@@ -474,8 +479,11 @@ def _snapshot_sources(root: Path) -> tuple[Path, Path]:
         final_manifest = _source_digest_manifest(root)
         if snapshot_manifest != written_manifest or snapshot_manifest != final_manifest:
             raise BuildError("repository sources changed while creating a private OpenCode snapshot")
-    except (OSError, BuildError):
-        shutil.rmtree(snapshot_parent, ignore_errors=True)
+    except BaseException:
+        try:
+            shutil.rmtree(snapshot_parent, ignore_errors=True)
+        except BaseException:
+            pass
         raise
     return snapshot_root, snapshot_parent
 
@@ -582,7 +590,7 @@ def _normalize_artifact_modes(output_root: Path) -> None:
                             raise BuildError(f"artifact entry changed during normalization: {entry.name}")
                         normalize_fd(child_fd)
                     finally:
-                        os.close(child_fd)
+                        _close_owned_descriptors(child_fd)
                     mode = ARTIFACT_DIRECTORY_MODE
                 elif stat.S_ISREG(metadata.st_mode):
                     mode = ARTIFACT_FILE_MODE
@@ -646,8 +654,11 @@ def _open_directory_chain(path: Path, *, create: bool) -> int:
     if not candidate.is_absolute():
         raise BuildError(f"output parent must be absolute: {candidate}")
     descriptor: int | None = None
+    owned: list[int] = []
+    succeeded = False
     try:
         descriptor = os.open(Path(candidate.anchor), _directory_open_flags())
+        owned.append(descriptor)
         for component in candidate.parts[1:]:
             try:
                 child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
@@ -656,17 +667,27 @@ def _open_directory_chain(path: Path, *, create: bool) -> int:
                     raise
                 os.mkdir(component, mode=ARTIFACT_DIRECTORY_MODE, dir_fd=descriptor)
                 child = os.open(component, _directory_open_flags(), dir_fd=descriptor)
-            os.close(descriptor)
+            owned.append(child)
+            previous = descriptor
             descriptor = child
+            try:
+                os.close(previous)
+            except BaseException:
+                raise
+            owned.remove(previous)
+        succeeded = True
         return descriptor
     except OSError as error:
-        if descriptor is not None:
-            os.close(descriptor)
         raise BuildError(f"output parent cannot be opened safely: {candidate}: {error}") from error
-    except Exception:
-        if descriptor is not None:
-            os.close(descriptor)
-        raise
+    finally:
+        # On success only the returned leaf remains owned by the caller.  On
+        # every failure, including a non-Exception fault, close the complete
+        # set because a child may have been acquired before the fault.
+        if succeeded and descriptor is not None:
+            if descriptor in owned:
+                owned.remove(descriptor)
+        if owned:
+            _close_owned_descriptors(*owned)
 
 
 def _open_output_parent(parent: Path) -> tuple[int, tuple[int, int]]:
@@ -678,8 +699,8 @@ def _open_output_parent(parent: Path) -> tuple[int, tuple[int, int]]:
         if not stat.S_ISDIR(bound.st_mode):
             raise BuildError(f"output parent is not a directory: {parent}")
         return descriptor, (bound.st_dev, bound.st_ino)
-    except Exception:
-        os.close(descriptor)
+    except BaseException:
+        _close_owned_descriptors(descriptor)
         raise
 
 
@@ -695,8 +716,8 @@ def _retain_output_parent(descriptor: int) -> tuple[int, tuple[int, int]]:
         if not stat.S_ISDIR(metadata.st_mode):
             raise BuildError("bound output parent descriptor is not a directory")
         return retained, (metadata.st_dev, metadata.st_ino)
-    except Exception:
-        os.close(retained)
+    except BaseException:
+        _close_owned_descriptors(retained)
         raise
 
 
@@ -704,15 +725,18 @@ def _directory_ancestry(descriptor: int) -> set[tuple[int, int]]:
     """Return directory identities from ``descriptor`` through filesystem root."""
 
     current: int | None = None
+    owned: list[int] = []
     identities: set[tuple[int, int]] = set()
     try:
         current = os.dup(descriptor)
+        owned.append(current)
         while True:
             metadata = os.fstat(current)
             if not stat.S_ISDIR(metadata.st_mode):
                 raise BuildError("directory ancestry descriptor is not a directory")
             identities.add((metadata.st_dev, metadata.st_ino))
             parent = os.open("..", _directory_open_flags(), dir_fd=current)
+            owned.append(parent)
             reached_root = False
             try:
                 parent_metadata = os.fstat(parent)
@@ -720,19 +744,24 @@ def _directory_ancestry(descriptor: int) -> set[tuple[int, int]]:
                     raise BuildError("directory ancestry parent is not a directory")
                 reached_root = _same_directory_identity(metadata, parent_metadata)
                 if not reached_root:
-                    os.close(current)
+                    previous = current
                     current, parent = parent, None
+                    os.close(previous)
+                    owned.remove(previous)
             finally:
                 if parent is not None:
-                    os.close(parent)
+                    _close_owned_descriptors(parent)
+                    if parent in owned:
+                        owned.remove(parent)
             if reached_root:
                 break
         return identities
     except OSError as error:
         raise BuildError(f"directory ancestry cannot be inspected: {error}") from error
     finally:
-        if current is not None:
-            os.close(current)
+        # Ancestry inspection never transfers the duplicated current
+        # descriptor to a caller, so close it on both success and failure.
+        _close_owned_descriptors(*owned)
 
 
 def _validate_parent_against_source_descriptors(
@@ -785,8 +814,7 @@ def _validate_descriptor_bound_parent(
         raise BuildError(f"descriptor-bound source roots cannot be inspected: {error}") from error
     finally:
         if not valid:
-            for source_fd in source_descriptors:
-                os.close(source_fd)
+            _close_owned_descriptors(*source_descriptors)
 
 
 def _binding_is_current(binding: _OutputBinding) -> bool:
@@ -818,7 +846,7 @@ def _binding_is_current(binding: _OutputBinding) -> bool:
         return False
     finally:
         if observed_fd is not None:
-            os.close(observed_fd)
+            _close_owned_descriptors(observed_fd)
 
 
 def _renameat2_noreplace(
@@ -877,6 +905,12 @@ def _entry_identity(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def _identity_value(value: os.stat_result | tuple[int, int]) -> tuple[int, int]:
+    if isinstance(value, os.stat_result):
+        return _entry_identity(value)
+    return value
+
+
 def _stat_name(parent_fd: int, name: str) -> os.stat_result | None:
     try:
         return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -932,97 +966,177 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result | None =
         except OSError:
             pass
     finally:
-        os.close(descriptor)
+        _close_owned_descriptors(descriptor)
 
 
 _ALLOCATE_OBSERVATION_ATTEMPTS = 2
 
 
-def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[int, int], int]:
+def _reclaim_identity_after_allocation_failure(
+    parent_fd: int,
+    identity: tuple[int, int] | None,
+    name: str,
+) -> None:
+    """Best-effort reclaim of only the first identity observed after mkdir."""
+
+    if identity is None:
+        return
+    try:
+        _reclaim_directory_identity(parent_fd, identity, (name,))
+    except BaseException:
+        # The original allocation fault is more useful than a compensation
+        # fault.  The caller's bounded cleanup path gets another opportunity.
+        pass
+
+
+def _allocate_owned_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[int, int], int]:
+    """Allocate a private directory and retain its first known identity.
+
+    Name ``stat`` is useful when it works, but the opened no-follow descriptor
+    plus ``fstat`` is the fallback identity source.  A later observation can
+    reject the candidate, but it can never replace the first identity retained
+    for compensation.
+    """
+
     for _attempt in range(32):
         name = f"{prefix}{uuid.uuid4().hex}"
         try:
             os.mkdir(name, mode=ARTIFACT_DIRECTORY_MODE, dir_fd=parent_fd)
         except FileExistsError:
             continue
-        metadata: os.stat_result | None = None
-        last_metadata: os.stat_result | None = None
-        descriptor: int | None = None
+        retained_identity: tuple[int, int] | None = None
         observation_error: OSError | None = None
+        identity_mismatch = False
+        fatal_observation_error: BaseException | None = None
         for _observation in range(_ALLOCATE_OBSERVATION_ATTEMPTS):
-            metadata = None
+            descriptor: int | None = None
             try:
-                metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                last_metadata = metadata
-                if not stat.S_ISDIR(metadata.st_mode):
-                    raise BuildError(f"private directory is not a directory: {name}")
-                descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
-                if _entry_identity(os.fstat(descriptor)) != _entry_identity(metadata):
-                    raise BuildError(f"private directory changed during creation: {name}")
-                return name, _entry_identity(metadata), descriptor
-            except OSError as error:
-                observation_error = error
-                if descriptor is not None:
-                    os.close(descriptor)
-                    descriptor = None
-                if _observation + 1 < _ALLOCATE_OBSERVATION_ATTEMPTS:
-                    continue
-                break
-            except BaseException:
-                if descriptor is not None:
-                    os.close(descriptor)
-                if last_metadata is not None:
-                    try:
-                        _reclaim_directory_identity(
-                            parent_fd,
-                            _entry_identity(last_metadata),
-                            (name,),
-                        )
-                    except BaseException:
-                        pass
-                raise
-        if descriptor is not None:
-            os.close(descriptor)
-        if last_metadata is None:
-            # Give a transient observation failure one more bounded chance to
-            # identify the directory before reclaiming it by identity.
-            for _cleanup_attempt in range(_ALLOCATE_OBSERVATION_ATTEMPTS):
                 try:
-                    last_metadata = os.stat(
-                        name,
-                        dir_fd=parent_fd,
-                        follow_symlinks=False,
-                    )
+                    metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                 except OSError as error:
                     observation_error = error
-                    continue
-                break
-        if last_metadata is not None:
-            try:
-                _reclaim_directory_identity(
-                    parent_fd,
-                    _entry_identity(last_metadata),
-                    (name,),
+                except BaseException as error:
+                    # Keep the original non-Exception fault, but still use the
+                    # no-follow open/fstat path to learn the owner identity so
+                    # compensation can reclaim it safely.
+                    if fatal_observation_error is None:
+                        fatal_observation_error = error
+                else:
+                    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                        identity_mismatch = True
+                    else:
+                        observed_identity = _entry_identity(metadata)
+                        if retained_identity is None:
+                            retained_identity = observed_identity
+                        elif observed_identity != retained_identity:
+                            identity_mismatch = True
+
+                descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+                opened = os.fstat(descriptor)
+                if not stat.S_ISDIR(opened.st_mode) or stat.S_ISLNK(opened.st_mode):
+                    identity_mismatch = True
+                else:
+                    opened_identity = _entry_identity(opened)
+                    if retained_identity is None:
+                        retained_identity = opened_identity
+                    elif opened_identity != retained_identity:
+                        identity_mismatch = True
+
+                # Open the live name once more.  This verifies the retained
+                # identity even when every name-stat attempt is unavailable.
+                verification = os.open(
+                    name,
+                    _directory_open_flags(),
+                    dir_fd=parent_fd,
                 )
+                try:
+                    verified = os.fstat(verification)
+                    if (
+                        not stat.S_ISDIR(verified.st_mode)
+                        or stat.S_ISLNK(verified.st_mode)
+                        or retained_identity is None
+                        or _entry_identity(verified) != retained_identity
+                    ):
+                        identity_mismatch = True
+                finally:
+                    _close_owned_descriptors(verification)
+
+                if identity_mismatch:
+                    _close_owned_descriptors(descriptor)
+                    descriptor = None
+                    continue
+                if retained_identity is None:
+                    raise BuildError(f"private directory identity could not be observed: {name}")
+                if fatal_observation_error is not None:
+                    _close_owned_descriptors(descriptor)
+                    descriptor = None
+                    _reclaim_identity_after_allocation_failure(
+                        parent_fd,
+                        retained_identity,
+                        name,
+                    )
+                    raise fatal_observation_error
+                return name, retained_identity, descriptor
+            except OSError as error:
+                observation_error = error
+                _close_owned_descriptors(descriptor if descriptor is not None else -1)
+                descriptor = None
+                if _observation + 1 >= _ALLOCATE_OBSERVATION_ATTEMPTS:
+                    break
             except BaseException:
-                pass
+                _close_owned_descriptors(descriptor if descriptor is not None else -1)
+                _reclaim_identity_after_allocation_failure(
+                    parent_fd,
+                    retained_identity,
+                    name,
+                )
+                raise
+        _reclaim_identity_after_allocation_failure(parent_fd, retained_identity, name)
+        if fatal_observation_error is not None:
+            raise fatal_observation_error
+        if identity_mismatch:
+            raise BuildError(f"private directory changed during creation: {name}")
         if observation_error is not None:
-            raise observation_error
+            raise BuildError(f"private directory cannot be observed: {name}: {observation_error}") from observation_error
         raise BuildError(f"private directory could not be observed: {name}")
     raise BuildError(f"cannot allocate a unique private directory under descriptor {parent_fd}")
 
 
-def _directory_names_with_identity(parent_fd: int, expected: tuple[int, int]) -> list[str]:
+def _allocate_empty_directory(parent_fd: int, prefix: str) -> tuple[str, tuple[int, int], int]:
+    return _allocate_owned_directory(parent_fd, prefix)
+
+
+def _directory_inventory_with_errors(
+    parent_fd: int,
+    expected: tuple[int, int],
+) -> tuple[list[str], set[str]]:
     try:
         names = os.listdir(parent_fd)
     except OSError as error:
         raise BuildError(f"directory inventory cannot be read: {error}") from error
-    return [
-        name for name in names
-        if (metadata := _stat_name(parent_fd, name)) is not None
-        and stat.S_ISDIR(metadata.st_mode)
-        and _entry_identity(metadata) == expected
-    ]
+    matches: list[str] = []
+    unobservable: set[str] = set()
+    for name in names:
+        try:
+            metadata = _stat_name(parent_fd, name)
+        except OSError:
+            # An unrelated entry may disappear or become unobservable while
+            # inventory is in progress.  Continue inspecting every other name.
+            unobservable.add(name)
+            continue
+        if metadata is None:
+            continue
+        if (
+            stat.S_ISDIR(metadata.st_mode)
+            and not stat.S_ISLNK(metadata.st_mode)
+            and _entry_identity(metadata) == expected
+        ):
+            matches.append(name)
+    return matches, unobservable
+
+
+def _directory_names_with_identity(parent_fd: int, expected: tuple[int, int]) -> list[str]:
+    return _directory_inventory_with_errors(parent_fd, expected)[0]
 
 
 _RECLAIM_ATTEMPTS = 8
@@ -1035,8 +1149,12 @@ def _reclaim_directory_identity(
 ) -> bool:
     preferred = tuple(dict.fromkeys(preferred_names))
     for _attempt in range(_RECLAIM_ATTEMPTS):
-        names = _directory_names_with_identity(parent_fd, expected)
+        names, unobservable = _directory_inventory_with_errors(parent_fd, expected)
         if not names:
+            if any(name in unobservable for name in preferred):
+                # A known name that cannot be inspected may still hold the
+                # target identity.  Do not claim a successful reclaim.
+                return False
             return True
         ordered = [name for name in preferred if name in names]
         ordered.extend(name for name in names if name not in ordered)
@@ -1046,7 +1164,8 @@ def _reclaim_directory_identity(
             _remove_tree_at(parent_fd, name, metadata)
     # A known inode still visible after the bounded retry budget is a cleanup
     # failure, not a successful reclaim.
-    return not _directory_names_with_identity(parent_fd, expected)
+    names, unobservable = _directory_inventory_with_errors(parent_fd, expected)
+    return not names and not any(name in unobservable for name in preferred)
 
 
 def _close_owned_descriptors(*descriptors: int) -> None:
@@ -1054,7 +1173,7 @@ def _close_owned_descriptors(*descriptors: int) -> None:
         if descriptor >= 0:
             try:
                 os.close(descriptor)
-            except OSError:
+            except BaseException:
                 pass
 
 
@@ -1090,9 +1209,13 @@ def _handle_placeholder_allocation_failure(
     finally:
         _close_owned_descriptors(*owned_descriptors)
     if cleanup_error is not None:
+        if not isinstance(error, Exception):
+            raise error
         raise BuildError(
             f"staging cleanup failed after placeholder allocation error: {cleanup_error}"
         ) from cleanup_error
+    if not isinstance(error, Exception):
+        raise error
     raise BuildError(f"rollback placeholder cannot be allocated: {error}") from error
 
 
@@ -1114,7 +1237,7 @@ def _fsync_tree_at(directory_fd: int) -> None:
                     )
                 _fsync_tree_at(child)
             finally:
-                os.close(child)
+                _close_owned_descriptors(child)
         elif stat.S_ISREG(metadata.st_mode):
             child = os.open(entry.name, os.O_RDONLY | flags, dir_fd=directory_fd)
             try:
@@ -1129,7 +1252,7 @@ def _fsync_tree_at(directory_fd: int) -> None:
                     )
                 os.fsync(child)
             finally:
-                os.close(child)
+                _close_owned_descriptors(child)
         else:
             raise BuildError(
                 f"artifact entry is not regular before fsync: {entry.name}"
@@ -1216,7 +1339,11 @@ def _rollback_published_output(binding: _OutputBinding, output_name: str) -> Non
 def _replace_output(staging: Path, output: Path) -> None:
     """Publish one complete artifact with no target replacement."""
 
-    key = os.path.abspath(os.fspath(staging))
+    staging = Path(os.path.abspath(os.fspath(staging)))
+    output = Path(os.path.abspath(os.fspath(output)))
+    if staging.parent != output.parent:
+        raise BuildError("staging and output must share one normalized parent")
+    key = os.fspath(staging)
     binding = _OUTPUT_BINDINGS.get(key)
     temporary_binding = False
     accepted = False
@@ -1229,6 +1356,9 @@ def _replace_output(staging: Path, output: Path) -> None:
         except OSError as error:
             _close_owned_descriptors(parent_fd)
             raise BuildError(f"staging directory cannot be inspected: {error}") from error
+        except BaseException:
+            _close_owned_descriptors(parent_fd)
+            raise
         try:
             staging_fd = os.open(
                 staging.name,
@@ -1238,6 +1368,20 @@ def _replace_output(staging: Path, output: Path) -> None:
         except OSError as error:
             _close_owned_descriptors(parent_fd)
             raise BuildError(f"staging directory cannot be opened: {error}") from error
+        except BaseException:
+            _close_owned_descriptors(parent_fd)
+            raise
+        try:
+            opened = os.fstat(staging_fd)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or stat.S_ISLNK(opened.st_mode)
+                or _entry_identity(opened) != _entry_identity(staging_metadata)
+            ):
+                raise BuildError(f"staging directory changed during publication: {staging}")
+        except BaseException:
+            _close_owned_descriptors(staging_fd, parent_fd)
+            raise
         try:
             placeholder_name, placeholder_identity, placeholder_fd = _allocate_empty_directory(
                 parent_fd, f".{output.name}.rollback-"
@@ -1335,7 +1479,7 @@ def _cleanup_staging(
     staging: Path,
     staging_parent: Path,
     prefix: str,
-    identity: os.stat_result | None = None,
+    identity: os.stat_result | tuple[int, int] | None = None,
 ) -> None:
     """Reclaim the owned staging identity and rollback placeholder after failure."""
 
@@ -1343,7 +1487,7 @@ def _cleanup_staging(
     if binding is not None:
         try:
             expected = binding.staging_identity
-            if identity is not None and _entry_identity(identity) != expected:
+            if identity is not None and _identity_value(identity) != expected:
                 return
             if not _reclaim_directory_identity(
                 binding.parent_fd,
@@ -1365,7 +1509,7 @@ def _cleanup_staging(
         if identity is not None:
             if not _reclaim_directory_identity(
                 parent_fd,
-                _entry_identity(identity),
+                _identity_value(identity),
                 (staging.name,),
             ):
                 raise BuildError("OpenCode staging could not be reclaimed safely")
@@ -1374,7 +1518,7 @@ def _cleanup_staging(
             if not stat.S_ISLNK(metadata.st_mode) and stat.S_ISDIR(metadata.st_mode):
                 _remove_tree_at(parent_fd, staging.name, metadata)
     finally:
-        os.close(parent_fd)
+        _close_owned_descriptors(parent_fd)
 
 
 def build_opencode_package(
@@ -1440,57 +1584,19 @@ def build_opencode_package(
                 output,
                 output_parent_fd=parent_fd,
             )
-        except Exception:
+        except BaseException:
             _close_owned_descriptors(*source_root_fds, parent_fd)
             raise
     staging_prefix = f".{output.name}."
-    staging_name = ""
-    staging_identity: os.stat_result | None = None
-    for _attempt in range(32):
-        candidate_name = f"{staging_prefix}{uuid.uuid4().hex}"
-        try:
-            os.mkdir(candidate_name, mode=ARTIFACT_DIRECTORY_MODE, dir_fd=parent_fd)
-        except FileExistsError:
-            continue
-        except OSError as error:
-            _close_owned_descriptors(*source_root_fds, parent_fd)
-            raise BuildError(f"cannot create private staging directory: {error}") from error
-        staging_name = candidate_name
-        try:
-            staging_identity = os.stat(candidate_name, dir_fd=parent_fd, follow_symlinks=False)
-        except OSError as error:
-            cleanup_error: BaseException | None = None
-            try:
-                _remove_tree_at(parent_fd, candidate_name)
-            except BaseException as raised:
-                cleanup_error = raised
-            finally:
-                _close_owned_descriptors(*source_root_fds, parent_fd)
-            if cleanup_error is not None:
-                raise BuildError(
-                    f"staging directory cleanup failed after inspection error: {cleanup_error}"
-                ) from cleanup_error
-            raise BuildError(f"staging directory cannot be inspected: {error}") from error
-        break
-    if not staging_name or staging_identity is None:
-        _close_owned_descriptors(*source_root_fds, parent_fd)
-        raise BuildError("cannot allocate a unique staging directory")
-    staging = staging_parent / staging_name
     try:
-        staging_fd = os.open(staging_name, _directory_open_flags(), dir_fd=parent_fd)
-    except OSError as error:
-        cleanup_error = None
-        try:
-            _remove_tree_at(parent_fd, staging_name, staging_identity)
-        except BaseException as raised:
-            cleanup_error = raised
-        finally:
-            _close_owned_descriptors(*source_root_fds, parent_fd)
-        if cleanup_error is not None:
-            raise BuildError(
-                f"staging directory cleanup failed after open error: {cleanup_error}"
-            ) from cleanup_error
-        raise BuildError(f"staging directory cannot be opened: {error}") from error
+        staging_name, staging_identity, staging_fd = _allocate_owned_directory(
+            parent_fd,
+            staging_prefix,
+        )
+    except BaseException:
+        _close_owned_descriptors(*source_root_fds, parent_fd)
+        raise
+    staging = staging_parent / staging_name
     try:
         (
             placeholder_name,
@@ -1501,7 +1607,7 @@ def build_opencode_package(
         _handle_placeholder_allocation_failure(
             parent_fd,
             staging_name,
-            _entry_identity(staging_identity),
+            staging_identity,
             error,
             (staging_fd, *source_root_fds, parent_fd),
         )
@@ -1510,7 +1616,7 @@ def build_opencode_package(
         parent_fd,
         parent_identity,
         staging_name,
-        (staging_identity.st_dev, staging_identity.st_ino),
+        staging_identity,
         staging_fd,
         require_lexical_parent,
         source_root_fds,
@@ -1547,12 +1653,20 @@ def build_opencode_package(
         _verify_live_sources_against_snapshot(root, snapshot_root)
         _fsync_tree_at(binding.staging_fd)
         _replace_output(staging, output)
-    except (OSError, BuildError):
-        _cleanup_staging(staging, staging_parent, staging_prefix, staging_identity)
+    except BaseException as original:
+        try:
+            _cleanup_staging(staging, staging_parent, staging_prefix, staging_identity)
+        except BaseException:
+            # Compensation is best effort and must not mask a render, source,
+            # or publication fault of any exception class.
+            pass
         raise
     finally:
         if snapshot_parent is not None:
-            shutil.rmtree(snapshot_parent, ignore_errors=True)
+            try:
+                shutil.rmtree(snapshot_parent, ignore_errors=True)
+            except BaseException:
+                pass
         _OUTPUT_BINDINGS.pop(binding_key, None)
         _close_owned_descriptors(
             binding.staging_fd,
