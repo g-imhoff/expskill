@@ -239,7 +239,8 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertTrue(redirected.is_dir())
             self.assertEqual(list(redirected.iterdir()), [])
-            self.assertFalse((moved / "expskill").exists())
+            self.assertTrue((moved / "expskill").is_dir())
+            self.assertEqual(list((moved / "expskill").iterdir()), [])
 
     def test_uninstall_recovers_interrupted_initial_artifact_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1285,19 +1286,27 @@ class FoundationCorrectionTests(unittest.TestCase):
             original_links = original_payload["links"]
             artifact = state / "expskill/opencode-artifact"
             artifact_identity = (artifact.stat().st_dev, artifact.stat().st_ino)
-            real_unlink = install_module._unlink_destination
+            real_unlink = install_module._retire_owned_object
             unlinks = 0
 
-            def fail_fourth_unlink(destination: Path) -> None:
+            def fail_fourth_unlink(
+                destination: Path,
+                identity: tuple[int, int],
+                role: str,
+                *,
+                directory: bool,
+            ) -> bool:
                 nonlocal unlinks
                 unlinks += 1
                 if unlinks == 4:
                     raise OSError(errno.EIO, "injected fourth unlink failure")
-                real_unlink(destination)
+                return real_unlink(
+                    destination, identity, role, directory=directory
+                )
 
             with mock.patch.object(
                 install_module,
-                "_unlink_destination",
+                "_retire_owned_object",
                 side_effect=fail_fourth_unlink,
             ):
                 with self.assertRaisesRegex(
@@ -1324,7 +1333,7 @@ class FoundationCorrectionTests(unittest.TestCase):
                 for entry in original_links
                 if Path(entry["destination"]).is_symlink()
             ]
-            self.assertEqual(len(remaining), 1)
+            self.assertEqual(len(remaining), len(original_links) - 3)
             remaining_exact = remaining[0]
             self.assertEqual(
                 remaining_exact.resolve(strict=True),
@@ -1363,19 +1372,27 @@ class FoundationCorrectionTests(unittest.TestCase):
             install_opencode(repo, config, state)
             receipt = receipt_path(state)
             original_payload = json.loads(receipt.read_text(encoding="utf-8"))
-            real_unlink = install_module._unlink_destination
+            real_unlink = install_module._retire_owned_object
             unlinks = 0
 
-            def crash_before_fourth_unlink(destination: Path) -> None:
+            def crash_before_fourth_unlink(
+                destination: Path,
+                identity: tuple[int, int],
+                role: str,
+                *,
+                directory: bool,
+            ) -> bool:
                 nonlocal unlinks
                 unlinks += 1
                 if unlinks == 4:
                     raise SystemExit("injected fourth unlink crash")
-                real_unlink(destination)
+                return real_unlink(
+                    destination, identity, role, directory=directory
+                )
 
             with mock.patch.object(
                 install_module,
-                "_unlink_destination",
+                "_retire_owned_object",
                 side_effect=crash_before_fourth_unlink,
             ):
                 with self.assertRaises(SystemExit):

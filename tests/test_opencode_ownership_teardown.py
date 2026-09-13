@@ -90,12 +90,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             payload = receipt(state)
             victim = payload["links"][0]
             destination = Path(victim["destination"])
-            quarantine = install_module._deletion_quarantine_path(
-                destination,
-                victim["destination_dev"],
-                victim["destination_ino"],
-            )
-            real_exchange = install_module._renameat_exchange
+            real_exchange = install_module._renameat_noreplace
             injected = False
 
             def crash_after_exchange(
@@ -107,7 +102,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 nonlocal injected
                 real_exchange(source_fd, source_name, target_fd, target_name)
                 if (
-                    source_name == quarantine.name
+                    source_name == destination.name
                     and target_name.endswith(".retire")
                     and not injected
                 ):
@@ -115,7 +110,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     raise SystemExit("after successful leaf retirement exchange")
 
             with mock.patch.object(
-                install_module, "_renameat_exchange", side_effect=crash_after_exchange
+                install_module, "_renameat_noreplace", side_effect=crash_after_exchange
             ):
                 with self.assertRaises(SystemExit):
                     uninstall_opencode(repo, config, state)
@@ -136,7 +131,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = Path(receipt(state)["artifact_root"])
-            real_exchange = install_module._renameat_exchange
+            real_exchange = install_module._renameat_noreplace
             injected = False
 
             def crash_after_exchange(
@@ -156,7 +151,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                     raise SystemExit("after successful directory retirement exchange")
 
             with mock.patch.object(
-                install_module, "_renameat_exchange", side_effect=crash_after_exchange
+                install_module, "_renameat_noreplace", side_effect=crash_after_exchange
             ):
                 with self.assertRaises(SystemExit):
                     uninstall_opencode(repo, config, state)
@@ -183,57 +178,23 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             victim = payload["links"][0]
             destination = Path(victim["destination"])
             expected = (victim["destination_dev"], victim["destination_ino"])
-            quarantine = install_module._deletion_quarantine_path(destination, *expected)
             foreign_target = root / "foreign-target"
-            real_stat = install_module.os.stat
-            injected: tuple[Path, Path] | None = None
+            token = install_module._retirement_token(
+                payload["lineage"], "final-link", "leaf", destination, *expected
+            )
+            private = install_module._retirement_private_path(
+                destination, token, "leaf"
+            )
+            private.symlink_to(foreign_target)
+            private_identity = (private.lstat().st_dev, private.lstat().st_ino)
 
-            def replace_before_terminal_unlink(
-                path: object, *args: object, **kwargs: object
-            ) -> os.stat_result:
-                nonlocal injected
-                metadata = real_stat(path, *args, **kwargs)
-                name = os.fspath(path)
-                directory_fd = kwargs.get("dir_fd")
-                if (
-                    injected is None
-                    and isinstance(name, str)
-                    and name.startswith(f".{quarantine.name}.")
-                    and name.endswith(".sentinel")
-                    and isinstance(directory_fd, int)
-                ):
-                    retirement_name = next(
-                        item
-                        for item in os.listdir(directory_fd)
-                        if item.startswith(f".{quarantine.name}.")
-                        and item.endswith(".retire")
-                    )
-                    detached_name = f"{retirement_name}.owned"
-                    os.rename(
-                        retirement_name,
-                        detached_name,
-                        src_dir_fd=directory_fd,
-                        dst_dir_fd=directory_fd,
-                    )
-                    os.symlink(foreign_target, retirement_name, dir_fd=directory_fd)
-                    injected = (
-                        quarantine.parent / retirement_name,
-                        quarantine.parent / detached_name,
-                    )
-                return metadata
+            with self.assertRaises(install_module.InstallError):
+                uninstall_opencode(repo, config, state)
 
-            with mock.patch.object(
-                install_module.os, "stat", side_effect=replace_before_terminal_unlink
-            ):
-                with self.assertRaises(install_module.InstallError):
-                    uninstall_opencode(repo, config, state)
-
-            assert injected is not None
-            private, detached = injected
             self.assertTrue(receipt_path(state).is_file())
             self.assertTrue(private.is_symlink())
             self.assertEqual(Path(os.readlink(private)), foreign_target)
-            self.assertEqual((detached.lstat().st_dev, detached.lstat().st_ino), expected)
+            self.assertEqual((private.lstat().st_dev, private.lstat().st_ino), private_identity)
 
     def test_terminal_directory_remove_preserves_private_name_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -245,54 +206,23 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             payload = receipt(state)
             artifact = Path(payload["artifact_root"])
             expected = (payload["artifact_dev"], payload["artifact_ino"])
-            real_stat = install_module.os.stat
-            injected: tuple[Path, Path] | None = None
+            token = install_module._retirement_token(
+                payload["lineage"], "artifact", "directory", artifact, *expected
+            )
+            private = install_module._retirement_private_path(
+                artifact, token, "directory"
+            )
+            private.mkdir()
+            (private / "foreign").write_text("foreign\n", encoding="utf-8")
+            private_identity = (private.stat().st_dev, private.stat().st_ino)
 
-            def replace_before_terminal_remove(
-                path: object, *args: object, **kwargs: object
-            ) -> os.stat_result:
-                nonlocal injected
-                metadata = real_stat(path, *args, **kwargs)
-                name = os.fspath(path)
-                directory_fd = kwargs.get("dir_fd")
-                if (
-                    injected is None
-                    and isinstance(name, str)
-                    and name.startswith(f".{artifact.name}.")
-                    and name.endswith(".sentinel-dir")
-                    and isinstance(directory_fd, int)
-                ):
-                    retirement_name = next(
-                        item
-                        for item in os.listdir(directory_fd)
-                        if item.startswith(f".{artifact.name}.")
-                        and item.endswith(".retire-dir")
-                    )
-                    detached_name = f"{retirement_name}.owned"
-                    os.rename(
-                        retirement_name,
-                        detached_name,
-                        src_dir_fd=directory_fd,
-                        dst_dir_fd=directory_fd,
-                    )
-                    os.mkdir(retirement_name, dir_fd=directory_fd)
-                    injected = (
-                        artifact.parent / retirement_name,
-                        artifact.parent / detached_name,
-                    )
-                return metadata
+            with self.assertRaises(install_module.InstallError):
+                uninstall_opencode(repo, config, state)
 
-            with mock.patch.object(
-                install_module.os, "stat", side_effect=replace_before_terminal_remove
-            ):
-                with self.assertRaises(install_module.InstallError):
-                    uninstall_opencode(repo, config, state)
-
-            assert injected is not None
-            private, detached = injected
             self.assertTrue(receipt_path(state).is_file())
             self.assertTrue(private.is_dir())
-            self.assertEqual((detached.stat().st_dev, detached.stat().st_ino), expected)
+            self.assertEqual((private.stat().st_dev, private.stat().st_ino), private_identity)
+            self.assertEqual((private / "foreign").read_text(), "foreign\n")
 
     def test_candidate_rollback_requires_live_exact_anchor_relationship(self) -> None:
         for generation in ("initial", "upgrade"):
@@ -428,10 +358,9 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
             victim = payload["links"][0]
             destination = Path(victim["destination"])
             expected = (victim["destination_dev"], victim["destination_ino"])
-            quarantine = install_module._deletion_quarantine_path(destination, *expected)
-            detached = quarantine.with_name(f"{quarantine.name}.owned")
+            detached = destination.with_name(f"{destination.name}.owned")
             foreign_target = root / "foreign-target"
-            real_exchange = install_module._renameat_exchange
+            real_exchange = install_module._renameat_noreplace
             injected = False
 
             def replace_at_final_exchange(
@@ -441,7 +370,11 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 target_name: str,
             ) -> None:
                 nonlocal injected
-                if source_name == quarantine.name and not injected:
+                if (
+                    source_name == destination.name
+                    and target_name.endswith(".retire")
+                    and not injected
+                ):
                     injected = True
                     os.rename(
                         source_name,
@@ -454,7 +387,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
 
             with mock.patch.object(
                 install_module,
-                "_renameat_exchange",
+                "_renameat_noreplace",
                 side_effect=replace_at_final_exchange,
             ):
                 with self.assertRaises(install_module.InstallError):
@@ -462,8 +395,8 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
 
             self.assertTrue(injected, "cleanup never used a reversible final exchange")
             self.assertTrue(receipt_path(state).is_file())
-            self.assertTrue(quarantine.is_symlink())
-            self.assertEqual(Path(os.readlink(quarantine)), foreign_target)
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(Path(os.readlink(destination)), foreign_target)
             self.assertTrue(detached.is_symlink())
             self.assertEqual(
                 (detached.lstat().st_dev, detached.lstat().st_ino), expected
@@ -486,12 +419,11 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 artifact = Path(payload["artifact_root"])
                 anchor = Path(payload["artifact_anchor"])
                 receipt_file = receipt_path(state)
-                anchor_quarantine = install_module._deletion_quarantine_path(
-                    anchor,
-                    payload["artifact_anchor_dev"],
-                    payload["artifact_anchor_ino"],
+                real_exchange = (
+                    install_module._renameat_exchange
+                    if kind == "receipt"
+                    else install_module._renameat_noreplace
                 )
-                real_exchange = install_module._renameat_exchange
                 injected = False
                 raced_path: Path | None = None
                 detached: Path | None = None
@@ -504,8 +436,16 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 ) -> None:
                     nonlocal injected, raced_path, detached
                     matches = (
-                        (kind == "artifact" and source_name == artifact.name)
-                        or (kind == "anchor" and source_name == anchor_quarantine.name)
+                        (
+                            kind == "artifact"
+                            and source_name == artifact.name
+                            and target_name.endswith(".retire-dir")
+                        )
+                        or (
+                            kind == "anchor"
+                            and source_name == anchor.name
+                            and target_name.endswith(".retire")
+                        )
                         or (
                             kind == "receipt"
                             and source_name.startswith(f".{receipt_file.name}.")
@@ -517,7 +457,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                         raced_path = (
                             artifact
                             if kind == "artifact"
-                            else anchor_quarantine
+                            else anchor
                             if kind == "anchor"
                             else receipt_file.parent / source_name
                         )
@@ -546,7 +486,11 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
 
                 with mock.patch.object(
                     install_module,
-                    "_renameat_exchange",
+                    (
+                        "_renameat_exchange"
+                        if kind == "receipt"
+                        else "_renameat_noreplace"
+                    ),
                     side_effect=replace_at_final_exchange,
                 ):
                     with self.assertRaises(install_module.InstallError):
@@ -593,7 +537,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     install_module,
-                    "_unlink_destination",
+                    "_retire_owned_object",
                     side_effect=install_module.InstallError(
                         "injected link compensation failure"
                     ),
@@ -1474,12 +1418,20 @@ install_module.install_opencode(repo, config, state)
                 encoding="utf-8",
             )
             victim = legacy_links[0]
-            real_unlink = install_module._unlink_destination
+            real_unlink = install_module._retire_owned_object
             injected = False
 
-            def fail_after_migrated_unlink(destination: Path) -> bool:
+            def fail_after_migrated_unlink(
+                destination: Path,
+                identity: tuple[int, int],
+                role: str,
+                *,
+                directory: bool,
+            ) -> bool:
                 nonlocal injected
-                removed = real_unlink(destination)
+                removed = real_unlink(
+                    destination, identity, role, directory=directory
+                )
                 if destination == victim.destination and not injected:
                     injected = True
                     raise install_module.InstallError("after migrated unlink durability")
@@ -1487,7 +1439,7 @@ install_module.install_opencode(repo, config, state)
 
             with mock.patch.object(
                 install_module,
-                "_unlink_destination",
+                "_retire_owned_object",
                 side_effect=fail_after_migrated_unlink,
             ):
                 with self.assertRaisesRegex(
@@ -1524,6 +1476,12 @@ install_module.install_opencode(repo, config, state)
                         recorded["destination_dev"],
                         recorded["destination_ino"],
                     )
+                    token = install_module._retirement_token(
+                        payload["lineage"], "final-link", "leaf", destination, *expected
+                    )
+                    quarantine = install_module._retirement_private_path(
+                        destination, token, "leaf"
+                    )
                     real_rename = install_module._renameat_noreplace
                     stopped = False
 
@@ -1538,7 +1496,7 @@ install_module.install_opencode(repo, config, state)
                         if (
                             not stopped
                             and source_name == destination.name
-                            and target_name.endswith(".delete")
+                            and target_name == quarantine.name
                         ):
                             stopped = True
                             raise failure_type("after exact link delete rename")
@@ -1551,9 +1509,6 @@ install_module.install_opencode(repo, config, state)
                         with self.assertRaises(failure_type):
                             uninstall_opencode(repo, config, state)
 
-                    quarantines = tuple(destination.parent.glob(".*.delete"))
-                    self.assertEqual(len(quarantines), 1)
-                    quarantine = quarantines[0]
                     self.assertEqual(
                         (quarantine.lstat().st_dev, quarantine.lstat().st_ino),
                         expected,
@@ -1613,8 +1568,11 @@ install_module.install_opencode(repo, config, state)
                         recorded["destination_dev"],
                         recorded["destination_ino"],
                     )
-                    quarantine = install_module._deletion_quarantine_path(
-                        staging, *expected
+                    token = install_module._retirement_token(
+                        payload["lineage"], "staged-link", "leaf", staging, *expected
+                    )
+                    quarantine = install_module._retirement_private_path(
+                        staging, token, "leaf"
                     )
                     real_rename = install_module._renameat_noreplace
                     stopped = False
@@ -1672,6 +1630,12 @@ install_module.install_opencode(repo, config, state)
                         payload["artifact_anchor_dev"],
                         payload["artifact_anchor_ino"],
                     )
+                    token = install_module._retirement_token(
+                        payload["lineage"], "anchor", "leaf", anchor, *expected
+                    )
+                    quarantine = install_module._retirement_private_path(
+                        anchor, token, "leaf"
+                    )
                     real_rename = install_module._renameat_noreplace
                     stopped = False
 
@@ -1686,7 +1650,7 @@ install_module.install_opencode(repo, config, state)
                         if (
                             not stopped
                             and source_name == anchor.name
-                            and target_name.endswith(".delete")
+                            and target_name == quarantine.name
                         ):
                             stopped = True
                             raise failure_type("after exact anchor delete rename")
@@ -1699,9 +1663,6 @@ install_module.install_opencode(repo, config, state)
                         with self.assertRaises(failure_type):
                             uninstall_opencode(repo, config, state)
 
-                    quarantines = tuple(anchor.parent.glob(f".{anchor.name}.*.delete"))
-                    self.assertEqual(len(quarantines), 1)
-                    quarantine = quarantines[0]
                     self.assertEqual(
                         (quarantine.stat().st_dev, quarantine.stat().st_ino), expected
                     )
@@ -1803,8 +1764,12 @@ install_module.install_opencode(repo, config, state)
                         payload["artifact_anchor_dev"],
                         payload["artifact_anchor_ino"],
                     )
-                quarantine = install_module._deletion_quarantine_path(
-                    owned_path, *expected
+                role = "final-link" if operation == "link" else "anchor"
+                token = install_module._retirement_token(
+                    payload["lineage"], role, "leaf", owned_path, *expected
+                )
+                quarantine = install_module._retirement_private_path(
+                    owned_path, token, "leaf"
                 )
                 real_rename = install_module._renameat_noreplace
                 stopped = False
@@ -1846,7 +1811,8 @@ install_module.install_opencode(repo, config, state)
                     quarantine.lstat().st_ino,
                 )
 
-                uninstall_opencode(repo, config, state)
+                with self.assertRaises(install_module.InstallError):
+                    uninstall_opencode(repo, config, state)
 
                 self.assertTrue(quarantine.is_symlink())
                 self.assertEqual(os.readlink(quarantine), str(foreign))
@@ -1854,7 +1820,7 @@ install_module.install_opencode(repo, config, state)
                     (quarantine.lstat().st_dev, quarantine.lstat().st_ino),
                     foreign_identity,
                 )
-                self.assertFalse(receipt_path(state).exists())
+                self.assertTrue(receipt_path(state).is_file())
 
     def test_ordinary_failure_after_retired_pruning_does_not_recreate_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1911,12 +1877,18 @@ install_module.install_opencode(repo, config, state)
             retired_skill = config / "skills/unslop"
             retired_command = config / "commands/unslop.md"
             shutil.rmtree(repo / "packages/expskill/skills/unslop")
-            real_unlink = install_module._unlink_destination
+            real_unlink = install_module._retire_owned_object
             failed = False
 
-            def fail_after_exact_unlink(path: Path) -> bool:
+            def fail_after_exact_unlink(
+                path: Path,
+                identity: tuple[int, int],
+                role: str,
+                *,
+                directory: bool,
+            ) -> bool:
                 nonlocal failed
-                removed = real_unlink(path)
+                removed = real_unlink(path, identity, role, directory=directory)
                 if path == retired_skill and not failed:
                     failed = True
                     raise install_module.InstallError("after retired exact unlink")
@@ -1926,7 +1898,7 @@ install_module.install_opencode(repo, config, state)
                 mock.patch.object(install_module, "_validate_repository"),
                 mock.patch.object(
                     install_module,
-                    "_unlink_destination",
+                    "_retire_owned_object",
                     side_effect=fail_after_exact_unlink,
                 ),
             ):
@@ -1988,7 +1960,7 @@ install_module.install_opencode(repo, config, state)
                 if (
                     not stopped
                     and source_name == victim.destination.name
-                    and target_name.endswith(".delete")
+                    and target_name.endswith(".retire")
                 ):
                     stopped = True
                     raise SystemExit("after migrated link delete rename")
@@ -2007,11 +1979,7 @@ install_module.install_opencode(repo, config, state)
                 for entry in interrupted["links"]
                 if entry["destination"] == str(victim.destination)
             )
-            quarantine = install_module._deletion_quarantine_path(
-                victim.destination,
-                recorded["destination_dev"],
-                recorded["destination_ino"],
-            )
+            quarantine = Path(interrupted["pending_retirement"]["private"])
             self.assertTrue(quarantine.is_symlink())
 
             install_opencode(repo, config, state)
@@ -3817,6 +3785,319 @@ install_module.install_opencode(repo, config, state)
                     uninstall_opencode(repo, config, state)
                 self.assertFalse(receipt_path(state).exists())
                 self.assertFalse((state / "expskill/opencode-artifact").exists())
+
+    def test_anchor_retirement_exchange_is_receipt_journaled_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            real_rename = install_module._renameat_noreplace
+            interrupted = False
+
+            def stop_after_private_exchange(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal interrupted
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if (
+                    source_name.startswith(".opencode-artifact.anchor-")
+                    and target_name.endswith(".retire")
+                    and not interrupted
+                ):
+                    interrupted = True
+                    raise SystemExit("after journaled anchor exchange")
+
+            with mock.patch.object(
+                install_module, "_renameat_noreplace", side_effect=stop_after_private_exchange
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(interrupted)
+            pending = receipt(state)["pending_retirement"]
+            self.assertEqual(pending["role"], "anchor")
+            self.assertEqual(pending["phase"], "prepared")
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+
+    def test_prepublication_candidate_exchange_enters_durable_swap_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            skill = repo / "packages/expskill/skills/unslop/SKILL.md"
+            skill.write_text(
+                skill.read_text(encoding="utf-8").replace(
+                    "Cut AI tells", "candidate exchange rollback marker"
+                ),
+                encoding="utf-8",
+            )
+            real_rename = install_module._rename_noreplace
+            interrupted = False
+
+            def stop_after_candidate_exchange(source: Path, target: Path) -> None:
+                nonlocal interrupted
+                real_rename(source, target)
+                if (
+                    source.name.startswith(".opencode-artifact.next-")
+                    and target.name == "opencode-artifact"
+                    and not interrupted
+                ):
+                    interrupted = True
+                    raise SystemExit("after candidate directory exchange")
+
+            with mock.patch.object(
+                install_module, "_rename_noreplace", side_effect=stop_after_candidate_exchange
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue(interrupted)
+            observed_rollback = False
+            real_remove = install_module._remove_candidate_artifact_exact
+
+            def observe_candidate_retirement(*args: object, **kwargs: object) -> None:
+                nonlocal observed_rollback
+                observed_rollback = (
+                    receipt(state)["pending_swap"]["phase"] == "rollback-prepared"
+                )
+                real_remove(*args, **kwargs)
+
+            with mock.patch.object(
+                install_module,
+                "_remove_candidate_artifact_exact",
+                side_effect=observe_candidate_retirement,
+            ):
+                install_opencode(repo, config, state)
+            self.assertTrue(observed_rollback)
+            self.assertNotIn("pending_swap", receipt(state))
+
+    def test_nested_stat_disappearance_retains_receipt_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            real_scandir = install_module.os.scandir
+            injected = False
+
+            class VanishedEntry:
+                def __init__(self, entry: os.DirEntry[str]) -> None:
+                    self.name = entry.name
+
+                def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+                    nonlocal injected
+                    injected = True
+                    raise FileNotFoundError(self.name)
+
+            def disappear_between_scan_and_stat(directory_fd: int) -> object:
+                entries = list(real_scandir(directory_fd))
+                if not injected and entries:
+                    entries[0] = VanishedEntry(entries[0])  # type: ignore[assignment]
+                return iter(entries)
+
+            with mock.patch.object(
+                install_module.os,
+                "scandir",
+                side_effect=disappear_between_scan_and_stat,
+            ):
+                with self.assertRaises(install_module.InstallError):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(injected)
+            self.assertTrue(receipt_path(state).is_file())
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse((state / "expskill/opencode-artifact").exists())
+
+    def test_failed_install_leaves_new_empty_state_directories_unretired(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+
+            with (
+                mock.patch.object(
+                    install_module,
+                    "_ensure_opencode_artifact",
+                    side_effect=install_module.InstallError("injected initial failure"),
+                ),
+                mock.patch.object(
+                    install_module,
+                    "_rmdir_exact_via_exchange",
+                    side_effect=SystemExit("state directory retirement is forbidden"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    install_module.InstallError, "injected initial failure"
+                ):
+                    install_opencode(repo, config, state)
+
+            self.assertTrue((state / "expskill").is_dir())
+            install_opencode(repo, config, state)
+            self.assertEqual(receipt(state)["teardown_phase"], "committed")
+
+    def test_receipt_recovery_rejects_arbitrary_self_consistent_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            canonical = receipt_path(state)
+            real_rename = install_module._renameat_noreplace
+            interrupted = False
+
+            def stop_after_receipt_quarantine(
+                source_fd: int,
+                source_name: str,
+                target_fd: int,
+                target_name: str,
+            ) -> None:
+                nonlocal interrupted
+                real_rename(source_fd, source_name, target_fd, target_name)
+                if source_name == canonical.name and target_name.endswith(".delete"):
+                    interrupted = True
+                    raise SystemExit("after receipt quarantine")
+
+            with mock.patch.object(
+                install_module, "_renameat_noreplace", side_effect=stop_after_receipt_quarantine
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(interrupted)
+            quarantine = next(canonical.parent.glob("*.anchor-removed.delete"))
+            copied = canonical.parent / "copied-receipt"
+            shutil.copy2(quarantine, copied)
+            copied_metadata = copied.lstat()
+            arbitrary = canonical.parent / (
+                f".{canonical.name}.{copied_metadata.st_dev:x}-{copied_metadata.st_ino:x}."
+                f"{'f' * 32}.none.anchor-removed.delete"
+            )
+            copied.rename(arbitrary)
+
+            with self.assertRaisesRegex(
+                install_module.InstallError, "receipt deletion token"
+            ):
+                install_opencode(repo, config, state)
+            self.assertTrue(arbitrary.is_file())
+
+    def test_retirement_entry_serialization_has_closed_roles_and_phases(self) -> None:
+        lineage = "1" * 32
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            for role, kind in (
+                ("final-link", "leaf"),
+                ("staged-link", "leaf"),
+                ("anchor", "leaf"),
+                ("artifact", "directory"),
+                ("candidate", "directory"),
+                ("backup", "directory"),
+            ):
+                for source_kind in ("public", "quarantine"):
+                    for phase in ("prepared", "exchanged", "reclaimed", "done"):
+                        with self.subTest(
+                            role=role, source_kind=source_kind, phase=phase
+                        ):
+                            source = parent / f"{role}-{source_kind}-source"
+                            token = install_module._retirement_token(
+                                lineage, role, kind, source, 11, 12
+                            )
+                            private = install_module._retirement_private_path(
+                                source, token, kind
+                            )
+                            entry = install_module._PendingRetirement(
+                                role=role,
+                                kind=kind,
+                                source=source,
+                                private=private,
+                                expected_dev=11,
+                                expected_ino=12,
+                                placeholder_dev=13 if phase == "prepared" else None,
+                                placeholder_ino=14 if phase == "prepared" else None,
+                                lineage=lineage,
+                                token=token,
+                                phase=phase,
+                                source_kind=source_kind,
+                            )
+                            encoded = install_module._pending_retirement_payload(entry)
+                            self.assertEqual(
+                                install_module._pending_retirement_from_payload(
+                                    encoded, lineage
+                                ),
+                                entry,
+                            )
+            for key, invalid in (
+                ("role", "receipt"),
+                ("kind", "other"),
+                ("phase", "unknown"),
+                ("source_kind", "other"),
+                ("token", "f" * 32),
+            ):
+                with self.subTest(invalid=key):
+                    malformed = {**encoded, key: invalid}
+                    with self.assertRaises(install_module.InstallError):
+                        install_module._pending_retirement_from_payload(
+                            malformed, lineage
+                        )
+            with self.assertRaises(install_module.InstallError):
+                install_module._pending_retirement_from_payload(
+                    {**encoded, "unexpected": True}, lineage
+                )
+            with self.assertRaises(install_module.InstallError):
+                install_module._pending_retirement_from_payload(
+                    {**encoded, "placeholder_dev": 13}, lineage
+                )
+
+    def test_each_retirement_receipt_phase_boundary_recovers_before_teardown(self) -> None:
+        for boundary in ("prepared", "exchanged", "reclaimed", "done"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                config = root / "config"
+                state = root / "state"
+                install_opencode(repo, config, state)
+                real_rewrite = install_module._rewrite_receipt_retirement
+                interrupted = False
+
+                def stop_after_boundary(
+                    path: Path,
+                    pending: install_module._PendingRetirement | None,
+                ) -> None:
+                    nonlocal interrupted
+                    real_rewrite(path, pending)
+                    if (
+                        pending is not None
+                        and pending.phase == boundary
+                        and not interrupted
+                    ):
+                        interrupted = True
+                        raise SystemExit(f"after retirement {boundary} write")
+
+                with mock.patch.object(
+                    install_module,
+                    "_rewrite_receipt_retirement",
+                    side_effect=stop_after_boundary,
+                ):
+                    with self.assertRaises(SystemExit):
+                        uninstall_opencode(repo, config, state)
+
+                self.assertTrue(interrupted)
+                self.assertEqual(
+                    receipt(state)["pending_retirement"]["phase"], boundary
+                )
+                uninstall_opencode(repo, config, state)
+                self.assertFalse(receipt_path(state).exists())
 
 
 if __name__ == "__main__":
