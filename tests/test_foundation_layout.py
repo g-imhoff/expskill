@@ -115,6 +115,23 @@ class FoundationLayoutTests(unittest.TestCase):
         self.assertIsNone(artifact_output_relative(source))
         self.assertEqual(source.fspath_calls, 1)
 
+    def test_artifact_output_relative_rejects_str_subclass_from_pathlike(self) -> None:
+        class HostileText(str):
+            def split(self, *args: object, **kwargs: object) -> list[str]:
+                return ["plugins", "expskill", "opencode", "agents.json"]
+
+        class HostilePath(os.PathLike[str]):
+            def __init__(self) -> None:
+                self.fspath_calls = 0
+
+            def __fspath__(self) -> str:
+                self.fspath_calls += 1
+                return HostileText("plugins/expskill/skills/../escape.txt")
+
+        source = HostilePath()
+        self.assertIsNone(artifact_output_relative(source))
+        self.assertEqual(source.fspath_calls, 1)
+
     def test_artifact_output_relative_rejects_non_text_path_values(self) -> None:
         class BytesPath(os.PathLike[bytes]):
             def __fspath__(self) -> bytes:
