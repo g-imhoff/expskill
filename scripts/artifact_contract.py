@@ -32,7 +32,9 @@ def artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | N
         lexical = os.fspath(source_relative)
     except TypeError:
         return None
-    if not isinstance(lexical, str):
+    # A str subclass can override lexical methods such as ``split``.  Do not
+    # let those overrides influence the contract's exact path checks.
+    if type(lexical) is not str:
         return None
 
     # Validate the exact text returned by os.fspath before Path can normalize
