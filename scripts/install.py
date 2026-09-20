@@ -100,7 +100,6 @@ OPENCODE_RECEIPT_PENDING_PHASES = frozenset(
     {
         "none",
         "migration-prepared",
-        "link-anchor-migration-prepared",
         "swap-prepared",
         "swap-planned-unmaterialized",
         "swap-workspace-recorded",
@@ -689,11 +688,6 @@ class _Receipt:
     # receipt before the deterministic package anchor is created.  This bit
     # distinguishes that prepared state from a fully committed migration.
     pending_migration: bool = False
-    # A pre-anchor current receipt records the exact public destinations whose
-    # new private link anchors have been planned but not yet materialized.
-    # Existing anchor records are deliberately not included: a missing or
-    # foreign pre-existing anchor must never be adopted on retry.
-    pending_link_anchor_migration: tuple[Path, ...] | None = None
     pending_retirement: _PendingRetirement | None = None
 
 
@@ -1047,8 +1041,6 @@ def _receipt_deletion_phase(receipt: _Receipt) -> tuple[str, str]:
         pending_phase = f"publish-{receipt.pending_publish.phase}"
     elif receipt.pending_migration:
         pending_phase = "migration-prepared"
-    elif receipt.pending_link_anchor_migration is not None:
-        pending_phase = "link-anchor-migration-prepared"
     else:
         pending_phase = "none"
     if pending_phase not in OPENCODE_RECEIPT_PENDING_PHASES:
@@ -1126,7 +1118,6 @@ def _receipt_deletion_descriptor(
     pending_swap = payload.get("pending_swap")
     pending_publish = payload.get("pending_publish")
     pending_migration = payload.get("pending_migration")
-    pending_link_anchor_migration = payload.get("pending_link_anchor_migration")
     if (
         sum(
             value is not None
@@ -1134,7 +1125,6 @@ def _receipt_deletion_descriptor(
                 pending_swap,
                 pending_publish,
                 pending_migration,
-                pending_link_anchor_migration,
             )
         )
         > 1
@@ -1156,22 +1146,6 @@ def _receipt_deletion_descriptor(
         if pending_migration != {"phase": "prepared"}:
             raise InstallError(f"receipt deletion pending phase is malformed: {path}")
         pending_phase = "migration-prepared"
-    elif pending_link_anchor_migration is not None:
-        if (
-            not isinstance(pending_link_anchor_migration, dict)
-            or set(pending_link_anchor_migration) != {"phase", "links"}
-            or pending_link_anchor_migration.get("phase") != "prepared"
-            or not isinstance(pending_link_anchor_migration.get("links"), list)
-            or not pending_link_anchor_migration["links"]
-            or any(
-                not isinstance(value, str)
-                or not Path(value).expanduser().is_absolute()
-                or _has_dot_components(Path(value).expanduser())
-                for value in pending_link_anchor_migration["links"]
-            )
-        ):
-            raise InstallError(f"receipt deletion pending phase is malformed: {path}")
-        pending_phase = "link-anchor-migration-prepared"
     else:
         pending_phase = "none"
     if pending_phase not in OPENCODE_RECEIPT_PENDING_PHASES:
@@ -3900,56 +3874,6 @@ def _read_receipt(
         )
     ):
         raise InstallError(f"receipt pending migration is malformed: {receipt_path}")
-    link_anchor_migration_value = payload.get("pending_link_anchor_migration")
-    pending_link_anchor_migration: tuple[Path, ...] | None = None
-    if link_anchor_migration_value is not None:
-        if (
-            not isinstance(link_anchor_migration_value, dict)
-            or set(link_anchor_migration_value)
-            != {"phase", "links"}
-            or link_anchor_migration_value.get("phase") != "prepared"
-            or not isinstance(link_anchor_migration_value.get("links"), list)
-            or artifact_root is None
-            or pending is not None
-            or pending_publish is not None
-            or pending_migration
-            or teardown_phase != "committed"
-            or any(
-                link.destination_dev is None
-                or link.destination_ino is None
-                or link.link_anchor is None
-                or link.link_anchor_dev is None
-                or link.link_anchor_ino is None
-                for link in links
-            )
-        ):
-            raise InstallError(
-                f"receipt pending link-anchor migration is malformed: {receipt_path}"
-            )
-        planned_paths: list[Path] = []
-        for value in link_anchor_migration_value["links"]:
-            if not isinstance(value, str):
-                raise InstallError(
-                    f"receipt pending link-anchor migration is malformed: {receipt_path}"
-                )
-            raw_path = Path(value).expanduser()
-            if not raw_path.is_absolute() or _has_dot_components(raw_path):
-                raise InstallError(
-                    f"receipt pending link-anchor migration path is malformed: {receipt_path}"
-                )
-            planned_path = _lexical_absolute(raw_path)
-            if planned_path in planned_paths or not any(
-                link.link_anchor == planned_path for link in links
-            ):
-                raise InstallError(
-                    f"receipt pending link-anchor migration path is not recorded: {receipt_path}"
-                )
-            planned_paths.append(planned_path)
-        if not planned_paths:
-            raise InstallError(
-                f"receipt pending link-anchor migration has no planned links: {receipt_path}"
-            )
-        pending_link_anchor_migration = tuple(planned_paths)
     retirement_value = payload.get("pending_retirement")
     pending_retirement = None
     if retirement_value is not None:
@@ -3995,7 +3919,6 @@ def _read_receipt(
         pending_swap=pending,
         pending_publish=pending_publish,
         pending_migration=pending_migration,
-        pending_link_anchor_migration=pending_link_anchor_migration,
         pending_retirement=pending_retirement,
     )
 
@@ -4196,43 +4119,6 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
                 f"pending OpenCode migration receipt is incomplete: {receipt_path}"
             )
         payload["pending_migration"] = {"phase": "prepared"}
-    if receipt.pending_link_anchor_migration is not None:
-        if (
-            receipt.pending_swap is not None
-            or receipt.pending_publish is not None
-            or receipt.pending_migration
-            or receipt.artifact_root is None
-            or receipt.teardown_phase != "committed"
-            or not receipt.pending_link_anchor_migration
-            or any(
-                link.destination_dev is None
-                or link.destination_ino is None
-                or link.link_anchor is None
-                or link.link_anchor_dev is None
-                or link.link_anchor_ino is None
-                for link in receipt.links
-            )
-            or len(set(receipt.pending_link_anchor_migration))
-            != len(receipt.pending_link_anchor_migration)
-            or any(
-                path
-                not in {
-                    link.link_anchor
-                    for link in receipt.links
-                    if link.link_anchor is not None
-                }
-                for path in receipt.pending_link_anchor_migration
-            )
-        ):
-            raise InstallError(
-                f"pending OpenCode link-anchor migration is incomplete: {receipt_path}"
-            )
-        payload["pending_link_anchor_migration"] = {
-            "phase": "prepared",
-            "links": [
-                str(path) for path in receipt.pending_link_anchor_migration
-            ],
-        }
     if receipt.pending_retirement is not None:
         if receipt.lineage is None:
             raise InstallError(
@@ -4963,7 +4849,6 @@ def _persist_receipt(
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
         pending_migration=receipt.pending_migration,
-        pending_link_anchor_migration=receipt.pending_link_anchor_migration,
         pending_retirement=receipt.pending_retirement,
     )
     _write_receipt(receipt_path, updated)
@@ -5586,168 +5471,60 @@ def _opencode_link_anchor_is_live(link: ProfileLink) -> bool:
     )
 
 
-def _opencode_link_destination_is_exact(link: ProfileLink) -> bool:
-    """Match a public link to its already-recorded target and inode."""
+def _reject_unsafe_pre_anchor_opencode_receipt(receipt: _Receipt) -> None:
+    """Reject ambiguous legacy links before any ownership mutation."""
 
-    if link.destination_dev is None or link.destination_ino is None:
-        return False
-    bound = _bound_config_parent(link.destination, create=False)
-    if bound is None:
-        return False
-    binding, parent_fd = bound
-    _verify_config_binding(binding)
-    try:
-        metadata = os.stat(
-            link.destination.name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
-        target = Path(os.readlink(link.destination.name, dir_fd=parent_fd))
-    except OSError:
-        return False
-    if not stat.S_ISLNK(metadata.st_mode):
-        return False
-    if not target.is_absolute():
-        target = link.destination.parent / target
-    if _lexical_absolute(target) != _lexical_absolute(link.source):
-        return False
-    identity = (metadata.st_dev, metadata.st_ino)
-    if identity != (link.destination_dev, link.destination_ino):
-        return False
-    binding.validated_leaves[_lexical_absolute(link.destination)] = identity
-    _verify_config_binding(binding)
-    return True
-
-
-def _migrate_opencode_link_anchors(
-    receipt_path: Path, receipt: _Receipt
-) -> _Receipt:
-    """Upgrade an artifact receipt to exact per-link hard-link ownership."""
-
-    if receipt.artifact_root is None:
-        return receipt
-    if receipt.pending_publish is not None and not receipt.pending_publish.planned_links:
-        # Planned publication has not yet frozen public-link identities.  The
-        # normal publication journal will record anchors before each rename.
-        return receipt
-    if any(
-        link.destination_dev is None or link.destination_ino is None
-        for link in receipt.links
-    ):
-        # Publication recovery may legitimately retain planned or foreign
-        # pathnames without frozen inode authority.  Such entries cannot be
-        # adopted by migration; the surrounding publication/teardown journal
-        # remains responsible for converging them conservatively.
-        return receipt
-
-    pending_anchors = receipt.pending_link_anchor_migration
-    if pending_anchors is not None:
-        pending_set = set(pending_anchors)
-        pending_links: list[ProfileLink] = []
-        for link in receipt.links:
-            if link.link_anchor in pending_set:
-                if not _opencode_link_destination_is_exact(link):
-                    raise InstallError(
-                        "OpenCode link identity changed during anchor migration: "
-                        f"{link.destination}"
-                    )
-                pending_links.append(link)
-            elif not _opencode_link_anchor_is_live(link):
-                raise InstallError(
-                    "OpenCode pre-existing link anchor is no longer exact: "
-                    f"{link.destination}"
-                )
-        if len(pending_links) != len(pending_set):
-            raise InstallError("OpenCode anchor migration plan is incomplete")
-        # Validate every planned public link before creating any missing hidden
-        # inode, so a retargeted or missing pathname cannot yield a partial
-        # migration with new anchors already durable.
-        for link in pending_links:
-            if not _opencode_link_destination_is_exact(link):
-                raise InstallError(
-                    "OpenCode link identity changed before anchor migration: "
-                    f"{link.destination}"
-                )
-        for link in pending_links:
-            if _opencode_link_anchor_is_live(link):
-                continue
-            bound = _bound_config_parent(link.destination, create=False)
-            if bound is None:
-                raise InstallError(
-                    "OpenCode link parent disappeared during anchor migration: "
-                    f"{link.destination}"
-                )
-            binding, parent_fd = bound
-            _verify_config_binding(binding)
-            _create_opencode_link_anchor(
-                link.destination,
-                link.destination.name,
-                (link.destination_dev, link.destination_ino),
-                parent_fd,
-            )
-            os.fsync(parent_fd)
-            _verify_config_binding(binding)
-            if not _opencode_link_anchor_is_live(link):
-                raise InstallError(
-                    f"OpenCode link anchor was not established: {link.destination}"
-                )
-        completed = replace(receipt, pending_link_anchor_migration=None)
-        _write_receipt(receipt_path, completed)
-        return completed
-
-    planned: list[ProfileLink] = []
-    missing_anchors: list[Path] = []
-    invalid_existing_anchor = False
+    # A planned publication is a modern, journaled transaction.  Its link
+    # roster is intentionally anchorless until publication records each exact
+    # inode, so publication recovery, rather than legacy compatibility logic,
+    # owns any same-target pathname it encounters.
+    if receipt.pending_publish is not None:
+        return
     for link in receipt.links:
         if link.link_anchor is not None:
-            if not _opencode_link_anchor_is_live(link):
-                invalid_existing_anchor = True
-            planned.append(link)
             continue
-        if not _opencode_link_destination_is_exact(link):
+        if (
+            receipt.artifact_root is not None
+            and (link.destination_dev is None or link.destination_ino is None)
+        ):
+            # A modern publication may still carry an intentionally planned
+            # pathname with no frozen public inode.  It has no legacy
+            # authority to migrate and is handled by publication recovery.
+            continue
+        extant = [
+            path
+            for path in (link.destination, link.staged_destination)
+            if path is not None and _lexists(path)
+        ]
+        if extant:
+            locations = ", ".join(str(path) for path in extant)
             raise InstallError(
-                f"OpenCode link identity changed before anchor migration: {link.destination}"
+                "OpenCode receipt contains anchorless recorded link state at "
+                f"{locations}; automatic migration is unsafe and a clean/manual "
+                "removal is required before reinstall or uninstall"
             )
-        assert link.destination_dev is not None
-        assert link.destination_ino is not None
-        anchor = _opencode_link_anchor_path(
-            link.destination,
-            link.destination_dev,
-            link.destination_ino,
+
+
+def _opencode_receipt_recovery_is_pending(receipt_path: Path) -> bool:
+    """Whether a receipt-retirement journal must be recovered before reading."""
+
+    prefix = f".{receipt_path.name}."
+    try:
+        entries = os.scandir(receipt_path.parent)
+    except FileNotFoundError:
+        return False
+    try:
+        return any(
+            entry.name.startswith(prefix) and entry.name.endswith(".journal")
+            for entry in entries
         )
-        planned.append(
-            replace(
-                link,
-                link_anchor=anchor,
-                link_anchor_dev=link.destination_dev,
-                link_anchor_ino=link.destination_ino,
-            )
-        )
-        missing_anchors.append(anchor)
-
-    if not missing_anchors:
-        # Current receipts already have an anchor inventory.  In particular,
-        # do not recreate an anchor pathname that was replaced after commit;
-        # ordinary teardown will preserve that foreign state.
-        return receipt
-    if invalid_existing_anchor:
-        raise InstallError("OpenCode pre-existing link anchor is no longer exact")
-
-    # The complete planned anchor roster is durable before any new hard link
-    # is made.  A crash after this write is recovered by the same routine from
-    # either install or uninstall, using only the recorded paths and identities.
-    planned_receipt = replace(
-        receipt,
-        links=tuple(planned),
-        pending_link_anchor_migration=tuple(missing_anchors),
-    )
-    _write_receipt(receipt_path, planned_receipt)
-    return _migrate_opencode_link_anchors(receipt_path, planned_receipt)
+    finally:
+        close = getattr(entries, "close", None)
+        if close is not None:
+            close()
 
 
-def _capture_opencode_link_identity(
-    link: ProfileLink, *, create_anchor: bool = False
-) -> ProfileLink:
+def _capture_opencode_link_identity(link: ProfileLink) -> ProfileLink:
     """Freeze one no-follow symlink identity after validating its binding."""
 
     bound = _bound_config_parent(link.destination, create=False)
@@ -5772,24 +5549,6 @@ def _capture_opencode_link_identity(
         raise InstallError(f"OpenCode link target changed: {link.destination}")
     identity = (metadata.st_dev, metadata.st_ino)
     binding.validated_leaves[_lexical_absolute(link.destination)] = identity
-    if link.link_anchor is None and create_anchor:
-        link = replace(
-            link,
-            destination_dev=identity[0],
-            destination_ino=identity[1],
-        )
-        link_anchor = _create_opencode_link_anchor(
-            link.destination,
-            link.destination.name,
-            identity,
-            parent_fd,
-        )
-        link = replace(
-            link,
-            link_anchor=link_anchor,
-            link_anchor_dev=identity[0],
-            link_anchor_ino=identity[1],
-        )
     if link.link_anchor is not None:
         if (
             link.link_anchor_dev,
@@ -6723,7 +6482,6 @@ def _receipt_with_pending(receipt: _Receipt, pending: _PendingSwap | None) -> _R
         pending_swap=pending,
         pending_publish=receipt.pending_publish,
         pending_migration=receipt.pending_migration,
-        pending_link_anchor_migration=receipt.pending_link_anchor_migration,
         pending_retirement=receipt.pending_retirement,
     )
 
@@ -6748,7 +6506,6 @@ def _receipt_with_pending_publish(
         pending_swap=receipt.pending_swap,
         pending_publish=pending_publish,
         pending_migration=receipt.pending_migration,
-        pending_link_anchor_migration=receipt.pending_link_anchor_migration,
         pending_retirement=receipt.pending_retirement,
     )
 
@@ -7960,7 +7717,6 @@ def _with_artifact_identity(
         pending_swap=receipt.pending_swap,
         pending_publish=receipt.pending_publish,
         pending_migration=receipt.pending_migration,
-        pending_link_anchor_migration=receipt.pending_link_anchor_migration,
         pending_retirement=receipt.pending_retirement,
     )
 
@@ -8794,6 +8550,17 @@ def install_opencode(
     # state; resolving a symlinked ancestor here would redirect every output.
     canonical_config = _canonical_opencode_config(config_dir)
     receipt_path_value = _opencode_receipt_path(state_home)
+    # A pre-anchor receipt is ambiguous while any recorded public or staged
+    # link remains.  Read it before creating the config tree so a rejected
+    # compatibility upgrade cannot leave unowned parents behind.
+    if _lexists(receipt_path_value) and not _opencode_receipt_recovery_is_pending(
+        receipt_path_value
+    ):
+        preliminary = _read_opencode_receipt(
+            receipt_path_value, canonical_root, canonical_config, state_home
+        )
+        if preliminary is not None:
+            _reject_unsafe_pre_anchor_opencode_receipt(preliminary)
     try:
         config_binding = _open_config_binding(canonical_config, create=True)
     except OSError as error:
@@ -8852,15 +8619,26 @@ def _install_opencode_bound(
     receipt_directory = receipt_path_value.parent
     canonical_state_home = receipt_directory.parent
     receipt: _Receipt | None = None
+    if _lexists(receipt_path_value) and not _opencode_receipt_recovery_is_pending(
+        receipt_path_value
+    ):
+        preliminary = _read_opencode_receipt(
+            receipt_path_value, canonical_root, config_dir, state_home
+        )
+        if preliminary is not None:
+            _reject_unsafe_pre_anchor_opencode_receipt(preliminary)
     _recover_receipt_deletion(
         canonical_root, config_dir, state_home, receipt_path_value
     )
-    if _lexists(receipt_path_value):
+    if _lexists(receipt_path_value) and not _opencode_receipt_recovery_is_pending(
+        receipt_path_value
+    ):
         receipt = _read_opencode_receipt(
             receipt_path_value, canonical_root, config_dir, state_home
         )
         if receipt is None:
             raise InstallError(f"receipt disappeared while reading: {receipt_path_value}")
+        _reject_unsafe_pre_anchor_opencode_receipt(receipt)
         if receipt.pending_retirement is not None:
             _recover_pending_retirement(receipt_path_value, receipt)
             receipt = _read_opencode_receipt(
@@ -8870,15 +8648,13 @@ def _install_opencode_bound(
                 raise InstallError(
                     f"receipt disappeared after retirement recovery: {receipt_path_value}"
                 )
+            _reject_unsafe_pre_anchor_opencode_receipt(receipt)
         if receipt.teardown_phase != "committed":
             if receipt.pending_publish is not None or receipt.pending_swap is not None:
                 raise InstallError("OpenCode teardown receipt contains publication state")
             _resume_opencode_teardown(receipt_path_value, receipt, state_home)
             receipt = None
         if receipt is not None:
-            receipt = _migrate_opencode_link_anchors(
-                receipt_path_value, receipt
-            )
             receipt = _migrate_artifact_identity(
                 canonical_root, state_home, receipt_path_value, receipt
             )
@@ -8890,9 +8666,10 @@ def _install_opencode_bound(
             artifact_backup,
             artifact_pending,
             receipt,
-        ) = _ensure_opencode_artifact(canonical_root, state_home, receipt)
+    ) = _ensure_opencode_artifact(canonical_root, state_home, receipt)
         if receipt is not None:
             _recover_staged_opencode_links(receipt)
+            _reject_unsafe_pre_anchor_opencode_receipt(receipt)
     except Exception:
         _remove_new_opencode_state(
             receipt_directory,
@@ -8965,21 +8742,12 @@ def _install_opencode_bound(
             for old in tuple(receipt.links):
                 recorded = old
                 if old.destination_dev is None or old.destination_ino is None:
-                    if not _lexists(old.destination):
+                    if not _lexists(old.destination) and not (
+                        old.staged_destination is not None
+                        and _lexists(old.staged_destination)
+                    ):
                         continue
-                    if not _same_recorded_link(old.destination, old.source):
-                        raise InstallError(
-                            f"refusing to migrate retargeted legacy link: {old.destination}"
-                        )
-                    recorded = _capture_opencode_link_identity(old, create_anchor=True)
-                    receipt = _persist_receipt(
-                        receipt_path_value,
-                        receipt,
-                        links=tuple(
-                            recorded if item.destination == old.destination else item
-                            for item in receipt.links
-                        ),
-                    )
+                    _reject_unsafe_pre_anchor_opencode_receipt(receipt)
                 assert recorded.destination_dev is not None
                 assert recorded.destination_ino is not None
                 _unlink_recorded_destination(recorded)
@@ -9344,8 +9112,6 @@ def _read_opencode_receipt(
             allowed_keys.add("pending_publish")
         if "pending_migration" in payload:
             allowed_keys.add("pending_migration")
-        if "pending_link_anchor_migration" in payload:
-            allowed_keys.add("pending_link_anchor_migration")
         if "pending_retirement" in payload:
             allowed_keys.add("pending_retirement")
         if "receipt_secret" in payload:
@@ -9920,16 +9686,20 @@ def _anchor_committed_artifact_for_uninstall(
 def _uninstall_legacy_opencode_receipt(
     receipt_path: Path, receipt: _Receipt
 ) -> tuple[ProfileLink, ...]:
-    """Retire the closed historical roster after freezing every live inode."""
+    """Retire only a legacy roster whose ambiguous names are already absent."""
 
     frozen: list[ProfileLink] = []
     for link in receipt.links:
         if link.destination_dev is not None and link.destination_ino is not None:
             frozen.append(link)
-        elif _same_recorded_link(link.destination, link.source):
-            frozen.append(_capture_opencode_link_identity(link, create_anchor=True))
+        elif _lexists(link.destination) or (
+            link.staged_destination is not None
+            and _lexists(link.staged_destination)
+        ):
+            _reject_unsafe_pre_anchor_opencode_receipt(receipt)
         else:
-            # Missing and retargeted legacy names grant no deletion authority.
+            # Missing legacy names grant no deletion authority and are safe to
+            # omit while the receipt converges without touching public paths.
             frozen.append(link)
     current = replace(
         receipt,
@@ -9951,6 +9721,7 @@ def _uninstall_legacy_opencode_receipt(
         raise InstallError(
             "legacy OpenCode link cleanup failed: " + "; ".join(failures)
         )
+    _reject_unsafe_pre_anchor_opencode_receipt(current)
     _unlink_state_path(receipt_path)
     return tuple(removed)
 
@@ -9977,6 +9748,14 @@ def uninstall_opencode(
         raise InstallError(f"OpenCode state directory is already active: {binding.directory}")
     _STATE_BINDINGS[key] = binding
     try:
+        if _lexists(receipt_path_value) and not _opencode_receipt_recovery_is_pending(
+            receipt_path_value
+        ):
+            preliminary = _read_opencode_receipt(
+                receipt_path_value, canonical_root, canonical_config, state_home
+            )
+            if preliminary is not None:
+                _reject_unsafe_pre_anchor_opencode_receipt(preliminary)
         # Receipt-deletion recovery is state-bound and does not require a
         # config descriptor.  Run it before deciding whether config creation
         # is authorized, so an authenticated recovery record can restore the
@@ -9984,6 +9763,14 @@ def uninstall_opencode(
         _recover_receipt_deletion(
             canonical_root, canonical_config, state_home, receipt_path_value
         )
+        if _lexists(receipt_path_value) and not _opencode_receipt_recovery_is_pending(
+            receipt_path_value
+        ):
+            preliminary = _read_opencode_receipt(
+                receipt_path_value, canonical_root, canonical_config, state_home
+            )
+            if preliminary is not None:
+                _reject_unsafe_pre_anchor_opencode_receipt(preliminary)
         try:
             config_binding = _open_config_binding(canonical_config, create=False)
         except OSError as error:
@@ -10001,6 +9788,7 @@ def uninstall_opencode(
             )
             if receipt is None:
                 return InstallResult()
+            _reject_unsafe_pre_anchor_opencode_receipt(receipt)
             try:
                 config_binding = _open_config_binding(canonical_config, create=True)
             except OSError as error:
@@ -10036,6 +9824,14 @@ def _uninstall_opencode_bound(
     state_home: Path,
     receipt_path_value: Path,
 ) -> InstallResult:
+    if _lexists(receipt_path_value) and not _opencode_receipt_recovery_is_pending(
+        receipt_path_value
+    ):
+        preliminary = _read_opencode_receipt(
+            receipt_path_value, canonical_root, config_dir, state_home
+        )
+        if preliminary is not None:
+            _reject_unsafe_pre_anchor_opencode_receipt(preliminary)
     _recover_receipt_deletion(
         canonical_root, config_dir, state_home, receipt_path_value
     )
@@ -10046,6 +9842,7 @@ def _uninstall_opencode_bound(
     )
     if receipt is None:
         return InstallResult()
+    _reject_unsafe_pre_anchor_opencode_receipt(receipt)
     if receipt.pending_retirement is not None:
         _recover_pending_retirement(receipt_path_value, receipt)
         receipt = _read_opencode_receipt(
@@ -10055,6 +9852,7 @@ def _uninstall_opencode_bound(
             raise InstallError(
                 f"receipt disappeared after retirement recovery: {receipt_path_value}"
             )
+        _reject_unsafe_pre_anchor_opencode_receipt(receipt)
     if receipt.artifact_root is None:
         links = receipt.links
         removed = _uninstall_legacy_opencode_receipt(receipt_path_value, receipt)
@@ -10108,21 +9906,9 @@ def _uninstall_opencode_bound(
         )
         _write_receipt(receipt_path_value, receipt)
     else:
-        if receipt.teardown_phase == "committed":
-            receipt = _migrate_opencode_link_anchors(
-                receipt_path_value, receipt
-            )
         receipt = _migrate_artifact_identity(
             canonical_root, state_home, receipt_path_value, receipt
         )
-    if recovered_initial:
-        receipt = _migrate_opencode_link_anchors(
-            receipt_path_value, receipt
-        )
-    # Anchor migration is complete before any receipt-recorded staged inode
-    # can be retired.  A mixed pre-anchor receipt therefore cannot make
-    # teardown progress before every eligible public link has an exact,
-    # journaled ownership anchor.
     for link in receipt.links:
         _remove_recorded_opencode_staging(link)
     links = receipt.links
@@ -10147,6 +9933,7 @@ def _resume_opencode_teardown(
     if receipt.artifact_root is None:
         raise InstallError("OpenCode teardown receipt lacks an artifact")
     current = receipt
+    _reject_unsafe_pre_anchor_opencode_receipt(current)
     if current.teardown_phase == "committed":
         frozen_links: list[ProfileLink] = []
         for link in current.links:
@@ -10236,6 +10023,7 @@ def _resume_opencode_teardown(
 
     if current.teardown_phase != "anchor-removed":
         raise InstallError("OpenCode teardown phase is not recoverable")
+    _reject_unsafe_pre_anchor_opencode_receipt(current)
     if not stat.S_ISREG(_state_lstat(receipt_path_value).st_mode):
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     _unlink_state_path(receipt_path_value)

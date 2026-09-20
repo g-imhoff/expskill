@@ -1918,7 +1918,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertNotEqual((artifact / "plugins" / "unslop.js").read_text(), "tampered\n")
             self.assertFalse((artifact / "unexpected.txt").exists())
 
-    def test_original_feature_legacy_receipt_installs_with_missing_old_sources(self) -> None:
+    def test_original_feature_legacy_receipt_install_rejects_ambiguous_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -1940,15 +1940,15 @@ class FoundationCorrectionTests(unittest.TestCase):
                 "plugin_installed": True,
                 "repository_root": str(repo.resolve()),
             }), encoding="utf-8")
-            install_opencode(repo, config, state)
-            payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
-            self.assertIn("artifact_root", payload)
-            self.assertTrue(all(Path(entry["source"]).is_relative_to(state / "expskill") for entry in payload["links"]))
-            uninstall_opencode(repo, config, state)
-            self.assertFalse(receipt_path(state).exists())
-            self.assertFalse(profile_symlinks(config))
+            before = receipt_path(state).read_bytes()
+            with self.assertRaisesRegex(
+                InstallError, "automatic migration is unsafe.*manual"
+            ):
+                install_opencode(repo, config, state)
+            self.assertEqual(receipt_path(state).read_bytes(), before)
+            self.assertTrue(profile_symlinks(config))
 
-    def test_original_feature_legacy_receipt_uninstalls_with_missing_old_sources(self) -> None:
+    def test_original_feature_legacy_receipt_uninstall_rejects_ambiguous_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -1971,11 +1971,13 @@ class FoundationCorrectionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-
-            uninstall_opencode(repo, config, state)
-
-            self.assertFalse(receipt_path(state).exists())
-            self.assertFalse(profile_symlinks(config))
+            before = receipt_path(state).read_bytes()
+            with self.assertRaisesRegex(
+                InstallError, "automatic migration is unsafe.*manual"
+            ):
+                uninstall_opencode(repo, config, state)
+            self.assertEqual(receipt_path(state).read_bytes(), before)
+            self.assertTrue(profile_symlinks(config))
 
     def test_legacy_receipt_rejects_forged_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
