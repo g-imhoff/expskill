@@ -38,6 +38,14 @@ def receipt(state: Path) -> dict[str, object]:
     return json.loads(receipt_path(state).read_text(encoding="utf-8"))
 
 
+def link_anchor_paths(config: Path) -> list[Path]:
+    return [
+        path
+        for path in config.rglob("*")
+        if path.name.startswith(install_module.OPENCODE_LINK_ANCHOR_PREFIX)
+    ]
+
+
 class OpenCodeOwnershipTeardownTests(unittest.TestCase):
     def setUp(self) -> None:
         # This foundation checkout intentionally omits the two release-only
@@ -2435,6 +2443,98 @@ install_module.install_opencode(repo, config, state)
 
             self.assertTrue(destination.is_symlink())
             self.assertEqual(os.readlink(destination), str(source))
+            self.assertFalse(receipt_path(state).exists())
+            self.assertEqual(link_anchor_paths(config), [])
+
+    def test_uninstall_preserves_immediate_same_inode_recreated_symlink(self) -> None:
+        """An ABA pathname replacement must not inherit receipt ownership."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            owned = payload["links"][0]
+            destination = Path(owned["destination"])
+            source = Path(owned["source"])
+            old_identity = (destination.lstat().st_dev, destination.lstat().st_ino)
+
+            destination.unlink()
+            destination.symlink_to(source)
+            replacement_identity = (
+                destination.lstat().st_dev,
+                destination.lstat().st_ino,
+            )
+
+            # Simulate the filesystem's immediate same-inode ABA reuse
+            # deterministically while preserving the foreign replacement's
+            # actual inode on disk.  The installed receipt retains a private
+            # hard-link anchor, so the public pathname must still prove that
+            # it is the anchored inode before teardown may retire it.
+            real_stat = install_module.os.stat
+            retired: list[Path] = []
+
+            def same_inode_stat(path: object, *args: object, **kwargs: object) -> object:
+                observed = real_stat(path, *args, **kwargs)
+                if (
+                    kwargs.get("follow_symlinks") is False
+                    and kwargs.get("dir_fd") is not None
+                    and path == destination.name
+                ):
+                    values = list(observed)
+                    values[1] = old_identity[1]
+                    values[2] = old_identity[0]
+                    return os.stat_result(values)
+                return observed
+
+            def record_retirement(
+                path: Path,
+                expected: tuple[int, int],
+                role: str,
+                **kwargs: object,
+            ) -> bool:
+                if path == destination:
+                    retired.append(path)
+                    return False
+                return real_retire(path, expected, role, **kwargs)
+
+            real_retire = install_module._retire_owned_object
+            with mock.patch.object(install_module.os, "stat", side_effect=same_inode_stat), mock.patch.object(
+                install_module,
+                "_retire_owned_object",
+                side_effect=record_retirement,
+            ):
+                uninstall_opencode(repo, config, state)
+
+            self.assertEqual(retired, [])
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(
+                (destination.lstat().st_dev, destination.lstat().st_ino),
+                replacement_identity,
+            )
+            self.assertFalse(receipt_path(state).exists())
+            self.assertEqual(link_anchor_paths(config), [])
+
+    def test_uninstall_preserves_foreign_replacement_at_private_link_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            owned = payload["links"][0]
+            destination = Path(owned["destination"])
+            anchor = Path(owned["link_anchor"])
+            anchor.unlink()
+            anchor.write_text("foreign-anchor\n", encoding="utf-8")
+
+            uninstall_opencode(repo, config, state)
+
+            self.assertEqual(anchor.read_text(encoding="utf-8"), "foreign-anchor\n")
+            self.assertTrue(destination.is_symlink())
             self.assertFalse(receipt_path(state).exists())
 
     def test_reinstall_does_not_adopt_same_target_recreated_symlink(self) -> None:
