@@ -171,7 +171,18 @@ class OpencodeContractTests(unittest.TestCase):
         skill = root / "plugins" / "expskill" / "skills" / "future-skill"
         skill.mkdir()
         (skill / "SKILL.md").write_text(
-            "---\nname: future-skill\ndescription: Future skill.\nmetadata:\n  opencode/slash: \"true\"\n  opencode/autoinvoke: \"false\"\n---\n\nFuture.\n",
+            "---\nname: future-skill\ndescription: Future skill.\n---\n\nFuture.\n",
+            encoding="utf-8",
+        )
+        (skill / "agents").mkdir()
+        (skill / "agents" / "openai.yaml").write_text(
+            "interface:\n"
+            '  display_name: "Future Skill"\n'
+            '  short_description: "Render a future skill command safely"\n'
+            '  default_prompt: "Use $future-skill for future work."\n'
+            "\n"
+            "policy:\n"
+            "  allow_implicit_invocation: false\n",
             encoding="utf-8",
         )
         _temporary, artifact = self.build_artifact(root)
