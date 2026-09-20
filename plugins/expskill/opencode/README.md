@@ -61,9 +61,12 @@ Install the published package in an OpenCode project:
 }
 ```
 
-The package root exports `UnslopPlugin` and `ExecutionPolicyPlugin`. The
-plugins resolve their bundled skills and policy relative to the installed
-package, so a published artifact does not depend on this repository.
+The package root defaults to the native OpenCode v1 `ExpSkillPlugin`, which
+composes `UnslopPlugin` and `ExecutionPolicyPlugin` and registers the bundled
+commands, agents, and skills through its config hook. The two component hooks
+remain available as named exports. All plugins resolve their bundled assets
+relative to the installed package, so a published artifact does not depend on
+this repository.
 
 ## License
 

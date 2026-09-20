@@ -33,7 +33,7 @@ needs_node_and_npm = unittest.skipUnless(
     NODE and NPM, "node and npm are required for the opencode package smoke test"
 )
 
-EXPECTED_EXPORTS = ("ExecutionPolicyPlugin", "UnslopPlugin")
+EXPECTED_EXPORTS = ("ExecutionPolicyPlugin", "ExpSkillPlugin", "UnslopPlugin", "default")
 SHARED_HELPERS = ("design_state.py", "plan_graph.py", "worktrees.py")
 THIRD_PARTY_LICENSES = ("mattpocock-skills-MIT.txt", "pstack-MIT.txt")
 
@@ -1891,14 +1891,21 @@ class OpencodePackageTests(unittest.TestCase):
                 import_script = """
 const plugin = await import("opencode-expskill");
 const names = Object.keys(plugin).sort();
-const expected = ["ExecutionPolicyPlugin", "UnslopPlugin"];
+const expected = ["ExecutionPolicyPlugin", "ExpSkillPlugin", "UnslopPlugin", "default"];
 if (JSON.stringify(names) !== JSON.stringify(expected)) {
   throw new Error(`unexpected exports: ${JSON.stringify(names)}`);
 }
-for (const name of expected) {
+for (const name of ["ExecutionPolicyPlugin", "ExpSkillPlugin", "UnslopPlugin"]) {
   if (typeof plugin[name] !== "function") {
     throw new Error(`${name} is not a plugin function`);
   }
+}
+if (
+  typeof plugin.default !== "object" ||
+  plugin.default.id !== "opencode-expskill" ||
+  plugin.default.server !== plugin.ExpSkillPlugin
+) {
+  throw new Error("installed package has an invalid native plugin default");
 }
 const policyHooks = await plugin.ExecutionPolicyPlugin({});
 const args = { subagent_type: "expskill-implementer" };
