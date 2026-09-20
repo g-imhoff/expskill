@@ -56,6 +56,17 @@ def receipt_path(state: Path) -> Path:
     return state / "expskill" / "install-opencode.json"
 
 
+def profile_symlinks(config: Path) -> list[Path]:
+    """Exclude receipt-owned hard-link anchors from public-link counts."""
+
+    return [
+        path
+        for path in config.rglob("*")
+        if path.is_symlink()
+        and not path.name.startswith(install_module.OPENCODE_LINK_ANCHOR_PREFIX)
+    ]
+
+
 def original_feature_legacy_links(repo: Path, config: Path) -> list[dict[str, str]]:
     links: list[dict[str, str]] = []
     for name in SKILLS:
@@ -325,7 +336,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             # Artifact publication crashed before any link was staged.
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 len(payload["links"]),
             )
 
@@ -944,7 +955,7 @@ class FoundationCorrectionTests(unittest.TestCase):
                 (artifact.stat().st_dev, artifact.stat().st_ino), artifact_identity
             )
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 len(payload["links"]),
             )
 
@@ -1008,7 +1019,7 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertFalse(missing.exists())
             self.assertEqual(len(result.removed_links), len(payload["links"]) - 1)
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertFalse(profile_symlinks(config))
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse(artifact.exists())
             self.assertFalse(anchor.exists())
@@ -1171,7 +1182,7 @@ class FoundationCorrectionTests(unittest.TestCase):
                     install_opencode(repo, config, state)
 
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 33,
             )
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
@@ -1182,7 +1193,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 0,
             )
 
@@ -1217,7 +1228,7 @@ class FoundationCorrectionTests(unittest.TestCase):
                     install_opencode(repo, config, state)
 
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 3,
             )
             payload = json.loads(receipt_path(state).read_text(encoding="utf-8"))
@@ -1228,7 +1239,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 0,
             )
 
@@ -1261,7 +1272,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 0,
             )
 
@@ -1306,7 +1317,7 @@ class FoundationCorrectionTests(unittest.TestCase):
                     uninstall_opencode(repo, config, state)
 
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 0,
             )
             uninstall_opencode(repo, config, state)
@@ -1314,7 +1325,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 0,
             )
 
@@ -1341,8 +1352,9 @@ class FoundationCorrectionTests(unittest.TestCase):
                 directory: bool,
             ) -> bool:
                 nonlocal unlinks
-                unlinks += 1
-                if unlinks == 4:
+                if role == "final-link":
+                    unlinks += 1
+                if role == "final-link" and unlinks == 4:
                     raise OSError(errno.EIO, "injected fourth unlink failure")
                 return real_unlink(
                     destination, identity, role, directory=directory
@@ -1427,8 +1439,9 @@ class FoundationCorrectionTests(unittest.TestCase):
                 directory: bool,
             ) -> bool:
                 nonlocal unlinks
-                unlinks += 1
-                if unlinks == 4:
+                if role == "final-link":
+                    unlinks += 1
+                if role == "final-link" and unlinks == 4:
                     raise SystemExit("injected fourth unlink crash")
                 return real_unlink(
                     destination, identity, role, directory=directory
@@ -1449,7 +1462,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             )
             self.assertTrue(Path(interrupted_payload["artifact_anchor"]).is_file())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 len(original_payload["links"]) - 3,
             )
 
@@ -1457,7 +1470,7 @@ class FoundationCorrectionTests(unittest.TestCase):
 
             self.assertFalse(receipt.exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertFalse(profile_symlinks(config))
 
     def test_anchorless_recovery_preserves_state_when_reanchoring_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1494,7 +1507,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertTrue((state / "expskill/opencode-artifact").is_dir())
             self.assertTrue(receipt_path(state).is_file())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 len(payload["links"]),
             )
 
@@ -1535,7 +1548,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertTrue((state / "expskill/opencode-artifact").is_dir())
             self.assertTrue(receipt_path(state).is_file())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 len(payload["links"]),
             )
 
@@ -1574,7 +1587,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertTrue(artifact.is_dir())
             self.assertTrue(receipt_path(state).is_file())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 0,
             )
             self.assertTrue(
@@ -1613,7 +1626,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(
                 any((state / "expskill").glob(".opencode-artifact.txn-*"))
             )
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertFalse(profile_symlinks(config))
 
     def test_crash_cleanup_preserves_retargeted_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1647,7 +1660,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertFalse(receipt_path(state).exists())
             self.assertFalse((state / "expskill/opencode-artifact").exists())
             self.assertEqual(
-                len([path for path in config.rglob("*") if path.is_symlink()]),
+                len(profile_symlinks(config)),
                 1,
             )
 
@@ -1933,7 +1946,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             self.assertTrue(all(Path(entry["source"]).is_relative_to(state / "expskill") for entry in payload["links"]))
             uninstall_opencode(repo, config, state)
             self.assertFalse(receipt_path(state).exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertFalse(profile_symlinks(config))
 
     def test_original_feature_legacy_receipt_uninstalls_with_missing_old_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1962,7 +1975,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             uninstall_opencode(repo, config, state)
 
             self.assertFalse(receipt_path(state).exists())
-            self.assertFalse(any(path.is_symlink() for path in config.rglob("*")))
+            self.assertFalse(profile_symlinks(config))
 
     def test_legacy_receipt_rejects_forged_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

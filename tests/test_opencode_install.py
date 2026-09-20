@@ -12,6 +12,7 @@ from unittest import mock
 
 from scripts.install import (
     InstallError,
+    OPENCODE_LINK_ANCHOR_PREFIX,
     _default_opencode_config_dir,
     install_opencode,
     preflight_opencode_links,
@@ -153,6 +154,12 @@ class OpencodeInstallerTests(unittest.TestCase):
             self.assertTrue(foreign.is_file())
             remaining = [path for path in config_dir.rglob("*") if path.is_symlink()]
             self.assertEqual(remaining, [])
+            self.assertFalse(
+                any(
+                    path.name.startswith(OPENCODE_LINK_ANCHOR_PREFIX)
+                    for path in config_dir.rglob("*")
+                )
+            )
 
     def test_uninstall_without_receipt_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

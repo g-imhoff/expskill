@@ -92,6 +92,7 @@ OPENCODE_PACKAGE_NAME = "opencode-expskill"
 OPENCODE_ARTIFACT_DIRECTORY = "opencode-artifact"
 OPENCODE_ARTIFACT_ANCHOR_FILE = "package.json"
 OPENCODE_ARTIFACT_ANCHOR_PREFIX = f".{OPENCODE_ARTIFACT_DIRECTORY}.anchor-"
+OPENCODE_LINK_ANCHOR_PREFIX = ".expskill-link-anchor-"
 OPENCODE_RECEIPT_TEARDOWN_PHASES = frozenset(
     {"committed", "removing-links", "artifact-removed", "anchor-removed"}
 )
@@ -199,6 +200,12 @@ class ProfileLink:
     # descriptor-bound hidden name.  The receipt records this pathname and its
     # no-follow inode identity before the exclusive rename to ``destination``.
     staged_destination: Path | None = field(default=None, compare=False)
+    # A hard link in the same bound config parent keeps the owned symlink inode
+    # allocated for the full receipt lifetime.  Without this private anchor a
+    # pathname can suffer an inode-reuse ABA and appear receipt-owned again.
+    link_anchor: Path | None = field(default=None, compare=False)
+    link_anchor_dev: int | None = field(default=None, compare=False)
+    link_anchor_ino: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -542,6 +549,19 @@ def _validate_pending_retirement_authority(
                     link.staged_destination,
                     link.destination_dev,
                     link.destination_ino,
+                )
+            )
+        if (
+            link.link_anchor is not None
+            and link.link_anchor_dev is not None
+            and link.link_anchor_ino is not None
+        ):
+            authority.add(
+                (
+                    "anchor",
+                    link.link_anchor,
+                    link.link_anchor_dev,
+                    link.link_anchor_ino,
                 )
             )
     artifact_dev, artifact_ino = artifact_identity
@@ -2046,6 +2066,32 @@ def _valid_opencode_link_staging_path(
     )
 
 
+def _opencode_link_anchor_path(
+    destination: Path, dev: int, ino: int
+) -> Path:
+    """Name the private hard-link anchor for one exact public symlink inode."""
+
+    return destination.parent / (
+        f"{OPENCODE_LINK_ANCHOR_PREFIX}{destination.name}-"
+        f"{dev:x}-{ino:x}.anchor"
+    )
+
+
+def _valid_opencode_link_anchor_path(
+    destination: Path,
+    anchor: Path,
+    dev: int,
+    ino: int,
+) -> bool:
+    """Accept only the deterministic anchor beside its public destination."""
+
+    return (
+        anchor == _opencode_link_anchor_path(destination, dev, ino)
+        and anchor.parent == destination.parent
+        and anchor.name.startswith(OPENCODE_LINK_ANCHOR_PREFIX)
+    )
+
+
 def _deletion_quarantine_path(path: Path, dev: int, ino: int) -> Path:
     """Return a receipt-recoverable deletion name for one exact inode."""
 
@@ -2437,6 +2483,45 @@ def _receipt_links(
             raise InstallError(
                 f"receipt staged link identity is malformed: {receipt_path}"
             )
+        link_anchor_values = tuple(
+            entry.get(key)
+            for key in ("link_anchor", "link_anchor_dev", "link_anchor_ino")
+        )
+        if link_anchor_values == (None, None, None):
+            link_anchor = None
+            link_anchor_dev = None
+            link_anchor_ino = None
+        else:
+            anchor_value, link_anchor_dev, link_anchor_ino = link_anchor_values
+            if not (
+                destination_dev is not None
+                and destination_ino is not None
+                and isinstance(anchor_value, str)
+                and isinstance(link_anchor_dev, int)
+                and link_anchor_dev > 0
+                and isinstance(link_anchor_ino, int)
+                and link_anchor_ino > 0
+                and (link_anchor_dev, link_anchor_ino)
+                == (destination_dev, destination_ino)
+            ):
+                raise InstallError(
+                    f"receipt link anchor identity is malformed: {receipt_path}"
+                )
+            raw_anchor = Path(anchor_value).expanduser()
+            if not raw_anchor.is_absolute() or _has_dot_components(raw_anchor):
+                raise InstallError(
+                    f"receipt link anchor is malformed: {receipt_path}"
+                )
+            link_anchor = _lexical_absolute(raw_anchor)
+            if not _valid_opencode_link_anchor_path(
+                lexical_destination,
+                link_anchor,
+                link_anchor_dev,
+                link_anchor_ino,
+            ):
+                raise InstallError(
+                    f"receipt link anchor is outside its destination: {receipt_path}"
+                )
         seen_pairs.add(pair)
         seen_destinations.add(lexical_destination)
         links.append(
@@ -2446,6 +2531,9 @@ def _receipt_links(
                 destination_dev=destination_dev,
                 destination_ino=destination_ino,
                 staged_destination=staged_destination,
+                link_anchor=link_anchor,
+                link_anchor_dev=link_anchor_dev,
+                link_anchor_ino=link_anchor_ino,
             )
         )
     return tuple(links)
@@ -3868,6 +3956,32 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
                     f"receipt staged link path is invalid: {receipt_path}"
                 )
             entry["staged_destination"] = str(link.staged_destination)
+        if (
+            link.link_anchor is not None
+            or link.link_anchor_dev is not None
+            or link.link_anchor_ino is not None
+        ):
+            if (
+                link.destination_dev is None
+                or link.destination_ino is None
+                or link.link_anchor is None
+                or link.link_anchor_dev is None
+                or link.link_anchor_ino is None
+                or (link.link_anchor_dev, link.link_anchor_ino)
+                != (link.destination_dev, link.destination_ino)
+                or not _valid_opencode_link_anchor_path(
+                    link.destination,
+                    link.link_anchor,
+                    link.link_anchor_dev,
+                    link.link_anchor_ino,
+                )
+            ):
+                raise InstallError(
+                    f"receipt link anchor is malformed: {receipt_path}"
+                )
+            entry["link_anchor"] = str(link.link_anchor)
+            entry["link_anchor_dev"] = link.link_anchor_dev
+            entry["link_anchor_ino"] = link.link_anchor_ino
         serialized_links.append(entry)
     payload = {
         "links": serialized_links,
@@ -4441,7 +4555,12 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
         try:
             publication_hook = getattr(created, "record_staged", None)
 
-            def record_staged(path: Path, dev: int, ino: int) -> None:
+            def record_staged(
+                path: Path,
+                dev: int,
+                ino: int,
+                anchor: Path,
+            ) -> None:
                 if publication_hook is None:
                     return
                 publication_hook(
@@ -4450,6 +4569,9 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
                         destination_dev=dev,
                         destination_ino=ino,
                         staged_destination=path,
+                        link_anchor=anchor,
+                        link_anchor_dev=dev,
+                        link_anchor_ino=ino,
                     )
                 )
 
@@ -4460,15 +4582,28 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
             )
         except OSError as error:
             raise InstallError(f"cannot create agent link: {link.destination}: {error}") from error
-        created.append(
-            link
-            if identity is None
-            else replace(
-                link,
-                destination_dev=identity[0],
-                destination_ino=identity[1],
+        if identity is None:
+            created.append(link)
+        elif publication_hook is None:
+            created.append(
+                replace(
+                    link,
+                    destination_dev=identity[0],
+                    destination_ino=identity[1],
+                )
             )
-        )
+        else:
+            anchor = _opencode_link_anchor_path(link.destination, *identity)
+            created.append(
+                replace(
+                    link,
+                    destination_dev=identity[0],
+                    destination_ino=identity[1],
+                    link_anchor=anchor,
+                    link_anchor_dev=identity[0],
+                    link_anchor_ino=identity[1],
+                )
+            )
 
 
 def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
@@ -5104,10 +5239,72 @@ def _bound_link_identity(destination: Path, source: Path) -> bool:
     return True
 
 
+def _create_opencode_link_anchor(
+    destination: Path,
+    staged_name: str,
+    identity: tuple[int, int],
+    parent_fd: int,
+) -> Path:
+    """Hard-link a staged symlink into its receipt-owned private anchor."""
+
+    anchor = _opencode_link_anchor_path(destination, *identity)
+    created = False
+    complete = False
+    try:
+        try:
+            existing = os.stat(anchor.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if not stat.S_ISLNK(existing.st_mode) or (
+                existing.st_dev,
+                existing.st_ino,
+            ) != identity:
+                raise InstallError(
+                    f"OpenCode link anchor pathname contains a foreign replacement: {anchor}"
+                )
+            complete = True
+            return anchor
+        try:
+            os.link(
+                staged_name,
+                anchor.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            created = True
+            anchored = os.stat(anchor.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as error:
+            raise InstallError(
+                f"cannot create receipt-owned OpenCode link anchor: {anchor}: {error}"
+            ) from error
+        if not stat.S_ISLNK(anchored.st_mode) or (
+            anchored.st_dev,
+            anchored.st_ino,
+        ) != identity:
+            raise InstallError(
+                f"OpenCode link anchor lost its exact symlink identity: {anchor}"
+            )
+        complete = True
+        return anchor
+    finally:
+        if created and not complete:
+            try:
+                _unlink_exact_leaf_via_exchange(
+                    parent_fd,
+                    anchor.name,
+                    identity,
+                    "temporary destination anchor",
+                )
+            except (OSError, InstallError):
+                pass
+
+
 def _create_destination_link(
     destination: Path,
     source: Path,
-    record_staged: Callable[[Path, int, int], None] | None = None,
+    record_staged: Callable[[Path, int, int, Path], None] | None = None,
 ) -> tuple[int, int] | None:
     bound = _bound_config_parent(destination, create=True)
     if bound is None:
@@ -5125,6 +5322,7 @@ def _create_destination_link(
     temporary_identity: tuple[int, int] | None = None
     journaled = False
     published = False
+    link_anchor: Path | None = None
     try:
         while True:
             try:
@@ -5153,10 +5351,17 @@ def _create_destination_link(
                 f"OpenCode temporary link target changed: {destination}"
             )
         if record_staged is not None:
+            link_anchor = _create_opencode_link_anchor(
+                destination,
+                temporary_name,
+                temporary_identity,
+                parent_fd,
+            )
             record_staged(
                 temporary_path,
                 temporary_identity[0],
                 temporary_identity[1],
+                link_anchor,
             )
             journaled = True
         # The receipt's exact pathname/dev/ino authority is durable before the
@@ -5202,9 +5407,69 @@ def _create_destination_link(
                 )
             except (OSError, InstallError):
                 pass
+        elif (
+            record_staged is not None
+            and not journaled
+            and link_anchor is not None
+            and temporary_identity is not None
+        ):
+            try:
+                _unlink_exact_leaf_via_exchange(
+                    parent_fd,
+                    link_anchor.name,
+                    temporary_identity,
+                    "temporary destination anchor",
+                )
+            except (OSError, InstallError):
+                pass
 
 
-def _capture_opencode_link_identity(link: ProfileLink) -> ProfileLink:
+def _opencode_link_anchor_is_live(link: ProfileLink) -> bool:
+    """Prove the receipt anchor is the exact same symlink inode as the link."""
+
+    if (
+        link.destination_dev is None
+        or link.destination_ino is None
+        or link.link_anchor is None
+        or link.link_anchor_dev is None
+        or link.link_anchor_ino is None
+        or (link.link_anchor_dev, link.link_anchor_ino)
+        != (link.destination_dev, link.destination_ino)
+        or not _valid_opencode_link_anchor_path(
+            link.destination,
+            link.link_anchor,
+            link.link_anchor_dev,
+            link.link_anchor_ino,
+        )
+    ):
+        return False
+    bound = _bound_config_parent(link.link_anchor, create=False)
+    if bound is None:
+        return False
+    binding, parent_fd = bound
+    _verify_config_binding(binding)
+    try:
+        metadata = os.stat(
+            link.link_anchor.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        target = Path(os.readlink(link.link_anchor.name, dir_fd=parent_fd))
+    except OSError:
+        return False
+    if not target.is_absolute():
+        target = link.link_anchor.parent / target
+    return (
+        stat.S_ISLNK(metadata.st_mode)
+        and (metadata.st_dev, metadata.st_ino)
+        == (link.link_anchor_dev, link.link_anchor_ino)
+        and _lexical_absolute(target) == _lexical_absolute(link.source)
+    )
+
+
+def _capture_opencode_link_identity(
+    link: ProfileLink, *, create_anchor: bool = False
+) -> ProfileLink:
     """Freeze one no-follow symlink identity after validating its binding."""
 
     bound = _bound_config_parent(link.destination, create=False)
@@ -5229,6 +5494,38 @@ def _capture_opencode_link_identity(link: ProfileLink) -> ProfileLink:
         raise InstallError(f"OpenCode link target changed: {link.destination}")
     identity = (metadata.st_dev, metadata.st_ino)
     binding.validated_leaves[_lexical_absolute(link.destination)] = identity
+    if link.link_anchor is None and create_anchor:
+        link = replace(
+            link,
+            destination_dev=identity[0],
+            destination_ino=identity[1],
+        )
+        link_anchor = _create_opencode_link_anchor(
+            link.destination,
+            link.destination.name,
+            identity,
+            parent_fd,
+        )
+        link = replace(
+            link,
+            link_anchor=link_anchor,
+            link_anchor_dev=identity[0],
+            link_anchor_ino=identity[1],
+        )
+    if link.link_anchor is not None:
+        if (
+            link.link_anchor_dev,
+            link.link_anchor_ino,
+        ) != identity or not _opencode_link_anchor_is_live(
+            replace(
+                link,
+                destination_dev=identity[0],
+                destination_ino=identity[1],
+            )
+        ):
+            raise InstallError(
+                f"OpenCode link lost its receipt-owned anchor: {link.destination}"
+            )
     _verify_config_binding(binding)
     return replace(
         link,
@@ -5240,23 +5537,15 @@ def _capture_opencode_link_identity(link: ProfileLink) -> ProfileLink:
 def _recorded_opencode_link_is_live(link: ProfileLink) -> bool:
     """Match both target text and the committed no-follow symlink inode."""
 
-    if link.destination_dev is None or link.destination_ino is None:
-        return False
-    if not _bound_link_identity(link.destination, link.source):
-        return False
-    binding = _config_binding(link.destination)
-    if binding is None:
-        return False
-    return binding.validated_leaves.get(_lexical_absolute(link.destination)) == (
-        link.destination_dev,
-        link.destination_ino,
-    )
+    return _recorded_opencode_link_path_is_live(link, link.destination)
 
 
 def _recorded_opencode_link_path_is_live(link: ProfileLink, path: Path) -> bool:
     """Match a final or staged pathname to the receipt's symlink authority."""
 
     if link.destination_dev is None or link.destination_ino is None:
+        return False
+    if not _opencode_link_anchor_is_live(link):
         return False
     bound = _bound_config_parent(path, create=False)
     if bound is None:
@@ -5277,6 +5566,12 @@ def _recorded_opencode_link_path_is_live(link: ProfileLink, path: Path) -> bool:
     identity = (metadata.st_dev, metadata.st_ino)
     if identity != (link.destination_dev, link.destination_ino):
         return False
+    if link.link_anchor is not None and metadata.st_nlink < 2:
+        # A receipt-owned public inode must still be hard-linked to its
+        # private anchor.  Besides documenting the relationship, this closes
+        # the testable ABA seam where a pathname-only identity observation is
+        # forged independently of the retained inode.
+        return False
     binding.validated_leaves[_lexical_absolute(path)] = identity
     _verify_config_binding(binding)
     return True
@@ -5293,6 +5588,28 @@ def _remove_recorded_opencode_staging(link: ProfileLink) -> bool:
     ):
         return False
     return _unlink_recorded_destination(link, staging)
+
+
+def _unlink_recorded_opencode_link_anchor(link: ProfileLink) -> bool:
+    """Reclaim only the receipt-owned hard-link anchor for a final link."""
+
+    if (
+        link.link_anchor is None
+        or link.link_anchor_dev is None
+        or link.link_anchor_ino is None
+    ):
+        return False
+    if not _opencode_link_anchor_is_live(link):
+        # A missing or replaced private anchor is not deletion authority.  In
+        # particular, never unlink a pathname merely because its deterministic
+        # name matches a receipt from an earlier generation.
+        return False
+    return _retire_owned_object(
+        link.link_anchor,
+        (link.link_anchor_dev, link.link_anchor_ino),
+        "anchor",
+        directory=False,
+    )
 
 
 def _recover_staged_opencode_links(receipt: _Receipt) -> None:
@@ -5347,12 +5664,16 @@ def _recover_staged_opencode_links(receipt: _Receipt) -> None:
 
 
 def _committed_opencode_link(
-    link: ProfileLink, previous: ProfileLink | None, *, created: bool
+    link: ProfileLink,
+    previous: ProfileLink | None,
+    *,
+    created: bool,
+    published: ProfileLink | None = None,
 ) -> ProfileLink:
     """Capture new ownership or retain a prior exact symlink identity."""
 
     if created or previous is None:
-        return _capture_opencode_link_identity(link)
+        return _capture_opencode_link_identity(published or link)
     if previous.destination_dev is None or previous.destination_ino is None:
         # A planned-but-uncommitted link found after a crash has no frozen
         # inode authority.  Preserve the pathname without adopting it.
@@ -5368,8 +5689,18 @@ def _committed_opencode_link(
             link,
             destination_dev=previous.destination_dev,
             destination_ino=previous.destination_ino,
+            link_anchor=previous.link_anchor,
+            link_anchor_dev=previous.link_anchor_dev,
+            link_anchor_ino=previous.link_anchor_ino,
         )
-    return _capture_opencode_link_identity(link)
+    return _capture_opencode_link_identity(
+        replace(
+            link,
+            link_anchor=previous.link_anchor,
+            link_anchor_dev=previous.link_anchor_dev,
+            link_anchor_ino=previous.link_anchor_ino,
+        )
+    )
 
 
 def _unlink_recorded_destination(
@@ -5397,6 +5728,8 @@ def _unlink_recorded_destination(
                 f"cannot durably confirm exact OpenCode link absence: "
                 f"{destination}: {error}"
             ) from error
+        if path is None:
+            _unlink_recorded_opencode_link_anchor(link)
         return False
     role = "final-link" if path is None else "staged-link"
     removed = False
@@ -5413,6 +5746,11 @@ def _unlink_recorded_destination(
             _retire_owned_object(destination, identity, role, directory=False)
             or removed
         )
+    if path is None:
+        # The private anchor is receipt-owned cleanup, but it is not itself a
+        # public profile link and therefore must not inflate InstallResult's
+        # removed_links inventory.
+        _unlink_recorded_opencode_link_anchor(link)
     return removed
 
 
@@ -8349,7 +8687,7 @@ def _install_opencode_bound(
                         raise InstallError(
                             f"refusing to migrate retargeted legacy link: {old.destination}"
                         )
-                    recorded = _capture_opencode_link_identity(old)
+                    recorded = _capture_opencode_link_identity(old, create_anchor=True)
                     receipt = _persist_receipt(
                         receipt_path_value,
                         receipt,
@@ -8422,11 +8760,13 @@ def _install_opencode_bound(
             if receipt is not None
             else {}
         )
+        published_links = {link.destination: link for link in created_links}
         committed_links = tuple(
             _committed_opencode_link(
                 link,
                 previous_links.get(link.destination),
                 created=link in created_links,
+                published=published_links.get(link.destination),
             )
             for link in links
         )
@@ -9301,7 +9641,7 @@ def _uninstall_legacy_opencode_receipt(
         if link.destination_dev is not None and link.destination_ino is not None:
             frozen.append(link)
         elif _same_recorded_link(link.destination, link.source):
-            frozen.append(_capture_opencode_link_identity(link))
+            frozen.append(_capture_opencode_link_identity(link, create_anchor=True))
         else:
             # Missing and retargeted legacy names grant no deletion authority.
             frozen.append(link)
