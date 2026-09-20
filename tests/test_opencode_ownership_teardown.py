@@ -2411,6 +2411,212 @@ install_module.install_opencode(repo, config, state)
             self.assertEqual(Path(second["artifact_anchor"]), anchor)
             self.assertEqual((anchor.stat().st_dev, anchor.stat().st_ino), anchor_identity)
 
+    def test_reinstall_migrates_anchorless_current_receipt(self) -> None:
+        """A pre-anchor current receipt must be upgraded before teardown."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            for link in payload["links"]:
+                anchor_value = link.pop("link_anchor", None)
+                link.pop("link_anchor_dev", None)
+                link.pop("link_anchor_ino", None)
+                if anchor_value is not None:
+                    Path(anchor_value).unlink()
+            receipt_path(state).write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            install_opencode(repo, config, state)
+
+            migrated = receipt(state)
+            self.assertTrue(
+                all(
+                    link.get("link_anchor")
+                    and link.get("link_anchor_dev") == link.get("destination_dev")
+                    and link.get("link_anchor_ino") == link.get("destination_ino")
+                    for link in migrated["links"]
+                )
+            )
+            for link in migrated["links"]:
+                destination = Path(link["destination"])
+                anchor = Path(link["link_anchor"])
+                self.assertTrue(anchor.is_symlink())
+                self.assertEqual(
+                    (anchor.lstat().st_dev, anchor.lstat().st_ino),
+                    (destination.lstat().st_dev, destination.lstat().st_ino),
+                )
+
+            result = uninstall_opencode(repo, config, state)
+
+            self.assertEqual(len(result.removed_links), len(migrated["links"]))
+            self.assertFalse(receipt_path(state).exists())
+            self.assertEqual(
+                [path for path in config.rglob("*") if path.is_symlink()], []
+            )
+
+    def test_anchor_migration_recovers_after_install_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            for link in payload["links"]:
+                anchor_value = link.pop("link_anchor", None)
+                link.pop("link_anchor_dev", None)
+                link.pop("link_anchor_ino", None)
+                if anchor_value is not None:
+                    Path(anchor_value).unlink()
+            receipt_path(state).write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            real_create = install_module._create_opencode_link_anchor
+            calls = 0
+
+            def crash_after_first_anchor(*args: object, **kwargs: object) -> Path:
+                nonlocal calls
+                calls += 1
+                anchor = real_create(*args, **kwargs)
+                if calls == 1:
+                    raise SystemExit("after first pre-anchor migration anchor")
+                return anchor
+
+            with mock.patch.object(
+                install_module,
+                "_create_opencode_link_anchor",
+                side_effect=crash_after_first_anchor,
+            ):
+                with self.assertRaises(SystemExit):
+                    install_opencode(repo, config, state)
+
+            interrupted = receipt(state)
+            self.assertTrue(
+                all("link_anchor" in link for link in interrupted["links"])
+            )
+            self.assertEqual(
+                set(interrupted["pending_link_anchor_migration"]["links"]),
+                {link["link_anchor"] for link in interrupted["links"]},
+            )
+            self.assertTrue(Path(interrupted["links"][0]["link_anchor"]).exists())
+
+            install_opencode(repo, config, state)
+            recovered = receipt(state)
+            self.assertNotIn("pending_link_anchor_migration", recovered)
+            self.assertTrue(
+                all(
+                    Path(link["link_anchor"]).is_symlink()
+                    for link in recovered["links"]
+                )
+            )
+            uninstall_opencode(repo, config, state)
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(
+                any(path.is_symlink() for path in config.rglob("*"))
+            )
+
+    def test_anchor_migration_recovers_after_uninstall_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            for link in payload["links"]:
+                anchor_value = link.pop("link_anchor", None)
+                link.pop("link_anchor_dev", None)
+                link.pop("link_anchor_ino", None)
+                if anchor_value is not None:
+                    Path(anchor_value).unlink()
+            receipt_path(state).write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            real_create = install_module._create_opencode_link_anchor
+            calls = 0
+
+            def crash_after_first_anchor(*args: object, **kwargs: object) -> Path:
+                nonlocal calls
+                calls += 1
+                anchor = real_create(*args, **kwargs)
+                if calls == 1:
+                    raise SystemExit("after first pre-anchor uninstall anchor")
+                return anchor
+
+            with mock.patch.object(
+                install_module,
+                "_create_opencode_link_anchor",
+                side_effect=crash_after_first_anchor,
+            ):
+                with self.assertRaises(SystemExit):
+                    uninstall_opencode(repo, config, state)
+
+            self.assertTrue(receipt_path(state).exists())
+            interrupted = receipt(state)
+            self.assertEqual(
+                set(interrupted["pending_link_anchor_migration"]["links"]),
+                {link["link_anchor"] for link in interrupted["links"]},
+            )
+            self.assertTrue(
+                any(path.is_symlink() for path in config.rglob("*"))
+            )
+
+            result = uninstall_opencode(repo, config, state)
+            self.assertEqual(len(result.removed_links), len(payload["links"]))
+            self.assertFalse(receipt_path(state).exists())
+            self.assertFalse(
+                any(path.is_symlink() for path in config.rglob("*"))
+            )
+
+    def test_anchor_migration_rejects_foreign_collision_and_retarget(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config = root / "config"
+            state = root / "state"
+            install_opencode(repo, config, state)
+            payload = receipt(state)
+            for link in payload["links"]:
+                anchor_value = link.pop("link_anchor", None)
+                link.pop("link_anchor_dev", None)
+                link.pop("link_anchor_ino", None)
+                if anchor_value is not None:
+                    Path(anchor_value).unlink()
+            receipt_path(state).write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            collision_entry = payload["links"][0]
+            collision_destination = Path(collision_entry["destination"])
+            collision = install_module._opencode_link_anchor_path(
+                collision_destination,
+                collision_entry["destination_dev"],
+                collision_entry["destination_ino"],
+            )
+            collision.write_text("foreign-anchor\n", encoding="utf-8")
+
+            with self.assertRaises(install_module.InstallError):
+                install_opencode(repo, config, state)
+            self.assertEqual(collision.read_text(encoding="utf-8"), "foreign-anchor\n")
+            self.assertTrue(collision_destination.is_symlink())
+            self.assertTrue(receipt_path(state).exists())
+
+            retargeted = Path(payload["links"][1]["destination"])
+            retargeted.unlink()
+            retargeted.write_text("foreign-public\n", encoding="utf-8")
+            with self.assertRaises(install_module.InstallError):
+                uninstall_opencode(repo, config, state)
+            self.assertEqual(collision.read_text(encoding="utf-8"), "foreign-anchor\n")
+            self.assertEqual(retargeted.read_text(encoding="utf-8"), "foreign-public\n")
+            self.assertTrue(receipt_path(state).exists())
+
     def test_uninstall_preserves_same_target_recreated_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
