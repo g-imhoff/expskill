@@ -77,6 +77,43 @@ def run_parent_opencode_install(
     )
 
 
+def run_parent_staged_crash(
+    repo: Path, config: Path, state: Path
+) -> subprocess.CompletedProcess[str]:
+    code = """
+import json
+import sys
+from pathlib import Path
+import scripts.install as install_module
+
+real_rename = install_module._renameat_noreplace
+receipt_path = Path(sys.argv[3]) / "expskill" / "install-opencode.json"
+
+def crash_after_staged_receipt(*args: object, **kwargs: object) -> None:
+    if receipt_path.is_file():
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if any("staged_destination" in link for link in payload.get("links", [])):
+            raise SystemExit("after staged receipt persistence")
+    real_rename(*args, **kwargs)
+
+install_module._renameat_noreplace = crash_after_staged_receipt
+install_module.install_opencode(
+    Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+)
+"""
+    environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = str(repo)
+    return subprocess.run(
+        [sys.executable, "-c", code, str(repo), str(config), str(state)],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def run_current_opencode_operation(
     repo: Path, config: Path, state: Path, *, uninstall: bool = False
 ) -> subprocess.CompletedProcess[str]:
@@ -2463,6 +2500,88 @@ install_module.install_opencode(repo, config, state)
                 else:
                     self.assertEqual(link_anchor_paths(config), [])
 
+    def test_parent_staged_anchorless_crash_rejects_before_recovery_mutation(self) -> None:
+        """A staged f85 link cannot be adopted or orphaned by either entrypoint."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parent = extract_parent_checkout(root / "parent")
+            config = root / "config"
+            state = root / "state"
+            interrupted = run_parent_staged_crash(parent, config, state)
+            self.assertNotEqual(interrupted.returncode, 0)
+            self.assertIn("after staged receipt persistence", interrupted.stderr)
+
+            receipt_file = receipt_path(state)
+            before_receipt = receipt_file.read_bytes()
+            before = receipt(state)
+            self.assertEqual(before["pending_publish"]["phase"], "planned-links")
+            staged_entries = [
+                link for link in before["links"] if "staged_destination" in link
+            ]
+            self.assertEqual(len(staged_entries), 1)
+            staged = staged_entries[0]
+            staged_path = Path(staged["staged_destination"])
+            staged_identity = (
+                staged_path.lstat().st_dev,
+                staged_path.lstat().st_ino,
+            )
+            self.assertFalse(Path(staged["destination"]).exists())
+            self.assertNotIn("link_anchor", staged)
+            artifact = Path(before["artifact_root"])
+            artifact_identity = (artifact.stat().st_dev, artifact.stat().st_ino)
+            artifact_anchor = Path(
+                before.get(
+                    "artifact_anchor",
+                    before["pending_publish"]["candidate_anchor"],
+                )
+            )
+            artifact_anchor_identity = (
+                artifact_anchor.stat().st_dev,
+                artifact_anchor.stat().st_ino,
+            )
+            config_identity = (config.stat().st_dev, config.stat().st_ino)
+            state_identity = (
+                (state / "expskill").stat().st_dev,
+                (state / "expskill").stat().st_ino,
+            )
+
+            for uninstall in (False, True):
+                candidate = run_current_opencode_operation(
+                    parent, config, state, uninstall=uninstall
+                )
+                self.assertNotEqual(candidate.returncode, 0)
+                self.assertRegex(
+                    candidate.stderr,
+                    "automatic migration is unsafe.*manual",
+                )
+                self.assertEqual(receipt_file.read_bytes(), before_receipt)
+                self.assertEqual(
+                    (staged_path.lstat().st_dev, staged_path.lstat().st_ino),
+                    staged_identity,
+                )
+                self.assertTrue(staged_path.is_symlink())
+                self.assertFalse(Path(staged["destination"]).exists())
+                self.assertEqual(
+                    (artifact.stat().st_dev, artifact.stat().st_ino),
+                    artifact_identity,
+                )
+                self.assertEqual(
+                    (artifact_anchor.stat().st_dev, artifact_anchor.stat().st_ino),
+                    artifact_anchor_identity,
+                )
+                self.assertEqual(
+                    (config.stat().st_dev, config.stat().st_ino), config_identity
+                )
+                self.assertEqual(
+                    (
+                        (state / "expskill").stat().st_dev,
+                        (state / "expskill").stat().st_ino,
+                    ),
+                    state_identity,
+                )
+                self.assertEqual(link_anchor_paths(config), [])
+
     def test_uninstall_preserves_same_target_recreated_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -3444,6 +3563,38 @@ install_module.install_opencode(repo, config, state)
                                     destination.lstat().st_ino,
                                 ),
                             )
+
+                        if replacement_has_no_authority:
+                            # A manually recreated link in an anchorless
+                            # receipt is ambiguous, even when its target is
+                            # unchanged.  Both entrypoints must reject before
+                            # recovery can adopt or remove it.
+                            assert replacement is not None
+                            before_receipt = receipt_path(state).read_bytes()
+                            destination, target, identity = replacement
+                            operation = (
+                                install_opencode
+                                if entrypoint == "install"
+                                else uninstall_opencode
+                            )
+                            with self.assertRaisesRegex(
+                                install_module.InstallError,
+                                "automatic migration is unsafe",
+                            ):
+                                operation(repo, config, state)
+                            self.assertEqual(
+                                receipt_path(state).read_bytes(), before_receipt
+                            )
+                            self.assertTrue(destination.is_symlink())
+                            self.assertEqual(Path(os.readlink(destination)), target)
+                            self.assertEqual(
+                                (
+                                    destination.lstat().st_dev,
+                                    destination.lstat().st_ino,
+                                ),
+                                identity,
+                            )
+                            continue
 
                         if entrypoint == "install":
                             install_opencode(repo, config, state)
