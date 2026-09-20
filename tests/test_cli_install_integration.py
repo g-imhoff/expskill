@@ -460,6 +460,21 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 with self.subTest(agent=name):
                     self.assertIn(name, agents_stdout)
 
+            for name in AGENTS:
+                with self.subTest(agent_options=name):
+                    details = _run_json(
+                        opencode + ["debug", "agent", name],
+                        env,
+                        cwd=project_dir,
+                        unset_env=("EXPSKILL_HOME",),
+                    )
+                    self.assertIsInstance(details, dict)
+                    assert isinstance(details, dict)
+                    options = details.get("options")
+                    self.assertIsInstance(options, dict)
+                    assert isinstance(options, dict)
+                    self.assertEqual(options.get("reasoningEffort"), "xhigh")
+
 
 if __name__ == "__main__":
     unittest.main()
