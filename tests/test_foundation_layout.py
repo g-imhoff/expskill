@@ -338,6 +338,87 @@ class FoundationLayoutTests(unittest.TestCase):
             command_description = frontmatter[1].split(":", 1)[1].strip()
             self.assertEqual(command_description.strip('"'), description)
 
+    def test_build_derives_command_activation_from_canonical_skill_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / "artifact"
+            build_opencode_package(ROOT, artifact)
+
+            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 12)
+            commands = sorted((artifact / "commands").glob("*.md"))
+            self.assertEqual(len(commands), 12)
+            self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
+            catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(catalog["commands"]), {path.stem for path in commands})
+            for command in commands:
+                name = command.stem
+                contents = command.read_text(encoding="utf-8")
+                expected = name == "use-expskill"
+                implicit_marker = "This is the only skill that may activate without an explicit invocation."
+                explicit_marker = "This command is explicit-only."
+                self.assertIn(expected and implicit_marker or explicit_marker, contents)
+                self.assertEqual(implicit_marker in contents, expected)
+                self.assertEqual(
+                    contents.split("---\n", 2)[2],
+                    catalog["commands"][name]["template"],
+                )
+                self.assertEqual(
+                    implicit_marker in catalog["commands"][name]["template"],
+                    expected,
+                )
+                self.assertNotIn("opencode/autoinvoke", contents)
+                self.assertNotIn("opencode/autoinvoke", catalog["commands"][name]["template"])
+
+    def test_renderer_rejects_missing_or_malformed_canonical_skill_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            shutil.copytree(ROOT, root)
+            policy = root / "plugins" / "expskill" / "skills" / "plan" / "agents" / "openai.yaml"
+
+            policy.unlink()
+            with self.assertRaisesRegex(RenderError, "canonical skill 'plan' policy"):
+                render_all(root)
+
+            policy.write_text(
+                "interface:\n"
+                '  display_name: "Plan"\n'
+                '  short_description: "Shape a bounded development approach"\n'
+                '  default_prompt: "Use $plan to shape the accepted approach."\n'
+                "\n"
+                "policy:\n"
+                "  allow_implicit_invocation: maybe\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RenderError, "must be a YAML boolean"):
+                render_all(root)
+
+            policy.write_text(
+                "interface:\n"
+                '  display_name: "Plan"\n'
+                '  short_description: "Shape a bounded development approach"\n'
+                '  default_prompt: "Use $plan to shape the accepted approach."\n'
+                "\n"
+                "policy:\n"
+                "  allow_implicit_invocation: false\n"
+                "extra:\n"
+                "  value: true\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RenderError, "keys must be exactly interface and policy"):
+                render_all(root)
+
+            policy.write_text(
+                "interface:\n"
+                '  display_name: Plan\n'
+                '  short_description: "Shape a bounded development approach"\n'
+                '  default_prompt: "Use $plan to shape the accepted approach."\n'
+                "\n"
+                "policy:\n"
+                "  allow_implicit_invocation: false\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RenderError, "must be a quoted string"):
+                render_all(root)
+
     def test_validate_uses_artifact_renderer_and_rejects_malformed_overlay(self) -> None:
         from scripts.validate import validate_repository
 
@@ -479,10 +560,12 @@ class FoundationLayoutTests(unittest.TestCase):
             )
             self.assertIn("This command is explicit-only.", catalog["commands"]["plan"]["template"])
 
-            skill.write_text(
-                skill_contents.replace(
-                    "\n---\n",
-                    '\nmetadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "true"\n---\n',
+            policy = root / "plugins" / "expskill" / "skills" / "plan" / "agents" / "openai.yaml"
+            policy_contents = policy.read_text(encoding="utf-8")
+            policy.write_text(
+                policy_contents.replace(
+                    "allow_implicit_invocation: false",
+                    "allow_implicit_invocation: true",
                     1,
                 ),
                 encoding="utf-8",

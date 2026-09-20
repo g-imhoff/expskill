@@ -427,25 +427,118 @@ def _bounded_description(value: Any, label: str) -> str:
     return normalized[: OPENCODE_DESCRIPTION_MAX_LENGTH - 3].rstrip() + "..."
 
 
-def render_command(name: str, frontmatter: Mapping[str, Any]) -> str:
+def _skill_implicit_invocation_policy(skill_path: Path, skill_name: str) -> bool:
+    """Read the canonical skill policy used by host-specific command output."""
+
+    policy_path = skill_path.parent / "agents" / "openai.yaml"
+    contents = _read_text(policy_path, f"canonical skill {skill_name!r} policy")
+    sections: dict[str, dict[str, Any]] = {}
+    section: str | None = None
+    for line_number, line in enumerate(contents.splitlines(), start=1):
+        if not line.strip():
+            continue
+        if "\t" in line:
+            raise RenderError(
+                f"canonical skill {skill_name!r} policy line {line_number} contains a tab"
+            )
+        indentation = len(line) - len(line.lstrip(" "))
+        key, separator, raw_value = line.strip().partition(":")
+        if not separator or not key or indentation not in (0, 2):
+            raise RenderError(
+                f"canonical skill {skill_name!r} policy line {line_number} is invalid"
+            )
+        raw_value = raw_value.strip()
+        if indentation == 0:
+            if raw_value or key in sections:
+                raise RenderError(
+                    f"canonical skill {skill_name!r} policy root {key!r} is invalid"
+                )
+            sections[key] = {}
+            section = key
+            continue
+        if section is None or key in sections[section] or not raw_value:
+            raise RenderError(
+                f"canonical skill {skill_name!r} policy line {line_number} is invalid"
+            )
+
+        if section == "interface":
+            if len(raw_value) < 2 or raw_value[0] != raw_value[-1] or raw_value[0] not in {'"', "'"}:
+                raise RenderError(
+                    f"canonical skill {skill_name!r} interface.{key} must be a quoted string"
+                )
+            try:
+                value = _parse_scalar(raw_value)
+            except RenderError as error:
+                raise RenderError(
+                    f"canonical skill {skill_name!r} interface.{key} is invalid"
+                ) from error
+            if not isinstance(value, str) or not value.strip():
+                raise RenderError(
+                    f"canonical skill {skill_name!r} interface.{key} must be a non-empty string"
+                )
+            sections[section][key] = value
+        elif section == "policy":
+            if raw_value not in {"true", "false"}:
+                raise RenderError(
+                    f"canonical skill {skill_name!r} allow_implicit_invocation must be a YAML boolean"
+                )
+            sections[section][key] = raw_value == "true"
+        else:
+            sections[section][key] = raw_value
+
+    if set(sections) != {"interface", "policy"}:
+        raise RenderError(
+            f"canonical skill {skill_name!r} policy keys must be exactly interface and policy"
+        )
+    interface = sections["interface"]
+    if set(interface) != {"display_name", "short_description", "default_prompt"}:
+        raise RenderError(
+            f"canonical skill {skill_name!r} interface keys are not exact"
+        )
+    policy = sections["policy"]
+    if set(policy) != {"allow_implicit_invocation"}:
+        raise RenderError(
+            f"canonical skill {skill_name!r} policy must declare only "
+            "allow_implicit_invocation"
+        )
+    value = policy["allow_implicit_invocation"]
+    if not isinstance(value, bool):
+        raise RenderError(
+            f"canonical skill {skill_name!r} allow_implicit_invocation must be a YAML boolean"
+        )
+    return value
+
+
+def render_command(
+    name: str,
+    frontmatter: Mapping[str, Any],
+    *,
+    allow_implicit_invocation: bool,
+) -> str:
     """Render one thin command wrapper from a canonical skill frontmatter."""
 
+    if type(allow_implicit_invocation) is not bool:
+        raise RenderError("command activation policy must be a boolean")
     description = _command_description(frontmatter)
     return (
         "---\n"
         f"description: {_yaml_scalar(description)}\n"
         "---\n"
-        f"{_command_template(name, frontmatter)}"
+        f"{_command_template(name, frontmatter, allow_implicit_invocation)}"
     )
 
 
-def _command_template(name: str, frontmatter: Mapping[str, Any]) -> str:
+def _command_template(
+    name: str,
+    frontmatter: Mapping[str, Any],
+    allow_implicit_invocation: bool,
+) -> str:
+    if type(allow_implicit_invocation) is not bool:
+        raise RenderError("command activation policy must be a boolean")
     _command_description(frontmatter)
-    metadata = frontmatter.get("metadata")
-    autoinvoke = isinstance(metadata, Mapping) and metadata.get("opencode/autoinvoke") == "true"
     activation = (
         "This is the only skill that may activate without an explicit invocation."
-        if autoinvoke
+        if allow_implicit_invocation
         else "This command is explicit-only."
     )
     return (
@@ -465,8 +558,12 @@ def render_commands(repo_root: Path | str | None = None) -> dict[str, str]:
     root = _root(repo_root)
     canonical_root = root / "plugins" / "expskill"
     return {
-        name: render_command(name, frontmatter)
-        for name, _path, frontmatter, _contents in _skill_inputs(canonical_root)
+        name: render_command(
+            name,
+            frontmatter,
+            allow_implicit_invocation=_skill_implicit_invocation_policy(path, name),
+        )
+        for name, path, frontmatter, _contents in _skill_inputs(canonical_root)
     }
 
 
@@ -503,10 +600,14 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
         agents[name] = config
 
     commands: dict[str, Any] = {}
-    for name, _path, frontmatter, _contents in _skill_inputs(canonical_root):
+    for name, path, frontmatter, _contents in _skill_inputs(canonical_root):
         commands[name] = {
             "description": _command_description(frontmatter),
-            "template": _command_template(name, frontmatter),
+            "template": _command_template(
+                name,
+                frontmatter,
+                _skill_implicit_invocation_policy(path, name),
+            ),
         }
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
