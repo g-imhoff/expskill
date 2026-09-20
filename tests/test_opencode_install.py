@@ -163,6 +163,19 @@ class OpencodeInstallerTests(unittest.TestCase):
             result = uninstall_opencode(repo, config_dir, state_home)
             self.assertEqual(result.removed_links, ())
 
+    def test_uninstall_with_unowned_state_does_not_create_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            config_dir = root / "config"
+            state_home = root / "state"
+            (state_home / "expskill").mkdir(parents=True)
+
+            result = uninstall_opencode(repo, config_dir, state_home)
+
+            self.assertEqual(result.removed_links, ())
+            self.assertFalse(config_dir.exists())
+
     def test_uninstall_preserves_user_retarget(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
