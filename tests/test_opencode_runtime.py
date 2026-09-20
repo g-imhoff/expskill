@@ -508,6 +508,13 @@ import(%s).then(async (module) => {
     if (!condition) process.exitCode = 1;
   };
   const clone = (value) => JSON.parse(JSON.stringify(value));
+  const expectedAgent = (value) => {
+    const copy = clone(value);
+    const { reasoningEffort } = copy;
+    delete copy.reasoningEffort;
+    copy.options = { reasoningEffort };
+    return copy;
+  };
   const pluginUrl = process.env.EXPSKILL_TEST_PLUGIN_URL;
   const packageRoot = path.dirname(url.fileURLToPath(pluginUrl));
   const catalog = JSON.parse(await fs.readFile(path.join(packageRoot, 'catalog.json'), 'utf8'));
@@ -574,7 +581,7 @@ import(%s).then(async (module) => {
       (name) => JSON.stringify(config.command[name]) === JSON.stringify(catalog.commands[name]),
     ) &&
       expectedAgents.filter((name) => name !== expectedAgents[0]).every(
-        (name) => JSON.stringify(config.agent[name]) === JSON.stringify(catalog.agents[name]),
+        (name) => JSON.stringify(config.agent[name]) === JSON.stringify(expectedAgent(catalog.agents[name])),
       ),
   );
   assert('user-command-wins', config.command[expectedCommands[0]] === userCommand);
@@ -640,6 +647,66 @@ import(%s).then(async (module) => {
     );
   } catch { blocked = true; }
   assert('composed-policy-effect', blocked);
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
+NATIVE_AGENT_OPTIONS_CASE = r"""
+import(%s).then(async (module) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const url = await import('node:url');
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const pluginUrl = process.env.EXPSKILL_TEST_PLUGIN_URL;
+  const packageRoot = path.dirname(url.fileURLToPath(pluginUrl));
+  const catalog = JSON.parse(await fs.readFile(path.join(packageRoot, 'catalog.json'), 'utf8'));
+  const catalogSnapshot = JSON.stringify(catalog);
+  const hooks = await module.default.server({});
+  const bundledConfig = { command: {}, agent: {}, skills: { paths: [] } };
+  await hooks.config(bundledConfig);
+  for (const [name, source] of Object.entries(catalog.agents)) {
+    const published = bundledConfig.agent[name];
+    const options = published?.options;
+    assert(
+      `${name}-options-plain-object`,
+      options !== null && typeof options === 'object' && !Array.isArray(options) &&
+        Object.getPrototypeOf(options) === Object.prototype,
+    );
+    assert(
+      `${name}-options-exact-reasoning-effort`,
+      JSON.stringify(Object.keys(options ?? {}).sort()) === JSON.stringify(['reasoningEffort']) &&
+        options?.reasoningEffort === source.reasoningEffort,
+    );
+    assert(
+      `${name}-no-direct-reasoning-effort`,
+      !Object.prototype.hasOwnProperty.call(published ?? {}, 'reasoningEffort'),
+    );
+  }
+  assert('loaded-catalog-not-mutated', JSON.stringify(catalog) === catalogSnapshot);
+
+  const collisionName = Object.keys(catalog.agents)[0];
+  const userOptions = { reasoningEffort: 'user-option' };
+  const userAgent = {
+    description: 'user agent',
+    mode: 'primary',
+    prompt: 'user prompt',
+    reasoningEffort: 'user-direct',
+    options: userOptions,
+  };
+  const collisionConfig = {
+    command: {},
+    agent: { [collisionName]: userAgent },
+    skills: { paths: [] },
+  };
+  await hooks.config(collisionConfig);
+  assert(
+    'explicit-agent-collision-untouched',
+    collisionConfig.agent[collisionName] === userAgent &&
+      collisionConfig.agent[collisionName].reasoningEffort === 'user-direct' &&
+      collisionConfig.agent[collisionName].options === userOptions,
+  );
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
@@ -1068,6 +1135,29 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:composed-policy-effect",
         ):
             self.assertIn(token, result.stdout)
+
+    @needs_node
+    def test_native_root_normalizes_bundled_agent_reasoning_options(self) -> None:
+        result = run_node_case(self.artifact() / "index.js", NATIVE_AGENT_OPTIONS_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in (
+            "expskill-designer",
+            "expskill-explorer",
+            "expskill-implementer",
+            "expskill-planner",
+            "expskill-review",
+            "expskill-spec",
+            "expskill-test-engineer",
+        ):
+            for suffix in (
+                "options-plain-object",
+                "options-exact-reasoning-effort",
+                "no-direct-reasoning-effort",
+            ):
+                with self.subTest(agent=name, assertion=suffix):
+                    self.assertIn(f"ok:{name}-{suffix}", result.stdout)
+        self.assertIn("ok:loaded-catalog-not-mutated", result.stdout)
+        self.assertIn("ok:explicit-agent-collision-untouched", result.stdout)
 
     @needs_node
     def test_native_root_plugin_fails_closed_on_malformed_catalog(self) -> None:

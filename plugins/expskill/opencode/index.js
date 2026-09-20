@@ -312,12 +312,20 @@ function defaultDataDescriptor(value) {
   };
 }
 
-function buildReplacement(userEntries, catalogEntries) {
+function normalizeCatalogAgent(value) {
+  const runtime = structuredClone(value);
+  const { reasoningEffort } = runtime;
+  delete runtime.reasoningEffort;
+  runtime.options = { reasoningEffort };
+  return runtime;
+}
+
+function buildReplacement(userEntries, catalogEntries, clone = structuredClone) {
   const replacement = {};
   for (const [name, descriptor] of userEntries) defineOwnData(replacement, name, descriptor);
   for (const [name, entry] of catalogEntries) {
     if (!hasOwn(replacement, name)) {
-      defineOwnData(replacement, name, defaultDataDescriptor(structuredClone(entry.value)));
+      defineOwnData(replacement, name, defaultDataDescriptor(clone(entry.value)));
     }
   }
   return replacement;
@@ -387,7 +395,7 @@ function prepareConfig(config, catalog) {
     root,
     replacements: {
       command: buildReplacement(commandEntries, catalog.commands),
-      agent: buildReplacement(agentEntries, catalog.agents),
+      agent: buildReplacement(agentEntries, catalog.agents, normalizeCatalogAgent),
       skills: buildSkillsReplacement(skillsEntries, paths),
     },
   };
