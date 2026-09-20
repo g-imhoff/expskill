@@ -39,6 +39,7 @@ const REQUIRED_AGENTS = [
 
 const CATALOG_KEYS = ["agents", "commands", "schema_version"];
 const COMMAND_KEYS = ["description", "template"];
+const DESCRIPTION_MAX_LENGTH = 160;
 const AGENT_KEYS = [
   "description",
   "mode",
@@ -49,6 +50,7 @@ const AGENT_KEYS = [
 ];
 const AGENT_KEYS_WITH_TEMPERATURE = [...AGENT_KEYS, "temperature"];
 const UNSAFE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+const PERMISSION_DECISIONS = new Set(["allow", "ask", "deny"]);
 const hasOwn = (value, name) => Object.prototype.hasOwnProperty.call(value, name);
 
 function isProxy(value) {
@@ -92,7 +94,15 @@ function ownEnumerableDataEntries(value, label) {
     if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
       throw new Error(`${label}.${key} must be an enumerable data property`);
     }
-    entries.push([key, descriptor.value]);
+    entries.push([
+      key,
+      {
+        value: descriptor.value,
+        writable: descriptor.writable,
+        enumerable: descriptor.enumerable,
+        configurable: descriptor.configurable,
+      },
+    ]);
   }
   return entries;
 }
@@ -120,12 +130,17 @@ function validatePermission(value, label, seen = new Set()) {
     throw new Error(`${label} must be a plain object`);
   }
   seen.add(value);
-  for (const [name, child] of ownEnumerableDataEntries(value, label)) {
+  const entries = ownEnumerableDataEntries(value, label);
+  if (entries.length === 0) throw new Error(`${label} must be non-empty`);
+  for (const [name, descriptor] of entries) {
     if (UNSAFE_NAMES.has(name)) {
       throw new Error(`${label}.${name} has an unsafe name`);
     }
+    const child = descriptor.value;
     if (typeof child === "string") {
-      if (child.length === 0) throw new Error(`${label}.${name} must be non-empty`);
+      if (!PERMISSION_DECISIONS.has(child)) {
+        throw new Error(`${label}.${name} must be allow, ask, or deny`);
+      }
     } else if (isPlainObject(child)) {
       validatePermission(child, `${label}.${name}`, seen);
     } else {
@@ -137,8 +152,11 @@ function validatePermission(value, label, seen = new Set()) {
 
 function validateCommand(name, value) {
   const entries = exactDataEntries(value, COMMAND_KEYS, `catalog.commands.${name}`);
-  const fields = new Map(entries);
+  const fields = new Map(entries.map(([field, descriptor]) => [field, descriptor.value]));
   nonEmptyString(fields.get("description"), `catalog.commands.${name}.description`);
+  if (fields.get("description").length > DESCRIPTION_MAX_LENGTH) {
+    throw new Error(`catalog.commands.${name}.description is too long`);
+  }
   nonEmptyString(fields.get("template"), `catalog.commands.${name}.template`);
 }
 
@@ -146,9 +164,15 @@ function validateAgent(name, value) {
   if (!isPlainObject(value)) throw new Error(`catalog.agents.${name} must be a plain object`);
   const expected = hasOwn(value, "temperature") ? AGENT_KEYS_WITH_TEMPERATURE : AGENT_KEYS;
   const exact = exactDataEntries(value, expected, `catalog.agents.${name}`);
-  const fields = new Map(exact);
+  const fields = new Map(exact.map(([field, descriptor]) => [field, descriptor.value]));
   for (const field of ["description", "mode", "model", "reasoningEffort", "prompt"]) {
     nonEmptyString(fields.get(field), `catalog.agents.${name}.${field}`);
+  }
+  if (fields.get("description").length > DESCRIPTION_MAX_LENGTH) {
+    throw new Error(`catalog.agents.${name}.description is too long`);
+  }
+  if (fields.get("mode") !== "subagent") {
+    throw new Error(`catalog.agents.${name}.mode must be subagent`);
   }
   validatePermission(fields.get("permission"), `catalog.agents.${name}.permission`);
   if (fields.has("temperature") &&
@@ -159,14 +183,14 @@ function validateAgent(name, value) {
 
 function validateCatalog(value) {
   const top = exactDataEntries(value, CATALOG_KEYS, "catalog");
-  const fields = new Map(top);
+  const fields = new Map(top.map(([field, descriptor]) => [field, descriptor.value]));
   if (fields.get("schema_version") !== CATALOG_SCHEMA_VERSION) {
     throw new Error("invalid OpenCode runtime catalog schema");
   }
   const commandEntries = exactDataEntries(fields.get("commands"), REQUIRED_COMMANDS, "catalog.commands");
   const agentEntries = exactDataEntries(fields.get("agents"), REQUIRED_AGENTS, "catalog.agents");
-  for (const [name, entry] of commandEntries) validateCommand(name, entry);
-  for (const [name, entry] of agentEntries) validateAgent(name, entry);
+  for (const [name, descriptor] of commandEntries) validateCommand(name, descriptor.value);
+  for (const [name, descriptor] of agentEntries) validateAgent(name, descriptor.value);
   return { commands: commandEntries, agents: agentEntries };
 }
 
@@ -268,34 +292,75 @@ function validatePaths(value, label) {
   return paths;
 }
 
-function defineOwnData(target, name, value) {
+function defineOwnData(target, name, descriptor) {
   if (!Reflect.defineProperty(target, name, {
-    value,
-    writable: true,
-    enumerable: true,
-    configurable: true,
+    value: descriptor.value,
+    writable: descriptor.writable,
+    enumerable: descriptor.enumerable,
+    configurable: descriptor.configurable,
   })) {
     throw new Error(`cannot define ${name}`);
   }
 }
 
+function defaultDataDescriptor(value) {
+  return {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  };
+}
+
 function buildReplacement(userEntries, catalogEntries) {
   const replacement = {};
-  for (const [name, value] of userEntries) defineOwnData(replacement, name, value);
+  for (const [name, descriptor] of userEntries) defineOwnData(replacement, name, descriptor);
   for (const [name, entry] of catalogEntries) {
-    if (!hasOwn(replacement, name)) defineOwnData(replacement, name, structuredClone(entry));
+    if (!hasOwn(replacement, name)) {
+      defineOwnData(replacement, name, defaultDataDescriptor(structuredClone(entry.value)));
+    }
   }
   return replacement;
 }
 
+function normalizePathForComparison(value) {
+  const root = path.parse(value).root;
+  const separators = path.sep === "\\" ? /[\\/]+$/ : /\/+$/;
+  let normalized = value;
+  while (normalized.length > root.length && separators.test(normalized)) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function isBundledSkillsPath(value) {
+  return typeof value === "string" &&
+    normalizePathForComparison(value) === normalizePathForComparison(SKILLS_PATH);
+}
+
 function buildSkillsReplacement(userEntries, paths) {
   const replacement = {};
-  for (const [name, value] of userEntries) {
-    if (name !== "paths") defineOwnData(replacement, name, value);
+  let pathsDescriptor = null;
+  for (const [name, descriptor] of userEntries) {
+    if (name !== "paths") defineOwnData(replacement, name, descriptor);
+    else pathsDescriptor = descriptor;
   }
-  const nextPaths = [...paths];
-  if (!nextPaths.includes(SKILLS_PATH)) nextPaths.push(SKILLS_PATH);
-  defineOwnData(replacement, "paths", nextPaths);
+  const nextPaths = [];
+  let bundledAdded = false;
+  for (const entry of paths) {
+    if (isBundledSkillsPath(entry)) {
+      if (bundledAdded) continue;
+      bundledAdded = true;
+    }
+    nextPaths.push(entry);
+  }
+  if (!bundledAdded) nextPaths.push(SKILLS_PATH);
+  defineOwnData(replacement, "paths", {
+    value: nextPaths,
+    writable: pathsDescriptor?.writable ?? true,
+    enumerable: pathsDescriptor?.enumerable ?? true,
+    configurable: pathsDescriptor?.configurable ?? true,
+  });
   return replacement;
 }
 
@@ -316,7 +381,7 @@ function prepareConfig(config, catalog) {
   if (skillsSlot.descriptor) {
     skillsEntries = validateUserContainer(skillsSlot.value, "config.skills");
     const pathsEntry = skillsEntries.find(([name]) => name === "paths");
-    if (pathsEntry) paths = validatePaths(pathsEntry[1], "config.skills.paths");
+    if (pathsEntry) paths = validatePaths(pathsEntry[1].value, "config.skills.paths");
   }
   return {
     root,
