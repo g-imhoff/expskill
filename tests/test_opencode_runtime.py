@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -650,6 +651,221 @@ import(%s).then(async (module) => {
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
+NATIVE_ROOT_CATALOG_REJECTION_CASE = r"""
+import(%s).then(async (module) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const url = await import('node:url');
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const pluginUrl = process.env.EXPSKILL_TEST_PLUGIN_URL;
+  const packageRoot = path.dirname(url.fileURLToPath(pluginUrl));
+  JSON.parse(await fs.readFile(path.join(packageRoot, 'catalog.json'), 'utf8'));
+  const hooks = await module.default.server({});
+  const command = { keep: { template: 'keep' } };
+  const agent = { keep: { mode: 'primary' } };
+  const skills = { paths: ['/tmp/user-skills'] };
+  const config = { command, agent, skills, marker: { keep: true } };
+  const refs = { config, command, agent, skills, marker: config.marker };
+  const snapshot = JSON.stringify(config);
+  let error = null;
+  try { await hooks.config(config); } catch (cause) { error = cause; }
+  assert('catalog-rejection-does-not-throw', error === null);
+  assert(
+    'catalog-rejection-is-transactional',
+    JSON.stringify(config) === snapshot &&
+      config.command === refs.command &&
+      config.agent === refs.agent &&
+      config.skills === refs.skills &&
+      config.marker === refs.marker,
+  );
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
+NATIVE_ROOT_CONFIG_BOUNDARIES_CASE = r"""
+import(%s).then(async (module) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const url = await import('node:url');
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const pluginUrl = process.env.EXPSKILL_TEST_PLUGIN_URL;
+  const packageRoot = path.dirname(url.fileURLToPath(pluginUrl));
+  const catalog = JSON.parse(await fs.readFile(path.join(packageRoot, 'catalog.json'), 'utf8'));
+  const commandName = Object.keys(catalog.commands)[0];
+  const agentName = Object.keys(catalog.agents)[0];
+  const hooks = await module.default.server({});
+  const clone = (value) => JSON.stringify(value);
+  const noop = async (name, config, nested = [], observe = true) => {
+    const before = observe ? clone(config) : null;
+    const refs = observe ? [config, config.command, config.agent, config.skills, ...nested] : [];
+    let error = null;
+    try { await hooks.config(config); } catch (cause) { error = cause; }
+    assert(`${name}-does-not-throw`, error === null);
+    if (observe) {
+      assert(
+        `${name}-is-transactional`,
+        clone(config) === before &&
+          refs.every((ref, index) => index === 0 ? config === ref : (
+            index === 1 ? config.command === ref :
+            index === 2 ? config.agent === ref :
+            index === 3 ? config.skills === ref : true
+          )),
+      );
+    }
+  };
+
+  const frozenAgent = {};
+  Object.freeze(frozenAgent);
+  await noop('frozen-agent-after-commands', {
+    command: { keep: { template: 'keep' } },
+    agent: frozenAgent,
+    skills: { paths: ['/tmp/user-skills'] },
+  }, [frozenAgent]);
+
+  // Custom prototypes are outside the supported config boundary. They must be
+  // rejected before publication so inherited state cannot be copied or mutated.
+  const inheritedCommand = { inherited: { template: 'must survive' } };
+  const inheritedRoot = Object.create({ command: inheritedCommand });
+  inheritedRoot.agent = {};
+  inheritedRoot.skills = { paths: [] };
+  await noop('prototype-root', inheritedRoot);
+  assert(
+    'prototype-root-not-mutated',
+    JSON.stringify(inheritedCommand) === JSON.stringify({ inherited: { template: 'must survive' } }) &&
+      !Object.prototype.hasOwnProperty.call(inheritedRoot, 'command'),
+  );
+
+  const inheritedAgent = { inherited: { mode: 'must survive' } };
+  const prototypeAgent = Object.create(inheritedAgent);
+  prototypeAgent.keep = { mode: 'primary' };
+  const prototypeAgentRoot = { command: {}, agent: prototypeAgent, skills: { paths: [] } };
+  await noop('prototype-agent-container', prototypeAgentRoot, [prototypeAgent]);
+  assert(
+    'prototype-agent-not-mutated',
+    JSON.stringify(inheritedAgent) === JSON.stringify({ inherited: { mode: 'must survive' } }) &&
+      prototypeAgentRoot.agent === prototypeAgent,
+  );
+
+  const inheritedPathArray = ['/tmp/inherited-paths'];
+  const prototypeSkills = Object.create({ paths: inheritedPathArray });
+  const prototypeSkillsRoot = { command: {}, agent: {}, skills: prototypeSkills };
+  await noop('prototype-skills-container', prototypeSkillsRoot, [prototypeSkills]);
+  assert(
+    'prototype-skills-not-mutated',
+    JSON.stringify(inheritedPathArray) === JSON.stringify(['/tmp/inherited-paths']) &&
+      prototypeSkillsRoot.skills === prototypeSkills &&
+      !Object.prototype.hasOwnProperty.call(prototypeSkills, 'paths'),
+  );
+
+  for (const [name, config] of [
+    ['array-command', { command: [], agent: {}, skills: { paths: [] } }],
+    ['string-command', { command: 'invalid', agent: {}, skills: { paths: [] } }],
+    ['array-agent', { command: {}, agent: [], skills: { paths: [] } }],
+    ['string-agent', { command: {}, agent: 'invalid', skills: { paths: [] } }],
+    ['string-skills', { command: {}, agent: {}, skills: 'invalid' }],
+    ['string-paths', { command: {}, agent: {}, skills: { paths: 'invalid' } }],
+    ['date-command', { command: new Date(0), agent: {}, skills: { paths: [] } }],
+  ]) await noop(name, config);
+
+  let getterReads = 0;
+  const accessorConfig = { agent: {}, skills: { paths: [] } };
+  Object.defineProperty(accessorConfig, 'command', {
+    enumerable: true,
+    configurable: true,
+    get() { getterReads += 1; return {}; },
+  });
+  await noop('accessor-command', accessorConfig, [], false);
+  assert('accessor-command-not-read', getterReads === 0);
+
+  let nestedGetterReads = 0;
+  const accessorCommand = {};
+  Object.defineProperty(accessorCommand, 'keep', {
+    enumerable: true,
+    configurable: true,
+    get() { nestedGetterReads += 1; return { template: 'must not read' }; },
+  });
+  await noop('accessor-command-entry', {
+    command: accessorCommand,
+    agent: {},
+    skills: { paths: [] },
+  }, [], false);
+  assert('accessor-command-entry-not-read', nestedGetterReads === 0);
+
+  await noop('frozen-root', Object.freeze({ marker: true }));
+  await noop('non-extensible-root', Object.preventExtensions({ marker: true }));
+
+  const proxyTarget = {};
+  const proxyRoot = new Proxy(proxyTarget, {
+    defineProperty() { throw new Error('publication blocked'); },
+    set() { throw new Error('publication blocked'); },
+  });
+  await noop('proxy-root-publication', proxyRoot);
+  assert('proxy-root-target-unchanged', Object.keys(proxyTarget).length === 0);
+
+  let setterCalls = 0;
+  const setterRoot = {};
+  Object.defineProperty(setterRoot, 'command', {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error('getter must not run'); },
+    set() { setterCalls += 1; },
+  });
+  await noop('setter-root-publication', setterRoot, [], false);
+  assert('setter-root-not-called', setterCalls === 0);
+
+  const nonWritableRoot = { agent: {}, skills: { paths: [] } };
+  const nonWritableCommand = {};
+  Object.defineProperty(nonWritableRoot, 'command', {
+    value: nonWritableCommand,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+  await noop('non-writable-root-command', nonWritableRoot, [nonWritableCommand]);
+  assert(
+    'non-writable-root-command-not-mutated',
+    nonWritableRoot.command === nonWritableCommand,
+  );
+
+  const nonConfigurableRoot = { command: {}, agent: {}, skills: { paths: [] } };
+  Object.defineProperty(nonConfigurableRoot, 'agent', {
+    value: nonConfigurableRoot.agent,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+  await noop('non-configurable-root-agent', nonConfigurableRoot);
+  assert('non-configurable-root-agent-not-mutated', !Object.prototype.hasOwnProperty.call(
+    nonConfigurableRoot.agent,
+    agentName,
+  ));
+
+  const writableNonConfigurableRoot = { command: {}, agent: {}, skills: { paths: [] } };
+  Object.defineProperty(writableNonConfigurableRoot, 'command', {
+    value: writableNonConfigurableRoot.command,
+    enumerable: true,
+    writable: true,
+    configurable: false,
+  });
+  let writableNonConfigurableError = null;
+  try { await hooks.config(writableNonConfigurableRoot); } catch (cause) {
+    writableNonConfigurableError = cause;
+  }
+  assert('writable-non-configurable-root-does-not-throw', writableNonConfigurableError === null);
+  assert(
+    'writable-non-configurable-root-publishes',
+    writableNonConfigurableRoot.command !== undefined &&
+      Object.prototype.hasOwnProperty.call(writableNonConfigurableRoot.command, commandName) &&
+      Object.getOwnPropertyDescriptor(writableNonConfigurableRoot, 'command').configurable === false,
+  );
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
 
 def run_node_case(
     plugin: Path,
@@ -804,6 +1020,106 @@ class OpencodeRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ok:malformed-catalog-does-not-throw", result.stdout)
         self.assertIn("ok:malformed-catalog-no-partial-registration", result.stdout)
+
+    @needs_node
+    def test_native_root_rejects_catalog_variants_before_mutation(self) -> None:
+        variants: list[tuple[str, object]] = []
+
+        def extra_top_level(catalog: dict[str, object]) -> None:
+            catalog["unexpected"] = True
+
+        def missing_top_level(catalog: dict[str, object]) -> None:
+            del catalog["agents"]
+
+        def wrong_schema(catalog: dict[str, object]) -> None:
+            catalog["schema_version"] = "opencode-runtime.v0"
+
+        def missing_command(catalog: dict[str, object]) -> None:
+            commands = catalog["commands"]
+            assert isinstance(commands, dict)
+            del commands[next(iter(commands))]
+
+        def extra_command_field(catalog: dict[str, object]) -> None:
+            commands = catalog["commands"]
+            assert isinstance(commands, dict)
+            commands[next(iter(commands))]["unexpected"] = True  # type: ignore[index]
+
+        def extra_agent_field(catalog: dict[str, object]) -> None:
+            agents = catalog["agents"]
+            assert isinstance(agents, dict)
+            agents[next(iter(agents))]["unexpected"] = True  # type: ignore[index]
+
+        def thirteenth_command(catalog: dict[str, object]) -> None:
+            commands = catalog["commands"]
+            assert isinstance(commands, dict)
+            commands["unexpected-command"] = dict(next(iter(commands.values())))
+
+        def eighth_agent(catalog: dict[str, object]) -> None:
+            agents = catalog["agents"]
+            assert isinstance(agents, dict)
+            agents["unexpected-agent"] = dict(next(iter(agents.values())))
+
+        def dangerous_command_name(catalog: dict[str, object]) -> None:
+            commands = catalog["commands"]
+            assert isinstance(commands, dict)
+            commands["__proto__"] = dict(next(iter(commands.values())))
+
+        def command_array(catalog: dict[str, object]) -> None:
+            catalog["commands"] = []
+
+        def agent_array(catalog: dict[str, object]) -> None:
+            catalog["agents"] = []
+
+        variants.extend(
+            [
+                ("extra-top-level", extra_top_level),
+                ("missing-top-level", missing_top_level),
+                ("wrong-schema", wrong_schema),
+                ("missing-command", missing_command),
+                ("extra-command-field", extra_command_field),
+                ("extra-agent-field", extra_agent_field),
+                ("thirteenth-command", thirteenth_command),
+                ("eighth-agent", eighth_agent),
+                ("dangerous-command-name", dangerous_command_name),
+                ("command-array", command_array),
+                ("agent-array", agent_array),
+            ]
+        )
+        for name, mutate in variants:
+            with self.subTest(variant=name):
+                artifact = self.artifact()
+                catalog_path = artifact / "catalog.json"
+                catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+                mutate(catalog)
+                catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+                result = run_node_case(artifact / "index.js", NATIVE_ROOT_CATALOG_REJECTION_CASE)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("ok:catalog-rejection-does-not-throw", result.stdout)
+                self.assertIn("ok:catalog-rejection-is-transactional", result.stdout)
+
+    @needs_node
+    def test_native_root_config_application_fails_closed_at_boundaries(self) -> None:
+        result = run_node_case(self.artifact() / "index.js", NATIVE_ROOT_CONFIG_BOUNDARIES_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for token in (
+            "ok:frozen-agent-after-commands-is-transactional",
+            "ok:prototype-root-not-mutated",
+            "ok:prototype-agent-not-mutated",
+            "ok:prototype-skills-not-mutated",
+            "ok:array-command-is-transactional",
+            "ok:string-agent-is-transactional",
+            "ok:string-paths-is-transactional",
+            "ok:accessor-command-not-read",
+            "ok:accessor-command-entry-not-read",
+            "ok:frozen-root-is-transactional",
+            "ok:non-extensible-root-is-transactional",
+            "ok:proxy-root-target-unchanged",
+            "ok:setter-root-not-called",
+            "ok:non-writable-root-command-not-mutated",
+            "ok:non-configurable-root-agent-not-mutated",
+            "ok:writable-non-configurable-root-publishes",
+        ):
+            self.assertIn(token, result.stdout)
 
 
 if __name__ == "__main__":
