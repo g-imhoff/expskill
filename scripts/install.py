@@ -5474,22 +5474,8 @@ def _opencode_link_anchor_is_live(link: ProfileLink) -> bool:
 def _reject_unsafe_pre_anchor_opencode_receipt(receipt: _Receipt) -> None:
     """Reject ambiguous legacy links before any ownership mutation."""
 
-    # A planned publication is a modern, journaled transaction.  Its link
-    # roster is intentionally anchorless until publication records each exact
-    # inode, so publication recovery, rather than legacy compatibility logic,
-    # owns any same-target pathname it encounters.
-    if receipt.pending_publish is not None:
-        return
     for link in receipt.links:
         if link.link_anchor is not None:
-            continue
-        if (
-            receipt.artifact_root is not None
-            and (link.destination_dev is None or link.destination_ino is None)
-        ):
-            # A modern publication may still carry an intentionally planned
-            # pathname with no frozen public inode.  It has no legacy
-            # authority to migrate and is handled by publication recovery.
             continue
         extant = [
             path
@@ -8668,6 +8654,7 @@ def _install_opencode_bound(
             receipt,
     ) = _ensure_opencode_artifact(canonical_root, state_home, receipt)
         if receipt is not None:
+            _reject_unsafe_pre_anchor_opencode_receipt(receipt)
             _recover_staged_opencode_links(receipt)
             _reject_unsafe_pre_anchor_opencode_receipt(receipt)
     except Exception:
