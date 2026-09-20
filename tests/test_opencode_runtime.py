@@ -497,6 +497,159 @@ import(%s).then((module) => {
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
+NATIVE_ROOT_CASE = r"""
+import(%s).then(async (module) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const url = await import('node:url');
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const pluginUrl = process.env.EXPSKILL_TEST_PLUGIN_URL;
+  const packageRoot = path.dirname(url.fileURLToPath(pluginUrl));
+  const catalog = JSON.parse(await fs.readFile(path.join(packageRoot, 'catalog.json'), 'utf8'));
+  const expectedCommands = Object.keys(catalog.commands).sort();
+  const expectedAgents = Object.keys(catalog.agents).sort();
+  assert(
+    'root-export-shape',
+    JSON.stringify(Object.keys(module).sort()) ===
+      JSON.stringify(['ExecutionPolicyPlugin', 'ExpSkillPlugin', 'UnslopPlugin', 'default']) &&
+      typeof module.ExpSkillPlugin === 'function' &&
+      typeof module.ExecutionPolicyPlugin === 'function' &&
+      typeof module.UnslopPlugin === 'function' &&
+      typeof module.default === 'object' &&
+      module.default.id === 'opencode-expskill' &&
+      module.default.server === module.ExpSkillPlugin,
+  );
+
+  const hooks = await module.default.server({});
+  assert(
+    'composed-hooks',
+    typeof hooks.config === 'function' &&
+      typeof hooks['experimental.chat.system.transform'] === 'function' &&
+      typeof hooks['experimental.session.compacting'] === 'function' &&
+      typeof hooks['tool.execute.before'] === 'function' &&
+      typeof hooks['tool.execute.after'] === 'function',
+  );
+  assert(
+    'catalog-inventory-shape',
+    expectedCommands.length === 12 && expectedAgents.length === 7,
+  );
+
+  const userCommand = { description: 'user command', template: 'user template' };
+  const userAgent = { description: 'user agent', mode: 'primary', prompt: 'user prompt' };
+  const config = {
+    $schema: 'https://opencode.ai/config.json',
+    model: 'user/provider-model',
+    permission: { edit: 'deny' },
+    command: { [expectedCommands[0]]: userCommand, unrelated: { template: 'keep' } },
+    agent: { [expectedAgents[0]]: userAgent, unrelated: { mode: 'primary' } },
+    skills: { paths: [path.join(packageRoot, 'custom-skills')] },
+  };
+  const originalUnrelated = clone({
+    $schema: config.$schema,
+    model: config.model,
+    permission: config.permission,
+    unrelatedCommand: config.command.unrelated,
+    unrelatedAgent: config.agent.unrelated,
+    customSkillPath: config.skills.paths[0],
+  });
+  await hooks.config(config);
+  assert(
+    'all-catalog-commands',
+    Object.keys(config.command).filter((name) => name !== 'unrelated').length === expectedCommands.length &&
+      expectedCommands.every((name) => name in config.command),
+  );
+  assert(
+    'all-catalog-agents',
+    Object.keys(config.agent).filter((name) => name !== 'unrelated').length === expectedAgents.length &&
+      expectedAgents.every((name) => name in config.agent),
+  );
+  assert(
+    'catalog-values-preserved',
+    expectedCommands.filter((name) => name !== expectedCommands[0]).every(
+      (name) => JSON.stringify(config.command[name]) === JSON.stringify(catalog.commands[name]),
+    ) &&
+      expectedAgents.filter((name) => name !== expectedAgents[0]).every(
+        (name) => JSON.stringify(config.agent[name]) === JSON.stringify(catalog.agents[name]),
+      ),
+  );
+  assert('user-command-wins', config.command[expectedCommands[0]] === userCommand);
+  assert('user-agent-wins', config.agent[expectedAgents[0]] === userAgent);
+  const bundledSkills = path.join(packageRoot, 'skills');
+  assert(
+    'bundled-skills-path',
+    config.skills.paths.filter((entry) => entry === bundledSkills).length === 1 &&
+      config.skills.paths.at(-1) === bundledSkills &&
+      !config.skills.paths.some((entry) => entry.includes('/plugins/expskill/skills')),
+  );
+  assert(
+    'unrelated-config-preserved',
+    JSON.stringify({
+      $schema: config.$schema,
+      model: config.model,
+      permission: config.permission,
+      unrelatedCommand: config.command.unrelated,
+      unrelatedAgent: config.agent.unrelated,
+      customSkillPath: config.skills.paths[0],
+    }) === JSON.stringify(originalUnrelated),
+  );
+  const firstSnapshot = JSON.stringify(config);
+  await hooks.config(config);
+  assert('config-hook-idempotent', JSON.stringify(config) === firstSnapshot);
+
+  const output = { system: ['base instructions'] };
+  await hooks['experimental.chat.system.transform']({ sessionID: 'root-unslop' }, output);
+  assert('composed-unslop-effect', output.system.join('\n').includes('<unslop-scope>'));
+  const context = { context: [] };
+  await hooks['experimental.session.compacting']({ sessionID: 'root-compact' }, context);
+  assert('composed-compacting-effect', context.context.length === 1);
+  const policyArgs = { subagent_type: 'expskill-implementer' };
+  await hooks['tool.execute.before'](
+    { tool: 'task', sessionID: 'root-policy', callID: 'valid' },
+    { args: policyArgs },
+  );
+  await hooks['tool.execute.after'](
+    { tool: 'task', sessionID: 'root-policy', callID: 'valid', args: policyArgs },
+    {},
+  );
+  let blocked = false;
+  try {
+    await hooks['tool.execute.before'](
+      { tool: 'task', sessionID: 'root-policy', callID: 'invalid' },
+      { args: { subagent_type: 'expskill-undeclared' } },
+    );
+  } catch { blocked = true; }
+  assert('composed-policy-effect', blocked);
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
+NATIVE_ROOT_MALFORMED_CASE = r"""
+import(%s).then(async (module) => {
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const hooks = await module.default.server({});
+  const config = {
+    $schema: 'https://opencode.ai/config.json',
+    model: 'user/provider-model',
+    command: { keep: { template: 'keep' } },
+    agent: { keep: { mode: 'primary' } },
+    skills: { paths: ['/tmp/user-skills'] },
+  };
+  const snapshot = JSON.stringify(config);
+  let error = null;
+  try {
+    await hooks.config(config);
+  } catch (cause) { error = cause; }
+  assert('malformed-catalog-does-not-throw', error === null);
+  assert('malformed-catalog-no-partial-registration', JSON.stringify(config) === snapshot);
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
 
 def run_node_case(
     plugin: Path,
@@ -508,6 +661,7 @@ def run_node_case(
     script = case % repr(plugin.as_uri())
     case_env = dict(os.environ) if env is None else dict(env)
     case_env.setdefault("EXPSKILL_ARTIFACT_ROOT", str(plugin.parent.parent))
+    case_env.setdefault("EXPSKILL_TEST_PLUGIN_URL", plugin.as_uri())
     return subprocess.run(
         [NODE, "-e", script],
         capture_output=True,
@@ -619,6 +773,37 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:invalid-selected-reference-fails-closed",
         ):
             self.assertIn(token, result.stdout)
+
+    @needs_node
+    def test_native_root_plugin_registers_catalog_and_composes_hooks(self) -> None:
+        result = run_node_case(self.artifact() / "index.js", NATIVE_ROOT_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for token in (
+            "ok:root-export-shape",
+            "ok:composed-hooks",
+            "ok:catalog-inventory-shape",
+            "ok:all-catalog-commands",
+            "ok:all-catalog-agents",
+            "ok:catalog-values-preserved",
+            "ok:user-command-wins",
+            "ok:user-agent-wins",
+            "ok:bundled-skills-path",
+            "ok:unrelated-config-preserved",
+            "ok:config-hook-idempotent",
+            "ok:composed-unslop-effect",
+            "ok:composed-compacting-effect",
+            "ok:composed-policy-effect",
+        ):
+            self.assertIn(token, result.stdout)
+
+    @needs_node
+    def test_native_root_plugin_fails_closed_on_malformed_catalog(self) -> None:
+        artifact = self.artifact()
+        (artifact / "catalog.json").write_text("{invalid", encoding="utf-8")
+        result = run_node_case(artifact / "index.js", NATIVE_ROOT_MALFORMED_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ok:malformed-catalog-does-not-throw", result.stdout)
+        self.assertIn("ok:malformed-catalog-no-partial-registration", result.stdout)
 
 
 if __name__ == "__main__":

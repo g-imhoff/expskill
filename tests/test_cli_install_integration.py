@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,8 @@ try:
     from tests.cli_verification import ensure_binary
 except ModuleNotFoundError:  # direct ``python tests/test_cli_install_integration.py``
     from cli_verification import ensure_binary
+
+from scripts.build_opencode_package import build_opencode_package
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +58,9 @@ AGENTS = (
 )
 
 COMMAND_TIMEOUT = 300
+
+NPM = shutil.which("npm")
+needs_npm = unittest.skipUnless(NPM, "npm is required for packed OpenCode plugin integration")
 
 
 def _ensure_binary(kind: str) -> Path:
@@ -323,6 +329,136 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 if path.is_symlink()
             ]
             self.assertEqual(leftovers, [])
+
+    @needs_npm
+    def test_opencode_cli_discovers_packed_native_plugin(self) -> None:
+        assert NPM is not None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "artifact"
+            build_opencode_package(ROOT, artifact)
+            packed = _run(
+                [
+                    NPM,
+                    "pack",
+                    str(artifact),
+                    "--pack-destination",
+                    str(root),
+                ],
+                cwd=ROOT,
+            )
+            self.assertEqual(
+                packed.returncode,
+                0,
+                f"npm pack failed:\nstdout:\n{packed.stdout}\nstderr:\n{packed.stderr}",
+            )
+            tarballs = sorted(root.glob("opencode-expskill-*.tgz"))
+            self.assertEqual(len(tarballs), 1, packed.stdout)
+
+            project_dir = root / "project"
+            config_dir = root / "opencode-config"
+            test_home = root / "opencode-test-home"
+            xdg_config_home = root / "xdg-config"
+            xdg_data_home = root / "xdg-data"
+            state_home = root / "state-home"
+            cache_home = root / "cache-home"
+            project_dir.mkdir()
+            package_json = {
+                "name": "native-opencode-consumer",
+                "private": True,
+                "type": "module",
+            }
+            (project_dir / "package.json").write_text(
+                json.dumps(package_json) + "\n",
+                encoding="utf-8",
+            )
+            installed = _run(
+                [
+                    NPM,
+                    "install",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                    "--package-lock=false",
+                    str(tarballs[0]),
+                ],
+                cwd=project_dir,
+            )
+            self.assertEqual(
+                installed.returncode,
+                0,
+                f"npm install failed:\nstdout:\n{installed.stdout}\nstderr:\n{installed.stderr}",
+            )
+            package_root = project_dir / "node_modules" / "opencode-expskill"
+            self.assertTrue((package_root / "catalog.json").is_file())
+            config_dir.mkdir()
+            (config_dir / "opencode.json").write_text(
+                json.dumps({"plugin": [package_root.as_uri()]}) + "\n",
+                encoding="utf-8",
+            )
+            env = {key: value for key, value in os.environ.items() if key != "EXPSKILL_HOME"}
+            env.update({
+                "OPENCODE_TEST_HOME": str(test_home),
+                "OPENCODE_CONFIG_DIR": str(config_dir),
+                "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+                "XDG_CONFIG_HOME": str(xdg_config_home),
+                "XDG_DATA_HOME": str(xdg_data_home),
+                "XDG_STATE_HOME": str(state_home),
+                "XDG_CACHE_HOME": str(cache_home),
+            })
+            opencode = [str(self.opencode_bin)]
+            startup = _run(
+                opencode + ["debug", "config", "--print-logs", "--log-level", "DEBUG"],
+                env,
+                cwd=project_dir,
+                unset_env=("EXPSKILL_HOME",),
+            )
+            self.assertEqual(
+                startup.returncode,
+                0,
+                f"OpenCode startup failed:\nstdout:\n{startup.stdout}\nstderr:\n{startup.stderr}",
+            )
+            self.assertNotIn("failed to load plugin", startup.stderr.lower())
+            try:
+                startup_config = json.loads(startup.stdout)
+            except json.JSONDecodeError as error:
+                self.fail(
+                    f"OpenCode startup returned invalid config JSON: {error}\n"
+                    f"stdout:\n{startup.stdout}\nstderr:\n{startup.stderr}"
+                )
+            assert isinstance(startup_config, dict)
+            commands = startup_config.get("command", {})
+            self.assertIsInstance(commands, dict)
+            for name in (
+                "brainstorm",
+                "correct",
+                "design",
+                "grill-me",
+                "implement",
+                "plan",
+                "review",
+                "setup-ui-testing",
+                "skill-builder",
+                "test",
+                "unslop",
+                "use-expskill",
+            ):
+                with self.subTest(command=name):
+                    self.assertIn(name, commands)
+            skills = startup_config.get("skills", {})
+            self.assertIsInstance(skills, dict)
+            self.assertIn(str(package_root / "skills"), skills.get("paths", []))
+
+            agents_stdout = _await_agent_list(
+                opencode,
+                env,
+                AGENTS,
+                cwd=project_dir,
+                unset_env=("EXPSKILL_HOME",),
+            )
+            for name in AGENTS:
+                with self.subTest(agent=name):
+                    self.assertIn(name, agents_stdout)
 
 
 if __name__ == "__main__":
