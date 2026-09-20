@@ -2416,7 +2416,17 @@ install_module.install_opencode(repo, config, state)
             source = Path(owned["source"])
             old_identity = (destination.lstat().st_dev, destination.lstat().st_ino)
             destination.unlink()
-            destination.symlink_to(source)
+            replacement = destination.with_name(f"{destination.name}.replacement")
+            replacement.symlink_to(source)
+            if (replacement.lstat().st_dev, replacement.lstat().st_ino) == old_identity:
+                # The filesystem may immediately reuse an unlinked inode. Keep
+                # that inode occupied while creating the actual replacement so
+                # this test proves a different symlink identity deterministically.
+                alternate = destination.with_name(f"{destination.name}.replacement-2")
+                alternate.symlink_to(source)
+                replacement.unlink()
+                replacement = alternate
+            replacement.rename(destination)
             self.assertNotEqual(
                 (destination.lstat().st_dev, destination.lstat().st_ino), old_identity
             )
