@@ -9351,33 +9351,55 @@ def uninstall_opencode(
         raise InstallError(f"OpenCode state directory is already active: {binding.directory}")
     _STATE_BINDINGS[key] = binding
     try:
-        config_binding = _open_config_binding(canonical_config, create=True)
-    except OSError as error:
-        _STATE_BINDINGS.pop(key, None)
-        _close_state_binding(binding)
-        raise InstallError(
-            f"cannot bind OpenCode config directory: {canonical_config}: {error}"
-        ) from error
-    if config_binding is None:
-        _STATE_BINDINGS.pop(key, None)
-        _close_state_binding(binding)
-        raise InstallError(f"cannot create OpenCode config directory: {canonical_config}")
-    config_key = str(config_binding.directory)
-    if config_key in _CONFIG_BINDINGS:
-        _STATE_BINDINGS.pop(key, None)
-        _close_state_binding(binding)
-        _close_config_binding(config_binding)
-        raise InstallError(
-            f"OpenCode config directory is already active: {config_binding.directory}"
-        )
-    _CONFIG_BINDINGS[config_key] = config_binding
-    try:
-        return _uninstall_opencode_bound(
+        # Receipt-deletion recovery is state-bound and does not require a
+        # config descriptor.  Run it before deciding whether config creation
+        # is authorized, so an authenticated recovery record can restore the
+        # receipt that proves OpenCode-owned work exists.
+        _recover_receipt_deletion(
             canonical_root, canonical_config, state_home, receipt_path_value
         )
+        try:
+            config_binding = _open_config_binding(canonical_config, create=False)
+        except OSError as error:
+            raise InstallError(
+                f"cannot bind OpenCode config directory: {canonical_config}: {error}"
+            ) from error
+        if config_binding is None:
+            if not _lexists(receipt_path_value):
+                return InstallResult()
+            # Validate the receipt before materializing a previously absent
+            # config tree.  A mere state directory or malformed receipt must
+            # not create an unowned config directory.
+            receipt = _read_opencode_receipt(
+                receipt_path_value, canonical_root, canonical_config, state_home
+            )
+            if receipt is None:
+                return InstallResult()
+            try:
+                config_binding = _open_config_binding(canonical_config, create=True)
+            except OSError as error:
+                raise InstallError(
+                    f"cannot bind OpenCode config directory: {canonical_config}: {error}"
+                ) from error
+            if config_binding is None:
+                raise InstallError(
+                    f"cannot create OpenCode config directory: {canonical_config}"
+                )
+        config_key = str(config_binding.directory)
+        if config_key in _CONFIG_BINDINGS:
+            _close_config_binding(config_binding)
+            raise InstallError(
+                f"OpenCode config directory is already active: {config_binding.directory}"
+            )
+        _CONFIG_BINDINGS[config_key] = config_binding
+        try:
+            return _uninstall_opencode_bound(
+                canonical_root, canonical_config, state_home, receipt_path_value
+            )
+        finally:
+            _CONFIG_BINDINGS.pop(config_key, None)
+            _close_config_binding(config_binding)
     finally:
-        _CONFIG_BINDINGS.pop(config_key, None)
-        _close_config_binding(config_binding)
         _STATE_BINDINGS.pop(key, None)
         _close_state_binding(binding)
 
