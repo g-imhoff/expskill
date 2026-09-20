@@ -586,6 +586,22 @@ import(%s).then(async (module) => {
       config.skills.paths.at(-1) === bundledSkills &&
       !config.skills.paths.some((entry) => entry.includes('/plugins/expskill/skills')),
   );
+  const duplicatePathConfig = {
+    command: {},
+    agent: {},
+    skills: { paths: [bundledSkills, bundledSkills, bundledSkills + '/'] },
+  };
+  await hooks.config(duplicatePathConfig);
+  assert(
+    'bundled-skills-path-deduplicated',
+    JSON.stringify(duplicatePathConfig.skills.paths) === JSON.stringify([bundledSkills]),
+  );
+  const duplicatePathSnapshot = JSON.stringify(duplicatePathConfig);
+  await hooks.config(duplicatePathConfig);
+  assert(
+    'bundled-skills-path-idempotent',
+    JSON.stringify(duplicatePathConfig) === duplicatePathSnapshot,
+  );
   assert(
     'unrelated-config-preserved',
     JSON.stringify({
@@ -863,6 +879,45 @@ import(%s).then(async (module) => {
       Object.prototype.hasOwnProperty.call(writableNonConfigurableRoot.command, commandName) &&
       Object.getOwnPropertyDescriptor(writableNonConfigurableRoot, 'command').configurable === false,
   );
+
+  const descriptorCommandValue = { source: 'user command' };
+  const descriptorCommandContainer = {};
+  Object.defineProperty(descriptorCommandContainer, commandName, {
+    value: descriptorCommandValue,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+  const descriptorAgentValue = { source: 'user agent' };
+  const descriptorAgentContainer = {};
+  Object.defineProperty(descriptorAgentContainer, agentName, {
+    value: descriptorAgentValue,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+  const descriptorConfig = {
+    command: descriptorCommandContainer,
+    agent: descriptorAgentContainer,
+    skills: { paths: [] },
+  };
+  await hooks.config(descriptorConfig);
+  const commandDescriptor = Object.getOwnPropertyDescriptor(descriptorConfig.command, commandName);
+  const agentDescriptor = Object.getOwnPropertyDescriptor(descriptorConfig.agent, agentName);
+  assert(
+    'user-command-entry-descriptor-preserved',
+    commandDescriptor?.value === descriptorCommandValue &&
+      commandDescriptor.enumerable === true &&
+      commandDescriptor.writable === false &&
+      commandDescriptor.configurable === false,
+  );
+  assert(
+    'user-agent-entry-descriptor-preserved',
+    agentDescriptor?.value === descriptorAgentValue &&
+      agentDescriptor.enumerable === true &&
+      agentDescriptor.writable === false &&
+      agentDescriptor.configurable === false,
+  );
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
@@ -1004,6 +1059,8 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:user-command-wins",
             "ok:user-agent-wins",
             "ok:bundled-skills-path",
+            "ok:bundled-skills-path-deduplicated",
+            "ok:bundled-skills-path-idempotent",
             "ok:unrelated-config-preserved",
             "ok:config-hook-idempotent",
             "ok:composed-unslop-effect",
@@ -1070,6 +1127,30 @@ class OpencodeRuntimeTests(unittest.TestCase):
         def agent_array(catalog: dict[str, object]) -> None:
             catalog["agents"] = []
 
+        def invalid_agent_mode(catalog: dict[str, object]) -> None:
+            agents = catalog["agents"]
+            assert isinstance(agents, dict)
+            agents[next(iter(agents))]["mode"] = "primary"  # type: ignore[index]
+
+        def invalid_permission_decision(catalog: dict[str, object]) -> None:
+            agents = catalog["agents"]
+            assert isinstance(agents, dict)
+            permission = agents[next(iter(agents))]["permission"]  # type: ignore[index]
+            assert isinstance(permission, dict)
+            bash = permission["bash"]
+            assert isinstance(bash, dict)
+            bash["*"] = "maybe"
+
+        def empty_permission(catalog: dict[str, object]) -> None:
+            agents = catalog["agents"]
+            assert isinstance(agents, dict)
+            agents[next(iter(agents))]["permission"] = {}  # type: ignore[index]
+
+        def overlong_command_description(catalog: dict[str, object]) -> None:
+            commands = catalog["commands"]
+            assert isinstance(commands, dict)
+            commands[next(iter(commands))]["description"] = "x" * 161  # type: ignore[index]
+
         variants.extend(
             [
                 ("extra-top-level", extra_top_level),
@@ -1083,6 +1164,10 @@ class OpencodeRuntimeTests(unittest.TestCase):
                 ("dangerous-command-name", dangerous_command_name),
                 ("command-array", command_array),
                 ("agent-array", agent_array),
+                ("invalid-agent-mode", invalid_agent_mode),
+                ("invalid-permission-decision", invalid_permission_decision),
+                ("empty-permission", empty_permission),
+                ("overlong-command-description", overlong_command_description),
             ]
         )
         for name, mutate in variants:
@@ -1118,6 +1203,8 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:non-writable-root-command-not-mutated",
             "ok:non-configurable-root-agent-not-mutated",
             "ok:writable-non-configurable-root-publishes",
+            "ok:user-command-entry-descriptor-preserved",
+            "ok:user-agent-entry-descriptor-preserved",
         ):
             self.assertIn(token, result.stdout)
 
