@@ -5684,7 +5684,7 @@ def uninstall(
     preserve_managed_package = (
         unowned_plugin_reference or unowned_marketplace_reference
     )
-    if managed_package_owned and not preserve_managed_package:
+    if not agents_only and managed_package_owned and not preserve_managed_package:
         try:
             shutil.rmtree(managed_root)
         except OSError as error:

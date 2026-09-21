@@ -2019,12 +2019,15 @@ class InstallerTests(unittest.TestCase):
             receipt = load_receipt(state_home)
             self.assertFalse(receipt["marketplace_added"])
             self.assertFalse(receipt["plugin_installed"])
+            managed_root = managed_repository(repo)
+            self.assertTrue(managed_root.is_dir())
 
             runner = FakeRunner([])
             uninstall(repo, codex_home, state_home, runner, agents_only=True)
 
             self.assertEqual(runner.calls, [])
             self.assertFalse(receipt_path(state_home).exists())
+            self.assertTrue(managed_root.is_dir())
 
     def test_agents_only_dry_run_lists_links_without_cli_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
