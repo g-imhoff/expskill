@@ -16,8 +16,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
-SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "skill-builder"
-PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "skills"
+SKILL_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills" / "skill-builder"
+PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills"
+CODEX_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "codex" / "skills"
 TRIAL_CONTROL_PATH = "controls/recorded-trial-control.json"
 VERIFICATION_CONTROL_PATH = "controls/recorded-verification-control.json"
 USER_AUTHORITY_CONTROL_PATH = "controls/trusted-user-authority.json"
@@ -10431,7 +10432,7 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         frontmatter = parse_frontmatter(skill_text)
         metadata = parse_two_level_metadata(
-            (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+            (CODEX_SKILLS_ROOT / "skill-builder" / "agents" / "openai.yaml").read_text(encoding="utf-8")
         )
 
         self.assertEqual(frontmatter["name"], "skill-builder")
@@ -10448,7 +10449,7 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
         }
         public_prompts = "\n".join(
             path.read_text(encoding="utf-8")
-            for path in PUBLIC_SKILLS_ROOT.glob("*/agents/openai.yaml")
+            for path in CODEX_SKILLS_ROOT.glob("*/agents/openai.yaml")
         )
         self.assertNotIn("improve-skill", public_names)
         self.assertNotIn("$improve-skill", public_prompts)

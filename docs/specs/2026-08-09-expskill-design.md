@@ -81,7 +81,7 @@ grants remote-delivery or protected-branch merge authority.
 ## Canonical workflow state
 
 `plan` owns the private versioned Plan Graph outside the repository through
-`plugins/expskill/scripts/plan_graph.py`. It records accepted outcomes,
+`plugins/expskill/content/scripts/plan_graph.py`. It records accepted outcomes,
 constraints, decisions, work, dependencies, ownership, proof, projections, and
 logical Git topology against an exact non-protected branch and baseline.
 

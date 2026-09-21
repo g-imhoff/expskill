@@ -125,7 +125,7 @@ tests/{test_contracts.py,test_implement_contract.py,test_install.py,...}
 
 ```text
 python3 scripts/validate.py
-python3 /home/gimhoff/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/expskill/skills/implement
+python3 /home/gimhoff/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/expskill/content/skills/implement
 python3 /home/gimhoff/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/expskill
 python3 -m pytest -q tests/test_implement_contract.py tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
 python3 -m pytest -q

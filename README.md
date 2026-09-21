@@ -217,7 +217,7 @@ python3 scripts/build_opencode_package.py "$artifact_root"
 npm pack --dry-run --json "$artifact_root"
 ```
 
-See `plugins/expskill/opencode/README.md` for the source, renderer, builder,
+See `plugins/expskill/content/docs/opencode.md` for the source, renderer, builder,
 and plugin details.
 
 The focused contract and runtime suites cover the currently implemented skill,

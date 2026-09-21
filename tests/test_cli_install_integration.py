@@ -180,7 +180,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
                     link = agents_root / f"{name}.toml"
                     self.assertTrue(link.is_symlink(), f"missing agent link: {link}")
                     self.assertEqual(
-                        link.resolve().parent.parent.parent,
+                        link.resolve().parent.parent.parent.parent,
                         (ROOT / "plugins" / "expskill").resolve(),
                     )
 

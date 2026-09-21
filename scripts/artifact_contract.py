@@ -1,4 +1,4 @@
-"""Public declarative contract for the OpenCode artifact.
+"""Public declarative contract for the generated host artifacts.
 
 The builder and validator deliberately consume this small module instead of
 sharing private implementation helpers.  It describes the source roster,
@@ -13,13 +13,31 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
-PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v1"
+PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v2"
+CODEX_PROVENANCE_SCHEMA_VERSION = "codex-provenance.v1"
 PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
+PLATFORM_SOURCE_FILES = ("agents.json", "package.json", "LICENSE", "index.js")
 PLATFORM_PLUGIN_DIRECTORY = "plugins"
 PLATFORM_PLUGIN_FILES = ("execution-policy.js", "unslop.js")
-COPY_TREES = ("skills", "scripts")
-COPY_FILES = (Path("assets/execution-policy.json"),)
-COPY_LICENSES = Path("third-party/licenses")
+OPENCODE_README_SOURCE = Path("content/docs/opencode.md")
+# These are canonical source paths.  The target-relative paths are deliberately
+# separate: host packages may render a conventional top-level runtime layout
+# without creating a second authored source tree.
+COPY_TREES = (Path("content/skills"), Path("content/scripts"))
+COPY_TREE_OUTPUTS = {
+    Path("content/skills"): Path("skills"),
+    Path("content/scripts"): Path("scripts"),
+}
+COPY_FILES = (
+    Path("content/policies/execution-policy.json"),
+    Path("content/policies/skills.json"),
+)
+COPY_FILE_OUTPUTS = {
+    Path("content/policies/execution-policy.json"): Path("assets/execution-policy.json"),
+    Path("content/policies/skills.json"): Path("assets/skill-policies.json"),
+}
+COPY_LICENSES = Path("content/third-party/licenses")
+COPY_LICENSES_OUTPUT = Path("third-party/licenses")
 ARTIFACT_DIRECTORY_MODE = 0o755
 ARTIFACT_FILE_MODE = 0o644
 ARTIFACT_MTIME = 0
@@ -54,12 +72,17 @@ def artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | N
     if relative.parts[:2] != package_marker.parts:
         return None
     within = Path(*relative.parts[2:])
-    if len(within.parts) > 1 and within.parts[0] in COPY_TREES:
-        return within.as_posix()
-    if within in COPY_FILES:
-        return within.as_posix()
-    if len(within.parts) > len(COPY_LICENSES.parts) and within.parts[:2] == COPY_LICENSES.parts:
-        return within.as_posix()
+    for source_root, output_root in COPY_TREE_OUTPUTS.items():
+        if within == source_root:
+            return output_root.as_posix()
+        if len(within.parts) > len(source_root.parts) and within.parts[: len(source_root.parts)] == source_root.parts:
+            return (output_root / Path(*within.parts[len(source_root.parts) :])).as_posix()
+    if within in COPY_FILE_OUTPUTS:
+        return COPY_FILE_OUTPUTS[within].as_posix()
+    if within == OPENCODE_README_SOURCE:
+        return "README.md"
+    if len(within.parts) > len(COPY_LICENSES.parts) and within.parts[: len(COPY_LICENSES.parts)] == COPY_LICENSES.parts:
+        return (COPY_LICENSES_OUTPUT / Path(*within.parts[len(COPY_LICENSES.parts) :])).as_posix()
     if (
         len(within.parts) == 3
         and within.parts[0] == "opencode"

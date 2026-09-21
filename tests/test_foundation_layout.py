@@ -13,6 +13,7 @@ from pathlib import Path
 
 from scripts.build_opencode_package import BuildError, build_opencode_package
 from scripts.artifact_contract import (
+    OPENCODE_README_SOURCE,
     PLATFORM_FILES,
     PLATFORM_PLUGIN_DIRECTORY,
     PLATFORM_PLUGIN_FILES,
@@ -31,7 +32,9 @@ class FoundationLayoutTests(unittest.TestCase):
             *[
                 (package_root / "opencode" / name, name)
                 for name in PLATFORM_FILES
+                if name != "README.md"
             ],
+            (package_root / OPENCODE_README_SOURCE, "README.md"),
             *[
                 (
                     package_root / "opencode" / PLATFORM_PLUGIN_DIRECTORY / name,
@@ -48,15 +51,15 @@ class FoundationLayoutTests(unittest.TestCase):
                 / "unrelated.js",
                 None,
             ),
-            (package_root / "skills" / "unslop" / "SKILL.md", "skills/unslop/SKILL.md"),
-            (package_root / "scripts" / "design_state.py", "scripts/design_state.py"),
-            (package_root / "assets" / "execution-policy.json", "assets/execution-policy.json"),
+            (package_root / "content" / "skills" / "unslop" / "SKILL.md", "skills/unslop/SKILL.md"),
+            (package_root / "content" / "scripts" / "design_state.py", "scripts/design_state.py"),
+            (package_root / "content" / "policies" / "execution-policy.json", "assets/execution-policy.json"),
             (
-                package_root / "third-party" / "licenses" / "mattpocock-skills-MIT.txt",
+                package_root / "content" / "third-party" / "licenses" / "mattpocock-skills-MIT.txt",
                 "third-party/licenses/mattpocock-skills-MIT.txt",
             ),
             (
-                package_root / "third-party" / "licenses" / "pstack-MIT.txt",
+                package_root / "content" / "third-party" / "licenses" / "pstack-MIT.txt",
                 "third-party/licenses/pstack-MIT.txt",
             ),
             (Path("packages/expskill/opencode/agents.json"), None),
@@ -105,11 +108,11 @@ class FoundationLayoutTests(unittest.TestCase):
                 self.fspath_calls = 0
 
             def __str__(self) -> str:
-                return "plugins/expskill/skills/unslop/SKILL.md"
+                return "plugins/expskill/content/skills/unslop/SKILL.md"
 
             def __fspath__(self) -> str:
                 self.fspath_calls += 1
-                return "plugins/expskill/skills/../escape.txt"
+                return "plugins/expskill/content/skills/../escape.txt"
 
         source = ConflictingPath()
         self.assertIsNone(artifact_output_relative(source))
@@ -126,7 +129,7 @@ class FoundationLayoutTests(unittest.TestCase):
 
             def __fspath__(self) -> str:
                 self.fspath_calls += 1
-                return HostileText("plugins/expskill/skills/../escape.txt")
+                return HostileText("plugins/expskill/content/skills/../escape.txt")
 
         source = HostilePath()
         self.assertIsNone(artifact_output_relative(source))
@@ -152,8 +155,8 @@ class FoundationLayoutTests(unittest.TestCase):
         plugin_root = ROOT / "plugins" / "expskill"
         self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
         self.assertTrue((plugin_root / "opencode").is_dir())
-        self.assertEqual(len([path for path in (plugin_root / "skills").iterdir() if path.is_dir()]), 12)
-        self.assertEqual(len(list((plugin_root / "assets" / "agents").glob("expskill-*.toml"))), 7)
+        self.assertEqual(len([path for path in (plugin_root / "content" / "skills").iterdir() if path.is_dir()]), 12)
+        self.assertEqual(len(list((plugin_root / "content" / "agents").glob("expskill-*.md"))), 7)
         tracked = subprocess.run(
             ["git", "ls-files", "--", "packages/codex", "packages/opencode", "packages/expskill"],
             cwd=ROOT,
@@ -172,7 +175,7 @@ class FoundationLayoutTests(unittest.TestCase):
             # mirror.  It must never become a second build input.
             legacy = source / "packages" / "expskill"
             shutil.copytree(source / "plugins" / "expskill", legacy, dirs_exist_ok=True)
-            legacy_skill = legacy / "skills" / "unslop" / "SKILL.md"
+            legacy_skill = legacy / "content" / "skills" / "unslop" / "SKILL.md"
             legacy_skill.write_text(
                 legacy_skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "legacy package mirror marker"
@@ -185,7 +188,7 @@ class FoundationLayoutTests(unittest.TestCase):
             self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 12)
             self.assertEqual(len(list((artifact / "commands").glob("*.md"))), 12)
             self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
-            canonical_skill = source / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            canonical_skill = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
             self.assertEqual(
                 (artifact / "skills" / "unslop" / "SKILL.md").read_bytes(),
                 canonical_skill.read_bytes(),
@@ -203,8 +206,9 @@ class FoundationLayoutTests(unittest.TestCase):
         self.assertTrue((ROOT / "plugins" / "expskill").is_dir())
         self.assertTrue((ROOT / "plugins" / "expskill" / "opencode").is_dir())
         platform_root = ROOT / "plugins" / "expskill" / "opencode"
-        for name in ("agents.json", "package.json", "README.md", "LICENSE", "index.js"):
+        for name in ("agents.json", "package.json", "LICENSE", "index.js"):
             self.assertTrue((platform_root / name).is_file(), name)
+        self.assertTrue((ROOT / "plugins" / "expskill" / "content" / "docs" / "opencode.md").is_file())
         self.assertFalse((platform_root / "agents").exists())
         self.assertFalse((platform_root / "commands").exists())
         self.assertFalse((platform_root / "skills").exists())
@@ -226,7 +230,7 @@ class FoundationLayoutTests(unittest.TestCase):
                     self.assertFalse(left.is_symlink(), relative)
             self.assertEqual(json.loads((first / "catalog.json").read_text()), json.loads((second / "catalog.json").read_text()))
             provenance = json.loads((first / "provenance.json").read_text())
-            self.assertEqual(provenance["schema_version"], "opencode-provenance.v1")
+            self.assertEqual(provenance["schema_version"], "opencode-provenance.v2")
             paths = [item["path"] for item in provenance["inputs"]]
             self.assertEqual(paths, sorted(paths))
             for relative in ("scripts/build_opencode_package.py", "scripts/render_opencode.py"):
@@ -243,10 +247,10 @@ class FoundationLayoutTests(unittest.TestCase):
 
             source = temporary_root / "source"
             shutil.copytree(ROOT, source)
-            skill = source / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            skill = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
             skill.write_text(skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"), encoding="utf-8")
-            profile = source / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
-            profile.write_text(profile.read_text(encoding="utf-8").replace("Independently review", "Changed agent marker"), encoding="utf-8")
+            profile = source / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
+            profile.write_text(profile.read_text(encoding="utf-8").replace("Review exactly", "Changed agent marker"), encoding="utf-8")
             changed = temporary_root / "changed"
             build_opencode_package(source, changed)
             self.assertIn("Changed skill marker", (changed / "commands" / "unslop.md").read_text(encoding="utf-8"))
@@ -261,7 +265,7 @@ class FoundationLayoutTests(unittest.TestCase):
             shutil.copytree(ROOT, source)
             outside = temporary_root / "outside"
             outside.write_text("unsafe\n", encoding="utf-8")
-            link = source / "plugins" / "expskill" / "skills" / "unslop" / "unsafe.txt"
+            link = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "unsafe.txt"
             link.symlink_to(outside)
             with self.assertRaises(BuildError):
                 build_opencode_package(source, temporary_root / "output")
@@ -372,51 +376,43 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
             shutil.copytree(ROOT, root)
-            policy = root / "plugins" / "expskill" / "skills" / "plan" / "agents" / "openai.yaml"
+            policy = root / "plugins" / "expskill" / "content" / "policies" / "skills.json"
 
             policy.unlink()
-            with self.assertRaisesRegex(RenderError, "canonical skill 'plan' policy"):
+            with self.assertRaisesRegex(RenderError, "canonical skill policy is not a regular file"):
                 render_all(root)
 
-            policy.write_text(
-                "interface:\n"
-                '  display_name: "Plan"\n'
-                '  short_description: "Shape a bounded development approach"\n'
-                '  default_prompt: "Use $plan to shape the accepted approach."\n'
-                "\n"
-                "policy:\n"
-                "  allow_implicit_invocation: maybe\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RenderError, "must be a YAML boolean"):
+            policy_payload = {
+                "schema_version": "skill-policies.v1",
+                "allow_implicit_invocation": {
+                    name: name == "use-expskill"
+                    for name in (
+                        "brainstorm",
+                        "correct",
+                        "design",
+                        "grill-me",
+                        "implement",
+                        "plan",
+                        "review",
+                        "setup-ui-testing",
+                        "skill-builder",
+                        "test",
+                        "unslop",
+                        "use-expskill",
+                    )
+                },
+            }
+            policy_payload["allow_implicit_invocation"]["plan"] = "maybe"
+            policy.write_text(json.dumps(policy_payload) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(RenderError, "must be a boolean"):
                 render_all(root)
 
-            policy.write_text(
-                "interface:\n"
-                '  display_name: "Plan"\n'
-                '  short_description: "Shape a bounded development approach"\n'
-                '  default_prompt: "Use $plan to shape the accepted approach."\n'
-                "\n"
-                "policy:\n"
-                "  allow_implicit_invocation: false\n"
-                "extra:\n"
-                "  value: true\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RenderError, "keys must be exactly interface and policy"):
+            policy.write_text("{\"schema_version\": \"skill-policies.v1\", \"allow_implicit_invocation\": {\"plan\": false, \"extra\": true}}\n", encoding="utf-8")
+            with self.assertRaisesRegex(RenderError, "inventory diverges"):
                 render_all(root)
 
-            policy.write_text(
-                "interface:\n"
-                '  display_name: Plan\n'
-                '  short_description: "Shape a bounded development approach"\n'
-                '  default_prompt: "Use $plan to shape the accepted approach."\n'
-                "\n"
-                "policy:\n"
-                "  allow_implicit_invocation: false\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RenderError, "must be a quoted string"):
+            policy.write_text("not-json\n", encoding="utf-8")
+            with self.assertRaisesRegex(RenderError, "valid JSON"):
                 render_all(root)
 
     def test_validate_uses_artifact_renderer_and_rejects_malformed_overlay(self) -> None:
@@ -494,13 +490,8 @@ class FoundationLayoutTests(unittest.TestCase):
                 render_agents(root)
 
             spec_path.write_text(json.dumps(spec), encoding="utf-8")
-            profile = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-extra.toml"
-            profile.write_text(
-                (root / "plugins" / "expskill" / "assets" / "agents" / "expskill-spec.toml")
-                .read_text(encoding="utf-8")
-                .replace('name = "expskill-spec"', 'name = "expskill-extra"', 1),
-                encoding="utf-8",
-            )
+            profile = root / "plugins" / "expskill" / "content" / "agents" / "expskill-extra.md"
+            profile.write_text("Unexpected agent body.\n", encoding="utf-8")
             with self.assertRaises(RenderError):
                 render_agents(root)
 
@@ -532,14 +523,12 @@ class FoundationLayoutTests(unittest.TestCase):
             temporary_root = Path(temporary)
             root = temporary_root / "root"
             shutil.copytree(ROOT, root)
-            profile = root / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            profile = root / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
             profile.write_text(
-                profile.read_text(encoding="utf-8").replace(
-                    "developer_instructions = \"\"\"", "developer_instructions = \"\"\"\nMutation marker: review prompt.\n", 1
-                ),
+                profile.read_text(encoding="utf-8") + "\nMutation marker: review prompt.\n",
                 encoding="utf-8",
             )
-            skill = root / "plugins" / "expskill" / "skills" / "plan" / "SKILL.md"
+            skill = root / "plugins" / "expskill" / "content" / "skills" / "plan" / "SKILL.md"
             skill_contents = skill.read_text(encoding="utf-8")
             description_line = next(
                 line for line in skill_contents.splitlines() if line.startswith("description:")
@@ -560,16 +549,10 @@ class FoundationLayoutTests(unittest.TestCase):
             )
             self.assertIn("This command is explicit-only.", catalog["commands"]["plan"]["template"])
 
-            policy = root / "plugins" / "expskill" / "skills" / "plan" / "agents" / "openai.yaml"
-            policy_contents = policy.read_text(encoding="utf-8")
-            policy.write_text(
-                policy_contents.replace(
-                    "allow_implicit_invocation: false",
-                    "allow_implicit_invocation: true",
-                    1,
-                ),
-                encoding="utf-8",
-            )
+            policy = root / "plugins" / "expskill" / "content" / "policies" / "skills.json"
+            policy_payload = json.loads(policy.read_text(encoding="utf-8"))
+            policy_payload["allow_implicit_invocation"]["plan"] = True
+            policy.write_text(json.dumps(policy_payload, indent=2) + "\n", encoding="utf-8")
             changed_catalog = render_catalog(root)
             self.assertIn(
                 "This is the only skill that may activate without an explicit invocation.",

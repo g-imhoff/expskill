@@ -14,9 +14,18 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "brainstorm"
+SKILL_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills" / "brainstorm"
 ENTRYPOINT = SKILL_ROOT / "SKILL.md"
-METADATA = SKILL_ROOT / "agents" / "openai.yaml"
+METADATA = (
+    ROOT
+    / "plugins"
+    / "expskill"
+    / "codex"
+    / "skills"
+    / "brainstorm"
+    / "agents"
+    / "openai.yaml"
+)
 CATALOG = SKILL_ROOT / "references" / "brainstorm-techniques.csv"
 
 BMAD_REVISION = "890fcda760bade4d6080f5fa09aa8f658bc4a4a5"
@@ -200,7 +209,6 @@ class BrainstormContractTests(unittest.TestCase):
             actual_files,
             {
                 "SKILL.md",
-                "agents/openai.yaml",
                 "references/brainstorm-techniques.csv",
             },
         )
@@ -232,6 +240,7 @@ class BrainstormContractTests(unittest.TestCase):
             missing_root
             / "plugins"
             / "expskill"
+            / "content"
             / "skills"
             / "brainstorm"
             / "references"
@@ -257,6 +266,7 @@ class BrainstormContractTests(unittest.TestCase):
                     changed_root
                     / "plugins"
                     / "expskill"
+                    / "content"
                     / "skills"
                     / "brainstorm"
                     / "references"

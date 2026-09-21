@@ -68,7 +68,15 @@ class OpencodeInstallerTests(unittest.TestCase):
                 self.assertTrue(skill.is_symlink())
                 self.assertEqual(
                     (skill / "SKILL.md").read_bytes(),
-                    (repo / "plugins" / "expskill" / "skills" / name / "SKILL.md").read_bytes(),
+                    (
+                        repo
+                        / "plugins"
+                        / "expskill"
+                        / "content"
+                        / "skills"
+                        / name
+                        / "SKILL.md"
+                    ).read_bytes(),
                 )
                 self.assertTrue((config_dir / "commands" / f"{name}.md").is_symlink())
             for name in AGENTS:
@@ -105,15 +113,15 @@ class OpencodeInstallerTests(unittest.TestCase):
             config_dir = root / "config"
             state_home = root / "state"
             install_opencode(repo, config_dir, state_home)
-            skill = repo / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
+            skill = repo / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace("Cut AI tells", "Reinstalled marker"),
                 encoding="utf-8",
             )
-            profile = repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            profile = repo / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
             profile.write_text(
                 profile.read_text(encoding="utf-8").replace(
-                    "Independently review one immutable implementation candidate.",
+                    "Review exactly one immutable candidate",
                     "Reinstalled profile marker.",
                 ),
                 encoding="utf-8",

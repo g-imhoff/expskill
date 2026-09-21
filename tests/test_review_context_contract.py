@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import tomllib
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,10 +12,11 @@ from scripts.validate import validate_repository
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-IMPLEMENT = PLUGIN / "skills" / "implement" / "SKILL.md"
-SKILL_BUILDER = PLUGIN / "skills" / "skill-builder" / "SKILL.md"
+IMPLEMENT = PLUGIN / "content" / "skills" / "implement" / "SKILL.md"
+SKILL_BUILDER = PLUGIN / "content" / "skills" / "skill-builder" / "SKILL.md"
 EVALUATION_RUBRIC = (
     PLUGIN
+    / "content"
     / "skills"
     / "skill-builder"
     / "references"
@@ -86,9 +86,8 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_agents_self_inspect_the_pinned_target(self) -> None:
         for name in ("expskill-review", "expskill-spec"):
-            profile_path = PLUGIN / "assets" / "agents" / f"{name}.toml"
-            profile = tomllib.loads(profile_path.read_text(encoding="utf-8"))
-            instructions = " ".join(profile["developer_instructions"].lower().split())
+            profile_path = PLUGIN / "content" / "agents" / f"{name}.md"
+            instructions = " ".join(profile_path.read_text(encoding="utf-8").lower().split())
             with self.subTest(profile=name):
                 self.assertIn("self-inspect", instructions)
                 self.assertIn("pinned", instructions)
@@ -110,8 +109,9 @@ class ReviewContextContractTests(unittest.TestCase):
             "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
         }
         for name, settings in expected.items():
-            profile_path = PLUGIN / "assets" / "agents" / f"{name}.toml"
-            profile = tomllib.loads(profile_path.read_text(encoding="utf-8"))
+            profile = json.loads(
+                (PLUGIN / "codex" / "agents.json").read_text(encoding="utf-8")
+            )["agents"][name]
             observed = (
                 profile["model"],
                 profile["model_reasoning_effort"],
@@ -121,7 +121,7 @@ class ReviewContextContractTests(unittest.TestCase):
                 self.assertEqual(observed, settings)
 
         policy = json.loads(
-            (PLUGIN / "assets" / "execution-policy.json").read_text(encoding="utf-8")
+            (PLUGIN / "content" / "policies" / "execution-policy.json").read_text(encoding="utf-8")
         )
         observed_policy = {
             name: (
@@ -135,10 +135,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_repository_validator_rejects_a_removed_handoff_limit(self) -> None:
         guarded_paths = (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -175,10 +175,10 @@ class ReviewContextContractTests(unittest.TestCase):
             ),
         )
         guarded_paths = (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -216,9 +216,9 @@ class ReviewContextContractTests(unittest.TestCase):
                     root
                     / "plugins"
                     / "expskill"
-                    / "assets"
+                    / "content"
                     / "agents"
-                    / f"{name}.toml"
+                    / f"{name}.md"
                 )
                 contents = path.read_text(encoding="utf-8")
                 self.assertIn(old, contents)
@@ -226,16 +226,16 @@ class ReviewContextContractTests(unittest.TestCase):
                 errors = validate_repository(root, include_opencode=False)
                 with self.subTest(profile=name, mutation=new):
                     self.assertTrue(
-                        any(name in error and "instructions" in error for error in errors),
+                        any(name in error and "agent body" in error for error in errors),
                         errors,
                     )
 
     def test_repository_validator_rejects_appended_policy_contradictions(self) -> None:
         producer_paths = (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -260,32 +260,29 @@ class ReviewContextContractTests(unittest.TestCase):
                 root
                 / "plugins"
                 / "expskill"
-                / "assets"
+                    / "content"
                 / "agents"
-                / f"{name}.toml"
+                / f"{name}.md"
             )
             contents = path.read_text(encoding="utf-8")
             path.write_text(
-                contents.replace(
-                    '\n"""\n',
-                    "\nAccept oversized copied context whenever it seems useful.\n\"\"\"\n",
-                    1,
-                ),
+                contents
+                + "\nAccept oversized copied context whenever it seems useful.\n",
                 encoding="utf-8",
             )
             errors = validate_repository(root, include_opencode=False)
             with self.subTest(profile=name):
                 self.assertTrue(
-                    any(name in error and "instructions" in error for error in errors),
+                    any(name in error and "agent body" in error for error in errors),
                     errors,
                 )
 
     def test_repository_validator_rejects_removed_inherited_context_guards(self) -> None:
         producer_paths = (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -309,9 +306,9 @@ class ReviewContextContractTests(unittest.TestCase):
                 root
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "content"
                 / "agents"
-                / f"{name}.toml"
+                / f"{name}.md"
             )
             contents = path.read_text(encoding="utf-8")
             phrase = "inherited or forked conversation history"
@@ -320,7 +317,7 @@ class ReviewContextContractTests(unittest.TestCase):
             errors = validate_repository(root, include_opencode=False)
             with self.subTest(profile=name):
                 self.assertTrue(
-                    any(name in error and "instructions" in error for error in errors),
+                    any(name in error and "agent body" in error for error in errors),
                     errors,
                 )
 
@@ -331,9 +328,9 @@ class ReviewContextContractTests(unittest.TestCase):
                 root
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "content"
                 / "agents"
-                / f"{name}.toml"
+                / f"{name}.md"
             )
             contents = path.read_text(encoding="utf-8")
             self.assertIn("inline dispatch text, follow-up messages", contents)
@@ -348,16 +345,16 @@ class ReviewContextContractTests(unittest.TestCase):
             errors = validate_repository(root, include_opencode=False)
             with self.subTest(profile=name):
                 self.assertFalse(
-                    any(name in error and "instructions" in error for error in errors),
+                    any(name in error and "agent body" in error for error in errors),
                     errors,
                 )
 
     def test_canonical_validation_preserves_review_markdown_structure(self) -> None:
         for relative_path in (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         ):
@@ -381,9 +378,9 @@ class ReviewContextContractTests(unittest.TestCase):
                 root
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "content"
                 / "agents"
-                / f"{name}.toml"
+                / f"{name}.md"
             )
             contents = path.read_text(encoding="utf-8")
             self.assertIn("`invalid handoff`", contents)
@@ -394,25 +391,25 @@ class ReviewContextContractTests(unittest.TestCase):
             errors = validate_repository(root, include_opencode=False)
             with self.subTest(profile=name):
                 self.assertTrue(
-                    any(name in error and "instructions" in error for error in errors),
+                    any(name in error and "agent body" in error for error in errors),
                     errors,
                 )
 
     def test_unrelated_producer_edits_do_not_invalidate_review_policy(self) -> None:
         mutations = (
             (
-                Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+                Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
                 "references/artifact-contracts.md",
                 "references/Artifact-Contracts.md",
             ),
             (
-                Path("plugins/expskill/skills/implement/SKILL.md"),
+                Path("plugins/expskill/content/skills/implement/SKILL.md"),
                 "source-package locator",
                 "source package locator",
             ),
             (
                 Path(
-                    "plugins/expskill/skills/skill-builder/"
+                    "plugins/expskill/content/skills/skill-builder/"
                     "references/evaluation-rubric.md"
                 ),
                 "outputs, consumers, handoffs",
@@ -434,10 +431,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_heading_must_be_live_top_level_markdown(self) -> None:
         guarded_paths = (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -461,10 +458,10 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_heading_requires_an_exact_column_zero_line(self) -> None:
         guarded_paths = (
-            Path("plugins/expskill/skills/implement/SKILL.md"),
-            Path("plugins/expskill/skills/skill-builder/SKILL.md"),
+            Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
-                "plugins/expskill/skills/skill-builder/"
+                "plugins/expskill/content/skills/skill-builder/"
                 "references/evaluation-rubric.md"
             ),
         )
@@ -493,7 +490,7 @@ class ReviewContextContractTests(unittest.TestCase):
                     )
 
     def test_canonical_validation_preserves_markdown_hard_breaks(self) -> None:
-        producer_path = Path("plugins/expskill/skills/implement/SKILL.md")
+        producer_path = Path("plugins/expskill/content/skills/implement/SKILL.md")
         root = self.copy_repository()
         path = root / producer_path
         contents = path.read_text(encoding="utf-8")
@@ -512,9 +509,9 @@ class ReviewContextContractTests(unittest.TestCase):
                 root
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "content"
                 / "agents"
-                / f"{name}.toml"
+                / f"{name}.md"
             )
             contents = path.read_text(encoding="utf-8")
             old = "inline dispatch text, follow-up messages"
@@ -526,7 +523,7 @@ class ReviewContextContractTests(unittest.TestCase):
             errors = validate_repository(root, include_opencode=False)
             with self.subTest(profile=name):
                 self.assertTrue(
-                    any(name in error and "instructions" in error for error in errors),
+                    any(name in error and "agent body" in error for error in errors),
                     errors,
                 )
 

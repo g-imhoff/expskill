@@ -48,10 +48,8 @@ supporting contracts, four deterministic protocol helpers, and one evidence
 finalizer:
 
 ```text
-plugins/expskill/skills/test/
+plugins/expskill/content/skills/test/
 ├── SKILL.md
-├── agents/
-│   └── openai.yaml
 ├── references/
 │   ├── quality-rules.json
 │   └── evidence-contract.json

@@ -1,0 +1,17 @@
+{
+  "schema_version": "skill-policies.v1",
+  "allow_implicit_invocation": {
+    "brainstorm": false,
+    "correct": false,
+    "design": false,
+    "grill-me": false,
+    "implement": false,
+    "plan": false,
+    "review": false,
+    "setup-ui-testing": false,
+    "skill-builder": false,
+    "test": false,
+    "unslop": false,
+    "use-expskill": true
+  }
+}

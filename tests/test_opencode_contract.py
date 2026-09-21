@@ -7,7 +7,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from scripts.build_opencode_package import build_opencode_package
+from scripts.build_opencode_package import BuildError, build_opencode_package
 from scripts.render_opencode import (
     OPENCODE_DESCRIPTION_MAX_LENGTH,
     render_agents,
@@ -83,7 +83,7 @@ class OpencodeContractTests(unittest.TestCase):
         names = skill_inventory(ROOT)
         self.assertEqual(sorted(path.name for path in (artifact / "skills").iterdir()), list(names))
         for name in names:
-            source = PLUGIN_ROOT / "skills" / name / "SKILL.md"
+            source = PLUGIN_ROOT / "content" / "skills" / name / "SKILL.md"
             exposed = artifact / "skills" / name / "SKILL.md"
             self.assertFalse(exposed.is_symlink())
             self.assertEqual(exposed.read_bytes(), source.read_bytes())
@@ -91,7 +91,7 @@ class OpencodeContractTests(unittest.TestCase):
     def test_every_shared_skill_preserves_canonical_frontmatter(self) -> None:
         for name in skill_inventory(ROOT):
             with self.subTest(skill=name):
-                contents = (PLUGIN_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+                contents = (PLUGIN_ROOT / "content" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
                 errors: list[str] = []
                 frontmatter = _parse_frontmatter(contents, name, errors)
                 self.assertEqual(errors, [])
@@ -126,9 +126,11 @@ class OpencodeContractTests(unittest.TestCase):
         catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
         for name in AGENTS:
             with self.subTest(agent=name):
-                profile = tomllib.loads(
-                    (PLUGIN_ROOT / "assets" / "agents" / f"{name}.toml").read_text(encoding="utf-8")
-                )
+                profile = {
+                    "developer_instructions": (
+                        PLUGIN_ROOT / "content" / "agents" / f"{name}.md"
+                    ).read_text(encoding="utf-8")
+                }
                 contents = (artifact / "agents" / f"{name}.md").read_text(encoding="utf-8")
                 self.assertEqual(contents, rendered[name])
                 errors: list[str] = []
@@ -166,29 +168,16 @@ class OpencodeContractTests(unittest.TestCase):
             with self.subTest(agent=name):
                 self.assertIn(f"model: {expected}", contents.splitlines())
 
-    def test_dynamic_new_skill_is_included_without_hardcoded_inventory(self) -> None:
+    def test_new_skill_without_neutral_policy_is_rejected(self) -> None:
         root = self.copy_repository()
-        skill = root / "plugins" / "expskill" / "skills" / "future-skill"
+        skill = root / "plugins" / "expskill" / "content" / "skills" / "future-skill"
         skill.mkdir()
         (skill / "SKILL.md").write_text(
             "---\nname: future-skill\ndescription: Future skill.\n---\n\nFuture.\n",
             encoding="utf-8",
         )
-        (skill / "agents").mkdir()
-        (skill / "agents" / "openai.yaml").write_text(
-            "interface:\n"
-            '  display_name: "Future Skill"\n'
-            '  short_description: "Render a future skill command safely"\n'
-            '  default_prompt: "Use $future-skill for future work."\n'
-            "\n"
-            "policy:\n"
-            "  allow_implicit_invocation: false\n",
-            encoding="utf-8",
-        )
-        _temporary, artifact = self.build_artifact(root)
-        self.assertTrue((artifact / "commands" / "future-skill.md").is_file())
-        catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
-        self.assertIn("future-skill", catalog["commands"])
+        with self.assertRaisesRegex(BuildError, "policy inventory diverges"):
+            self.build_artifact(root)
 
     def test_explorer_is_the_named_high_reasoning_external_research_route(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
@@ -213,7 +202,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_execution_policy_is_copied_to_artifact(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
-        canonical = (PLUGIN_ROOT / "assets" / "execution-policy.json").read_bytes()
+        canonical = (PLUGIN_ROOT / "content" / "policies" / "execution-policy.json").read_bytes()
         self.assertEqual((artifact / "assets" / "execution-policy.json").read_bytes(), canonical)
         plugin = (artifact / "plugins" / "execution-policy.js").read_text(encoding="utf-8")
         self.assertIn("requestedAgent(output?.args)", plugin)
@@ -235,7 +224,7 @@ class OpencodeContractTests(unittest.TestCase):
 
     def test_source_mutation_changes_fresh_artifact_only(self) -> None:
         root = self.copy_repository()
-        skill = root / "plugins" / "expskill" / "skills" / "unslop" / "SKILL.md"
+        skill = root / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
         skill.write_text(
             skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"),
             encoding="utf-8",

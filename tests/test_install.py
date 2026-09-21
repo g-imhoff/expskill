@@ -80,7 +80,7 @@ class FakeRunner:
 def seed_repository(path: Path) -> Path:
     source_plugin = ROOT / "plugins" / "expskill"
     destination_plugin = path / "plugins" / "expskill"
-    source_scripts = source_plugin / "scripts"
+    source_scripts = source_plugin / "content" / "scripts"
     source_helper = source_scripts / "worktrees.py"
     source_plan_helper = source_scripts / "plan_graph.py"
     if (
@@ -96,13 +96,13 @@ def seed_repository(path: Path) -> Path:
         raise AssertionError(f"invalid route-neutral plugin helper fixture: {source_helper}")
     shutil.copytree(ROOT / ".agents", path / ".agents")
     shutil.copytree(source_plugin / ".codex-plugin", destination_plugin / ".codex-plugin")
-    shutil.copytree(source_plugin / "assets", destination_plugin / "assets")
-    shutil.copytree(source_plugin / "hooks", destination_plugin / "hooks")
-    shutil.copytree(source_plugin / "skills", destination_plugin / "skills")
-    shutil.copytree(source_plugin / "third-party", destination_plugin / "third-party")
+    shutil.copytree(source_plugin / "content", destination_plugin / "content")
+    shutil.copytree(source_plugin / "codex", destination_plugin / "codex")
+    shutil.copytree(source_plugin / "opencode", destination_plugin / "opencode")
     # Seed the same route-neutral plugin inputs that a real marketplace
     # registration receives, including the centralized worktree helper.
-    shutil.copytree(source_scripts, destination_plugin / "scripts")
+    # The helper scripts are part of the canonical content tree; retain the
+    # legacy fixture assertion under that exact source boundary.
     shutil.copytree(ROOT / "scripts", path / "scripts")
     shutil.copy2(ROOT / "README.md", path / "README.md")
     return path
@@ -265,19 +265,31 @@ class InstallerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            skills_root = repository / "plugins" / "expskill" / "skills"
+            skills_root = repository / "plugins" / "expskill" / "content" / "skills"
             self.assertEqual({entry.name for entry in skills_root.iterdir()}, set(SKILL_NAMES))
             for name in SKILL_NAMES:
                 self.assertTrue((skills_root / name / "SKILL.md").is_file(), name)
-                self.assertTrue((skills_root / name / "agents" / "openai.yaml").is_file(), name)
+                self.assertTrue(
+                    (
+                        repository
+                        / "plugins"
+                        / "expskill"
+                        / "codex"
+                        / "skills"
+                        / name
+                        / "agents"
+                        / "openai.yaml"
+                    ).is_file(),
+                    name,
+                )
 
     def test_seed_repository_copies_route_neutral_plugin_scripts(self) -> None:
         """Fixture regression: installed-package inputs retain the centralized helper."""
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = seed_repository(Path(temporary) / "repository")
-            source = ROOT / "plugins" / "expskill" / "scripts"
-            destination = repository / "plugins" / "expskill" / "scripts"
+            source = ROOT / "plugins" / "expskill" / "content" / "scripts"
+            destination = repository / "plugins" / "expskill" / "content" / "scripts"
             self.assertTrue(destination.is_dir(), destination)
             source_files = {
                 path.relative_to(source).as_posix(): path.read_bytes()
@@ -304,7 +316,7 @@ class InstallerTests(unittest.TestCase):
             repository = seed_repository(Path(temporary) / "repository")
             source = ROOT / "plugins" / "expskill"
             destination = repository / "plugins" / "expskill"
-            for relative in ("hooks", "third-party"):
+            for relative in ("codex/hooks", "content/third-party"):
                 source_files = {
                     path.relative_to(source / relative).as_posix(): path.read_bytes()
                     for path in (source / relative).rglob("*")
@@ -328,7 +340,7 @@ class InstallerTests(unittest.TestCase):
                 shutil.copytree(ROOT / ".agents", source_root / ".agents")
                 shutil.copytree(ROOT / "plugins" / "expskill", source_root / "plugins" / "expskill")
                 shutil.copytree(ROOT / "scripts", source_root / "scripts")
-                return source_root, source_root / "plugins" / "expskill" / "scripts" / helper_name
+                return source_root, source_root / "plugins" / "expskill" / "content" / "scripts" / helper_name
 
             for helper_name in ("worktrees.py", "plan_graph.py"):
                 for mutation in ("missing", "symlink", "empty"):
@@ -470,7 +482,7 @@ class InstallerTests(unittest.TestCase):
             )
             for name, destination in destinations.items():
                 self.assertTrue(destination.is_symlink(), name)
-                expected = repo.resolve() / "plugins" / "expskill" / "assets" / "agents" / f"{name}.toml"
+                expected = repo.resolve() / "plugins" / "expskill" / "codex" / "runtime" / "agents" / f"{name}.toml"
                 self.assertEqual(destination.resolve(), expected)
 
             receipt = load_receipt(state_home)
@@ -544,7 +556,8 @@ class InstallerTests(unittest.TestCase):
                     repo.resolve()
                     / "plugins"
                     / "expskill"
-                    / "assets"
+                    / "codex"
+                    / "runtime"
                     / "agents"
                     / f"{name}.toml"
                 )
@@ -834,7 +847,8 @@ class InstallerTests(unittest.TestCase):
                 repo
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "codex"
+                / "runtime"
                 / "agents"
                 / "expskill-review.toml"
             )
@@ -880,15 +894,15 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertFalse(receipt_path(state_home).exists())
 
-    def test_intermediate_assets_symlink_escape_refuses_before_runner_or_destinations(self) -> None:
+    def test_intermediate_content_symlink_escape_refuses_before_runner_or_destinations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            escaped = root / "escaped-assets"
-            shutil.copytree(repo / "plugins" / "expskill" / "assets", escaped)
-            assets = repo / "plugins" / "expskill" / "assets"
-            shutil.rmtree(assets)
-            assets.symlink_to(escaped, target_is_directory=True)
+            escaped = root / "escaped-content"
+            shutil.copytree(repo / "plugins" / "expskill" / "content", escaped)
+            content = repo / "plugins" / "expskill" / "content"
+            shutil.rmtree(content)
+            content.symlink_to(escaped, target_is_directory=True)
             codex_home = root / "codex"
             state_home = root / "state"
             runner = FakeRunner([])
@@ -903,14 +917,17 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            reviewer = repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
+            reviewer = (
+                repo
+                / "plugins"
+                / "expskill"
+                / "content"
+                / "agents"
+                / "expskill-review.md"
+            )
             reviewer.write_text(
                 reviewer.read_text(encoding="utf-8").replace(
-                    'model = "gpt-5.6-terra"', 'model = "gpt-5.6-luna"'
-                ).replace(
-                    'model_reasoning_effort = "medium"', 'model_reasoning_effort = "max"'
-                ).replace(
-                    'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
+                    "Review exactly", "Changed review"
                 ),
                 encoding="utf-8",
             )
@@ -933,7 +950,7 @@ class InstallerTests(unittest.TestCase):
             outside_home.mkdir()
             outside_target = outside_home / "owned.toml"
             outside_target.symlink_to(
-                repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-explorer.toml"
+                repo / "plugins" / "expskill" / "codex" / "runtime" / "agents" / "expskill-explorer.toml"
             )
             state_home = root / "state"
             receipt_directory = state_home / "expskill"
@@ -948,7 +965,8 @@ class InstallerTests(unittest.TestCase):
                                     repo.resolve()
                                     / "plugins"
                                     / "expskill"
-                                    / "assets"
+                                    / "codex"
+                                    / "runtime"
                                     / "agents"
                                     / "expskill-explorer.toml"
                                 ),
@@ -1166,7 +1184,8 @@ class InstallerTests(unittest.TestCase):
                 repo
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "codex"
+                / "runtime"
                 / "agents"
                 / "expskill-review.toml"
             )
@@ -1202,7 +1221,8 @@ class InstallerTests(unittest.TestCase):
                 repo
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "codex"
+                / "runtime"
                 / "agents"
                 / "expskill-review.toml"
             )
@@ -1213,7 +1233,8 @@ class InstallerTests(unittest.TestCase):
                 repo
                 / "plugins"
                 / "expskill"
-                / "assets"
+                / "codex"
+                / "runtime"
                 / "agents"
                 / "expskill-implementer.toml"
             )

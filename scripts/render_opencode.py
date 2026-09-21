@@ -1,9 +1,8 @@
-"""Pure renderers for the OpenCode package surface.
+"""Pure renderer for the OpenCode package surface.
 
-The repository keeps one canonical skill and agent source under
-``plugins/expskill``.  OpenCode's markdown agents and command wrappers are
-build outputs, not sources.  This module only reads those inputs and returns
-deterministic strings and JSON-compatible values; it never writes files.
+Canonical skills and agent bodies live under ``plugins/expskill/content``.
+OpenCode's Markdown agents and command wrappers are generated output, not
+sources. This module only reads inputs and returns deterministic values.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ import re
 import os
 import stat
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -209,7 +207,9 @@ def parse_skill_frontmatter(contents: str, skill_name: str) -> dict[str, Any]:
 
 
 def _skill_inputs(canonical_root: Path) -> list[tuple[str, Path, dict[str, Any], str]]:
-    skills_root = _regular_directory(canonical_root / "skills", "canonical skills directory")
+    skills_root = _regular_directory(
+        canonical_root / "content" / "skills", "canonical skills directory"
+    )
     result: list[tuple[str, Path, dict[str, Any], str]] = []
     for path in sorted(skills_root.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
@@ -232,32 +232,36 @@ def skill_inventory(repo_root: Path | str | None = None) -> tuple[str, ...]:
     return tuple(item[0] for item in _skill_inputs(canonical_root))
 
 
-def _load_profile(canonical_root: Path, name: str) -> dict[str, Any]:
-    path = canonical_root / "assets" / "agents" / f"{name}.toml"
-    try:
-        profile = tomllib.loads(_read_text(path, f"canonical agent profile {name!r}"))
-    except tomllib.TOMLDecodeError as error:
-        raise RenderError(f"canonical agent profile {name!r} is invalid TOML: {error}") from error
-    if not isinstance(profile, dict):
-        raise RenderError(f"canonical agent profile {name!r} must be a TOML table")
-    if profile.get("name") != name:
-        raise RenderError(f"canonical agent profile {name!r} name must match its filename")
-    for field in ("description", "developer_instructions"):
-        value = profile.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise RenderError(f"canonical agent profile {name!r} has no {field}")
-    return profile
+def _load_profile(
+    canonical_root: Path,
+    name: str,
+    overlay_entry: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Load one canonical agent body with OpenCode-facing metadata."""
+
+    body_path = canonical_root / "content" / "agents" / f"{name}.md"
+    body = _read_text(body_path, f"canonical agent body {name!r}").strip()
+    if not body:
+        raise RenderError(f"canonical agent body {name!r} is empty")
+    description = overlay_entry.get("description")
+    if not isinstance(description, str) or not description.strip():
+        raise RenderError(f"OpenCode agent overlay entry {name!r} has no description")
+    return {
+        "name": name,
+        "description": description,
+        "developer_instructions": body,
+    }
 
 
 def _canonical_agent_names(canonical_root: Path) -> tuple[str, ...]:
     agents_root = _regular_directory(
-        canonical_root / "assets" / "agents", "canonical agent profiles directory"
+        canonical_root / "content" / "agents", "canonical agent bodies directory"
     )
     names: list[str] = []
     for path in sorted(agents_root.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
             raise RenderError(f"canonical agent profile entry must not be a symlink: {path}")
-        if path.is_file() and path.name.startswith("expskill-") and path.suffix == ".toml":
+        if path.is_file() and path.name.startswith("expskill-") and path.suffix == ".md":
             names.append(path.stem)
     observed = set(names)
     expected = set(EXPECTED_AGENT_NAMES)
@@ -270,7 +274,7 @@ def _canonical_agent_names(canonical_root: Path) -> tuple[str, ...]:
         if extra:
             details.append(f"extra {extra!r}")
         raise RenderError(
-            "canonical agent profile roster must contain exactly seven profiles ("
+            "canonical agent body roster must contain exactly seven agents ("
             + "; ".join(details)
             + ")"
         )
@@ -400,7 +404,7 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
             raise RenderError(f"OpenCode agent overlay entry {name!r} must be an object")
         result[name] = render_agent(
             name,
-            _load_profile(canonical_root, name),
+            _load_profile(canonical_root, name, entry),
             entry,
             str(active["model"]),
             str(active["reasoningEffort"]),
@@ -430,84 +434,27 @@ def _bounded_description(value: Any, label: str) -> str:
 def _skill_implicit_invocation_policy(skill_path: Path, skill_name: str) -> bool:
     """Read the canonical skill policy used by host-specific command output."""
 
-    policy_path = skill_path.parent / "agents" / "openai.yaml"
-    contents = _read_text(policy_path, f"canonical skill {skill_name!r} policy")
-    sections: dict[str, dict[str, Any]] = {}
-    section: str | None = None
-    for line_number, line in enumerate(contents.splitlines(), start=1):
-        if not line.strip():
-            continue
-        if "\t" in line:
-            raise RenderError(
-                f"canonical skill {skill_name!r} policy line {line_number} contains a tab"
-            )
-        indentation = len(line) - len(line.lstrip(" "))
-        key, separator, raw_value = line.strip().partition(":")
-        if not separator or not key or indentation not in (0, 2):
-            raise RenderError(
-                f"canonical skill {skill_name!r} policy line {line_number} is invalid"
-            )
-        raw_value = raw_value.strip()
-        if indentation == 0:
-            if raw_value or key in sections:
-                raise RenderError(
-                    f"canonical skill {skill_name!r} policy root {key!r} is invalid"
-                )
-            sections[key] = {}
-            section = key
-            continue
-        if section is None or key in sections[section] or not raw_value:
-            raise RenderError(
-                f"canonical skill {skill_name!r} policy line {line_number} is invalid"
-            )
-
-        if section == "interface":
-            if len(raw_value) < 2 or raw_value[0] != raw_value[-1] or raw_value[0] not in {'"', "'"}:
-                raise RenderError(
-                    f"canonical skill {skill_name!r} interface.{key} must be a quoted string"
-                )
-            try:
-                value = _parse_scalar(raw_value)
-            except RenderError as error:
-                raise RenderError(
-                    f"canonical skill {skill_name!r} interface.{key} is invalid"
-                ) from error
-            if not isinstance(value, str) or not value.strip():
-                raise RenderError(
-                    f"canonical skill {skill_name!r} interface.{key} must be a non-empty string"
-                )
-            sections[section][key] = value
-        elif section == "policy":
-            if raw_value not in {"true", "false"}:
-                raise RenderError(
-                    f"canonical skill {skill_name!r} allow_implicit_invocation must be a YAML boolean"
-                )
-            sections[section][key] = raw_value == "true"
-        else:
-            sections[section][key] = raw_value
-
-    if set(sections) != {"interface", "policy"}:
-        raise RenderError(
-            f"canonical skill {skill_name!r} policy keys must be exactly interface and policy"
-        )
-    interface = sections["interface"]
-    if set(interface) != {"display_name", "short_description", "default_prompt"}:
-        raise RenderError(
-            f"canonical skill {skill_name!r} interface keys are not exact"
-        )
-    policy = sections["policy"]
-    if set(policy) != {"allow_implicit_invocation"}:
-        raise RenderError(
-            f"canonical skill {skill_name!r} policy must declare only "
-            "allow_implicit_invocation"
-        )
-    value = policy["allow_implicit_invocation"]
-    if not isinstance(value, bool):
-        raise RenderError(
-            f"canonical skill {skill_name!r} allow_implicit_invocation must be a YAML boolean"
-        )
+    # Activation is shared product policy, not a Codex implementation detail.
+    try:
+        plugin_root = skill_path.parents[3]
+    except IndexError as error:
+        raise RenderError(f"canonical skill {skill_name!r} path is too shallow") from error
+    policy = _read_json(
+        plugin_root / "content" / "policies" / "skills.json",
+        "canonical skill policy",
+    )
+    if policy.get("schema_version") != "skill-policies.v1":
+        raise RenderError("canonical skill policy has an unsupported schema")
+    values = policy.get("allow_implicit_invocation")
+    if not isinstance(values, Mapping):
+        raise RenderError("canonical skill policy must contain an object")
+    expected = set(skill_inventory(plugin_root.parents[1]))
+    if set(values) != expected:
+        raise RenderError("canonical skill policy inventory diverges from canonical skills")
+    value = values.get(skill_name)
+    if type(value) is not bool:
+        raise RenderError(f"canonical skill {skill_name!r} policy must be a boolean")
     return value
-
 
 def render_command(
     name: str,
@@ -581,7 +528,7 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
         entry = spec["agents"][name]
         if not isinstance(entry, Mapping):
             raise RenderError(f"OpenCode agent overlay entry {name!r} must be an object")
-        profile = _load_profile(canonical_root, name)
+        profile = _load_profile(canonical_root, name, entry)
         permission = entry.get("permission")
         if not isinstance(permission, Mapping) or not permission:
             raise RenderError(f"OpenCode agent overlay entry {name!r} has no permission mapping")

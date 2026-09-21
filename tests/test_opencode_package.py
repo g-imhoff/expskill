@@ -1813,8 +1813,8 @@ class OpencodePackageTests(unittest.TestCase):
 
                 missing_skills: list[str] = []
                 changed_skills: list[str] = []
-                for source in sorted((PLUGIN_ROOT / "skills").rglob("*")):
-                    relative_path = source.relative_to(PLUGIN_ROOT / "skills")
+                for source in sorted((PLUGIN_ROOT / "content" / "skills").rglob("*")):
+                    relative_path = source.relative_to(PLUGIN_ROOT / "content" / "skills")
                     if is_python_cache(relative_path) or not source.is_file():
                         continue
                     relative = relative_path.as_posix()
@@ -1838,18 +1838,18 @@ class OpencodePackageTests(unittest.TestCase):
 
                 for helper in SHARED_HELPERS:
                     contents = packed_bytes(f"scripts/{helper}")
-                    source = PLUGIN_ROOT / "scripts" / helper
+                    source = PLUGIN_ROOT / "content" / "scripts" / helper
                     if contents is not None and contents != source.read_bytes():
                         problems.append(f"tarball changed shared helper scripts/{helper}")
 
                 policy = packed_bytes("assets/execution-policy.json")
-                policy_source = PLUGIN_ROOT / "assets" / "execution-policy.json"
+                policy_source = PLUGIN_ROOT / "content" / "policies" / "execution-policy.json"
                 if policy is not None and policy != policy_source.read_bytes():
                     problems.append("tarball changed assets/execution-policy.json")
 
                 for license_name in THIRD_PARTY_LICENSES:
                     contents = packed_bytes(f"third-party/licenses/{license_name}")
-                    source = PLUGIN_ROOT / "third-party" / "licenses" / license_name
+                    source = PLUGIN_ROOT / "content" / "third-party" / "licenses" / license_name
                     if contents is not None and contents != source.read_bytes():
                         problems.append(
                             f"tarball changed third-party license {license_name}"

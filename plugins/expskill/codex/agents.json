@@ -1,0 +1,54 @@
+{
+  "schema_version": "codex-agents.v1",
+  "agents": {
+    "expskill-designer": {
+      "description": "Run one Design session inside its isolated helper-owned worktree.",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "max",
+      "sandbox_mode": "workspace-write",
+      "source": "../content/agents/expskill-designer.md"
+    },
+    "expskill-explorer": {
+      "description": "Gather bounded codebase evidence without changing the repository.",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "max",
+      "sandbox_mode": "read-only",
+      "source": "../content/agents/expskill-explorer.md"
+    },
+    "expskill-implementer": {
+      "description": "Implement exactly one owned node with task-local red-green-refactor.",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "max",
+      "sandbox_mode": "workspace-write",
+      "source": "../content/agents/expskill-implementer.md"
+    },
+    "expskill-planner": {
+      "description": "Own one Plan session and its private Plan Graph without editing tracked source.",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "max",
+      "sandbox_mode": "workspace-write",
+      "source": "../content/agents/expskill-planner.md"
+    },
+    "expskill-review": {
+      "description": "Independently review one immutable implementation candidate.",
+      "model": "gpt-5.6-sol",
+      "model_reasoning_effort": "xhigh",
+      "sandbox_mode": "read-only",
+      "source": "../content/agents/expskill-review.md"
+    },
+    "expskill-spec": {
+      "description": "Independently judge one immutable candidate against its accepted specification.",
+      "model": "gpt-5.6-sol",
+      "model_reasoning_effort": "xhigh",
+      "sandbox_mode": "read-only",
+      "source": "../content/agents/expskill-spec.md"
+    },
+    "expskill-test-engineer": {
+      "description": "Define shared acceptance tests and regression targets for a development change.",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "max",
+      "sandbox_mode": "read-only",
+      "source": "../content/agents/expskill-test-engineer.md"
+    }
+  }
+}

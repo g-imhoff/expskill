@@ -25,6 +25,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 sys.dont_write_bytecode = True
 
 try:
+    from scripts.build_codex_package import BuildError as CodexBuildError
+    from scripts.build_codex_package import build_codex_package as _build_codex_package
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
     from scripts.build_opencode_package import (
         _reject_symlink_components,
@@ -32,8 +34,13 @@ try:
     )
     from scripts.artifact_contract import (
         COPY_FILES,
+        COPY_FILE_OUTPUTS,
         COPY_LICENSES,
+        COPY_LICENSES_OUTPUT,
         COPY_TREES,
+        COPY_TREE_OUTPUTS,
+        artifact_output_relative,
+        OPENCODE_README_SOURCE,
         PLATFORM_FILES,
         PLATFORM_PLUGIN_DIRECTORY,
         canonical_provenance,
@@ -45,6 +52,8 @@ try:
     )
     from scripts.validate import validate_repository
 except ModuleNotFoundError:
+    from build_codex_package import BuildError as CodexBuildError
+    from build_codex_package import build_codex_package as _build_codex_package
     from build_opencode_package import BuildError as OpencodeBuildError
     from build_opencode_package import (
         _reject_symlink_components,
@@ -52,8 +61,13 @@ except ModuleNotFoundError:
     )
     from artifact_contract import (
         COPY_FILES,
+        COPY_FILE_OUTPUTS,
         COPY_LICENSES,
+        COPY_LICENSES_OUTPUT,
         COPY_TREES,
+        COPY_TREE_OUTPUTS,
+        artifact_output_relative,
+        OPENCODE_README_SOURCE,
         PLATFORM_FILES,
         PLATFORM_PLUGIN_DIRECTORY,
         canonical_provenance,
@@ -1912,12 +1926,60 @@ def _assert_relative_no_symlink_components(root: Path, relative: Sequence[str]) 
             raise InstallError(f"repository profile path contains a symlink: {current}")
 
 
-def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
+def _codex_runtime_root(repository_root: Path) -> Path:
+    return repository_root / "plugins" / PLUGIN_NAME / "codex" / "runtime"
+
+
+def _materialize_codex_runtime(repository_root: Path) -> Path:
+    """Build the ignored, self-contained Codex profile package.
+
+    Agent TOML is a Codex runtime representation.  Keeping it in ``codex/``
+    would make it a second authored prompt tree, so the installer publishes a
+    fresh generated package below the adapter's ignored ``runtime`` directory.
+    The authored adapter tree is never used as a write target.
+    """
+
+    package_root = repository_root / "plugins" / PLUGIN_NAME / "codex"
     _assert_relative_no_symlink_components(
         repository_root,
-        ("plugins", PLUGIN_NAME, "assets", "agents"),
+        ("plugins", PLUGIN_NAME, "codex"),
     )
-    agents_root = repository_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
+    if package_root.is_symlink() or not package_root.is_dir():
+        raise InstallError(f"Codex adapter directory is not a regular directory: {package_root}")
+    runtime = _codex_runtime_root(repository_root)
+    if runtime.is_symlink() or (runtime.exists() and not runtime.is_dir()):
+        raise InstallError(f"Codex runtime output is not a regular directory: {runtime}")
+
+    temporary_parent: Path | None = None
+    candidate: Path | None = None
+    backup: Path | None = None
+    try:
+        temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-runtime-", dir=package_root))
+        candidate = temporary_parent / "runtime"
+        _build_codex_package(repository_root, candidate)
+        if runtime.exists():
+            backup = package_root / f".codex-runtime-old-{uuid.uuid4().hex}"
+            runtime.rename(backup)
+        candidate.rename(runtime)
+        if backup is not None:
+            shutil.rmtree(backup)
+        return runtime
+    except (CodexBuildError, OSError, RuntimeError) as error:
+        if backup is not None and not runtime.exists() and backup.exists():
+            backup.rename(runtime)
+        raise InstallError(f"Codex runtime package could not be materialized: {error}") from error
+    finally:
+        if temporary_parent is not None and temporary_parent.exists():
+            shutil.rmtree(temporary_parent, ignore_errors=True)
+
+
+def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
+    runtime_root = _materialize_codex_runtime(repository_root)
+    _assert_relative_no_symlink_components(
+        repository_root,
+        ("plugins", PLUGIN_NAME, "codex", "runtime", "agents"),
+    )
+    agents_root = runtime_root / "agents"
     if not agents_root.is_dir():
         raise InstallError(f"agent source directory is missing: {agents_root}")
     try:
@@ -1926,8 +1988,8 @@ def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
         raise InstallError(f"agent source directory cannot be resolved: {agents_root}: {error}") from error
     if resolved_agents_root != agents_root:
         raise InstallError(f"agent source directory resolves outside the repository: {agents_root}")
-    discovered = tuple(sorted(agents_root.glob("expskill-*.toml"), key=lambda path: path.name))
     expected_names = {f"{name}.toml" for name in PROFILE_NAMES}
+    discovered = tuple(sorted(agents_root.glob("expskill-*.toml"), key=lambda path: path.name))
     discovered_names = {path.name for path in discovered}
     if discovered_names != expected_names or len(discovered) != len(expected_names):
         found = ", ".join(sorted(discovered_names)) or "none"
@@ -2010,7 +2072,7 @@ def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, 
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
-    source_directory = canonical_root / "plugins" / PLUGIN_NAME / "assets" / "agents"
+    source_directory = _codex_runtime_root(canonical_root) / "agents"
     return tuple(
         ProfileLink(
             source=_lexical_absolute(source_directory / f"{name}.toml"),
@@ -4994,7 +5056,7 @@ def _print_dry_run(repo_root: Path, codex_home: Path, agents_only: bool = False)
     if agents_only:
         print("codex agent links only: the plugin itself stays managed through codex plugin CLI")
         return
-    repository = links[0].source.parent.parent.parent.parent.parent
+    repository = _canonical_codex_repository_root(repo_root)
     print(f"codex plugin marketplace add {repository} --json")
     print(f"codex plugin add {PLUGIN_SELECTOR} --json")
 
@@ -7454,10 +7516,19 @@ def _install_source_inventory(root: Path) -> list[tuple[str, Path]]:
     walk(package_root / COPY_LICENSES)
     platform_root = package_root / "opencode"
     for name in PLATFORM_FILES:
-        path = platform_root / name
+        path = (
+            package_root / OPENCODE_README_SOURCE
+            if name == "README.md"
+            else platform_root / name
+        )
         result.append((path.relative_to(root).as_posix(), path))
     walk(platform_root / PLATFORM_PLUGIN_DIRECTORY)
-    walk(package_root / "assets" / "agents")
+    walk(package_root / "content" / "agents")
+    walk(package_root / "codex" / "skills")
+    result.append((
+        (package_root / "codex" / "agents.json").relative_to(root).as_posix(),
+        package_root / "codex" / "agents.json",
+    ))
     for relative in (
         Path("scripts/artifact_contract.py"),
         Path("scripts/build_opencode_package.py"),
@@ -7479,7 +7550,11 @@ def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
         package_root = repo_root / "plugins" / "expskill"
         platform_root = package_root / "opencode"
         for name in ("agents.json", "package.json", "README.md", "LICENSE", "index.js"):
-            expected[name] = (platform_root / name).read_bytes()
+            expected[name] = (
+                (package_root / OPENCODE_README_SOURCE).read_bytes()
+                if name == "README.md"
+                else (platform_root / name).read_bytes()
+            )
         for name in ("execution-policy.js", "unslop.js"):
             expected[f"plugins/{name}"] = (platform_root / "plugins" / name).read_bytes()
         for relative, path in _install_source_inventory(repo_root):
@@ -7487,12 +7562,9 @@ def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
             package_marker = Path("plugins") / "expskill"
             if source_relative.parts[:2] == package_marker.parts:
                 within = Path(*source_relative.parts[2:])
-                if within.parts and within.parts[0] in {"skills", "scripts"}:
-                    expected[within.as_posix()] = path.read_bytes()
-                elif within == Path("assets/execution-policy.json"):
-                    expected[within.as_posix()] = path.read_bytes()
-                elif within.parts[:2] == ("third-party", "licenses"):
-                    expected[within.as_posix()] = path.read_bytes()
+                mapped = artifact_output_relative(source_relative)
+                if mapped is not None:
+                    expected[mapped] = path.read_bytes()
                 elif within.parts[:2] == ("opencode", "plugins"):
                     expected[Path(*within.parts[1:]).as_posix()] = path.read_bytes()
             elif source_relative.parts[:1] == ("scripts",):
@@ -7507,7 +7579,7 @@ def _artifact_matches_sources(repo_root: Path, artifact: Path) -> bool:
             for relative, path in _install_source_inventory(repo_root)
         ]
         if (
-            provenance_payload.get("schema_version") != "opencode-provenance.v1"
+            provenance_payload.get("schema_version") != "opencode-provenance.v2"
             or inputs != expected_inputs
         ):
             return False

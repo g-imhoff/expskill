@@ -41,6 +41,16 @@ def receipt(state: Path) -> dict[str, object]:
     return json.loads(receipt_path(state).read_text(encoding="utf-8"))
 
 
+def remove_canonical_unslop(repo: Path) -> None:
+    """Model a retired skill while keeping the neutral policy inventory aligned."""
+
+    shutil.rmtree(repo / "plugins/expskill/content/skills/unslop")
+    policy_path = repo / "plugins/expskill/content/policies/skills.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    del policy["allow_implicit_invocation"]["unslop"]
+    policy_path.write_text(json.dumps(policy, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def extract_parent_checkout(path: Path) -> Path:
     archive = subprocess.run(
         ["git", "archive", PRE_ANCHOR_PARENT],
@@ -121,6 +131,11 @@ def run_current_opencode_operation(
     code = (
         "import sys; "
         "from pathlib import Path; "
+        "import scripts.install as install_module; "
+        "install_module._validate_repository = lambda _root: None; "
+        "install_module._skill_inventory = lambda root: tuple(sorted("
+        "entry.name for entry in (root / 'plugins' / 'expskill' / 'skills').iterdir()"
+        " if entry.is_dir())); "
         "from scripts.install import "
         f"{operation}; "
         f"{operation}(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))"
@@ -377,7 +392,7 @@ class OpenCodeOwnershipTeardownTests(unittest.TestCase):
                             original["artifact_dev"],
                             original["artifact_ino"],
                         )
-                        skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                        skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                         skill.write_text(
                             skill.read_text(encoding="utf-8").replace(
                                 "Cut AI tells", "rollback anchor relationship"
@@ -869,7 +884,7 @@ install_module.install_opencode(repo, config, state)
                 config = root / "config"
                 state = root / "state"
                 install_opencode(repo, config, state)
-                skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                 original_text = skill.read_text(encoding="utf-8")
                 skill.write_text(
                     original_text.replace(
@@ -1314,7 +1329,7 @@ install_module.install_opencode(repo, config, state)
             before = receipt(state)
             missing = Path(before["links"][0]["destination"])
             missing.unlink()
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "pending swap repair marker"
@@ -1373,7 +1388,7 @@ install_module.install_opencode(repo, config, state)
                     config = root / "config"
                     state = root / "state"
                     install_opencode(repo, config, state)
-                    skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                    skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                     skill.write_text(
                         skill.read_text(encoding="utf-8").replace(
                             "Cut AI tells", "partial backup retirement marker"
@@ -1900,7 +1915,7 @@ install_module.install_opencode(repo, config, state)
             install_opencode(repo, config, state)
             retired_skill = config / "skills/unslop"
             retired_command = config / "commands/unslop.md"
-            shutil.rmtree(repo / "plugins/expskill/skills/unslop")
+            remove_canonical_unslop(repo)
             real_evidence = install_module._artifact_evidence
             stopped = False
 
@@ -1945,7 +1960,7 @@ install_module.install_opencode(repo, config, state)
             install_opencode(repo, config, state)
             retired_skill = config / "skills/unslop"
             retired_command = config / "commands/unslop.md"
-            shutil.rmtree(repo / "plugins/expskill/skills/unslop")
+            remove_canonical_unslop(repo)
             real_unlink = install_module._retire_owned_object
             failed = False
 
@@ -2191,7 +2206,7 @@ install_module.install_opencode(repo, config, state)
             install_opencode(repo, config, state)
             retired_skill = config / "skills/unslop"
             retired_command = config / "commands/unslop.md"
-            shutil.rmtree(repo / "plugins/expskill/skills/unslop")
+            remove_canonical_unslop(repo)
             real_evidence = install_module._artifact_evidence
             injected = False
 
@@ -2827,7 +2842,7 @@ install_module.install_opencode(repo, config, state)
                 replaced_skill.lstat().st_dev,
                 replaced_skill.lstat().st_ino,
             )
-            shutil.rmtree(repo / "plugins/expskill/skills/unslop")
+            remove_canonical_unslop(repo)
 
             with mock.patch.object(install_module, "_validate_repository"):
                 install_opencode(repo, config, state)
@@ -3119,7 +3134,7 @@ install_module.install_opencode(repo, config, state)
                 state = root / "state"
                 install_opencode(repo, config, state)
                 old = receipt(state)
-                skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                 skill.write_text(
                     skill.read_text(encoding="utf-8").replace(
                         "Cut AI tells", "upgrade ownership marker"
@@ -3175,7 +3190,7 @@ install_module.install_opencode(repo, config, state)
                 config = root / "config"
                 state = root / "state"
                 install_opencode(repo, config, state)
-                skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                 skill.write_text(
                     skill.read_text(encoding="utf-8").replace(
                         "Cut AI tells", "repeated retirement marker"
@@ -3384,7 +3399,7 @@ install_module.install_opencode(repo, config, state)
                     config = root / "config"
                     state = root / "state"
                     install_opencode(repo, config, state)
-                    skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                    skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                     skill.write_text(
                         skill.read_text(encoding="utf-8").replace(
                             "Cut AI tells", "upgrade phase write marker"
@@ -3422,7 +3437,7 @@ install_module.install_opencode(repo, config, state)
                 config = root / "config"
                 state = root / "state"
                 install_opencode(repo, config, state)
-                skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                 skill.write_text(
                     skill.read_text(encoding="utf-8").replace(
                         "Cut AI tells", "frozen cleanup identity marker"
@@ -3664,7 +3679,7 @@ install_module.install_opencode(repo, config, state)
                         state = root / "state"
                         install_opencode(repo, config, state)
                         original = receipt(state)
-                        skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                        skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                         skill.write_text(
                             skill.read_text(encoding="utf-8").replace(
                                 "Cut AI tells", f"{boundary} upgrade marker"
@@ -3792,7 +3807,7 @@ install_module.install_opencode(repo, config, state)
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "foreign backup marker"
@@ -4058,7 +4073,7 @@ install_module.install_opencode(repo, config, state)
                 config = root / "config"
                 state = root / "state"
                 install_opencode(repo, config, state)
-                skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                 skill.write_text(
                     skill.read_text(encoding="utf-8").replace(
                         "Cut AI tells", "upgrade rollback destruction marker"
@@ -4149,7 +4164,7 @@ install_module.install_opencode(repo, config, state)
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "candidate exchange rollback marker"
@@ -6816,7 +6831,7 @@ install_module.install_opencode(repo, config, state)
                         canonical = receipt_path(state)
                         if transaction == "swap":
                             install_opencode(repo, config, state)
-                            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                             skill.write_text(
                                 skill.read_text(encoding="utf-8")
                                 + "\ncandidate-less rollback marker\n",

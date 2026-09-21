@@ -36,9 +36,14 @@ try:
         ARTIFACT_FILE_MODE,
         ARTIFACT_MTIME,
         COPY_FILES,
+        COPY_FILE_OUTPUTS,
         COPY_LICENSES,
+        COPY_LICENSES_OUTPUT,
         COPY_TREES,
+        COPY_TREE_OUTPUTS,
+        OPENCODE_README_SOURCE,
         PLATFORM_FILES,
+        PLATFORM_SOURCE_FILES,
         PLATFORM_PLUGIN_DIRECTORY,
         PLATFORM_PLUGIN_FILES,
         PROVENANCE_SCHEMA_VERSION,
@@ -51,9 +56,14 @@ except ModuleNotFoundError:
         ARTIFACT_FILE_MODE,
         ARTIFACT_MTIME,
         COPY_FILES,
+        COPY_FILE_OUTPUTS,
         COPY_LICENSES,
+        COPY_LICENSES_OUTPUT,
         COPY_TREES,
+        COPY_TREE_OUTPUTS,
+        OPENCODE_README_SOURCE,
         PLATFORM_FILES,
+        PLATFORM_SOURCE_FILES,
         PLATFORM_PLUGIN_DIRECTORY,
         PLATFORM_PLUGIN_FILES,
         PROVENANCE_SCHEMA_VERSION,
@@ -344,10 +354,12 @@ def _copy_tree(source: Path, target: Path, label: str) -> list[Path]:
     return files
 
 
-def _copy_platform_source(source_root: Path, output_root: Path) -> list[Path]:
+def _copy_platform_source(
+    source_root: Path, output_root: Path, readme_source: Path
+) -> list[Path]:
     files: list[Path] = []
     for name in PLATFORM_FILES:
-        source = source_root / name
+        source = readme_source if name == "README.md" else source_root / name
         destination = output_root / name
         _safe_copy_file(source, destination, f"OpenCode platform source {name!r}")
         files.append(destination)
@@ -368,7 +380,7 @@ def _validate_platform_source(source_root: Path) -> None:
     """
 
     _ensure_regular_directory(source_root, "OpenCode platform source")
-    expected = set(PLATFORM_FILES) | {PLATFORM_PLUGIN_DIRECTORY}
+    expected = set(PLATFORM_SOURCE_FILES) | {PLATFORM_PLUGIN_DIRECTORY}
     try:
         entries = {entry.name: entry for entry in source_root.iterdir()}
     except OSError as error:
@@ -382,7 +394,7 @@ def _validate_platform_source(source_root: Path) -> None:
         if missing:
             details.append(f"missing entries {missing!r}")
         raise BuildError("OpenCode platform source roster is invalid: " + "; ".join(details))
-    for name in PLATFORM_FILES:
+    for name in PLATFORM_SOURCE_FILES:
         _ensure_regular_file(entries[name], f"OpenCode platform source {name!r}")
     plugins = entries[PLATFORM_PLUGIN_DIRECTORY]
     _ensure_regular_directory(plugins, "OpenCode plugin source")
@@ -402,13 +414,26 @@ def _validate_platform_source(source_root: Path) -> None:
 def _copy_canonical_source(canonical_root: Path, output_root: Path) -> list[Path]:
     files: list[Path] = []
     for tree in COPY_TREES:
-        files.extend(_copy_tree(canonical_root / tree, output_root / tree, f"canonical {tree}"))
+        output_tree = COPY_TREE_OUTPUTS[tree]
+        files.extend(
+            _copy_tree(
+                canonical_root / tree,
+                output_root / output_tree,
+                f"canonical {tree}",
+            )
+        )
     for relative in COPY_FILES:
         source = canonical_root / relative
-        target = output_root / relative
+        target = output_root / COPY_FILE_OUTPUTS[relative]
         _safe_copy_file(source, target, f"canonical package asset {relative}")
         files.append(target)
-    files.extend(_copy_tree(canonical_root / COPY_LICENSES, output_root / COPY_LICENSES, "canonical licenses"))
+    files.extend(
+        _copy_tree(
+            canonical_root / COPY_LICENSES,
+            output_root / COPY_LICENSES_OUTPUT,
+            "canonical licenses",
+        )
+    )
     return files
 
 
@@ -435,11 +460,20 @@ def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
     for relative, path in _iter_regular_files(canonical_root / COPY_LICENSES, "canonical licenses"):
         add_file(path)
     for name in PLATFORM_FILES:
-        add_file(platform_root / name)
+        add_file(
+            canonical_root / OPENCODE_README_SOURCE
+            if name == "README.md"
+            else platform_root / name
+        )
     for _relative, path in _iter_regular_files(platform_root / PLATFORM_PLUGIN_DIRECTORY, "OpenCode plugin source"):
         add_file(path)
     for _relative, path in _iter_regular_files(
-        canonical_root / "assets" / "agents", "canonical agent profiles"
+        canonical_root / "codex" / "skills", "Codex skill overlays"
+    ):
+        add_file(path)
+    add_file(canonical_root / "codex" / "agents.json")
+    for _relative, path in _iter_regular_files(
+        canonical_root / "content" / "agents", "canonical agent bodies"
     ):
         add_file(path)
     for relative in (
@@ -1568,8 +1602,11 @@ def build_opencode_package(
         *COPY_TREES,
         *COPY_FILES,
         COPY_LICENSES,
-        Path("assets") / "agents",
+        Path("content") / "agents",
+        Path("codex") / "agents.json",
+        Path("codex") / "skills",
         Path("opencode") / PLATFORM_PLUGIN_DIRECTORY,
+        OPENCODE_README_SOURCE,
     ):
         source = canonical_root / relative
         _reject_symlink_components(source, f"canonical input {relative}")
@@ -1579,9 +1616,8 @@ def build_opencode_package(
     # Validate the complete set of source trees before staging so a stray
     # symlink cannot hide in an un-copied input directory.
     list(_iter_regular_files(platform_root, "OpenCode platform source"))
-    list(
-        _iter_regular_files(canonical_root / "assets" / "agents", "canonical agent profiles")
-    )
+    list(_iter_regular_files(canonical_root / "content" / "agents", "canonical agent bodies"))
+    list(_iter_regular_files(canonical_root / "codex" / "skills", "Codex skill overlays"))
     try:
         canonical_root_resolved = canonical_root.resolve(strict=True)
     except (OSError, RuntimeError) as error:
@@ -1660,7 +1696,11 @@ def build_opencode_package(
         _verify_live_sources_against_snapshot(root, snapshot_root)
         snapshot_canonical = snapshot_root / "plugins" / "expskill"
         snapshot_platform = snapshot_canonical / "opencode"
-        _copy_platform_source(snapshot_platform, staging)
+        _copy_platform_source(
+            snapshot_platform,
+            staging,
+            snapshot_root / "plugins" / "expskill" / OPENCODE_README_SOURCE,
+        )
         _copy_canonical_source(snapshot_canonical, staging)
         try:
             rendered = render_all(snapshot_root)

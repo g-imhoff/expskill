@@ -175,7 +175,7 @@ class FoundationCorrectionTests(unittest.TestCase):
                     install_opencode(repo, config, state)
                     old_marker = "Cut AI tells"
                     new_marker = "Source-changing recovery marker"
-                    skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+                    skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
                     self.assertIn(old_marker, skill.read_text(encoding="utf-8"))
                     skill.write_text(
                         skill.read_text(encoding="utf-8").replace(
@@ -405,7 +405,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             state = root / "state"
             install_opencode(repo, config, state)
             artifact = state / "expskill" / "opencode-artifact"
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "interrupted swap recovery marker"
@@ -468,7 +468,7 @@ class FoundationCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             real_read_bytes = Path.read_bytes
             mutated = False
 
@@ -488,8 +488,8 @@ class FoundationCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            first = repo / "plugins/expskill/skills/brainstorm/SKILL.md"
-            second = repo / "plugins/expskill/skills/design/SKILL.md"
+            first = repo / "plugins/expskill/content/skills/brainstorm/SKILL.md"
+            second = repo / "plugins/expskill/content/skills/design/SKILL.md"
             real_read_bytes = Path.read_bytes
             mutated = False
 
@@ -792,7 +792,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "late foreign backup marker"
@@ -829,7 +829,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "backup identity replacement marker"
@@ -870,7 +870,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "published recovery marker"
@@ -1842,7 +1842,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "uninstall interrupted swap marker"
@@ -2004,7 +2004,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             forged_destination = root / "outside-config" / "plan"
             state.joinpath("expskill").mkdir(parents=True)
             receipt_path(state).write_text(json.dumps({
-                "links": [{"source": str(repo / "plugins/expskill/skills/plan"), "destination": str(forged_destination)}],
+                "links": [{"source": str(repo / "plugins/expskill/content/skills/plan"), "destination": str(forged_destination)}],
                 "marketplace_added": False,
                 "plugin_installed": True,
                 "repository_root": str(repo.resolve()),
@@ -2016,7 +2016,7 @@ class FoundationCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             real_render = build_module.render_all
 
             def mutate_then_render(snapshot: Path) -> dict[str, str]:
@@ -2035,7 +2035,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             install_opencode(repo, config, state)
-            skill = repo / "plugins/expskill/skills/unslop/SKILL.md"
+            skill = repo / "plugins/expskill/content/skills/unslop/SKILL.md"
             skill.write_text(
                 skill.read_text(encoding="utf-8").replace(
                     "Cut AI tells", "backup cleanup retry marker"
@@ -2105,7 +2105,7 @@ class FoundationCorrectionTests(unittest.TestCase):
             repo = seed_repository(root / "repo")
             config = root / "config"
             state = root / "state"
-            policy = repo / "plugins" / "expskill" / "assets" / "execution-policy.json"
+            policy = repo / "plugins" / "expskill" / "content" / "policies" / "execution-policy.json"
             policy.write_text("{ invalid\n", encoding="utf-8")
             with self.assertRaises(InstallError):
                 install_opencode(repo, config, state)

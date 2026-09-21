@@ -7,12 +7,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-SKILLS = PLUGIN / "skills"
+SKILLS = PLUGIN / "content" / "skills"
 ROUTER = SKILLS / "use-expskill" / "SKILL.md"
 
 
 def _metadata(name: str) -> dict[str, dict[str, object]]:
-    path = SKILLS / name / "agents" / "openai.yaml"
+    path = PLUGIN / "codex" / "skills" / name / "agents" / "openai.yaml"
     result: dict[str, dict[str, object]] = {}
     section = ""
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -49,7 +49,7 @@ class CorrectContractTests(unittest.TestCase):
                     for path in root.rglob("*")
                     if path.is_file()
                 }
-                self.assertEqual(files, {"SKILL.md", "agents/openai.yaml"})
+                self.assertEqual(files, {"SKILL.md"})
                 metadata = _metadata(name)
                 self.assertEqual(set(metadata), {"interface", "policy"})
                 self.assertIs(

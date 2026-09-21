@@ -4,10 +4,12 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from scripts.render_codex import render_agents
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-SKILL = PLUGIN / "skills" / "implement"
+SKILL = PLUGIN / "content" / "skills" / "implement"
 
 
 class ImplementContractTests(unittest.TestCase):
@@ -21,13 +23,13 @@ class ImplementContractTests(unittest.TestCase):
             for path in SKILL.rglob("*")
             if path.is_file()
         }
-        self.assertEqual(files, {"SKILL.md", "agents/openai.yaml"})
-        metadata = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        self.assertEqual(files, {"SKILL.md"})
+        metadata = (PLUGIN / "codex" / "skills" / "implement" / "agents" / "openai.yaml").read_text(encoding="utf-8")
         self.assertIn('default_prompt: "Use $implement', metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
 
     def test_skill_is_orchestration_not_a_private_runtime(self) -> None:
-        self.assertFalse((PLUGIN / "scripts" / "implement_state.py").exists())
+        self.assertFalse((PLUGIN / "content" / "scripts" / "implement_state.py").exists())
         for marker in (
             "implement_state.py",
             "command-attestation",
@@ -100,11 +102,7 @@ class ImplementContractTests(unittest.TestCase):
         }
         for name, (sandbox, boundary) in expected.items():
             with self.subTest(profile=name):
-                profile = tomllib.loads(
-                    (PLUGIN / "assets" / "agents" / f"{name}.toml").read_text(
-                        encoding="utf-8"
-                    )
-                )
+                profile = tomllib.loads(render_agents(ROOT)[f"agents/{name}.toml"])
                 self.assertEqual(profile["name"], name)
                 self.assertEqual(profile["sandbox_mode"], sandbox)
                 self.assertIn(boundary, profile["developer_instructions"].lower())

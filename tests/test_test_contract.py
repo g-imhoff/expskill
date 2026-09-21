@@ -16,7 +16,17 @@ from tests import test_test_evidence_finalizer as finalizer_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_SKILL = ROOT / "plugins" / "expskill" / "skills" / "test"
+TEST_SKILL = ROOT / "plugins" / "expskill" / "content" / "skills" / "test"
+CODEX_TEST_METADATA = (
+    ROOT
+    / "plugins"
+    / "expskill"
+    / "codex"
+    / "skills"
+    / "test"
+    / "agents"
+    / "openai.yaml"
+)
 QUALITY_CATALOG = TEST_SKILL / "references" / "quality-rules.json"
 EVIDENCE_CONTRACT = TEST_SKILL / "references" / "evidence-contract.json"
 FINALIZER = TEST_SKILL / "scripts" / "finalize_evidence.py"
@@ -960,6 +970,7 @@ class TestSkillContractTests(unittest.TestCase):
             root
             / "plugins"
             / "expskill"
+            / "content"
             / "skills"
             / "test"
             / "references"
@@ -984,6 +995,7 @@ class TestSkillContractTests(unittest.TestCase):
             root
             / "plugins"
             / "expskill"
+            / "content"
             / "skills"
             / "test"
             / "references"
@@ -1048,13 +1060,12 @@ class TestSkillContractTests(unittest.TestCase):
         observed = {
             path.relative_to(TEST_SKILL).as_posix()
             for path in TEST_SKILL.rglob("*")
-            if path.is_file()
+            if path.is_file() and "__pycache__" not in path.relative_to(TEST_SKILL).parts
         }
         self.assertEqual(
             observed,
             {
                 "SKILL.md",
-                "agents/openai.yaml",
                 "references/quality-rules.json",
                 "references/evidence-contract.json",
                 "scripts/append_ledger.py",
@@ -1064,7 +1075,7 @@ class TestSkillContractTests(unittest.TestCase):
                 "scripts/record_final_action.py",
             },
         )
-        metadata_path = TEST_SKILL / "agents" / "openai.yaml"
+        metadata_path = CODEX_TEST_METADATA
         self.assertTrue(metadata_path.is_file(), metadata_path)
         self.assertEqual(metadata_path.read_text(encoding="utf-8"), EXPECTED_METADATA)
 
@@ -3865,7 +3876,7 @@ class TestSkillContractTests(unittest.TestCase):
         """Regression: preserved words must not hide a directive to repair and reroute."""
 
         root = self.copy_repository()
-        skill_path = root / "plugins" / "expskill" / "skills" / "test" / "SKILL.md"
+        skill_path = root / "plugins" / "expskill" / "content" / "skills" / "test" / "SKILL.md"
         original = skill_path.read_text(encoding="utf-8")
         mutated = original.replace(
             "Do not edit production code.",
