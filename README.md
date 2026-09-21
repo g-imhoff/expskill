@@ -1,6 +1,6 @@
 # ExpSkill
 
-ExpSkill is a private Codex plugin with twelve independent skills and one
+ExpSkill is a private Codex plugin with thirteen independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -46,6 +46,12 @@ Invoke a skill directly when you know what you want:
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
   fact-grounded interview and mandatory final confirmation.
+- `$autonomous-run` acts as an AI user on your behalf. It launches one initial
+  `$use-expskill` conversation and follows the workflow's instructions and
+  conversation transitions to a review-ready draft PR.
+  It answers questions and confirms decisions within your scope and constraints.
+  After the workflow delivers the PR, it runs `$review-loop` in its own
+  conversation before handing the result to you for review and merge.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work with
@@ -79,6 +85,7 @@ Use $test to exercise this implemented change through realistic product behavior
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
 Use $unslop to rewrite this explanation in a natural voice.
 Use $grill-me to stress-test these connected product decisions.
+Use $autonomous-run to carry this idea to a review-ready draft PR.
 ```
 
 ## Workflow state and evidence
