@@ -34,25 +34,27 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
 
-    def test_readme_and_manifest_expose_twelve_skills_including_correct(self) -> None:
+    def test_readme_and_manifest_expose_thirteen_skills_including_correct(self) -> None:
         """Regression: stale phase language hides a direct skill or contradicts the public roster."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
-        skill_wording = re.compile(r"\btwelve independent skills and one optional lifecycle router\b", re.I)
+        skill_wording = re.compile(r"\bthirteen independent skills and one optional lifecycle router\b", re.I)
         self.assertRegex(" ".join(readme.split()), skill_wording)
         self.assertIn("$design", readme)
         self.assertIn("$test", readme)
         self.assertIn("$skill-builder", readme)
         self.assertIn("$setup-ui-testing", readme)
         self.assertIn("$review", readme)
+        self.assertIn("$review-loop", readme)
         self.assertIn("$correct", readme)
         self.assertIn("$autonomous-run", readme)
         self.assertIn("$test", long_description)
         self.assertIn("$skill-builder", long_description)
         self.assertIn("$setup-ui-testing", long_description)
         self.assertIn("$review", long_description)
+        self.assertIn("$review-loop", long_description)
         self.assertIn("$correct", long_description)
         self.assertIn("$autonomous-run", long_description)
         self.assertRegex(description, skill_wording)
@@ -82,7 +84,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-eleven-skill-wording": ("readme", "twelve independent skills"),
+            "stale-twelve-skill-wording": ("readme", "thirteen independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
@@ -124,12 +126,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         json.dumps(manifest, indent=2) + "\n",
                         encoding="utf-8",
                     )
-                elif mutation == "stale-eleven-skill-wording":
+                elif mutation == "stale-twelve-skill-wording":
                     readme = root / "README.md"
                     readme.write_text(
                         readme.read_text(encoding="utf-8").replace(
+                            "thirteen independent skills",
                             "twelve independent skills",
-                            "eleven independent skills",
                             1,
                         ),
                         encoding="utf-8",

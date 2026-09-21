@@ -1,6 +1,6 @@
 # ExpSkill
 
-ExpSkill is a private Codex plugin with twelve independent skills and one
+ExpSkill is a private Codex plugin with thirteen independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -36,6 +36,8 @@ Invoke a skill directly when you know what you want:
   choice before structural or breaking changes.
 - `$review` adversarially inspects a user-defined code scope and saves an
   evidence-backed Markdown report with ratings, without fixes or fix advice.
+- `$review-loop` runs adversarial category reviewers, fixes each top issue,
+  and repeats until every score reaches 9 of 10 before a PR.
 - `$test` exercises already-implemented behavior through realistic composed
   product paths and reports revision-bound evidence without repairing production
   code.
@@ -48,7 +50,8 @@ Invoke a skill directly when you know what you want:
   `$use-expskill` conversation and follows the workflow's instructions and
   conversation transitions to a review-ready draft PR.
   It answers questions and confirms decisions within your scope and constraints.
-  You review and merge the result.
+  After the workflow delivers the PR, it runs `$review-loop` in its own
+  conversation before handing the result to you for review and merge.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work with
@@ -77,6 +80,7 @@ Use $setup-ui-testing to establish this project's reusable isolated UI inspectio
 Use $implement to execute this accepted implementation work.
 Use $correct to repair this bounded regression before the branch is merged.
 Use $review to inspect the changes between this branch and main and save a report.
+Use $review-loop to drive this change to 9 of 10 before opening a PR.
 Use $test to exercise this implemented change through realistic product behavior.
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
 Use $unslop to rewrite this explanation in a natural voice.
@@ -98,7 +102,8 @@ Design works on one isolated candidate commit. The graph cannot become ready
 until Plan validates and records the approved Design receipt from that same
 baseline.
 
-`$brainstorm`, `$setup-ui-testing`, `$correct`, `$review`, and `$test` remain
+`$brainstorm`, `$setup-ui-testing`, `$correct`, `$review`, `$review-loop`, and
+`$test` remain
 independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
 Setup UI Testing records the reusable project-specific inspection method, and
@@ -114,6 +119,10 @@ alone. Reports live in the installed Review skill's `tmp/reports/` directory,
 outside every repository. Filenames include the date and time through seconds.
 The user deletes reports manually. Review does not apply corrections or start
 another skill.
+
+`$review-loop` coordinates per-category reviewers and fixers as the pre-PR gate.
+It runs up to three review cycles and passes when every category scores at
+least 9 of 10.
 
 The live certification chain is unfinished. Its required boundary must use
 fresh `codex exec --ephemeral --ignore-user-config --json` sessions in

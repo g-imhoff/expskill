@@ -44,6 +44,7 @@ SKILL_NAMES = (
     "skill-builder",
     "unslop",
     "autonomous-run",
+    "review-loop",
 )
 PLUGIN_SELECTOR = "expskill@expskill"
 MANIFEST_VERSION = json.loads(
