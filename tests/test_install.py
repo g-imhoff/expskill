@@ -674,6 +674,73 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse((repo / ".agents").exists())
             self.assertFalse(receipt_path(state_home).exists())
 
+    def test_legacy_plugin_removal_with_malformed_json_is_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(repo, repo.resolve()),
+                    plugin_list_response(repo, repo.resolve()),
+                    FakeResult(0, stdout="not-json"),
+                    plugin_add_response(repo),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                runner.calls[-1],
+                ("codex", "plugin", "add", PLUGIN_SELECTOR, "--json"),
+            )
+            self.assertFalse(
+                (state_home / "expskill" / "codex-migration.json").exists()
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_legacy_marketplace_removal_with_malformed_json_is_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            recovery_root = recovery_repository(repo)
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(repo, repo.resolve()),
+                    plugin_list_response(repo, repo.resolve()),
+                    removal_response(),
+                    FakeResult(0, stdout="not-json"),
+                    legacy_marketplace_add_response(repo, recovery_root),
+                    plugin_add_response(repo),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON"):
+                install(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                runner.calls[-2:],
+                [
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        str(recovery_root.resolve()),
+                        "--json",
+                    ),
+                    ("codex", "plugin", "add", PLUGIN_SELECTOR, "--json"),
+                ],
+            )
+            self.assertFalse(
+                (state_home / "expskill" / "codex-migration.json").exists()
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_legacy_migration_restore_failure_keeps_recovery_journal(self) -> None:
         """If compensation fails, durable migration evidence remains for retry."""
 

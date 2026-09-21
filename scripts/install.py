@@ -2266,6 +2266,11 @@ def _write_codex_migration_journal(
                 os.fsync(stream.fileno())
             os.replace(temporary_path, journal_path)
             temporary_path = None
+            directory_fd = os.open(journal_directory, _directory_open_flags())
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except OSError as error:
             write_cause = error
             write_error = InstallError(
@@ -2337,6 +2342,11 @@ def _clear_codex_migration_journal(journal_path: Path) -> None:
         raise InstallError(f"migration journal path is not a regular file: {journal_path}")
     try:
         journal_path.unlink()
+        directory_fd = os.open(journal_path.parent, _directory_open_flags())
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except OSError as error:
         raise InstallError(f"cannot remove Codex migration journal: {journal_path}: {error}") from error
 
@@ -5358,8 +5368,8 @@ def install(
                     ]
                     plugin_remove_result = _run_command(run, plugin_remove)
                     _require_success(plugin_remove, plugin_remove_result)
-                    _parse_json(plugin_remove, plugin_remove_result)
                     migration_state["plugin_removed"] = True
+                    _parse_json(plugin_remove, plugin_remove_result)
                     _write_codex_migration_journal(
                         migration_journal_path,
                         migration_state,
@@ -5374,8 +5384,8 @@ def install(
                 ]
                 marketplace_remove_result = _run_command(run, marketplace_remove)
                 _require_success(marketplace_remove, marketplace_remove_result)
-                _parse_json(marketplace_remove, marketplace_remove_result)
                 migration_state["marketplace_removed"] = True
+                _parse_json(marketplace_remove, marketplace_remove_result)
                 _write_codex_migration_journal(
                     migration_journal_path,
                     migration_state,
