@@ -543,7 +543,7 @@ import(%s).then(async (module) => {
   );
   assert(
     'catalog-inventory-shape',
-    expectedCommands.length === 12 && expectedAgents.length === 7,
+    expectedCommands.length === 14 && expectedAgents.length === 7,
   );
 
   const userCommand = { description: 'user command', template: 'user template' };

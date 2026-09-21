@@ -14,6 +14,7 @@ const CATALOG_PATH = path.join(PACKAGE_ROOT, "catalog.json");
 const SKILLS_PATH = path.join(PACKAGE_ROOT, "skills");
 const CATALOG_SCHEMA_VERSION = "opencode-runtime.v1";
 const REQUIRED_COMMANDS = [
+  "autonomous-run",
   "brainstorm",
   "correct",
   "design",
@@ -21,6 +22,7 @@ const REQUIRED_COMMANDS = [
   "implement",
   "plan",
   "review",
+  "review-loop",
   "setup-ui-testing",
   "skill-builder",
   "test",

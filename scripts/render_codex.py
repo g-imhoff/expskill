@@ -173,8 +173,14 @@ def skill_inventory(repo_root: Path | str | None = None) -> tuple[str, ...]:
     if not root.is_dir() or root.is_symlink():
         raise RenderError(f"canonical skills directory is missing: {root}")
     names = tuple(sorted(path.name for path in root.iterdir() if path.is_dir() and not path.is_symlink()))
-    if len(names) != 12:
-        raise RenderError(f"canonical skill roster must contain exactly 12 skills, found {len(names)}")
+    policy_path = package / "content" / "policies" / "skills.json"
+    try:
+        policy = json.loads(_read_text(policy_path, "canonical skill policy"))
+    except json.JSONDecodeError as error:
+        raise RenderError(f"canonical skill policy is malformed: {error}") from error
+    policy_values = policy.get("allow_implicit_invocation") if isinstance(policy, dict) else None
+    if not isinstance(policy_values, dict) or set(policy_values) != set(names):
+        raise RenderError("canonical skill policy inventory diverges from canonical skills")
     for name in names:
         _regular_file(root / name / "SKILL.md", f"canonical skill {name!r}")
     return names

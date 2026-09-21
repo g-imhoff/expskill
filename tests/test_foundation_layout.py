@@ -155,7 +155,7 @@ class FoundationLayoutTests(unittest.TestCase):
         plugin_root = ROOT / "plugins" / "expskill"
         self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
         self.assertTrue((plugin_root / "opencode").is_dir())
-        self.assertEqual(len([path for path in (plugin_root / "content" / "skills").iterdir() if path.is_dir()]), 12)
+        self.assertEqual(len([path for path in (plugin_root / "content" / "skills").iterdir() if path.is_dir()]), 14)
         self.assertEqual(len(list((plugin_root / "content" / "agents").glob("expskill-*.md"))), 7)
         tracked = subprocess.run(
             ["git", "ls-files", "--", "packages/codex", "packages/opencode", "packages/expskill"],
@@ -185,8 +185,8 @@ class FoundationLayoutTests(unittest.TestCase):
 
             artifact = source.parent / "artifact"
             build_opencode_package(source, artifact)
-            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 12)
-            self.assertEqual(len(list((artifact / "commands").glob("*.md"))), 12)
+            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 14)
+            self.assertEqual(len(list((artifact / "commands").glob("*.md"))), 14)
             self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
             canonical_skill = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
             self.assertEqual(
@@ -347,9 +347,9 @@ class FoundationLayoutTests(unittest.TestCase):
             artifact = Path(temporary) / "artifact"
             build_opencode_package(ROOT, artifact)
 
-            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 12)
+            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 14)
             commands = sorted((artifact / "commands").glob("*.md"))
-            self.assertEqual(len(commands), 12)
+            self.assertEqual(len(commands), 14)
             self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
             catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
             self.assertEqual(set(catalog["commands"]), {path.stem for path in commands})
@@ -387,6 +387,7 @@ class FoundationLayoutTests(unittest.TestCase):
                 "allow_implicit_invocation": {
                     name: name == "use-expskill"
                     for name in (
+                        "autonomous-run",
                         "brainstorm",
                         "correct",
                         "design",
@@ -394,6 +395,7 @@ class FoundationLayoutTests(unittest.TestCase):
                         "implement",
                         "plan",
                         "review",
+                        "review-loop",
                         "setup-ui-testing",
                         "skill-builder",
                         "test",

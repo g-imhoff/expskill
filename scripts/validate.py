@@ -152,8 +152,10 @@ PUBLIC_SKILL_TOKENS = {
     "$setup-ui-testing",
     "$skill-builder",
     "$unslop",
+    "$autonomous-run",
+    "$review-loop",
 }
-PUBLIC_SKILL_COUNT_TEXT = "eleven independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "thirteen independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
@@ -207,6 +209,8 @@ EXPECTED_SKILLS = {
     "setup-ui-testing",
     "skill-builder",
     "unslop",
+    "autonomous-run",
+    "review-loop",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
@@ -1310,7 +1314,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise eleven independent skills and one optional "
+                "plugin description must advertise thirteen independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
@@ -1428,6 +1432,7 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "references/rules-index.md", "references/geometry.md", "references/typography.md",
                 "references/interaction.md", "references/forms.md", "references/responsive.md",
                 "references/accessibility.md", "references/motion.md", "references/data-display.md",
+                "references/yodea-preview.md",
             })
         if skill_root.name == "skill-builder":
             expected_files.update({
@@ -2220,9 +2225,9 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
     normalized = " ".join(readme.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "README must describe eleven independent skills and one optional lifecycle router"
+            "README must describe thirteen independent skills and one optional lifecycle router"
         )
-    if re.search(r"\b(?:seven|eight|nine|ten) independent skills\b", normalized):
+    if re.search(r"\b(?:seven|eight|nine|ten|eleven|twelve) independent skills\b", normalized):
         errors.append("README contains stale public-skill count wording")
     if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
         errors.append("README must advertise $skill-builder")

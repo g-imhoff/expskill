@@ -27,6 +27,10 @@ for non-code work. Let that direct request proceed.
   components have not been approved.
 - Choose `implement` when the implementation facts and any required Design
   deliverables are accepted.
+- Choose `review-loop` when implementation is done and the change needs
+  adversarial category review with fixes before a PR. It coordinates reviewers
+  and fixers for up to three review cycles, passing when every category reaches
+  9 of 10.
 
 Except for the bounded Plan and Design conversation pair, open only the selected
 skill for the current transition. Explain the choice in plain language. A
@@ -84,6 +88,13 @@ conversation returns questions instead of asking the user. Present at most one
 current question at a time, apply its answer to the owning conversation, and
 then request the next current question. Do not infer approval. Relay questions
 only after the user has started both conversations.
+Relay Design's clickable Yodea preview link with each visual approval request
+and preview progress update. Carry the hosted note and represented candidate
+revision or digest through subsequent handoffs and completion summaries. The
+coordinator authorized to create or update a PR must include the current preview
+link in its description and both the PR and preview links in the final user
+response. Preserve the hosted preview through PR review even after the local
+Design worktree is cleaned up.
 
 After user approval, Design creates one coherent local candidate commit and
 delivers its route-neutral manifest and candidate-bearing Design receipt. Pass
@@ -131,7 +142,7 @@ Use `$grill-me` when every condition below is true:
   matter.
 - Only the user can decide them.
 
-Explain the blocker briefly and offer `$grill-me` only with the user's explicit consent. Never automatically invoke `$grill-me`. Then resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
+Explain the blocker briefly, then resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
 shared understanding, return the confirmed decision delta and resume the owning
 skill. The owning skill remains responsible for its state and for invalidating
 any dependent work.

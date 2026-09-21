@@ -103,6 +103,14 @@ Report completion only when every node and both whole-branch gates pass on the
 current target head. Summarize the implemented behavior, commits, checks, gate
 verdicts, retained risks, and any preserved worktrees.
 
+For UI work, include the Yodea preview link and represented Design candidate
+revision or digest from the delivery manifest. Preserve the hosted note for
+downstream PR delivery before removing local worktree evidence, and carry the
+link into the handoff for inclusion in the PR description and final response.
+Keep the hosted preview available through PR review. If implementation changed
+what the specimen represents, flag that mismatch instead of claiming the
+preview shows the current implementation.
+
 Do not push, open or update a merge request, approve, merge, enable auto-merge,
 or enter a merge queue. Do not invoke another product skill. Remote delivery,
 hands-on or end-to-end testing, and the user's final review remain separate

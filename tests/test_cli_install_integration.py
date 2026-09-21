@@ -175,7 +175,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
             installed_path = Path(str(plugin.get("installedPath")))
             self.assertEqual(
                 len(tuple(installed_path.glob("skills/*/agents/openai.yaml"))),
-                12,
+                14,
             )
 
             installer = _run(

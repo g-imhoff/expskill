@@ -31,6 +31,8 @@ PHASE_ROOTS = {
         "review",
         "test",
         "unslop",
+        "autonomous-run",
+        "review-loop",
     )
 }
 PUBLIC_SKILL_ROOTS = {
@@ -60,6 +62,8 @@ EXPECTED_SKILLS = {
     "test",
     "skill-builder",
     "unslop",
+    "autonomous-run",
+    "review-loop",
 }
 REMOVED_PUBLIC_SKILL = "accept" + "ance"
 REMOVED_PUBLIC_TOKEN = "$" + REMOVED_PUBLIC_SKILL
@@ -439,7 +443,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("eleven", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("thirteen", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -554,7 +558,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\beleven independent skills and one optional lifecycle router\b"
+            r"\bthirteen independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
