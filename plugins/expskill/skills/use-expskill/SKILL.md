@@ -89,6 +89,14 @@ current question at a time, apply its answer to the owning conversation, and
 then request the next current question. Do not infer approval. Relay questions
 only after the user has started both conversations.
 
+Relay Design's clickable Yodea preview link with each visual approval request
+and preview progress update. Carry the hosted note and represented candidate
+revision or digest through subsequent handoffs and completion summaries. The
+coordinator authorized to create or update a PR must include the current preview
+link in its description and both the PR and preview links in the final user
+response. Preserve the hosted preview through PR review even after the local
+Design worktree is cleaned up.
+
 After user approval, Design creates one coherent local candidate commit and
 delivers its route-neutral manifest and candidate-bearing Design receipt. Pass
 that unchanged receipt and commit identity to the same Plan session. Plan
