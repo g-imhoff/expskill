@@ -883,6 +883,184 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(journal.exists())
             self.assertFalse(recovery_root.exists())
 
+    def test_initial_install_resumes_links_created_before_process_exit(self) -> None:
+        """A retry claims only the links named by the durable install transaction."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+
+            def interrupt_after_links(command: list[str]) -> FakeResult:
+                if tuple(command[:4]) == (
+                    "codex",
+                    "plugin",
+                    "marketplace",
+                    "add",
+                ):
+                    raise SystemExit("simulated exit after links")
+                return marketplace_list_response()
+
+            with self.assertRaisesRegex(SystemExit, "after links"):
+                install(repo, codex_home, state_home, interrupt_after_links)
+
+            journal = state_home / "expskill" / "codex-install.json"
+            self.assertTrue(journal.is_file())
+            interrupted = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(
+                {entry["phase"] for entry in interrupted["links"]},
+                {"published"},
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertTrue(
+                all(path.is_symlink() for path in destination_paths(codex_home).values())
+            )
+
+            install(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner(install_results(repo)),
+            )
+
+            receipt = load_receipt(state_home)
+            self.assertEqual(len(receipt["links"]), len(PROFILE_NAMES))
+            self.assertFalse(journal.exists())
+
+            uninstall(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner(
+                    [
+                        plugin_list_response(repo),
+                        marketplace_list_response(repo),
+                        removal_response(),
+                        removal_response(),
+                    ]
+                ),
+            )
+            self.assertTrue(
+                all(
+                    not os.path.lexists(path)
+                    for path in destination_paths(codex_home).values()
+                )
+            )
+
+    def test_initial_install_resumes_cli_ownership_after_process_exit(self) -> None:
+        """Successful adds remain owned when the process exits before the receipt."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+
+            with mock.patch(
+                "scripts.install._write_codex_receipt",
+                side_effect=SystemExit("simulated exit after CLI adds"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "after CLI adds"):
+                    install(
+                        repo,
+                        codex_home,
+                        state_home,
+                        FakeRunner(install_results(repo)),
+                    )
+
+            journal = state_home / "expskill" / "codex-install.json"
+            self.assertTrue(journal.is_file())
+            interrupted = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(interrupted["marketplace_phase"], "added")
+            self.assertEqual(interrupted["plugin_phase"], "added")
+            retry = FakeRunner(
+                install_results(repo, marketplace_present=True, plugin_present=True)
+            )
+            install(repo, codex_home, state_home, retry)
+
+            receipt = load_receipt(state_home)
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+            self.assertFalse(journal.exists())
+
+            uninstall_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+            uninstall(repo, codex_home, state_home, uninstall_runner)
+            self.assertIn(
+                ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                uninstall_runner.calls,
+            )
+
+    def test_managed_marketplace_swap_recovers_exact_backup_after_process_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            managed_root = managed_repository(repo)
+            managed_parent = managed_root.parent
+            (repo / "README.md").write_text(
+                (repo / "README.md").read_text(encoding="utf-8") + "\nupdated\n",
+                encoding="utf-8",
+            )
+            original_fsync = __import__("scripts.install", fromlist=["_fsync_directory"])._fsync_directory
+            interrupted = {"value": False}
+
+            def exit_after_published_swap(path: Path) -> None:
+                original_fsync(path)
+                backups = tuple(
+                    candidate
+                    for candidate in managed_parent.iterdir()
+                    if ".old-" in candidate.name or "swap-backup" in candidate.name
+                )
+                if (
+                    path == managed_parent
+                    and managed_root.exists()
+                    and backups
+                    and not interrupted["value"]
+                ):
+                    interrupted["value"] = True
+                    raise SystemExit("simulated exit during managed swap")
+
+            with mock.patch("scripts.install._fsync_directory", exit_after_published_swap):
+                with self.assertRaisesRegex(SystemExit, "managed swap"):
+                    install(repo, codex_home, state_home, FakeRunner([]))
+
+            self.assertTrue(
+                any(
+                    ".old-" in candidate.name or "swap-backup" in candidate.name
+                    for candidate in managed_parent.iterdir()
+                )
+            )
+
+            install(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner(
+                    install_results(repo, marketplace_present=True, plugin_present=True)
+                ),
+            )
+
+            self.assertTrue(managed_root.is_dir())
+            self.assertFalse(
+                any(
+                    ".old-" in candidate.name or "swap-backup" in candidate.name
+                    for candidate in managed_parent.iterdir()
+                )
+            )
+            self.assertFalse(
+                (state_home / "expskill" / "codex-install.json").exists()
+            )
+
     def test_uninstall_removes_checkout_based_cli_state_from_owned_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -957,7 +1135,7 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(managed_root.is_dir())
             self.assertFalse(receipt_path(state_home).exists())
 
-    def test_install_migrates_owned_retired_profile_links(self) -> None:
+    def test_install_preserves_unproven_retired_profile_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -990,13 +1168,8 @@ class InstallerTests(unittest.TestCase):
 
             result = install(repo, codex_home, state_home, runner)
 
-            self.assertEqual(
-                {link.destination.name for link in result.removed_links},
-                {f"{name}.toml" for name in RETIRED_PROFILE_NAMES},
-            )
-            self.assertTrue(
-                all(not os.path.lexists(path) for path in retired_destinations)
-            )
+            self.assertEqual(result.removed_links, ())
+            self.assertTrue(all(path.is_symlink() for path in retired_destinations))
             self.assertEqual(
                 {
                     Path(entry["destination"]).stem
@@ -1004,6 +1177,80 @@ class InstallerTests(unittest.TestCase):
                 },
                 set(PROFILE_NAMES),
             )
+
+    def test_retired_link_removal_is_fsynced_before_receipt_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            agents = codex_home.resolve() / "agents"
+            source = (
+                repo.resolve()
+                / "plugins"
+                / "expskill"
+                / "codex"
+                / "runtime"
+                / "agents"
+                / "expskill-reviewer.toml"
+            )
+            destination = agents / "expskill-reviewer.toml"
+            destination.symlink_to(source)
+            metadata = os.lstat(destination)
+            anchor = agents / (
+                f".expskill-codex-link-anchor-{destination.name}-"
+                f"{metadata.st_dev:x}-{metadata.st_ino:x}.anchor"
+            )
+            os.link(destination, anchor, follow_symlinks=False)
+            receipt = load_receipt(state_home)
+            receipt["links"].append(
+                {
+                    "source": str(source),
+                    "destination": str(destination),
+                    "destination_dev": metadata.st_dev,
+                    "destination_ino": metadata.st_ino,
+                    "link_anchor": str(anchor),
+                    "link_anchor_dev": metadata.st_dev,
+                    "link_anchor_ino": metadata.st_ino,
+                }
+            )
+            receipt_path(state_home).write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            events: list[str] = []
+            install_module = __import__("scripts.install", fromlist=["_fsync_directory"])
+            original_fsync = install_module._fsync_directory
+            original_write = install_module._write_codex_receipt
+
+            def record_fsync(path: Path) -> None:
+                original_fsync(path)
+                if path == agents:
+                    events.append("agents-fsync")
+
+            def record_receipt(path: Path, value: object) -> None:
+                events.append("receipt")
+                original_write(path, value)
+
+            with mock.patch("scripts.install._fsync_directory", record_fsync), mock.patch(
+                "scripts.install._write_codex_receipt", record_receipt
+            ):
+                result = install(
+                    repo,
+                    codex_home,
+                    state_home,
+                    FakeRunner(
+                        install_results(
+                            repo, marketplace_present=True, plugin_present=True
+                        )
+                    ),
+                )
+
+            self.assertIn(destination.name, {link.destination.name for link in result.removed_links})
+            self.assertFalse(os.path.lexists(destination))
+            self.assertFalse(os.path.lexists(anchor))
+            self.assertLess(events.index("agents-fsync"), events.index("receipt"))
 
     def test_unrelated_and_broken_symlink_conflicts_refuse(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1172,8 +1419,14 @@ class InstallerTests(unittest.TestCase):
             runner = FakeRunner(
                 install_results(repo) + [removal_response(), removal_response()]
             )
+            original_replace = os.replace
 
-            with mock.patch("scripts.install.os.replace", side_effect=OSError("receipt disk full")):
+            def fail_receipt_replace(source: Path, destination: Path) -> None:
+                if Path(destination) == receipt_path(state_home):
+                    raise OSError("receipt disk full")
+                original_replace(source, destination)
+
+            with mock.patch("scripts.install.os.replace", fail_receipt_replace):
                 with self.assertRaisesRegex(InstallError, "receipt disk full"):
                     install(repo, codex_home, state_home, runner)
 
@@ -1457,6 +1710,113 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(replaced.is_file())
             self.assertFalse(receipt_path(state_home).exists())
 
+    def test_uninstall_preserves_same_target_symlink_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            replacement = destination_paths(codex_home)["expskill-review"]
+            target = Path(os.readlink(replacement))
+            replacement.unlink()
+            replacement.symlink_to(target)
+
+            uninstall(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner(
+                    [
+                        plugin_list_response(repo),
+                        marketplace_list_response(repo),
+                        removal_response(),
+                        removal_response(),
+                    ]
+                ),
+            )
+
+            self.assertTrue(replacement.is_symlink())
+            self.assertEqual(Path(os.readlink(replacement)), target)
+
+    def test_link_publication_and_uninstall_are_fsynced_before_receipt_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            agents = codex_home.resolve() / "agents"
+            install_events: list[tuple[str, int | None]] = []
+            install_module = __import__("scripts.install", fromlist=["_fsync_directory"])
+            original_fsync = install_module._fsync_directory
+            original_write = install_module._write_codex_receipt
+
+            def install_fsync(path: Path) -> None:
+                original_fsync(path)
+                if path == agents:
+                    install_events.append(("agents-fsync", None))
+
+            def install_write(path: Path, value: object) -> None:
+                install_events.append(("receipt", len(value.links)))
+                original_write(path, value)
+
+            with mock.patch("scripts.install._fsync_directory", install_fsync), mock.patch(
+                "scripts.install._write_codex_receipt", install_write
+            ):
+                install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+
+            first_owned_receipt = next(
+                index
+                for index, event in enumerate(install_events)
+                if event == ("receipt", len(PROFILE_NAMES))
+            )
+            self.assertIn(
+                ("agents-fsync", None), install_events[:first_owned_receipt]
+            )
+
+            uninstall_events: list[tuple[str, int | None]] = []
+
+            def uninstall_fsync(path: Path) -> None:
+                original_fsync(path)
+                if path == agents:
+                    uninstall_events.append(("agents-fsync", None))
+
+            def uninstall_write(path: Path, value: object) -> None:
+                uninstall_events.append(("receipt", len(value.links)))
+                original_write(path, value)
+
+            with mock.patch("scripts.install._fsync_directory", uninstall_fsync), mock.patch(
+                "scripts.install._write_codex_receipt", uninstall_write
+            ):
+                uninstall(
+                    repo,
+                    codex_home,
+                    state_home,
+                    FakeRunner(
+                        [
+                            plugin_list_response(repo),
+                            marketplace_list_response(repo),
+                            removal_response(),
+                            removal_response(),
+                        ]
+                    ),
+                )
+
+            prior_receipt = -1
+            prior_count = len(PROFILE_NAMES)
+            for index, event in enumerate(uninstall_events):
+                if event[0] != "receipt" or event[1] is None or event[1] >= prior_count:
+                    if event[0] == "receipt" and event[1] is not None:
+                        prior_count = event[1]
+                        prior_receipt = index
+                    continue
+                self.assertIn(
+                    ("agents-fsync", None),
+                    uninstall_events[prior_receipt + 1 : index],
+                )
+                prior_count = event[1]
+                prior_receipt = index
+
     def test_uninstall_preserves_retargeted_links_and_preexisting_marketplace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1690,6 +2050,12 @@ class InstallerTests(unittest.TestCase):
             receipt_directory = state_home / "expskill"
             temporary_paths: list[Path] = []
             original_unlink = Path.unlink
+            original_replace = os.replace
+
+            def fail_receipt_replace(source: Path, destination: Path) -> None:
+                if Path(destination) == receipt_path(state_home):
+                    raise OSError("receipt disk full")
+                original_replace(source, destination)
 
             def fail_temporary(path: Path, *args: object, **kwargs: object) -> None:
                 if path.parent == receipt_directory and path.name.startswith(".install.json."):
@@ -1697,7 +2063,7 @@ class InstallerTests(unittest.TestCase):
                     raise OSError("temporary receipt busy")
                 original_unlink(path, *args, **kwargs)
 
-            with mock.patch("scripts.install.os.replace", side_effect=OSError("receipt disk full")):
+            with mock.patch("scripts.install.os.replace", fail_receipt_replace):
                 with mock.patch.object(Path, "unlink", fail_temporary):
                     with self.assertRaisesRegex(InstallError, "receipt disk full") as context:
                         install(repo, codex_home, state_home, runner)
