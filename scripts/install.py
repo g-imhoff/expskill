@@ -2104,6 +2104,7 @@ def _remove_owned_codex_marketplace(root: Path, repository_root: Path) -> None:
                 child.unlink()
             else:
                 shutil.rmtree(child)
+        _fsync_directory(root)
         marker.unlink()
         root.rmdir()
         _fsync_directory(root.parent)
@@ -4573,7 +4574,6 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary_path, receipt_path)
         temporary_path = None
-        _fsync_directory(receipt_directory)
         directory_fd = os.open(
             receipt_directory,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -4721,6 +4721,7 @@ def _write_codex_receipt(receipt_path: Path, receipt: _Receipt) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary_path, receipt_path)
         temporary_path = None
+        _fsync_directory(receipt_directory)
     except OSError as error:
         write_cause = error
         write_error = InstallError(f"cannot write receipt: {receipt_path}: {error}")
@@ -5800,6 +5801,7 @@ def uninstall(
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
         receipt_path_value.unlink()
+        _fsync_directory(receipt_path_value.parent)
     except OSError as error:
         raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
     return InstallResult(
