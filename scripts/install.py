@@ -2875,7 +2875,7 @@ def _validate_codex_install_journal(
         "recovery_swap",
     }
     if (
-        set(payload) != expected_keys
+        set(payload) - {"superseded_links"} != expected_keys
         or payload.get("schema_version") != CODEX_INSTALL_SCHEMA
         or payload.get("repository_root") != str(repository_root)
         or payload.get("codex_home") != str(_lexical_absolute(codex_home))
@@ -3014,6 +3014,7 @@ def _validate_codex_install_journal(
             )
     if seen != set(expected):
         raise InstallError(f"install journal links are malformed: {journal_path}")
+    _codex_superseded_links(journal_path, payload)
     for swap_key in ("swap", "recovery_swap"):
         swap = payload.get(swap_key)
         if swap is not None and not isinstance(swap, dict):
@@ -6149,6 +6150,69 @@ def _clear_codex_transaction_link(record: dict[str, object]) -> None:
     record["link_anchor"] = None
 
 
+def _codex_superseded_links(
+    journal_path: Path, journal: Mapping[str, object],
+) -> tuple[ProfileLink, ...]:
+    """Decode exact prior receipt authority retained across publication."""
+
+    entries = journal.get("superseded_links", [])
+    if not isinstance(entries, list):
+        raise InstallError(f"Codex superseded links are malformed: {journal_path}")
+    expected = _allowlisted_links(
+        Path(journal["repository_root"]), Path(journal["codex_home"]),
+        journal_path.parent.parent,
+    )
+    links: list[ProfileLink] = []
+    for entry in entries:
+        # Several interrupted repairs can retain different identities at one
+        # destination. Each must independently pass the receipt allowlist.
+        link, = _codex_receipt_links([entry], journal_path, expected)
+        if not _valid_codex_link_anchor_path(link):
+            raise InstallError(f"Codex superseded link lacks identity: {journal_path}")
+        links.append(link)
+    return tuple(links)
+
+
+def _retain_codex_superseded_links(
+    journal_path: Path, journal: dict[str, object],
+    previous: Sequence[ProfileLink], successor: Sequence[ProfileLink],
+) -> None:
+    next_by_destination = {link.destination: link for link in successor}
+    entries = list(journal.get("superseded_links", []))
+    for link in previous:
+        next_link = next_by_destination.get(link.destination)
+        if (
+            not _valid_codex_link_anchor_path(link)
+            or next_link is None
+            or (link.source, link.link_anchor) == (next_link.source, next_link.link_anchor)
+        ):
+            continue
+        entry = {
+            "source": str(link.source), "destination": str(link.destination),
+            "destination_dev": link.destination_dev, "destination_ino": link.destination_ino,
+            "link_anchor": str(link.link_anchor),
+            "link_anchor_dev": link.link_anchor_dev, "link_anchor_ino": link.link_anchor_ino,
+        }
+        if entry not in entries:
+            entries.append(entry)
+    if entries != journal.get("superseded_links", []):
+        journal["superseded_links"] = entries
+        # The old receipt remains authoritative until this write succeeds.
+        _write_codex_install_journal(journal_path, journal)
+
+
+def _retire_codex_superseded_links(
+    journal_path: Path, journal: dict[str, object],
+) -> None:
+    for link in _codex_superseded_links(journal_path, journal):
+        _remove_codex_recorded_link(link)
+        if _lexists(link.link_anchor):
+            raise InstallError(f"Codex superseded anchor could not be retired: {link.link_anchor}")
+    # Keep the inventory until journal deletion. Besides idempotent cleanup,
+    # it identifies legacy pre-states superseded by a published receipt if a
+    # later invocation fails while finishing this transaction.
+
+
 def _recover_codex_transaction_link(
     link: ProfileLink,
     record: dict[str, object],
@@ -6290,21 +6354,14 @@ def _recover_codex_transaction_link(
             record["phase"] = "published"
             _write_codex_install_journal(journal_path, journal)
             return recorded
-        try:
-            recorded.staged_destination.unlink()
-            _fsync_directory(recorded.staged_destination.parent)
-        except OSError as error:
-            raise InstallError(
-                f"cannot retire staged Codex agent link: {recorded.staged_destination}: {error}"
-            ) from error
-    if _codex_anchor_is_live(recorded) and recorded.link_anchor is not None:
-        try:
-            recorded.link_anchor.unlink()
-            _fsync_directory(recorded.link_anchor.parent)
-        except OSError as error:
-            raise InstallError(
-                f"cannot retire Codex link anchor: {recorded.link_anchor}: {error}"
-            ) from error
+    _retire_codex_transaction_stage(recorded)
+    if _same_recorded_link(link.destination, link.source):
+        # Preserve the original identity as dependency evidence. Neither this
+        # journal nor the successor receipt may adopt the replacement inode.
+        return recorded
+    _remove_codex_recorded_link(recorded)
+    if recorded.link_anchor is not None and _lexists(recorded.link_anchor):
+        raise InstallError(f"Codex link anchor could not be retired: {recorded.link_anchor}")
     _clear_codex_transaction_link(record)
     _write_codex_install_journal(journal_path, journal)
     return None
@@ -6769,10 +6826,33 @@ def _restore_legacy_codex_links(
 
     _verify_codex_transaction()
     failures: list[str] = []
+    repository_root = Path(journal["repository_root"])
+    receipt_path = _receipt_path(journal_path.parent.parent)
+    receipt = _read_codex_receipt(
+        receipt_path, repository_root,
+        _allowlisted_links(repository_root, Path(journal["codex_home"]), journal_path.parent.parent),
+    )
+    superseded = _codex_superseded_links(journal_path, journal)
+    retained = {
+        (link.source, link.destination): link
+        for link in superseded
+    }
+    receipted = {} if receipt is None else {link.destination: link for link in receipt.links}
+    if receipt is not None:
+        retained.update({(link.source, link.destination): link for link in receipt.links})
     records = {record["destination"]: record for record in journal["links"]}
     for link in links:
         try:
             record = records[str(link.destination)]
+            successor = receipted.get(link.destination)
+            if (
+                link in superseded
+                and successor is not None
+                and str(successor.source) == record["source"]
+            ):
+                # Receipt publication committed this migration. A failure on
+                # retry must not restore its obsolete checkout-based pre-state.
+                continue
             restoration = record.get("legacy_restore")
             staged = _codex_link_staging_path(
                 link.source, link.destination, journal["stage_secret"]
@@ -6795,7 +6875,13 @@ def _restore_legacy_codex_links(
             link.destination.parent.mkdir(parents=True, exist_ok=True)
             if restoration["dev"] is None:
                 if not _lexists(staged):
-                    staged.symlink_to(record["preexisting_target"])
+                    original = retained.get((link.source, link.destination))
+                    if original is not None and _valid_codex_link_anchor_path(original):
+                        if not _codex_anchor_is_live(original):
+                            raise InstallError(f"legacy receipt anchor changed: {original.link_anchor}")
+                        os.link(original.link_anchor, staged, follow_symlinks=False)
+                    else:
+                        staged.symlink_to(record["preexisting_target"])
                 if not _codex_staged_link_is_exact(link, staged):
                     raise InstallError(f"legacy restoration stage changed: {staged}")
                 metadata = os.lstat(staged)
@@ -7178,6 +7264,8 @@ def _cleanup_after_install_failure(
             except InstallError as error:
                 failures.append(f"migration journal cleanup: {error}")
     if install_journal is not None:
+        if install_journal.get("superseded_links"):
+            failures.append("superseded link cleanup remains pending in install journal")
         # A resumed invocation may fail before its local ownership flags are
         # set, including after an add exited before its durable checkpoint.
         # Keep pre-states loaded from the prior invocation until its possible
@@ -7539,6 +7627,10 @@ def _install_codex_bound(
             or plugin_new
             or resumed_migration,
         )
+        _retain_codex_superseded_links(
+            install_journal_path, install_journal,
+            () if receipt is None else receipt.links, merged_receipt.links,
+        )
         if migration_state is not None:
             migration_state["committed"] = True
             _write_codex_migration_journal(
@@ -7547,6 +7639,7 @@ def _install_codex_bound(
             )
         _write_codex_receipt(receipt_path_value, merged_receipt)
         receipt_committed = True
+        _retire_codex_superseded_links(install_journal_path, install_journal)
         if migration_state is not None:
             _clear_codex_migration_journal(migration_journal_path)
             if _codex_managed_root_is_owned(recovery_root, canonical_root):
@@ -7710,6 +7803,7 @@ def _uninstall_codex_bound(
         )
         if failures:
             raise InstallError("pending owned link cleanup failed: " + "; ".join(failures))
+        _retire_codex_superseded_links(journal_path, journal)
         for key, target in (("swap", managed_root), ("recovery_swap", recovery_root)):
             _resume_codex_marketplace_swap(
                 canonical_root, target, journal_path, journal, swap_key=key

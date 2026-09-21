@@ -15,6 +15,8 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from scripts.install import (
     InstallError,
     _codex_managed_root,
@@ -4318,6 +4320,338 @@ class InstallerTests(unittest.TestCase):
                 any("codex plugin marketplace add" in line for line in lines)
             )
             self.assertFalse(any("codex plugin add " in line for line in lines))
+
+
+def _seed_receipted_checkout_profile(repo: Path, codex_home: Path, state_home: Path) -> Path:
+    destination = destination_paths(codex_home)["expskill-review"]
+    source = repo / "plugins/expskill/assets/agents" / destination.name
+    destination.parent.mkdir(parents=True)
+    destination.symlink_to(source)
+    receipt_path(state_home).parent.mkdir(parents=True)
+    receipt_path(state_home).write_text(json.dumps({
+        "repository_root": str(repo.resolve()),
+        "links": [{"source": str(source), "destination": str(destination)}],
+        "marketplace_added": False,
+        "plugin_installed": False,
+    }))
+    return destination
+
+
+@pytest.mark.parametrize("agents_only", [True, False], ids=["agents", "full"])
+@pytest.mark.parametrize("existing_receipt", [False, True], ids=["first", "existing"])
+@pytest.mark.parametrize("resume", [False, True], ids=["direct-uninstall", "resume-install"])
+@pytest.mark.parametrize("replacement", ["missing", "regular", "same-target", "other-target"])
+def test_recovery_authority_public_replacement_matrix(
+    tmp_path: Path, agents_only: bool, existing_receipt: bool, resume: bool, replacement: str,
+) -> None:
+    repo = seed_repository(tmp_path / "repo")
+    codex_home, state_home = tmp_path / "codex", tmp_path / "state"
+    destination = destination_paths(codex_home)["expskill-review"]
+    prior_inode = None
+    if existing_receipt:
+        install(repo, codex_home, state_home, FakeRunner(
+            [] if agents_only else install_results(repo)
+        ), agents_only=agents_only)
+        prior_inode = destination.lstat().st_ino
+        destination.unlink()
+    pid = os.fork()
+    if pid == 0:
+        with mock.patch("scripts.install._write_codex_receipt", side_effect=lambda *a, **k: os._exit(73)):
+            install(repo, codex_home, state_home, FakeRunner(
+                [] if agents_only else install_results(repo, existing_receipt, existing_receipt)
+            ), agents_only=agents_only)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    target = Path(os.readlink(destination))
+    original_inode = destination.lstat().st_ino
+    destination.unlink()
+    if replacement == "regular":
+        destination.write_text("user replacement")
+    elif replacement in {"same-target", "other-target"}:
+        destination.symlink_to(target if replacement == "same-target" else tmp_path / "unrelated")
+    replacement_inode = destination.lstat().st_ino if replacement != "missing" else None
+    if replacement_inode is not None:
+        assert replacement_inode != original_inode
+    if resume:
+        runner = FakeRunner([] if agents_only else install_results(repo, True, True))
+        if replacement in {"regular", "other-target"}:
+            with pytest.raises(InstallError, match="conflict"):
+                install(repo, codex_home, state_home, runner, agents_only=agents_only)
+        else:
+            install(repo, codex_home, state_home, runner, agents_only=agents_only)
+            if replacement == "same-target":
+                entries = [entry for entry in load_receipt(state_home)["links"] if entry["destination"] == str(destination)]
+                assert len(entries) == 1, "resume discarded the package dependency"
+                assert entries[0]["destination_ino"] in {prior_inode, original_inode}
+                assert entries[0]["destination_ino"] != replacement_inode
+    # A pending journal blocks before CLI cleanup; a committed receipt removes
+    # owned registrations first. Either route must keep the replacement target.
+    cli_present = not agents_only
+    for _ in range(2 if replacement == "same-target" else 1):
+        runner = FakeRunner([
+            plugin_list_response(repo if cli_present else None),
+            marketplace_list_response(repo if cli_present else None),
+            removal_response(), removal_response(),
+        ])
+        if replacement == "same-target":
+            with pytest.raises(InstallError, match="ownership changed|unproven.*depends"):
+                uninstall(repo, codex_home, state_home, runner)
+            assert destination.lstat().st_ino == replacement_inode
+            assert target.is_file()
+            assert receipt_path(state_home).exists() or (state_home / "expskill/codex-install.json").exists()
+        else:
+            uninstall(repo, codex_home, state_home, runner)
+        if any("remove" in call for call in runner.calls):
+            cli_present = False
+    if replacement == "same-target":
+        destination.unlink()
+        uninstall(repo, codex_home, state_home, FakeRunner([
+            plugin_list_response(repo if cli_present else None),
+            marketplace_list_response(repo if cli_present else None),
+            removal_response(), removal_response(),
+        ]))
+    survivors = {destination} if replacement in {"regular", "other-target"} else set()
+    assert set(destination.parent.iterdir()) == survivors
+    if survivors:
+        assert destination.lstat().st_ino == replacement_inode
+    assert not receipt_path(state_home).exists()
+    assert not (state_home / "expskill/codex-install.json").exists()
+    assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["missing-repair", "checkout-migration"])
+@pytest.mark.parametrize("boundary", ["none", "before-receipt", "after-receipt"])
+@pytest.mark.parametrize("resume", [False, True], ids=["direct-uninstall", "resume-install"])
+def test_recovery_authority_superseded_anchor(
+    tmp_path: Path, legacy: bool, boundary: str, resume: bool,
+) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    codex_home, state_home = tmp_path / "codex", tmp_path / "state"
+    if legacy:
+        destination = _seed_receipted_checkout_profile(repo, codex_home, state_home)
+    else:
+        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+        destination = destination_paths(codex_home)["expskill-review"]
+        destination.unlink()
+    if boundary == "none":
+        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    else:
+        pid = os.fork()
+        if pid == 0:
+            write = module._write_codex_receipt
+            def checkpoint(path: Path, receipt: object, **kwargs: object) -> None:
+                publishing = len(receipt.links) == len(PROFILE_NAMES) and all(
+                    link.source.is_relative_to(managed_repository(repo)) for link in receipt.links
+                )
+                if publishing and boundary == "before-receipt":
+                    os._exit(73)
+                write(path, receipt, **kwargs)
+                if publishing and boundary == "after-receipt":
+                    os._exit(73)
+            with mock.patch("scripts.install._write_codex_receipt", checkpoint):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    if resume:
+        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    uninstall(repo, codex_home, state_home, FakeRunner([
+        plugin_list_response(), marketplace_list_response(),
+    ]))
+    assert list(destination.parent.iterdir()) == [], "superseded anchor lost cleanup authority"
+    assert not receipt_path(state_home).exists()
+    assert not (state_home / "expskill/codex-install.json").exists()
+    assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("boundary", ["none", "restored", "journal-cleared"])
+def test_recovery_authority_receipted_legacy_compensation(tmp_path: Path, boundary: str) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    codex_home, state_home = tmp_path / "codex", tmp_path / "state"
+    destination = _seed_receipted_checkout_profile(repo, codex_home, state_home)
+    original_target = os.readlink(destination)
+    def fail_install() -> None:
+        with pytest.raises(InstallError, match="plugin add failed"):
+            install(repo, codex_home, state_home, FakeRunner([
+                marketplace_list_response(), marketplace_add_response(repo),
+                plugin_list_response(), FakeResult(1, stderr="plugin add failed"),
+                removal_response(),
+            ]))
+    if boundary == "none":
+        fail_install()
+    else:
+        pid = os.fork()
+        if pid == 0:
+            sync, clear = module._fsync_directory, module._clear_codex_install_journal
+            def checkpoint(path: Path) -> None:
+                sync(path)
+                if boundary == "restored" and destination.is_symlink() and os.readlink(destination) == original_target:
+                    journal = json.loads((state_home / "expskill/codex-install.json").read_text())
+                    if any("legacy_restore" in record for record in journal["links"]):
+                        os._exit(73)
+            def cleared(path: Path) -> None:
+                clear(path)
+                if boundary == "journal-cleared":
+                    os._exit(73)
+            with mock.patch("scripts.install._fsync_directory", checkpoint), mock.patch("scripts.install._clear_codex_install_journal", cleared):
+                fail_install()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    if boundary != "restored":
+        entry = next(entry for entry in load_receipt(state_home)["links"] if entry["destination"] == str(destination))
+        assert entry["destination_ino"] == destination.lstat().st_ino, "compensation abandoned receipt identity"
+        assert Path(entry["link_anchor"]).lstat().st_ino == destination.lstat().st_ino
+    for _ in range(2):
+        uninstall(repo, codex_home, state_home, FakeRunner([
+            plugin_list_response(), marketplace_list_response(), removal_response(), removal_response(),
+        ]))
+    assert list(destination.parent.iterdir()) == []
+    assert not receipt_path(state_home).exists()
+    assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["missing-repair", "checkout-migration"])
+@pytest.mark.parametrize("fault", ["error", "exit-before", "exit-exchange", "exit-after", "private-regular", "private-same-target"])
+def test_recovery_authority_anchor_retirement_retry(tmp_path: Path, legacy: bool, fault: str) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    codex_home, state_home = tmp_path / "codex", tmp_path / "state"
+    if legacy:
+        destination = _seed_receipted_checkout_profile(repo, codex_home, state_home)
+    else:
+        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+        destination = destination_paths(codex_home)["expskill-review"]
+    metadata = destination.lstat()
+    old_anchor = module._codex_link_anchor_path(destination, metadata.st_dev, metadata.st_ino)
+    if not legacy:
+        destination.unlink()
+    unrelated = destination.parent / ".expskill-codex-link-anchor-unrelated.anchor"
+    unrelated.write_text("unrelated private file")
+    remove = module._remove_exact_via_exchange
+    def retirement(parent_fd: int, name: str, *args: object, **kwargs: object) -> bool:
+        if name == old_anchor.name:
+            if fault == "error":
+                raise InstallError("old anchor cleanup blocked")
+            if fault == "exit-before":
+                os._exit(73)
+            if fault.startswith("private-") and not (tmp_path / "saved-anchor").is_symlink():
+                old_anchor.rename(tmp_path / "saved-anchor")
+                if fault == "private-regular":
+                    old_anchor.write_text("private replacement")
+                else:
+                    old_anchor.symlink_to(os.readlink(tmp_path / "saved-anchor"))
+        result = remove(parent_fd, name, *args, **kwargs)
+        if name == old_anchor.name and fault == "exit-after":
+            os._exit(73)
+        return result
+    if fault.startswith("exit-"):
+        pid = os.fork()
+        if pid == 0:
+            exchange = module._renameat_exchange
+            def exchanged(source_fd: int, source_name: str, target_fd: int, target_name: str) -> None:
+                exchange(source_fd, source_name, target_fd, target_name)
+                if fault == "exit-exchange" and source_name == old_anchor.name:
+                    os._exit(73)
+            with mock.patch("scripts.install._remove_exact_via_exchange", retirement), mock.patch("scripts.install._renameat_exchange", exchanged):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        with mock.patch("scripts.install._remove_exact_via_exchange", retirement), pytest.raises(InstallError):
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    journal_path = state_home / "expskill/codex-install.json"
+    assert journal_path.exists(), "failed retirement lost its durable authority"
+    if fault.startswith("private-"):
+        replacement_inode = old_anchor.lstat().st_ino
+        for _ in range(2):
+            with pytest.raises(InstallError):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            assert old_anchor.lstat().st_ino == replacement_inode
+            assert journal_path.exists()
+        old_anchor.unlink()
+        (tmp_path / "saved-anchor").rename(old_anchor)
+    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    uninstall(repo, codex_home, state_home, FakeRunner([
+        plugin_list_response(), marketplace_list_response(),
+    ]))
+    assert list(destination.parent.iterdir()) == [unrelated]
+    assert unrelated.read_text() == "unrelated private file"
+    assert not receipt_path(state_home).exists()
+    assert not journal_path.exists()
+    assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("boundary", ["before-receipt", "after-receipt"])
+def test_recovery_authority_dependency_receipt_handoff(tmp_path: Path, boundary: str) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    codex_home, state_home = tmp_path / "codex", tmp_path / "state"
+    with mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit), pytest.raises(SystemExit):
+        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    destination = destination_paths(codex_home)["expskill-review"]
+    original_inode, target = destination.lstat().st_ino, Path(os.readlink(destination))
+    destination.unlink()
+    destination.symlink_to(target)
+    replacement_inode = destination.lstat().st_ino
+    pid = os.fork()
+    if pid == 0:
+        write = module._write_codex_receipt
+        def checkpoint(*args: object, **kwargs: object) -> None:
+            if boundary == "before-receipt":
+                os._exit(73)
+            write(*args, **kwargs)
+            os._exit(73)
+        with mock.patch("scripts.install._write_codex_receipt", checkpoint):
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    entries = [entry for entry in load_receipt(state_home)["links"] if entry["destination"] == str(destination)]
+    assert len(entries) == 1
+    assert entries[0]["destination_ino"] == original_inode
+    with pytest.raises(InstallError, match="unproven.*depends"):
+        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    assert destination.lstat().st_ino == replacement_inode
+    assert target.is_file()
+    destination.unlink()
+    uninstall(repo, codex_home, state_home, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert list(destination.parent.iterdir()) == []
+    assert not receipt_path(state_home).exists()
+    assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("boundary", ["before-retirement", "after-retirement"])
+def test_recovery_authority_failed_retry_after_receipt_publication(tmp_path: Path, boundary: str) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    codex_home, state_home = tmp_path / "codex", tmp_path / "state"
+    destination = _seed_receipted_checkout_profile(repo, codex_home, state_home)
+    pid = os.fork()
+    if pid == 0:
+        write, clear = module._write_codex_receipt, module._clear_codex_install_journal
+        def checkpoint(path: Path, receipt: object, **kwargs: object) -> None:
+            write(path, receipt, **kwargs)
+            if boundary == "before-retirement" and len(receipt.links) == len(PROFILE_NAMES):
+                os._exit(73)
+        def clearing(path: Path) -> None:
+            if boundary == "after-retirement":
+                os._exit(73)
+            clear(path)
+        with mock.patch("scripts.install._write_codex_receipt", checkpoint), mock.patch("scripts.install._clear_codex_install_journal", clearing):
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    with mock.patch("scripts.install._write_codex_receipt", side_effect=InstallError("receipt publication failed")), pytest.raises(InstallError, match="receipt publication failed"):
+        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+    for _ in range(2):
+        uninstall(repo, codex_home, state_home, FakeRunner([
+            plugin_list_response(), marketplace_list_response(),
+        ]))
+    assert list(destination.parent.iterdir()) == []
+    assert not receipt_path(state_home).exists()
+    assert not (state_home / "expskill/codex-install.json").exists()
+    assert not managed_repository(repo).exists()
 
 
 if __name__ == "__main__":
