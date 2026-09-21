@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -281,6 +282,219 @@ def wait_for_crashed_child(pid: int, expected_status: int = 73) -> None:
 
 
 class InstallerTests(unittest.TestCase):
+    def test_pending_install_can_be_uninstalled_without_a_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            with mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit):
+                with self.assertRaises(SystemExit):
+                    install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            runner = FakeRunner(
+                install_results(repo, marketplace_present=True, plugin_present=True)
+                + [plugin_list_response(repo), marketplace_list_response(repo),
+                   removal_response(), removal_response()]
+            )
+            uninstall(repo, codex_home, state_home, runner)
+            self.assertFalse((state_home / "expskill" / "codex-install.json").exists())
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertFalse(managed_repository(repo).exists())
+            self.assertFalse(any((codex_home / "agents").iterdir()))
+
+    def test_codex_lock_survives_state_leaf_replacement(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            state_home = Path(temporary) / "state"
+            with module._codex_transaction(state_home, create=True):
+                (state_home / "expskill").rename(state_home / "displaced")
+                (state_home / "expskill").mkdir()
+                # A distinct process has no process-local lease table.
+                pid = os.fork()
+                if pid == 0:
+                    module._CODEX_TRANSACTION_LEASES.clear()
+                    module._STATE_BINDINGS.clear()
+                    try:
+                        with module._codex_transaction(state_home, create=True):
+                            os._exit(74)
+                    except InstallError:
+                        os._exit(73)
+                wait_for_crashed_child(pid)
+
+    def test_codex_rejects_substituted_state_before_journal_write(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            state_home = Path(temporary) / "state"
+            with module._codex_transaction(state_home, create=True):
+                (state_home / "expskill").rename(state_home / "displaced")
+                (state_home / "expskill").mkdir()
+                with self.assertRaisesRegex(InstallError, "binding.*replaced"):
+                    module._write_codex_install_journal(
+                        state_home / "expskill" / "codex-install.json", {}
+                    )
+                self.assertEqual(list((state_home / "expskill").iterdir()), [])
+
+    def test_shared_state_binding_supports_codex_lock_opt_out(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch("scripts.install.fcntl.flock", wraps=fcntl.flock) as flock:
+                binding = module._open_state_binding(
+                    Path(temporary) / "state", create=True, lock=False
+                )
+                module._close_state_binding(binding)
+            flock.assert_not_called()
+
+    def test_state_substitution_during_build_is_rejected_before_marker_write(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            state_home = root / "state"
+            original_build = module._build_codex_marketplace
+            candidates = []
+            def substitute(source: Path, candidate: Path) -> object:
+                result = original_build(source, candidate)
+                (state_home / "expskill").rename(root / "displaced")
+                candidate.mkdir(parents=True)
+                (candidate / "user-data").write_text("preserve")
+                candidates.append(candidate)
+                return result
+            with mock.patch("scripts.install._build_codex_marketplace", substitute):
+                with self.assertRaisesRegex(InstallError, "binding.*replaced"):
+                    install(repo, root / "codex", state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(list(candidates[0].iterdir()), [candidates[0] / "user-data"])
+
+    def test_created_state_ancestors_are_durable_before_external_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            state_home, codex_home = root / "nested" / "state", root / "codex"
+            synced = set()
+            original_fsync = os.fsync
+            def fsync(fd: int) -> None:
+                metadata = os.fstat(fd)
+                synced.add((metadata.st_dev, metadata.st_ino))
+                original_fsync(fd)
+            def external(command: list[str]) -> FakeResult:
+                for path in (root, root / "nested", state_home):
+                    metadata = path.stat()
+                    self.assertIn((metadata.st_dev, metadata.st_ino), synced, str(path))
+                raise SystemExit
+            with mock.patch("scripts.install.os.fsync", fsync):
+                with self.assertRaises(SystemExit):
+                    install(repo, codex_home, state_home, external)
+
+    def test_package_publication_syncs_source_and_removed_temporary_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            events = []
+            original_rename, original_fsync, original_rmtree = Path.rename, os.fsync, shutil.rmtree
+            def rename(path: Path, target: Path) -> Path:
+                result = original_rename(path, target)
+                if path.name == "marketplace" and path.parent.name.startswith(".codex-package-"):
+                    events.append(("rename", path.parent, Path(target).parent))
+                return result
+            def fsync(fd: int) -> None:
+                events.append(("sync", Path(os.readlink(f"/proc/self/fd/{fd}"))))
+                original_fsync(fd)
+            def rmtree(path: Path, *args: object, **kwargs: object) -> None:
+                original_rmtree(path, *args, **kwargs)
+                if Path(path).name.startswith(".codex-package-"):
+                    events.append(("remove", Path(path)))
+            with mock.patch.object(Path, "rename", rename), mock.patch("scripts.install.os.fsync", fsync), mock.patch("scripts.install.shutil.rmtree", rmtree):
+                install(repo, root / "codex", root / "state", FakeRunner([]), agents_only=True)
+            index = next(i for i, event in enumerate(events) if event[0] == "rename")
+            _, source_parent, target_parent = events[index]
+            removal = events.index(("remove", source_parent), index)
+            self.assertIn(("sync", source_parent), events[index:removal])
+            self.assertIn(("sync", target_parent), events[index:removal])
+            self.assertIn(("sync", target_parent), events[removal:])
+
+    def test_recovered_public_link_is_synced_before_published_checkpoint(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            original_write = module._write_codex_install_journal
+            def exit_before_checkpoint(path: Path, payload: dict) -> None:
+                if any(link["phase"] == "published" for link in payload["links"]):
+                    raise SystemExit
+                original_write(path, payload)
+            with mock.patch("scripts.install._write_codex_install_journal", exit_before_checkpoint):
+                with self.assertRaises(SystemExit):
+                    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            synced = []
+            original_fsync = os.fsync
+            def fsync(fd: int) -> None:
+                synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+                original_fsync(fd)
+            def checkpoint(path: Path, payload: dict) -> None:
+                if any(link["phase"] == "published" for link in payload["links"]):
+                    self.assertIn(codex_home / "agents", synced)
+                original_write(path, payload)
+            with mock.patch("scripts.install.os.fsync", fsync), mock.patch("scripts.install._write_codex_install_journal", checkpoint):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+
+    def test_unproven_deterministic_stages_are_preserved_in_both_intent_phases(self) -> None:
+        from scripts import install as module
+        for phase in ("planned", "staging"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                links = module._planned_codex_links(repo, codex_home, state_home)
+                stage = module._codex_link_staging_path(links[0].source, links[0].destination)
+                stage.parent.mkdir(parents=True)
+                stage.symlink_to(links[0].source)
+                before = stage.lstat()
+                payload = module._new_codex_install_journal(repo, codex_home, managed_repository(repo), links, True)
+                if phase == "staging":
+                    payload["links"][0]["phase"] = phase
+                    payload["links"][0]["staged_destination"] = str(stage)
+                module._write_codex_install_journal(state_home / "expskill" / "codex-install.json", payload)
+                with self.assertRaises(InstallError):
+                    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertEqual(stage.lstat().st_ino, before.st_ino)
+
+    def test_raced_regular_prestate_does_not_poison_retry(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            destination = destination_paths(codex_home)["expskill-review"]
+            original_new = module._new_codex_install_journal
+            def race(*args: object, **kwargs: object) -> dict:
+                destination.parent.mkdir(parents=True)
+                destination.write_text("user data")
+                return original_new(*args, **kwargs)
+            with mock.patch("scripts.install._new_codex_install_journal", race):
+                with self.assertRaises(InstallError):
+                    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            destination.unlink()
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertTrue(destination.is_symlink())
+
+    def test_unproven_legacy_receipt_keeps_its_package_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            payload = load_receipt(state_home)
+            payload["links"] = [{key: entry[key] for key in ("source", "destination")} for entry in payload["links"]]
+            receipt_path(state_home).write_text(json.dumps(payload))
+            try:
+                uninstall(repo, codex_home, state_home, FakeRunner([
+                    plugin_list_response(repo), marketplace_list_response(repo),
+                    removal_response(), removal_response(),
+                ]))
+            except InstallError:
+                pass
+            self.assertTrue(receipt_path(state_home).exists())
+            self.assertTrue(all(path.exists() for path in destination_paths(codex_home).values()))
+
     def test_install_preflight_rejects_invalid_utf8_readme_without_side_effects(self) -> None:
         """Regression: repository decoding failures stay controlled before installation."""
 
@@ -2230,6 +2444,135 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(destination.is_symlink())
             self.assertEqual(Path(os.readlink(destination)), user_target)
             self.assertEqual(user_target.read_text(encoding="utf-8"), "user-owned\n")
+
+            uninstall(repo, codex_home, state_home, FakeRunner([
+                plugin_list_response(), marketplace_list_response(),
+            ]))
+            self.assertEqual(Path(os.readlink(destination)), user_target)
+            self.assertEqual(list(destination.parent.glob("*.retire")), [])
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_uninstall_restores_replacement_racing_placeholder_move_and_retries(self) -> None:
+        from scripts import install as module
+        for regular in (False, True):
+            with self.subTest(regular=regular), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+                destination = destination_paths(codex_home)["expskill-review"]
+                original_rename = module._renameat_noreplace
+                raced = False
+                def race(source_fd: int, source_name: str, target_fd: int, target_name: str) -> None:
+                    nonlocal raced
+                    if source_name == destination.name and target_name.endswith(".sentinel") and not raced:
+                        raced = True
+                        destination.unlink()
+                        if regular:
+                            destination.write_text("user replacement")
+                        else:
+                            destination.symlink_to(root / "user-target")
+                    original_rename(source_fd, source_name, target_fd, target_name)
+                with mock.patch("scripts.install._renameat_noreplace", race):
+                    with self.assertRaises(InstallError):
+                        uninstall(repo, codex_home, state_home, FakeRunner([
+                            plugin_list_response(repo), marketplace_list_response(repo),
+                            removal_response(), removal_response(),
+                        ]))
+                self.assertTrue(raced)
+                self.assertTrue(os.path.lexists(destination))
+                uninstall(repo, codex_home, state_home, FakeRunner([
+                    plugin_list_response(), marketplace_list_response(),
+                ]))
+                if regular:
+                    self.assertEqual(destination.read_text(), "user replacement")
+                else:
+                    self.assertEqual(Path(os.readlink(destination)), root / "user-target")
+                self.assertEqual(list(destination.parent.iterdir()), [destination])
+
+    def test_uninstall_preserves_replacement_immediately_after_exchange(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            destination = destination_paths(codex_home)["expskill-review"]
+            original_exchange = module._renameat_exchange
+            raced = False
+            def exchange(source_fd: int, source_name: str, target_fd: int, target_name: str) -> None:
+                nonlocal raced
+                original_exchange(source_fd, source_name, target_fd, target_name)
+                if source_name == destination.name and not raced:
+                    raced = True
+                    destination.unlink()
+                    destination.write_text("user replacement after exchange")
+            with mock.patch("scripts.install._renameat_exchange", exchange):
+                with self.assertRaises(InstallError):
+                    uninstall(repo, codex_home, state_home, FakeRunner([
+                        plugin_list_response(repo), marketplace_list_response(repo),
+                        removal_response(), removal_response(),
+                    ]))
+            self.assertFalse(destination.is_symlink())
+            self.assertEqual(destination.read_text(), "user replacement after exchange")
+            uninstall(repo, codex_home, state_home, FakeRunner([
+                plugin_list_response(), marketplace_list_response(),
+            ]))
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+
+    def test_legacy_link_migration_preserves_replacement_at_retirement(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            destination = destination_paths(codex_home)["expskill-review"]
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(repo / "plugins/expskill/assets/agents" / destination.name)
+            original_unlink, original_exchange = Path.unlink, module._renameat_exchange
+            raced = False
+            def replace_user() -> None:
+                nonlocal raced
+                raced = True
+                original_unlink(destination)
+                destination.symlink_to(root / "user-target")
+            def unlink(path: Path, *args: object, **kwargs: object) -> None:
+                if path == destination and not raced:
+                    replace_user()
+                original_unlink(path, *args, **kwargs)
+            def exchange(source_fd: int, source_name: str, target_fd: int, target_name: str) -> None:
+                if source_name == destination.name and not raced:
+                    replace_user()
+                original_exchange(source_fd, source_name, target_fd, target_name)
+            with mock.patch.object(Path, "unlink", unlink), mock.patch("scripts.install._renameat_exchange", exchange):
+                try:
+                    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                except InstallError:
+                    pass
+            self.assertTrue(raced)
+            self.assertEqual(Path(os.readlink(destination)), root / "user-target")
+
+    def test_legacy_migration_uses_the_journaled_inode(self) -> None:
+        from scripts import install as module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            destination = destination_paths(codex_home)["expskill-review"]
+            destination.parent.mkdir(parents=True)
+            source = repo / "plugins/expskill/assets/agents" / destination.name
+            destination.symlink_to(source)
+            original_migrate = module._migrate_legacy_codex_links
+            replacement_identity = []
+            def replace_before_migrate(*args: object, **kwargs: object) -> object:
+                destination.rename(root / "original-legacy")
+                destination.symlink_to(source)
+                replacement_identity.append(destination.lstat().st_ino)
+                return original_migrate(*args, **kwargs)
+            with mock.patch("scripts.install._migrate_legacy_codex_links", replace_before_migrate):
+                with self.assertRaises(InstallError):
+                    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(destination.lstat().st_ino, replacement_identity[0])
 
     def test_link_publication_and_uninstall_are_fsynced_before_receipt_progress(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

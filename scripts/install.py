@@ -875,6 +875,7 @@ class _CodexTransactionLease:
     """One process-local view of the state-directory Codex transaction lock."""
 
     binding: _StateBinding
+    lock_binding: _StateBinding
     owner: int
     depth: int = 1
 
@@ -982,8 +983,10 @@ def _link_open_descriptor(source_fd: int, target_fd: int, target_name: str) -> N
     raise OSError(error_number, os.strerror(error_number))
 
 
-def _open_state_binding(directory: Path, *, create: bool) -> _StateBinding | None:
-    """Open every ancestor without following links and optionally create it."""
+def _open_state_binding(
+    directory: Path, *, create: bool, lock: bool = True
+) -> _StateBinding | None:
+    """Bind state, retaining OpenCode's leaf lock unless the caller opts out."""
 
     absolute = _lexical_absolute(directory)
     descriptor = os.open(absolute.anchor, _directory_open_flags())
@@ -1023,10 +1026,8 @@ def _open_state_binding(directory: Path, *, create: bool) -> _StateBinding | Non
             created_directories=tuple(created_directories),
         )
         _verify_state_binding(binding)
-        # The retained state-directory descriptor is also the transaction
-        # lock.  Retirement records below are safe to reclaim only while one
-        # installer owns this lock; Linux does not provide unlink-by-inode.
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if lock:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return binding
     except Exception:
         if descriptor >= 0:
@@ -1048,7 +1049,7 @@ def _close_state_binding(binding: _StateBinding) -> None:
 def _codex_transaction(
     state_home: Path, *, create: bool
 ) -> Iterator[bool]:
-    """Hold the Codex state-directory lease, re-entering only on its owner."""
+    """Lock a retained ancestor so replacing the state leaf cannot bypass it."""
 
     directory = _codex_install_journal_path(state_home).parent
     key = str(_lexical_absolute(directory))
@@ -1057,15 +1058,33 @@ def _codex_transaction(
     if active is not None:
         if active.owner != owner:
             raise InstallError(f"Codex transaction is already active: {directory}")
+        _verify_codex_transaction()
         active.depth += 1
         try:
             yield True
         finally:
             active.depth -= 1
         return
+    lock_binding = None
+    binding = None
     try:
-        binding = _open_state_binding(directory, create=create)
+        lock_binding = _open_state_binding(
+            _lexical_absolute(state_home).parent, create=create, lock=False
+        )
+        if lock_binding is not None:
+            fcntl.flock(lock_binding.directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        binding = _open_state_binding(directory, create=create, lock=False)
+        if binding is not None and lock_binding is not None:
+            for created in (
+                *lock_binding.created_directories, *binding.created_directories
+            ):
+                os.fsync(created.directory_fd)
+                os.fsync(created.parent_fd)
     except OSError as error:
+        if binding is not None:
+            _close_state_binding(binding)
+        if lock_binding is not None:
+            _close_state_binding(lock_binding)
         if error.errno in {errno.EACCES, errno.EAGAIN}:
             raise InstallError(
                 f"Codex transaction is already active: {directory}"
@@ -1073,13 +1092,26 @@ def _codex_transaction(
         raise InstallError(
             f"cannot bind Codex state directory: {directory}: {error}"
         ) from error
+    except BaseException:
+        if binding is not None:
+            _close_state_binding(binding)
+        if lock_binding is not None:
+            _close_state_binding(lock_binding)
+        raise
     if binding is None:
+        if lock_binding is not None:
+            _close_state_binding(lock_binding)
         yield False
         return
     if key in _STATE_BINDINGS:
         _close_state_binding(binding)
+        if lock_binding is not None:
+            _close_state_binding(lock_binding)
         raise InstallError(f"Codex transaction is already active: {directory}")
-    lease = _CodexTransactionLease(binding=binding, owner=owner)
+    assert lock_binding is not None
+    lease = _CodexTransactionLease(
+        binding=binding, lock_binding=lock_binding, owner=owner
+    )
     _CODEX_TRANSACTION_LEASES[key] = lease
     _STATE_BINDINGS[key] = binding
     try:
@@ -1090,6 +1122,21 @@ def _codex_transaction(
         _STATE_BINDINGS.pop(key, None)
         _CODEX_TRANSACTION_LEASES.pop(key, None)
         _close_state_binding(binding)
+        _close_state_binding(lock_binding)
+
+
+def _verify_codex_transaction() -> None:
+    """Check retained bindings before each Codex mutation or checkpoint."""
+
+    for lease in tuple(_CODEX_TRANSACTION_LEASES.values()):
+        if lease.owner == threading.get_ident():
+            try:
+                _verify_state_binding(lease.lock_binding)
+                _verify_state_binding(lease.binding)
+            except InstallError as error:
+                raise InstallError(
+                    f"Codex state directory binding was replaced: {lease.binding.directory}"
+                ) from error
 
 
 def _verify_state_binding(binding: _StateBinding) -> None:
@@ -2046,6 +2093,7 @@ def _write_codex_managed_marker(
     repository_root: Path,
     identity_root: Path,
 ) -> None:
+    _verify_codex_transaction()
     marker = root / CODEX_MANAGED_MARKER
     marker.write_text(
         json.dumps(
@@ -2136,6 +2184,7 @@ def _remove_exact_codex_swap_backup(
     target_root: Path,
     repository_root: Path,
 ) -> None:
+    _verify_codex_transaction()
     try:
         metadata = os.lstat(backup)
     except FileNotFoundError:
@@ -2189,6 +2238,7 @@ def _resume_codex_marketplace_swap(
     *,
     swap_key: str = "swap",
 ) -> None:
+    _verify_codex_transaction()
     swap = journal.get(swap_key)
     if swap is None:
         return
@@ -2263,6 +2313,7 @@ def _materialize_codex_marketplace(
     install_journal: dict[str, object] | None = None,
     swap_key: str = "swap",
 ) -> Path:
+    _verify_codex_transaction()
     parent = target_root.parent
     _mkdir_durable(parent)
     if (install_journal_path is None) != (install_journal is None):
@@ -2289,8 +2340,11 @@ def _materialize_codex_marketplace(
         _build_codex_marketplace(repository_root, candidate_root)
         _write_codex_managed_marker(candidate_root, repository_root, target_root)
         _fsync_codex_marketplace(candidate_root)
+        _verify_codex_transaction()
     except (CodexBuildError, InstallError, OSError, RuntimeError) as error:
+        _verify_codex_transaction()
         shutil.rmtree(temporary_parent, ignore_errors=True)
+        _fsync_directory(parent)
         raise InstallError(f"Codex package could not be materialized: {error}") from error
     try:
         if target_root.exists():
@@ -2321,7 +2375,9 @@ def _materialize_codex_marketplace(
                 _write_codex_install_journal(
                     install_journal_path, install_journal
                 )
+        _verify_codex_transaction()
         candidate_root.rename(target_root)
+        _fsync_directory(temporary_parent)
         _fsync_directory(parent)
         if (
             backup is not None
@@ -2336,7 +2392,9 @@ def _materialize_codex_marketplace(
             _fsync_directory(parent)
         raise InstallError(f"Codex package could not be materialized: {error}") from error
     finally:
+        _verify_codex_transaction()
         shutil.rmtree(temporary_parent, ignore_errors=True)
+        _fsync_directory(parent)
     if backup is not None:
         if backup_identity is None:
             raise InstallError("Codex package swap identity is missing")
@@ -2355,6 +2413,7 @@ def _materialize_codex_marketplace(
 def _remove_owned_codex_marketplace(root: Path, repository_root: Path) -> None:
     """Remove an owned marketplace while retaining its marker until the end."""
 
+    _verify_codex_transaction()
     if root.is_symlink() or not root.is_dir():
         raise InstallError(f"managed Codex package is not a regular directory: {root}")
     if not _codex_managed_root_is_owned(root, repository_root):
@@ -2379,6 +2438,7 @@ def _remove_owned_codex_marketplace(root: Path, repository_root: Path) -> None:
 def _remove_empty_codex_marketplace(root: Path) -> bool:
     """Finish a marker-last removal interrupted after deleting the marker."""
 
+    _verify_codex_transaction()
     if root.is_symlink() or not root.is_dir():
         return False
     try:
@@ -2659,6 +2719,7 @@ def _write_codex_install_journal(
 ) -> None:
     """Atomically checkpoint a general Codex install transaction."""
 
+    _verify_codex_transaction()
     journal_directory = journal_path.parent
     temporary_path: Path | None = None
     try:
@@ -2680,6 +2741,7 @@ def _write_codex_install_journal(
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
+        _verify_codex_transaction()
         os.replace(temporary_path, journal_path)
         temporary_path = None
         _fsync_directory(journal_directory)
@@ -2691,6 +2753,7 @@ def _write_codex_install_journal(
         ) from error
     finally:
         if temporary_path is not None:
+            _verify_codex_transaction()
             try:
                 temporary_path.unlink()
             except OSError:
@@ -2700,6 +2763,7 @@ def _write_codex_install_journal(
 def _read_codex_install_journal(
     journal_path: Path,
 ) -> dict[str, object] | None:
+    _verify_codex_transaction()
     if not _lexists(journal_path):
         return None
     if journal_path.is_symlink() or not journal_path.is_file():
@@ -2718,6 +2782,7 @@ def _read_codex_install_journal(
 
 
 def _clear_codex_install_journal(journal_path: Path) -> None:
+    _verify_codex_transaction()
     if not _lexists(journal_path):
         return
     if journal_path.is_symlink() or not journal_path.is_file():
@@ -2739,8 +2804,11 @@ def _codex_link_prestate(link: ProfileLink) -> dict[str, object]:
     if _lexists(link.destination):
         try:
             metadata = os.lstat(link.destination)
-            if stat.S_ISLNK(metadata.st_mode):
-                target = os.readlink(link.destination)
+            if not stat.S_ISLNK(metadata.st_mode):
+                raise InstallError(
+                    f"refusing conflicting agent destination: {link.destination}"
+                )
+            target = os.readlink(link.destination)
         except OSError as error:
             raise InstallError(
                 f"cannot inspect agent destination pre-state: {link.destination}: {error}"
@@ -2774,6 +2842,7 @@ def _new_codex_install_journal(
         "codex_home": str(_lexical_absolute(codex_home)),
         "managed_root": str(managed_root),
         "agents_only": agents_only,
+        "stage_secret": secrets.token_hex(32),
         "links": [_codex_link_prestate(link) for link in links],
         "marketplace_pre_state": None,
         "plugin_pre_state": None,
@@ -2799,6 +2868,7 @@ def _validate_codex_install_journal(
         "codex_home",
         "managed_root",
         "agents_only",
+        "stage_secret",
         "links",
         "marketplace_pre_state",
         "plugin_pre_state",
@@ -2814,6 +2884,12 @@ def _validate_codex_install_journal(
         or payload.get("codex_home") != str(_lexical_absolute(codex_home))
         or payload.get("managed_root") != str(managed_root)
         or payload.get("agents_only") is not agents_only
+        or not isinstance(payload.get("stage_secret"), str)
+        or len(payload["stage_secret"]) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in payload["stage_secret"]
+        )
         or payload.get("marketplace_pre_state")
         not in {None, "absent", "owned", "legacy"}
         or payload.get("plugin_pre_state")
@@ -2897,7 +2973,8 @@ def _validate_codex_install_journal(
                 or not isinstance(staged, str)
                 or _lexical_absolute(Path(staged))
                 != _codex_link_staging_path(
-                    expected[pair].source, expected[pair].destination
+                    expected[pair].source, expected[pair].destination,
+                    payload["stage_secret"],
                 )
             ):
                 raise InstallError(
@@ -2916,6 +2993,7 @@ def _validate_codex_install_journal(
                 raise InstallError(
                     f"install journal link identity is malformed: {journal_path}"
                 )
+            _codex_transaction_link(record, expected[pair], payload)
         elif any(value is not None for value in (dev, ino, staged, anchor)):
             raise InstallError(
                 f"install journal link identity is malformed: {journal_path}"
@@ -2945,6 +3023,10 @@ def _load_or_start_codex_install_journal(
             links,
             agents_only,
         )
+        _validate_codex_install_journal(
+            payload, journal_path, repository_root, codex_home,
+            managed_root, links, agents_only,
+        )
         _write_codex_install_journal(journal_path, payload)
     else:
         changed = False
@@ -2966,7 +3048,16 @@ def _load_or_start_codex_install_journal(
         if "recovery_swap" not in payload:
             payload["recovery_swap"] = None
             changed = True
+        if "stage_secret" not in payload:
+            # Old stages with a recorded inode remain recoverable.  An old
+            # creation intent without inode evidence never receives authority.
+            payload["stage_secret"] = secrets.token_hex(32)
+            changed = True
         if changed:
+            _validate_codex_install_journal(
+                payload, journal_path, repository_root, codex_home,
+                managed_root, links, agents_only,
+            )
             _write_codex_install_journal(journal_path, payload)
     _validate_codex_install_journal(
         payload,
@@ -2985,6 +3076,7 @@ def _write_codex_migration_journal(
 ) -> None:
     """Persist the legacy Codex migration state outside the source checkout."""
 
+    _verify_codex_transaction()
     journal_directory = journal_path.parent
     try:
         journal_directory.mkdir(parents=True, exist_ok=True)
@@ -3006,6 +3098,7 @@ def _write_codex_migration_journal(
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            _verify_codex_transaction()
             os.replace(temporary_path, journal_path)
             temporary_path = None
             directory_fd = os.open(journal_directory, _directory_open_flags())
@@ -3020,6 +3113,7 @@ def _write_codex_migration_journal(
             )
         finally:
             if temporary_path is not None:
+                _verify_codex_transaction()
                 try:
                     temporary_path.unlink()
                 except OSError as error:
@@ -3078,6 +3172,7 @@ def _read_codex_migration_journal(journal_path: Path) -> dict[str, object] | Non
 
 
 def _clear_codex_migration_journal(journal_path: Path) -> None:
+    _verify_codex_transaction()
     if not _lexists(journal_path):
         return
     if journal_path.is_symlink() or not journal_path.is_file():
@@ -3105,15 +3200,22 @@ def _opencode_link_staging_path(source: Path, destination: Path) -> Path:
     return destination.parent / f".{destination.name}.expskill-{identity}.link"
 
 
-def _codex_link_staging_path(source: Path, destination: Path) -> Path:
+def _codex_link_staging_path(
+    source: Path, destination: Path, secret: str | None = None
+) -> Path:
     identity = hashlib.sha256(
         b"codex-link-stage.v1\0"
         + os.fsencode(_lexical_absolute(source))
         + b"\0"
         + os.fsencode(_lexical_absolute(destination))
     ).hexdigest()[:32]
+    capability = ""
+    if secret is not None:
+        capability = "." + hmac.new(
+            bytes.fromhex(secret), identity.encode("ascii"), hashlib.sha256
+        ).hexdigest()
     return destination.parent / (
-        f"{CODEX_LINK_STAGE_PREFIX}{destination.name}-{identity}.link"
+        f"{CODEX_LINK_STAGE_PREFIX}{destination.name}-{identity}{capability}.link"
     )
 
 
@@ -3181,10 +3283,8 @@ def _codex_staged_link_is_exact(
     staged: Path,
     identity: tuple[int, int] | None = None,
 ) -> bool:
-    """Recognize only the deterministic staged symlink named by journal intent."""
+    """Check the target and, once recorded, the exact stage inode."""
 
-    if staged != _codex_link_staging_path(link.source, link.destination):
-        return False
     try:
         metadata = os.lstat(staged)
         target = Path(os.readlink(staged))
@@ -3202,6 +3302,7 @@ def _codex_staged_link_is_exact(
 def _remove_codex_recorded_link(link: ProfileLink) -> bool:
     """Remove only the anchor-proven public symlink and its private anchor."""
 
+    _verify_codex_transaction()
     if (
         not _valid_codex_link_anchor_path(link)
         or link.destination_dev is None
@@ -3220,6 +3321,7 @@ def _remove_codex_recorded_link(link: ProfileLink) -> bool:
             expected,
             f"Codex agent link {link.destination}",
             directory=False,
+            preserve_replacements=True,
         )
         if not removed:
             try:
@@ -3241,6 +3343,7 @@ def _remove_codex_recorded_link(link: ProfileLink) -> bool:
             expected,
             f"Codex link anchor {link.link_anchor}",
             directory=False,
+            preserve_replacements=True,
         )
         if not anchor_removed:
             try:
@@ -3453,6 +3556,7 @@ def _remove_exact_via_exchange(
     label: str,
     *,
     directory: bool,
+    preserve_replacements: bool = False,
 ) -> bool:
     """Retire an exact inode using a durable, identity-bearing private name.
 
@@ -3561,6 +3665,12 @@ def _remove_exact_via_exchange(
         if retired_identity == placeholder_identity:
             require_placeholder(retired, "retirement placeholder")
             if current is None or identity(current) != expected:
+                if preserve_replacements:
+                    # No exchange occurred (or a raced exchange was reversed).
+                    # Only our exact private placeholder remains to retire.
+                    os.unlink(retirement, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                    return False
                 raise InstallError(f"{label} identity changed before final exchange")
             require_kind(current, "pathname")
             _renameat_exchange(parent_fd, name, parent_fd, retirement)
@@ -3572,6 +3682,13 @@ def _remove_exact_via_exchange(
                 or current is None
                 or identity(current) != placeholder_identity
             ):
+                if preserve_replacements and (
+                    retired is not None and identity(retired) == expected
+                ):
+                    # The exchange captured our inode, then someone replaced
+                    # the public placeholder.  Reversing would hide their entry.
+                    os.fsync(parent_fd)
+                    raise InstallError(f"{label} identity changed after final exchange")
                 try:
                     _renameat_exchange(parent_fd, name, parent_fd, retirement)
                     os.fsync(parent_fd)
@@ -3588,6 +3705,24 @@ def _remove_exact_via_exchange(
 
         current = metadata(name)
         private_placeholder = metadata(placeholder)
+        if (
+            preserve_replacements
+            and private_placeholder is not None
+            and identity(private_placeholder) != placeholder_identity
+        ):
+            # A replacement raced the public-placeholder rename.  Put that
+            # exact entry back without overwriting any newer public entry.
+            _renameat_noreplace(parent_fd, placeholder, parent_fd, name)
+            os.fsync(parent_fd)
+            raise InstallError(f"{label} identity changed while moving placeholder")
+        if (
+            preserve_replacements
+            and current is not None
+            and identity(current) != placeholder_identity
+        ):
+            # Our original inode is already private.  A new public entry is
+            # independent of it and must not prevent private-only cleanup.
+            current = None
         if current is not None:
             require_placeholder(current, "placeholder")
             if identity(current) != placeholder_identity:
@@ -3597,6 +3732,14 @@ def _remove_exact_via_exchange(
             _renameat_noreplace(parent_fd, name, parent_fd, placeholder)
             os.fsync(parent_fd)
             private_placeholder = metadata(placeholder)
+            if (
+                preserve_replacements
+                and private_placeholder is not None
+                and identity(private_placeholder) != placeholder_identity
+            ):
+                _renameat_noreplace(parent_fd, placeholder, parent_fd, name)
+                os.fsync(parent_fd)
+                raise InstallError(f"{label} identity changed while moving placeholder")
         if private_placeholder is not None:
             require_placeholder(private_placeholder, "private placeholder")
             if identity(private_placeholder) != placeholder_identity:
@@ -5506,6 +5649,7 @@ def _read_codex_receipt(
 ) -> _Receipt | None:
     """Read a Codex receipt without applying OpenCode's identity journal."""
 
+    _verify_codex_transaction()
     if not _lexists(receipt_path):
         return None
     if receipt_path.is_symlink() or not receipt_path.is_file():
@@ -5543,6 +5687,7 @@ def _read_codex_receipt(
 def _write_codex_receipt(receipt_path: Path, receipt: _Receipt) -> None:
     """Persist the Codex receipt in the stage-2 JSON shape."""
 
+    _verify_codex_transaction()
     receipt_directory = receipt_path.parent
     if _lexists(receipt_path) and (
         receipt_path.is_symlink() or not receipt_path.is_file()
@@ -5601,6 +5746,7 @@ def _write_codex_receipt(receipt_path: Path, receipt: _Receipt) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
+        _verify_codex_transaction()
         os.replace(temporary_path, receipt_path)
         temporary_path = None
         _fsync_directory(receipt_directory)
@@ -5610,6 +5756,7 @@ def _write_codex_receipt(receipt_path: Path, receipt: _Receipt) -> None:
     finally:
         if temporary_path is not None:
             try:
+                _verify_codex_transaction()
                 temporary_path.unlink()
             except OSError as error:
                 cleanup_failure = (
@@ -5695,7 +5842,10 @@ def _invoke_runner(run: Runner | Callable[[Sequence[str]], object], command: lis
 def _run_command(
     run: Runner | Callable[[Sequence[str]], object], command: list[str]
 ) -> _CommandResult:
-    return _invoke_runner(run, command)
+    _verify_codex_transaction()
+    result = _invoke_runner(run, command)
+    _verify_codex_transaction()
+    return result
 
 
 def _require_success(command: list[str], result: _CommandResult) -> None:
@@ -5838,7 +5988,9 @@ def _validate_plugin_add(payload: Mapping[str, Any], expected_version: str) -> N
 
 
 def _codex_transaction_link(
-    record: Mapping[str, object], link: ProfileLink
+    record: Mapping[str, object],
+    link: ProfileLink,
+    journal: Mapping[str, object],
 ) -> ProfileLink | None:
     if record.get("phase") == "staging":
         return None
@@ -5871,7 +6023,13 @@ def _codex_transaction_link(
         link_anchor_ino=ino,
     )
     if (
-        staged != _codex_link_staging_path(link.source, link.destination)
+        staged
+        not in {
+            _codex_link_staging_path(link.source, link.destination),
+            _codex_link_staging_path(
+                link.source, link.destination, journal["stage_secret"]
+            ),
+        }
         or not _valid_codex_link_anchor_path(recorded)
     ):
         raise InstallError(
@@ -5894,16 +6052,17 @@ def _recover_codex_transaction_link(
     journal_path: Path,
     journal: dict[str, object],
 ) -> ProfileLink | None:
+    _verify_codex_transaction()
     phase = record.get("phase")
     if phase in {"planned", "preexisting"}:
-        staged = _codex_link_staging_path(link.source, link.destination)
-        if _lexists(staged):
-            if not _codex_staged_link_is_exact(link, staged):
+        for staged in (
+            _codex_link_staging_path(link.source, link.destination),
+            _codex_link_staging_path(
+                link.source, link.destination, journal["stage_secret"]
+            ),
+        ):
+            if _lexists(staged):
                 raise InstallError(f"Codex link staging path is occupied: {staged}")
-            record["phase"] = "staging"
-            record["staged_destination"] = str(staged)
-            _write_codex_install_journal(journal_path, journal)
-            phase = "staging"
     if phase == "staging":
         staged_value = record.get("staged_destination")
         if not isinstance(staged_value, str):
@@ -5911,6 +6070,12 @@ def _recover_codex_transaction_link(
                 f"Codex install transaction intent is incomplete: {link.destination}"
             )
         staged = _lexical_absolute(Path(staged_value))
+        if staged != _codex_link_staging_path(
+            link.source, link.destination, journal["stage_secret"]
+        ):
+            raise InstallError(
+                f"Codex link staging path lacks transaction authority: {staged}"
+            )
         if not _lexists(staged):
             _clear_codex_transaction_link(record)
             _write_codex_install_journal(journal_path, journal)
@@ -5925,10 +6090,11 @@ def _recover_codex_transaction_link(
         record["destination_dev"] = metadata.st_dev
         record["destination_ino"] = metadata.st_ino
         record["link_anchor"] = str(anchor)
+        _fsync_directory(staged.parent)
         _write_codex_install_journal(journal_path, journal)
         phase = "anchoring"
     if phase == "anchoring":
-        recorded = _codex_transaction_link(record, link)
+        recorded = _codex_transaction_link(record, link, journal)
         if (
             recorded is None
             or recorded.staged_destination is None
@@ -5986,11 +6152,12 @@ def _recover_codex_transaction_link(
             ) from error
         record["phase"] = "staged"
         _write_codex_install_journal(journal_path, journal)
-    recorded = _codex_transaction_link(record, link)
+    recorded = _codex_transaction_link(record, link, journal)
     if recorded is None:
         return None
     if _codex_link_path_is_live(recorded):
         if record["phase"] != "published":
+            _fsync_directory(link.destination.parent)
             record["phase"] = "published"
             _write_codex_install_journal(journal_path, journal)
         return recorded
@@ -6046,14 +6213,13 @@ def _create_codex_link(
     journal_path: Path,
     journal: dict[str, object],
 ) -> ProfileLink:
+    _verify_codex_transaction()
     _mkdir_durable(link.destination.parent)
-    staged = _codex_link_staging_path(link.source, link.destination)
+    staged = _codex_link_staging_path(
+        link.source, link.destination, journal["stage_secret"]
+    )
     if _lexists(staged):
         raise InstallError(f"Codex link staging path is occupied: {staged}")
-    anchor: Path | None = None
-    identity: tuple[int, int] | None = None
-    journaled = False
-    published = False
     try:
         record["phase"] = "staging"
         record["staged_destination"] = str(staged)
@@ -6081,7 +6247,6 @@ def _create_codex_link(
         _fsync_directory(link.destination.parent)
         record["phase"] = "staged"
         _write_codex_install_journal(journal_path, journal)
-        journaled = True
         parent_fd = os.open(link.destination.parent, _directory_open_flags())
         try:
             _renameat_noreplace(
@@ -6090,7 +6255,6 @@ def _create_codex_link(
             os.fsync(parent_fd)
         finally:
             os.close(parent_fd)
-        published = True
         recorded = replace(
             link,
             destination_dev=identity[0],
@@ -6108,11 +6272,6 @@ def _create_codex_link(
         return recorded
     except OSError as error:
         raise InstallError(f"cannot create agent link: {link.destination}: {error}") from error
-    finally:
-        if journaled and published:
-            # The stage pathname was renamed into the public destination.
-            # Its identity remains journaled through the private anchor.
-            pass
 
 
 def _create_codex_links(
@@ -6150,13 +6309,14 @@ def _create_codex_links(
                 _create_codex_link(link, raw_record, journal_path, journal)
             )
         except Exception:
-            pending = _codex_transaction_link(raw_record, link)
+            pending = _codex_transaction_link(raw_record, link, journal)
             if pending is not None:
                 created.append(pending)
             raise
 
 
 def _rollback_codex_links(links: Sequence[ProfileLink]) -> list[str]:
+    _verify_codex_transaction()
     failures: list[str] = []
     for link in reversed(tuple(links)):
         if (
@@ -6188,6 +6348,7 @@ def _rollback_codex_transaction_links(
 ) -> list[str]:
     """Retire every exact intent artifact before allowing journal deletion."""
 
+    _verify_codex_transaction()
     records = journal.get("links")
     if not isinstance(records, list):
         return ["install journal links are malformed"]
@@ -6208,24 +6369,11 @@ def _rollback_codex_transaction_links(
         phase = record.get("phase")
         staged = _codex_link_staging_path(link.source, link.destination)
         try:
-            if phase in {"planned", "preexisting"} and _lexists(staged):
-                if not _codex_staged_link_is_exact(link, staged):
+            if phase in {"planned", "preexisting"}:
+                if _lexists(staged):
                     raise InstallError(
                         f"Codex link staging path is occupied: {staged}"
                     )
-                metadata = os.lstat(staged)
-                parent_fd = os.open(staged.parent, _directory_open_flags())
-                try:
-                    _remove_exact_via_exchange(
-                        parent_fd,
-                        staged.name,
-                        (metadata.st_dev, metadata.st_ino),
-                        f"Codex staged agent link {staged}",
-                        directory=False,
-                    )
-                finally:
-                    os.close(parent_fd)
-                _fsync_directory(staged.parent)
             elif phase == "staging":
                 staged_value = record.get("staged_destination")
                 if not isinstance(staged_value, str):
@@ -6233,6 +6381,12 @@ def _rollback_codex_transaction_links(
                         f"Codex install transaction intent is incomplete: {link.destination}"
                     )
                 staged = _lexical_absolute(Path(staged_value))
+                if staged != _codex_link_staging_path(
+                    link.source, link.destination, journal["stage_secret"]
+                ):
+                    raise InstallError(
+                        f"Codex link staging path lacks transaction authority: {staged}"
+                    )
                 if _lexists(staged):
                     if not _codex_staged_link_is_exact(link, staged):
                         raise InstallError(
@@ -6247,12 +6401,13 @@ def _rollback_codex_transaction_links(
                             (metadata.st_dev, metadata.st_ino),
                             f"Codex staged agent link {staged}",
                             directory=False,
+                            preserve_replacements=True,
                         )
                     finally:
                         os.close(parent_fd)
                     _fsync_directory(staged.parent)
             elif phase in {"anchoring", "staged", "published"}:
-                recorded = _codex_transaction_link(record, link)
+                recorded = _codex_transaction_link(record, link, journal)
                 if recorded is None:
                     raise InstallError(
                         f"Codex install transaction link is incomplete: {link.destination}"
@@ -6288,6 +6443,7 @@ def _rollback_codex_transaction_links(
                             expected,
                             f"Codex staged agent link {recorded.staged_destination}",
                             directory=False,
+                            preserve_replacements=True,
                         )
                     finally:
                         os.close(parent_fd)
@@ -6391,10 +6547,13 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
 def _migrate_legacy_codex_links(
     repository_root: Path,
     links: Sequence[ProfileLink],
+    journal: Mapping[str, object],
 ) -> tuple[ProfileLink, ...]:
+    _verify_codex_transaction()
     legacy_sources: dict[str, list[Path]] = {}
     for source in _legacy_profile_sources(repository_root):
         legacy_sources.setdefault(source.name, []).append(source)
+    records = {record["destination"]: record for record in journal["links"]}
     migrated: list[ProfileLink] = []
     for link in links:
         if not _lexists(link.destination) or _same_owned_link(link.destination, link.source):
@@ -6410,7 +6569,30 @@ def _migrate_legacy_codex_links(
         if legacy is None:
             continue
         try:
-            link.destination.unlink()
+            record = records[str(link.destination)]
+            expected = (record["preexisting_dev"], record["preexisting_ino"])
+            if not record["preexisting"] or not _same_owned_link(
+                link.destination, legacy
+            ):
+                raise InstallError(
+                    f"legacy agent link changed identity: {link.destination}"
+                )
+            parent_fd = os.open(link.destination.parent, _directory_open_flags())
+            try:
+                removed = _remove_exact_via_exchange(
+                    parent_fd,
+                    link.destination.name,
+                    expected,
+                    f"legacy Codex agent link {link.destination}",
+                    directory=False,
+                    preserve_replacements=True,
+                )
+            finally:
+                os.close(parent_fd)
+            if not removed:
+                raise InstallError(
+                    f"legacy agent link changed identity: {link.destination}"
+                )
             _fsync_directory(link.destination.parent)
         except OSError as error:
             raise InstallError(
@@ -6423,6 +6605,7 @@ def _migrate_legacy_codex_links(
 
 
 def _restore_legacy_codex_links(links: Sequence[ProfileLink]) -> list[str]:
+    _verify_codex_transaction()
     failures: list[str] = []
     for link in links:
         if _lexists(link.destination):
@@ -6711,6 +6894,7 @@ def _cleanup_after_install_failure(
     install_journal_path: Path | None = None,
     install_journal: Mapping[str, object] | None = None,
 ) -> None:
+    _verify_codex_transaction()
     failures: list[str] = []
     if plugin_new:
         failure = _remove_command(
@@ -6912,7 +7096,9 @@ def _install_codex_bound(
     migration_state: dict[str, object] | None = None
     receipt_committed = False
     try:
-        migrated_legacy_links = _migrate_legacy_codex_links(canonical_root, links)
+        migrated_legacy_links = _migrate_legacy_codex_links(
+            canonical_root, links, install_journal
+        )
         _create_codex_links(
             links,
             created_links,
@@ -7156,6 +7342,14 @@ def _remove_owned_links(
     removed: list[ProfileLink] = []
     failures: list[str] = []
     for link in receipt.links:
+        if (
+            not _valid_codex_link_anchor_path(link)
+            and _same_owned_link(link.destination, link.source)
+        ):
+            failures.append(
+                f"unproven legacy link still depends on its package: {link.destination}"
+            )
+            continue
         try:
             removed_owned = _remove_codex_recorded_link(link)
         except InstallError as error:
@@ -7186,6 +7380,7 @@ def uninstall(
         return _uninstall_codex_bound(
             canonical_root,
             links,
+            codex_home,
             state_home,
             run,
             agents_only,
@@ -7195,12 +7390,32 @@ def uninstall(
 def _uninstall_codex_bound(
     canonical_root: Path,
     links: Sequence[ProfileLink],
+    codex_home: Path,
     state_home: Path,
     run: Runner | Callable[[Sequence[str]], object],
     agents_only: bool,
 ) -> InstallResult:
     managed_root = _codex_managed_root(canonical_root, state_home)
     recovery_root = _codex_recovery_root(canonical_root, state_home)
+    journal = _read_codex_install_journal(_codex_install_journal_path(state_home))
+    if journal is not None:
+        pending_agents_only = journal.get("agents_only")
+        if not isinstance(pending_agents_only, bool):
+            raise InstallError("Codex install journal has invalid agents-only mode")
+        if agents_only and not pending_agents_only:
+            raise InstallError(
+                "pending full Codex install requires uninstall without --agents-only"
+            )
+        # Finish the validated transaction first.  Its original observations
+        # recover CLI ownership even when an add exited before its checkpoint.
+        _install_codex_bound(
+            canonical_root,
+            _planned_codex_links(canonical_root, codex_home, state_home),
+            codex_home,
+            state_home,
+            run,
+            pending_agents_only,
+        )
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_codex_receipt(receipt_path_value, canonical_root, links)
     if receipt is None:
@@ -7330,6 +7545,7 @@ def _uninstall_codex_bound(
     if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
+        _verify_codex_transaction()
         receipt_path_value.unlink()
         _fsync_directory(receipt_path_value.parent)
     except OSError as error:
