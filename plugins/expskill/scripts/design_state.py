@@ -502,11 +502,27 @@ def _inventory(value):
     paths=[x["path"] for x in value["files"]]
     if len(paths)!=len(set(paths)) or len({p.casefold() for p in paths})!=len(paths): raise ValueError("duplicate inventory path")
 
+def _delivery_result(s):
+    """Derive the same delivery result from the immutable saved generation."""
+    def dg(x): return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    result={"schema_version":1,"workflow_id":s["workflow_id"],"revision":s["revision"],"lifecycle":"delivered","identity":s["identity"],"ui_contract":s["ui_contract"],"candidate_digest":hashlib.sha256(json.dumps(s["candidate_payload"],sort_keys=True).encode()).hexdigest(),"candidate_inventory_digest":dg(s["candidate_payload"]),"review_evidence_digest":dg(s["review_evidence"]),"manifest_digest":dg(s["manifest"]),"evidence_digest":dg(s["evidence"]),"approval_digest":dg(s["approvals"]),"dependency_digest":dg(s["dependencies"])}
+    if s["brief"]["confirmed"]:
+        result["brief_digest"]=s["brief"]["digest"]
+        if s["candidate"] is not None:
+            result["candidate_commit"]=s["candidate"]["commit"]
+    return result
+
 def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_evidence,manifest,state_home):
     with _locked(Path(state_home)) as root:
         s=_load(root,workflow_id)
         _revalidate(s)
-        if s["lifecycle"]=="delivered" or s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
+        if s["lifecycle"]=="delivered":
+            if (type(expected_revision) is not int or expected_revision != s["revision"] - 1
+                    or candidate_payload != s["candidate_payload"]
+                    or review_evidence != s["review_evidence"] or manifest != s["manifest"]):
+                raise ValueError("immutable or stale workflow: retry the identical delivery request")
+            return _delivery_result(s)
+        if s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
         if s["invocation_mode"] == "routed" and s["candidate"] is None: raise ValueError("routed delivery requires candidate checkpoint")
         if s["invocation_mode"] == "routed" and not s["brief"]["confirmed"]: raise ValueError("confirmed design brief required for routed delivery; the Plan join needs brief_digest")
         for x in (candidate_payload,review_evidence,manifest): _inventory(x)
@@ -536,14 +552,7 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
         s["candidate_payload"],s["review_evidence"],s["manifest"]=candidate_payload,review_evidence,manifest
         s["delivery"]=expected_delivery
         s["lifecycle"]="delivered"; s["revision"]+=1; _durable_write(root,workflow_id,s)
-        digest=hashlib.sha256(json.dumps(candidate_payload,sort_keys=True).encode()).hexdigest()
-        def dg(x): return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-        result={"schema_version":1,"workflow_id":workflow_id,"revision":s["revision"],"lifecycle":"delivered","identity":s["identity"],"ui_contract":s["ui_contract"],"candidate_digest":digest,"candidate_inventory_digest":dg(candidate_payload),"review_evidence_digest":dg(review_evidence),"manifest_digest":dg(manifest),"evidence_digest":dg(s["evidence"]),"approval_digest":dg(s["approvals"]),"dependency_digest":dg(s["dependencies"])}
-        if s["brief"]["confirmed"]:
-            result["brief_digest"]=s["brief"]["digest"]
-            if s["candidate"] is not None:
-                result["candidate_commit"]=s["candidate"]["commit"]
-        return result
+        return _delivery_result(s)
 
 def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_target_branch=None):
     """Read-only check of what the Plan typed Design join will demand.
@@ -552,9 +561,11 @@ def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_tar
     mutating state. Every problem names the exact missing or mismatched
     receipt field (``brief_digest``, ``candidate_commit``, ``lifecycle``,
     ``baseline``, ``branch``, approvals) so a mismatch fails here, before
-    delivery, instead of late at the join. Run it once before delivery to
-    catch field gaps early, then again after delivery: ``eligible`` true
-    means the delivery receipt will pass the Plan join shape checks.
+    delivery, instead of late at the join. Before delivery, an active
+    lifecycle is expected to be the sole remaining problem; fix every other
+    problem first. The CLI returns status 1 for that pending lifecycle.
+    After delivery, require status 0 and ``eligible`` true with no problems.
+    Only the delivered CLI receipt is ready for the Plan join shape checks.
     """
     with _locked(Path(state_home)) as root:
         s = _load(root, workflow_id)

@@ -97,15 +97,16 @@ REQUIREMENTS = (
 def validate_delivery_receipt_shape(receipt: object) -> list[str]:
     """Return one problem string per contract violation, empty when clean."""
     problems: list[str] = []
-    if not isinstance(receipt, dict):
-        return ["delivery receipt is not a mapping"]
+    if not isinstance(receipt, dict) or any(not isinstance(key, str) for key in receipt):
+        return ["delivery receipt must be a mapping with string field names"]
     missing = sorted(DELIVERY_RECEIPT_FIELDS - set(receipt))
     extra = sorted(set(receipt) - DELIVERY_RECEIPT_FIELDS)
     if missing:
         problems.append(f"missing receipt fields: {', '.join(missing)}")
     if extra:
         problems.append(f"unexpected receipt fields: {', '.join(extra)}")
-    if receipt.get("schema_version") != DELIVERY_RECEIPT_SCHEMA_VERSION:
+    version = receipt.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != DELIVERY_RECEIPT_SCHEMA_VERSION:
         problems.append(
             "schema_version must be "
             f"{DELIVERY_RECEIPT_SCHEMA_VERSION}, got {receipt.get('schema_version')!r}"
@@ -125,18 +126,29 @@ def validate_delivery_receipt_shape(receipt: object) -> list[str]:
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
         problems.append("revision must be an integer of at least 1")
     identity = receipt.get("identity")
-    if not isinstance(identity, dict):
-        problems.append("identity must be a mapping")
+    if not isinstance(identity, dict) or any(not isinstance(key, str) for key in identity):
+        problems.append("identity must be a mapping with string field names")
     else:
         missing_identity = sorted(DELIVERY_IDENTITY_FIELDS - set(identity))
+        extra_identity = sorted(set(identity) - DELIVERY_IDENTITY_FIELDS)
         if missing_identity:
             problems.append(
                 f"missing identity fields: {', '.join(missing_identity)}"
             )
+        if extra_identity:
+            problems.append(
+                f"unexpected identity fields: {', '.join(extra_identity)}"
+            )
         for field in ("repository", "branch", "worktree"):
             value = identity.get(field)
-            if field in identity and (not isinstance(value, str) or not value):
-                problems.append(f"identity.{field} must be a non-empty string")
+            maximum = 244 if field == "branch" else 16_384
+            if field in identity and (
+                not isinstance(value, str) or not value.strip()
+                or len(value) > maximum or "\x00" in value
+            ):
+                problems.append(
+                    f"identity.{field} must be nonblank text of at most {maximum} characters without NUL"
+                )
         for field in ("baseline", "head"):
             value = identity.get(field)
             if field in identity and (

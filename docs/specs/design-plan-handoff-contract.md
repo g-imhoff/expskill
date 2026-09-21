@@ -37,7 +37,12 @@ baseline, head, dirty_fingerprint, ui_contract_digest.
 The rules are strict on purpose. operation is `deliver`. lifecycle is
 `delivered`. Anything else stops at the join. Workflow ids are 32 lowercase
 hex characters. Digests are 64. Commits are full SHAs. identity.head equals
-candidate_commit. If a field is missing or mistyped, the error names it.
+candidate_commit. Workflow IDs, digests, and SHAs must be strings.
+schema_version must be the integer `1`, and revision must be an integer of
+at least `1`. Booleans and floats do not count as integers. Repository and
+worktree names must be nonblank strings of at most 16,384 characters, and
+branch names have a 244-character limit. None may contain NUL. If a field
+is missing or mistyped, the error names it.
 
 ## What each digest means
 
@@ -65,9 +70,15 @@ fails and names the branch tip as the cause.
 
 Design checks first. `preflight_plan_join` in `design_state.py` takes the
 workflow plus the Plan baseline and target branch, and returns every
-problem it finds, each naming the exact field. Run it before delivery to
-catch gaps early, then after delivery. When it reports eligible, the receipt
-passes the Plan shape checks. Routed delivery itself refuses to finish
+problem it finds, each naming the exact field. Before delivery, `eligible`
+is false and the CLI exits with status `1` because the lifecycle is still
+active. Proceed to delivery only when that active lifecycle is the sole
+remaining problem. Fix every other problem first. Missing or malformed
+preflight output blocks delivery.
+
+Use the `deliver` CLI stdout as the receipt, unchanged. After delivery, run
+preflight again and require `eligible: true`, no problems, and CLI exit
+status `0` before passing the receipt to Plan. Routed delivery refuses to finish
 without a candidate checkpoint and a confirmed brief, because without those
 two the receipt could never join.
 
@@ -94,3 +105,22 @@ is correct behavior. Rebase the join onto the current revision instead of
 editing the receipt. And if the Design branch was deleted before the
 candidate merged into the target, the ancestry check fails. That means the
 candidate never integrated, so do not work around it. Integrate first.
+
+Keep the original delivery request until Plan accepts the receipt. If Design
+stops after saving delivery but before returning stdout, retry `deliver` with
+the identical request, including its original `expected_revision` and all
+three inventories. Design revalidates the workspace and returns the same
+receipt without rewriting state or incrementing the revision. Changed inputs
+or a different revision still fail. Do not reconstruct the receipt by hand.
+
+If Plan stops after saving the join but before acknowledging it, load the
+current graph and compare its embedded Design delivery receipt with the
+original. A matching receipt and `ready` state confirm success. Reapplying the
+old operation raises a revision conflict and leaves that graph unchanged.
+
+While saving an unintegrated join, Plan holds a Git verify transaction on the
+Design branch. This locks the candidate ref without changing its value. A
+branch that already moved blocks the join before any graph write; a competing
+Git update cannot move it during the save. Plan releases the lock on success
+or failure. Later operations still revalidate the live branch or integrated
+ancestry.

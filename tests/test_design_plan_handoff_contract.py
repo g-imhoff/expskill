@@ -157,8 +157,8 @@ def bound_components(design, brief_digest: str) -> dict:
     }
 
 
-def deliver_routed_design(tmp_path: Path) -> tuple[dict, Path, Path, Path, str, str]:
-    """Run the full routed Design flow and return the CLI delivery receipt."""
+def prepare_routed_design(tmp_path: Path):
+    """Prepare an approved fixture and return its pending delivery payload."""
     design = load("handoff_design", DESIGN_HELPER)
     tmp_path.mkdir(parents=True, exist_ok=True)
     repo, baseline = make_repo(tmp_path)
@@ -196,7 +196,7 @@ def deliver_routed_design(tmp_path: Path) -> tuple[dict, Path, Path, Path, str, 
     )
     code_digest = hashlib.sha256(b"CheckoutForm-code").hexdigest()
     evidence_digest = hashlib.sha256(b"CheckoutForm-evidence").hexdigest()
-    receipt = design_cli(state_home, "deliver", {
+    payload = {
         "workflow_id": workflow_id,
         "expected_revision": bound["revision"],
         "candidate_payload": {"files": [
@@ -208,9 +208,144 @@ def deliver_routed_design(tmp_path: Path) -> tuple[dict, Path, Path, Path, str, 
         "manifest": {"files": [
             {"path": "manifest.json", "digest": "3" * 64,
              "classification": "manifest"}]},
-    })
+    }
+    return design, repo, state_home, baseline, candidate, payload
+
+
+def deliver_routed_design(tmp_path: Path) -> tuple[dict, Path, Path, Path, str, str]:
+    """Run the full routed Design flow and return the CLI delivery receipt."""
+    _, repo, state_home, baseline, candidate, payload = prepare_routed_design(tmp_path)
+    receipt = design_cli(state_home, "deliver", payload)
     assert receipt["lifecycle"] == "delivered"
     return receipt, repo, state_home, tmp_path, baseline, candidate
+
+
+@pytest.fixture(scope="module")
+def delivery_receipt(tmp_path_factory):
+    receipt, *_ = deliver_routed_design(tmp_path_factory.mktemp("receipt-types"))
+    return receipt
+
+
+@pytest.mark.parametrize(("path", "value"), [
+    (("workflow_id",), int("1" * 32)),
+    (("workflow_id",), "A" * 32),
+    (("workflow_id",), None),
+    (("schema_version",), True),
+    (("schema_version",), 1.0),
+    (("revision",), True),
+    (("revision",), 1.0),
+    (("revision",), 0),
+    (("identity", "unexpected"), "extra"),
+    (("identity", "branch"), "x" * 245),
+    *((("identity", field), value)
+      for field in ("repository", "worktree", "branch")
+      for value in (None, "", " \t", "bad\x00text", "x" * 16_385)),
+], ids=lambda value: (
+    ".".join(value) if isinstance(value, tuple)
+    else "overlong-text" if isinstance(value, str) and len(value) > 100
+    else repr(value)
+))
+def test_receipt_validators_reject_mistyped_and_extra_fields(
+    delivery_receipt: dict, path: tuple[str, ...], value: object,
+) -> None:
+    contract = load("handoff_contract_types", CONTRACT_MODULE)
+    plan = load("handoff_plan_types", PLAN_HELPER)
+    mutated = copy.deepcopy(delivery_receipt)
+    target = mutated if len(path) == 1 else mutated[path[0]]
+    target[path[-1]] = value
+    assert contract.validate_delivery_receipt_shape(mutated), path
+    with pytest.raises(plan.PlanGraphError):
+        plan.record_design_join_from_delivery(
+            workflow_id="f" * 32, plan_revision=1,
+            design_delivery_receipt=mutated,
+        )
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_receipt_validators_reject_nonstring_field_names(delivery_receipt, nested):
+    contract = load("handoff_contract_keys", CONTRACT_MODULE)
+    plan = load("handoff_plan_keys", PLAN_HELPER)
+    mutated = copy.deepcopy(delivery_receipt)
+    target = mutated["identity"] if nested else mutated
+    target[0] = "unexpected"
+    assert contract.validate_delivery_receipt_shape(mutated)
+    with pytest.raises(plan.PlanGraphError):
+        plan._validate_design_delivery_receipt(mutated)
+
+
+@pytest.mark.parametrize(("field", "maximum"), [
+    ("repository", 16_384), ("worktree", 16_384), ("branch", 244),
+])
+def test_receipt_text_limits_agree_at_the_boundary(delivery_receipt, field, maximum):
+    contract = load("handoff_contract_text", CONTRACT_MODULE)
+    plan = load("handoff_plan_text", PLAN_HELPER)
+    mutated = copy.deepcopy(delivery_receipt)
+    mutated["identity"][field] = "x" * maximum
+    assert contract.validate_delivery_receipt_shape(mutated) == []
+    plan._validate_design_delivery_receipt(mutated)
+
+
+def test_malformed_receipt_cannot_make_a_plan_ready(tmp_path: Path) -> None:
+    plan = load("handoff_plan_reject_join", PLAN_HELPER)
+    receipt, repo, _, _, _, _ = deliver_routed_design(tmp_path)
+    git(repo, "checkout", "--quiet", TARGET_BRANCH)
+    state_home = tmp_path / "plan-state"
+    plan.initialize_workflow(repo, TARGET_BRANCH, required_graph(), state_home)
+    graph = plan.load_workflow(repo, TARGET_BRANCH, state_home)
+    refresh_audit(plan, repo, state_home, graph)
+    before = plan.load_workflow(repo, TARGET_BRANCH, state_home)
+    assert before["lifecycle"]["derived_state"] == "not-ready"
+    for field, value in (("workflow_id", int("1" * 32)), ("schema_version", True)):
+        mutated = copy.deepcopy(receipt)
+        mutated[field] = value
+        with pytest.raises(plan.PlanGraphError, match=field):
+            join = plan.record_design_join_from_delivery(
+                workflow_id=before["workflow_id"],
+                plan_revision=before["graph_revision"],
+                design_delivery_receipt=mutated,
+            )
+            record = copy.deepcopy(before["design_join"])
+            record.update(receipt=join, fresh=True)
+            operation = plan.issue_operation_receipt(
+                operation="record-design-join", workflow_id=before["workflow_id"],
+                prior_graph_revision=before["graph_revision"], target=["design_join"],
+                record_version=record["record_version"], value=record,
+            )
+            plan.apply_updates(
+                repo, TARGET_BRANCH, before["workflow_id"], before["graph_revision"],
+                [{"op": "record-design-join", "path": ["design_join"], "value": record,
+                  "prior_graph_revision": before["graph_revision"],
+                  "record_version": record["record_version"], "receipt": operation}],
+                state_home,
+            )
+        assert plan.load_workflow(repo, TARGET_BRANCH, state_home) == before
+
+
+def test_preflight_before_and_after_delivery(tmp_path: Path) -> None:
+    design, _, state_home, baseline, _, payload = prepare_routed_design(tmp_path)
+    workflow_id = payload["workflow_id"]
+    before = design.load_workflow(workflow_id=workflow_id, state_home=state_home)
+    check = {"workflow_id": workflow_id, "plan_baseline": baseline,
+             "plan_target_branch": TARGET_BRANCH}
+    pending = subprocess.run(
+        [sys.executable, str(DESIGN_HELPER), "preflight", "--state-home", str(state_home)],
+        input=json.dumps(check), text=True, capture_output=True, check=False,
+    )
+    assert pending.returncode == 1, pending.stderr
+    result = json.loads(pending.stdout)
+    assert result["eligible"] is False
+    assert result["problems"] == [
+        "lifecycle is 'active'; the Plan join needs 'delivered' (deliver first)"
+    ]
+    assert design.load_workflow(workflow_id=workflow_id, state_home=state_home) == before
+    receipt = design_cli(state_home, "deliver", payload)
+    complete = design_cli(state_home, "preflight", check)
+    assert complete["eligible"] is True
+    assert complete["problems"] == []
+    plan = load("handoff_plan_preflight_sequence", PLAN_HELPER)
+    plan.record_design_join_from_delivery(
+        workflow_id="f" * 32, plan_revision=1, design_delivery_receipt=receipt,
+    )
 
 
 def required_graph():
@@ -456,14 +591,20 @@ def test_shared_contract_cli_checks_a_receipt(tmp_path: Path) -> None:
     )
     assert check.returncode == 0, check.stderr
     assert json.loads(check.stdout)["eligible"] is True
-    broken = {k: v for k, v in receipt.items() if k != "candidate_commit"}
-    refused = subprocess.run(
-        [sys.executable, str(CONTRACT_MODULE), "check"],
-        input=json.dumps(broken), text=True,
-        capture_output=True, check=False,
-    )
-    assert refused.returncode == 1
-    assert "candidate_commit" in refused.stdout
+    missing = {k: v for k, v in receipt.items() if k != "candidate_commit"}
+    extra_identity = copy.deepcopy(receipt)
+    extra_identity["identity"]["unexpected"] = "extra"
+    numeric_workflow = dict(receipt, workflow_id=int("1" * 32))
+    for broken, field in ((missing, "candidate_commit"),
+                          (extra_identity, "unexpected"),
+                          (numeric_workflow, "workflow_id")):
+        refused = subprocess.run(
+            [sys.executable, str(CONTRACT_MODULE), "check"],
+            input=json.dumps(broken), text=True,
+            capture_output=True, check=False,
+        )
+        assert refused.returncode == 1
+        assert field in refused.stdout
 
 
 def test_delivered_design_state_reloads_with_persisted_inventories(tmp_path: Path) -> None:
@@ -488,4 +629,8 @@ def test_skill_docs_point_at_the_shared_contract() -> None:
     assert "docs/specs/design-plan-handoff-contract.md" in design_skill
     assert "docs/specs/design-plan-handoff-contract.md" in plan_skill
     assert "preflight" in design_skill
+    assert "An active lifecycle is the only expected pre-delivery problem" in design_skill
+    assert "Fix every other problem before delivery" in design_skill
+    assert "After delivery, run `preflight` again and require `eligible: true`" in design_skill
+    assert "Use the `deliver` CLI stdout as the receipt, unchanged" in design_skill
     assert "record_design_join_from_delivery" in plan_skill

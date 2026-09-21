@@ -1269,8 +1269,9 @@ def issue_design_join_receipt(
     design_delivery_receipt: dict[str, Any],
 ) -> dict[str, Any]:
     """Build the bounded Design result that Plan may join into its graph."""
-    if not re.fullmatch(r"[0-9a-f]{32}", str(workflow_id)) or not re.fullmatch(r"[0-9a-f]{32}", str(design_workflow_id)):
-        raise PlanGraphError("invalid Design join workflow identity")
+    for field, identifier in (("workflow_id", workflow_id), ("design_workflow_id", design_workflow_id)):
+        if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
+            raise PlanGraphError(f"invalid Design join {field}")
     _integer(plan_revision, "Design join plan revision", minimum=1)
     _integer(design_revision, "Design workflow revision", minimum=1)
     _text(design_branch, "Design branch", maximum=244)
@@ -1389,7 +1390,8 @@ def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
     }
     missing = sorted(fields - set(receipt))
     extra = sorted(set(receipt) - fields)
-    if missing or extra or receipt.get("schema_version") != 1:
+    version = receipt.get("schema_version")
+    if missing or extra or isinstance(version, bool) or not isinstance(version, int) or version != 1:
         detail = (
             f"missing={missing or 'none'} extra={extra or 'none'} "
             f"schema_version={receipt.get('schema_version')!r}"
@@ -1404,8 +1406,9 @@ def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
             "Design delivery receipt is not delivered "
             f"(operation={operation!r} lifecycle={lifecycle!r})"
         )
-    if not re.fullmatch(r"[0-9a-f]{32}", str(receipt.get("workflow_id", ""))):
-        raise PlanGraphError("invalid Design delivery workflow identity")
+    workflow_id = receipt.get("workflow_id")
+    if not isinstance(workflow_id, str) or not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
+        raise PlanGraphError("invalid Design delivery workflow_id")
     _integer(receipt.get("revision"), "Design delivery revision", minimum=1)
     identity = _mapping(receipt.get("identity"), "Design delivery identity")
     identity_fields = {
@@ -1421,7 +1424,8 @@ def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
             f"extra={extra_identity or 'none'})"
         )
     for field in ("repository", "branch", "worktree"):
-        _text(identity.get(field), f"Design delivery identity {field}")
+        _text(identity.get(field), f"Design delivery identity {field}",
+              maximum=244 if field == "branch" else 16_384)
     for field in ("baseline", "head", "candidate_commit"):
         candidate = receipt.get(field) if field == "candidate_commit" else identity.get(field)
         if not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", candidate):
@@ -2227,6 +2231,42 @@ def _receipt(
     )
 
 
+@contextmanager
+def _hold_design_candidate(context: _RepoContext, graph: dict[str, Any]) -> Iterator[None]:
+    """Keep an unintegrated candidate ref fixed while its join is persisted.
+
+    A prepared Git verify transaction locks the ref without updating it.
+    Aborting releases the lock on both successful writes and exceptions.
+    """
+    join = _design_join_record(graph)
+    receipt = join.get("receipt")
+    if not join.get("required") or receipt is None:
+        yield
+        return
+    candidate = receipt["candidate_commit"]
+    if _commit_is_ancestor(context.repository, candidate, context.head):
+        yield
+        return
+    branch = receipt["design_branch"]
+    process = subprocess.Popen(
+        ["git", "update-ref", "--stdin"], cwd=context.repository,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    try:
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(f"start\nverify refs/heads/{branch} {candidate}\nprepare\n")
+        process.stdin.flush()
+        if process.stdout.readline() != "start: ok\n" or process.stdout.readline() != "prepare: ok\n":
+            _, error = process.communicate()
+            raise PlanGraphError(f"cannot lock Design candidate branch {branch!r}: {error.strip()}")
+        yield
+    finally:
+        # Closing stdin also aborts an uncommitted transaction, including when
+        # the caller fails during the state write. No ref is ever updated.
+        process.communicate()
+
+
 def _rotate(transaction: _Transaction, old: dict[str, Any], new: dict[str, Any]) -> None:
     if transaction.work_fd is None:
         raise PlanGraphError("workflow not found")
@@ -2834,14 +2874,15 @@ def _apply_updates_locked(
         transaction.context,
         _transaction_provenance_resolver(transaction),
     )
-    _rotate(transaction, current, candidate)
-    return _receipt(
-        candidate,
-        transaction,
-        previous_revision=actual_previous_revision,
-        applied_paths=paths,
-        reconciled=reconciled,
-    )
+    with _hold_design_candidate(transaction.context, candidate):
+        _rotate(transaction, current, candidate)
+        return _receipt(
+            candidate,
+            transaction,
+            previous_revision=actual_previous_revision,
+            applied_paths=paths,
+            reconciled=reconciled,
+        )
 
 
 def apply_updates(
