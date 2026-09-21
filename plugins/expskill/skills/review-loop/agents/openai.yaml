@@ -1,0 +1,6 @@
+interface:
+  display_name: "Review Loop"
+  short_description: "Category reviewers drive a change to 9 of 10"
+  default_prompt: "Use $review-loop to review this change by category and fix top issues until 9 of 10."
+policy:
+  allow_implicit_invocation: false

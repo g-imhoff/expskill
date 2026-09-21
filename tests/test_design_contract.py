@@ -26,6 +26,7 @@ EXPECTED_SKILLS = {
     "test",
     "unslop",
     "use-expskill",
+    "review-loop",
 }
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",
