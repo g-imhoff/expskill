@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "ExpSkill",
     "shortDescription": "Standalone development skills with optional routing",
-    "longDescription": "Use $brainstorm, $plan, $design, $setup-ui-testing, $implement, $correct, $review, $review-loop, $test, $skill-builder, $unslop, $grill-me, or $autonomous-run directly. Use $use-expskill for the next lifecycle step with implementation review and specification gates.",
+    "longDescription": "Use $brainstorm, $plan, $design, $setup-ui-testing, $implement, $correct, $review, $review-loop, $test, $skill-builder, $unslop, $grill-me, or $autonomous-run directly. Design includes Yodea previews. Use $use-expskill for the next lifecycle step with implementation review and specification gates.",
     "developerName": "g-imhoff",
     "category": "Developer Tools",
     "capabilities": [],
