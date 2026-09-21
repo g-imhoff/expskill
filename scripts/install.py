@@ -1069,7 +1069,7 @@ def _codex_transaction(
     binding = None
     try:
         lock_binding = _open_state_binding(
-            _lexical_absolute(state_home).parent, create=create, lock=False
+            directory.parent.parent, create=create, lock=False
         )
         if lock_binding is not None:
             fcntl.flock(lock_binding.directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2925,7 +2925,7 @@ def _validate_codex_install_journal(
         )
         if (
             not isinstance(record, dict)
-            or set(record) != link_keys
+            or set(record) - {"legacy_restore"} != link_keys
             or pair not in expected
             or pair in seen
             or not isinstance(record.get("preexisting"), bool)
@@ -2961,6 +2961,23 @@ def _validate_codex_install_journal(
             raise InstallError(
                 f"install journal link pre-state is malformed: {journal_path}"
             )
+        if "legacy_restore" in record:
+            restoration = record["legacy_restore"]
+            if (
+                not preexisting
+                or not isinstance(restoration, dict)
+                or set(restoration) != {"dev", "ino"}
+                or not (
+                    all(value is None for value in restoration.values())
+                    or all(
+                        type(value) is int and value > 0
+                        for value in restoration.values()
+                    )
+                )
+            ):
+                raise InstallError(
+                    f"install journal legacy restoration is malformed: {journal_path}"
+                )
         dev = record.get("destination_dev")
         ino = record.get("destination_ino")
         staged = record.get("staged_destination")
@@ -3310,11 +3327,27 @@ def _remove_codex_recorded_link(link: ProfileLink) -> bool:
         or link.link_anchor is None
     ):
         return False
-    if not _codex_anchor_is_live(link):
-        return False
     expected = (link.destination_dev, link.destination_ino)
+    if not link.destination.parent.exists():
+        return False
     parent_fd = os.open(link.destination.parent, _directory_open_flags())
     try:
+        if not _codex_anchor_is_live(link):
+            if _retirement_record_exists(
+                parent_fd, link.link_anchor.name, expected, directory=False
+            ):
+                # The exchange may have moved our anchor to its exact private
+                # retirement name.  Finish that work before dropping authority;
+                # a replacement at either public name remains independent.
+                _remove_exact_via_exchange(
+                    parent_fd,
+                    link.link_anchor.name,
+                    expected,
+                    f"Codex link anchor {link.link_anchor}",
+                    directory=False,
+                    preserve_replacements=True,
+                )
+            return False
         removed = _remove_exact_via_exchange(
             parent_fd,
             link.destination.name,
@@ -6604,20 +6637,68 @@ def _migrate_legacy_codex_links(
     return tuple(migrated)
 
 
-def _restore_legacy_codex_links(links: Sequence[ProfileLink]) -> list[str]:
+def _restore_legacy_codex_links(
+    links: Sequence[ProfileLink],
+    journal_path: Path,
+    journal: dict[str, object],
+) -> list[str]:
+    """Publish a journaled restoration inode without adopting a replacement."""
+
     _verify_codex_transaction()
     failures: list[str] = []
+    records = {record["destination"]: record for record in journal["links"]}
     for link in links:
-        if _lexists(link.destination):
-            if _same_owned_link(link.destination, link.source):
-                continue
-            failures.append(f"legacy link destination changed: {link.destination}")
-            continue
         try:
+            record = records[str(link.destination)]
+            restoration = record.get("legacy_restore")
+            staged = _codex_link_staging_path(
+                link.source, link.destination, journal["stage_secret"]
+            )
+            if restoration is None:
+                if _lexists(link.destination):
+                    if _codex_staged_link_is_exact(
+                        link, link.destination,
+                        (record["preexisting_dev"], record["preexisting_ino"]),
+                    ):
+                        continue
+                    raise InstallError(f"legacy link destination changed: {link.destination}")
+                if _lexists(staged):
+                    raise InstallError(f"legacy restoration stage is occupied: {staged}")
+                # Only the secret-bound private stage can supply a new inode.
+                # Never infer restoration ownership from the public target.
+                restoration = {"dev": None, "ino": None}
+                record["legacy_restore"] = restoration
+                _write_codex_install_journal(journal_path, journal)
             link.destination.parent.mkdir(parents=True, exist_ok=True)
-            link.destination.symlink_to(link.source)
+            if restoration["dev"] is None:
+                if not _lexists(staged):
+                    staged.symlink_to(record["preexisting_target"])
+                if not _codex_staged_link_is_exact(link, staged):
+                    raise InstallError(f"legacy restoration stage changed: {staged}")
+                metadata = os.lstat(staged)
+                _fsync_directory(staged.parent)
+                restoration.update(dev=metadata.st_dev, ino=metadata.st_ino)
+                # Freeze identity before publication so either pathname can
+                # be verified after a process exit during the rename.
+                _write_codex_install_journal(journal_path, journal)
+            expected = (restoration["dev"], restoration["ino"])
+            if _lexists(staged):
+                if not _codex_staged_link_is_exact(link, staged, expected):
+                    raise InstallError(f"legacy restoration stage changed identity: {staged}")
+                parent_fd = os.open(staged.parent, _directory_open_flags())
+                try:
+                    _renameat_noreplace(
+                        parent_fd, staged.name, parent_fd, link.destination.name
+                    )
+                finally:
+                    os.close(parent_fd)
+            if not _codex_staged_link_is_exact(link, link.destination, expected):
+                raise InstallError(f"legacy link destination changed: {link.destination}")
             _fsync_directory(link.destination.parent)
-        except OSError as error:
+            record["preexisting_dev"], record["preexisting_ino"] = expected
+            record.pop("legacy_restore")
+            _write_codex_install_journal(journal_path, journal)
+        except (OSError, InstallError) as error:
             failures.append(f"legacy link {link.destination}: {error}")
     return failures
 
@@ -6935,10 +7016,17 @@ def _cleanup_after_install_failure(
                 known_destinations.add(link.destination)
     except InstallError as error:
         failures.append(f"legacy link journal: {error}")
-    failures.extend(
-        f"legacy link rollback: {failure}"
-        for failure in _restore_legacy_codex_links(legacy_links)
-    )
+    if (
+        legacy_links
+        and install_journal_path is not None
+        and isinstance(install_journal, dict)
+    ):
+        failures.extend(
+            f"legacy link rollback: {failure}"
+            for failure in _restore_legacy_codex_links(
+                legacy_links, install_journal_path, install_journal
+            )
+        )
     migration_restored = False
     if migration_journal_path is not None and migration_state is not None:
         recovery_failures: list[str] = []
@@ -7032,6 +7120,8 @@ def _install_codex_bound(
 ) -> InstallResult:
     managed_root = _codex_managed_root(canonical_root, state_home)
     install_journal_path = _codex_install_journal_path(state_home)
+    new_transaction = not _lexists(install_journal_path)
+    prior_migration = _lexists(_codex_migration_journal_path(state_home))
     install_journal = _load_or_start_codex_install_journal(
         install_journal_path,
         canonical_root,
@@ -7040,6 +7130,23 @@ def _install_codex_bound(
         planned_links,
         agents_only,
     )
+    restoring = {
+        record["destination"]
+        for record in install_journal["links"]
+        if "legacy_restore" in record
+    }
+    if restoring:
+        legacy_links = tuple(
+            link for link in _journaled_legacy_codex_links(install_journal)
+            if str(link.destination) in restoring
+        )
+        if {str(link.destination) for link in legacy_links} != restoring:
+            raise InstallError("Codex legacy restoration lacks journaled legacy authority")
+        failures = _restore_legacy_codex_links(
+            legacy_links, install_journal_path, install_journal
+        )
+        if failures:
+            raise InstallError("legacy link recovery failed: " + "; ".join(failures))
     pending_cli = tuple(
         kind
         for kind in ("plugin", "marketplace")
@@ -7081,15 +7188,36 @@ def _install_codex_bound(
             run,
             plugin_version,
         )
-        marketplace_payload = _run_json(
-            run,
-            ["codex", "plugin", "marketplace", "list", "--json"],
-        )
-        marketplace_state = _marketplace_state(
-            marketplace_payload,
-            managed_root,
-            (canonical_root, recovery_root),
-        )
+        try:
+            marketplace_payload = _run_json(
+                run,
+                ["codex", "plugin", "marketplace", "list", "--json"],
+            )
+            marketplace_state = _marketplace_state(
+                marketplace_payload,
+                managed_root,
+                (canonical_root, recovery_root),
+            )
+        except InstallError:
+            # This invocation has only materialized its package and inspected
+            # CLI state.  Older journals may still authorize uncheckpointed
+            # mutations, even when their current phases look quiescent.
+            if (
+                new_transaction
+                and not prior_migration
+                and all(
+                    install_journal[key] is None
+                    for key in (
+                        "swap", "recovery_swap", "marketplace_pre_state", "plugin_pre_state"
+                    )
+                )
+                and all(
+                    record["phase"] in {"planned", "preexisting"}
+                    for record in install_journal["links"]
+                )
+            ):
+                _clear_codex_install_journal(install_journal_path)
+            raise
         if marketplace_state == "foreign":
             raise InstallError("marketplace name conflict from another repository")
         if install_journal["marketplace_pre_state"] is None:
