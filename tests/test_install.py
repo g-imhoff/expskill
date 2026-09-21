@@ -43,6 +43,7 @@ SKILL_NAMES = (
     "setup-ui-testing",
     "skill-builder",
     "unslop",
+    "autonomous-run",
     "review-loop",
 )
 PLUGIN_SELECTOR = "expskill@expskill"
