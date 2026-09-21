@@ -6893,6 +6893,7 @@ def _cleanup_after_install_failure(
     plugin_version: str | None = None,
     install_journal_path: Path | None = None,
     install_journal: Mapping[str, object] | None = None,
+    pending_cli: Sequence[str] = (),
 ) -> None:
     _verify_codex_transaction()
     failures: list[str] = []
@@ -6938,6 +6939,7 @@ def _cleanup_after_install_failure(
         f"legacy link rollback: {failure}"
         for failure in _restore_legacy_codex_links(legacy_links)
     )
+    migration_restored = False
     if migration_journal_path is not None and migration_state is not None:
         recovery_failures: list[str] = []
         if migration_state.get("marketplace_removed"):
@@ -6959,10 +6961,31 @@ def _cleanup_after_install_failure(
         if recovery_failures:
             failures.extend(recovery_failures)
         else:
+            migration_restored = True
             try:
                 _clear_codex_migration_journal(migration_journal_path)
             except InstallError as error:
                 failures.append(f"migration journal cleanup: {error}")
+    if install_journal is not None:
+        # A resumed invocation may fail before its local ownership flags are
+        # set, including after an add exited before its durable checkpoint.
+        # Keep pre-states loaded from the prior invocation until its possible
+        # registration is compensated or validated and receipted by a retry.
+        for kind, added_this_run in (
+            ("plugin", plugin_new),
+            ("marketplace", marketplace_new),
+        ):
+            if (
+                not added_this_run
+                and not migration_restored
+                and kind in pending_cli
+            ):
+                failures.append(f"{kind} rollback remains pending in install journal")
+        # Exact backup identities live only in this journal.  A retry must
+        # reconcile both package swaps before that authority can be retired.
+        for swap_key in ("swap", "recovery_swap"):
+            if install_journal.get(swap_key) is not None:
+                failures.append(f"{swap_key} cleanup remains pending in install journal")
     if not failures and install_journal_path is not None:
         try:
             _clear_codex_install_journal(install_journal_path)
@@ -7016,6 +7039,11 @@ def _install_codex_bound(
         managed_root,
         planned_links,
         agents_only,
+    )
+    pending_cli = tuple(
+        kind
+        for kind in ("plugin", "marketplace")
+        if install_journal.get(f"{kind}_pre_state") in {"absent", "legacy"}
     )
     recovery_root = _codex_recovery_root(canonical_root, state_home)
     _resume_codex_marketplace_swap(
@@ -7293,6 +7321,7 @@ def _install_codex_bound(
             plugin_version,
             install_journal_path,
             install_journal,
+            pending_cli,
         )
     return InstallResult(
         links=links,
@@ -7354,6 +7383,13 @@ def _remove_owned_links(
             removed_owned = _remove_codex_recorded_link(link)
         except InstallError as error:
             failures.append(f"link {link.destination}: {error}")
+            continue
+        if not removed_owned and _same_recorded_link(link.destination, link.source):
+            # Keep the original entry as dependency evidence, without adopting
+            # the replacement inode.  Retry can finish once the user removes it.
+            failures.append(
+                f"unproven link still depends on its package: {link.destination}"
+            )
             continue
         if removed_owned:
             removed.append(link)

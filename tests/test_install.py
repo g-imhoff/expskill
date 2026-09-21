@@ -1432,6 +1432,132 @@ class InstallerTests(unittest.TestCase):
                 uninstall_runner.calls,
             )
 
+    def test_resumed_install_failure_retains_cli_ownership_until_cleanup(self) -> None:
+        self._assert_resumed_install_failure_retains_cli_ownership(False)
+
+    def test_uncheckpointed_add_failure_retains_cli_ownership_until_cleanup(self) -> None:
+        self._assert_resumed_install_failure_retains_cli_ownership(True)
+
+    def test_initial_add_failure_retires_restored_legacy_link_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            destination = destination_paths(codex_home)["expskill-review"]
+            legacy_source = (
+                repo / "plugins" / "expskill" / "codex" / "runtime" / "agents"
+                / destination.name
+            )
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(legacy_source)
+            with self.assertRaisesRegex(InstallError, "initial add failed"):
+                install(
+                    repo, codex_home, state_home,
+                    FakeRunner([
+                        marketplace_list_response(),
+                        FakeResult(1, stderr="initial add failed"),
+                    ]),
+                )
+            self.assertEqual(Path(os.readlink(destination)), legacy_source)
+            self.assertFalse((state_home / "expskill" / "codex-install.json").exists())
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            self.assertTrue(destination.is_file())
+
+    def _assert_resumed_install_failure_retains_cli_ownership(
+        self, interrupt_before_checkpoint: bool
+    ) -> None:
+        for failed_add in ("marketplace", "plugin"):
+            for finish in ("retry", "uninstall"):
+                for preexisting in (False, True):
+                    with self.subTest(
+                        failed_add=failed_add, finish=finish, preexisting=preexisting
+                    ), tempfile.TemporaryDirectory() as temporary:
+                        root = Path(temporary)
+                        repo = seed_repository(root / "repo")
+                        codex_home, state_home = root / "codex", root / "state"
+                        registered = {
+                            "marketplace": preexisting,
+                            "plugin": preexisting,
+                        }
+                        failing = False
+                        interrupted = False
+                        removals = []
+
+                        def run(command: list[str]) -> FakeResult:
+                            nonlocal interrupted
+                            kind = "marketplace" if command[2] == "marketplace" else "plugin"
+                            action = command[3] if kind == "marketplace" else command[2]
+                            if action == "list":
+                                response = (
+                                    marketplace_list_response
+                                    if kind == "marketplace"
+                                    else plugin_list_response
+                                )
+                                return response(repo if registered[kind] else None)
+                            if action == "add":
+                                if failing and kind == failed_add:
+                                    return FakeResult(1, stderr=f"injected {kind} add failure")
+                                present = registered[kind]
+                                registered[kind] = True
+                                if (
+                                    interrupt_before_checkpoint
+                                    and not interrupted
+                                    and kind == failed_add
+                                ):
+                                    interrupted = True
+                                    raise SystemExit(f"after {kind} add before checkpoint")
+                                return (
+                                    marketplace_add_response(repo, present)
+                                    if kind == "marketplace"
+                                    else plugin_add_response(repo)
+                                )
+                            self.assertEqual(action, "remove")
+                            removals.append(kind)
+                            registered[kind] = False
+                            return removal_response()
+
+                        with mock.patch(
+                            "scripts.install._write_codex_receipt",
+                            side_effect=SystemExit("after CLI adds"),
+                        ):
+                            with self.assertRaises(SystemExit):
+                                install(repo, codex_home, state_home, run)
+
+                        journal = state_home / "expskill" / "codex-install.json"
+                        failing = True
+                        for _ in range(2):
+                            with self.assertRaisesRegex(InstallError, "injected .* add failure"):
+                                install(repo, codex_home, state_home, run)
+                            if not preexisting:
+                                self.assertTrue(journal.is_file())
+                                pending = json.loads(journal.read_text(encoding="utf-8"))
+                                self.assertEqual(pending["marketplace_pre_state"], "absent")
+                                self.assertEqual(
+                                    pending["plugin_pre_state"],
+                                    None
+                                    if interrupt_before_checkpoint and failed_add == "marketplace"
+                                    else "absent",
+                                )
+
+                        failing = False
+                        if finish == "retry":
+                            install(repo, codex_home, state_home, run)
+                            receipt = load_receipt(state_home)
+                            self.assertIs(receipt["marketplace_added"], not preexisting)
+                            self.assertIs(receipt["plugin_installed"], not preexisting)
+                        uninstall(repo, codex_home, state_home, run)
+                        self.assertEqual(
+                            registered,
+                            {"marketplace": preexisting, "plugin": preexisting},
+                        )
+                        if preexisting:
+                            self.assertEqual(removals, [])
+                        else:
+                            self.assertFalse(managed_repository(repo).exists())
+                        self.assertFalse(journal.exists())
+                        self.assertFalse(receipt_path(state_home).exists())
+                        self.assertFalse(any((codex_home / "agents").iterdir()))
+
     def test_managed_marketplace_swap_recovers_exact_backup_after_process_exit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1572,6 +1698,74 @@ class InstallerTests(unittest.TestCase):
                     for candidate in recovery_parent.iterdir()
                 )
             )
+
+    def test_recovery_swap_cleanup_failure_retains_backup_authority_for_retry(self) -> None:
+        from scripts import install as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            recovery_root = module._materialize_codex_recovery_package(repo, state_home)
+            original_remove = module._remove_exact_codex_swap_backup
+
+            def fail_recovery_backup(
+                backup: Path, expected: tuple[int, int], target: Path, repository: Path
+            ) -> None:
+                if target == recovery_root:
+                    raise InstallError("injected recovery backup cleanup failure")
+                original_remove(backup, expected, target, repository)
+
+            with mock.patch(
+                "scripts.install._remove_exact_codex_swap_backup", fail_recovery_backup
+            ):
+                with self.assertRaisesRegex(InstallError, "recovery backup cleanup failure"):
+                    install(
+                        repo,
+                        codex_home,
+                        state_home,
+                        FakeRunner([
+                            marketplace_list_response(repo, repo),
+                            plugin_list_response(),
+                        ]),
+                    )
+
+            backups = tuple(recovery_root.parent.glob("*.swap-backup-*"))
+            self.assertEqual(len(backups), 1)
+            journal = state_home / "expskill" / "codex-install.json"
+            self.assertTrue(journal.is_file())
+            pending = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(pending["recovery_swap"]["backup"], str(backups[0]))
+
+            install(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner([
+                    marketplace_list_response(repo, repo),
+                    plugin_list_response(),
+                    removal_response(),
+                    marketplace_add_response(repo),
+                    plugin_add_response(repo),
+                ]),
+            )
+            self.assertFalse(backups[0].exists())
+            self.assertFalse(recovery_root.exists())
+            self.assertFalse(journal.exists())
+            uninstall(
+                repo,
+                codex_home,
+                state_home,
+                FakeRunner([
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]),
+            )
+            self.assertFalse(tuple((state_home / "expskill").rglob("*.swap-backup-*")))
+            self.assertFalse(managed_repository(repo).exists())
+            self.assertFalse(receipt_path(state_home).exists())
 
     def test_uninstall_removes_checkout_based_cli_state_from_owned_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2374,25 +2568,52 @@ class InstallerTests(unittest.TestCase):
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
             replacement = destination_paths(codex_home)["expskill-review"]
             target = Path(os.readlink(replacement))
+            original_content = replacement.read_text(encoding="utf-8")
+            original_identity = replacement.lstat().st_ino
             replacement.unlink()
             replacement.symlink_to(target)
+            replacement_identity = replacement.lstat().st_ino
+            self.assertNotEqual(replacement_identity, original_identity)
 
+            with self.assertRaisesRegex(InstallError, "unproven.*depends on its package"):
+                uninstall(
+                    repo,
+                    codex_home,
+                    state_home,
+                    FakeRunner(
+                        [
+                            plugin_list_response(repo),
+                            marketplace_list_response(repo),
+                            removal_response(),
+                            removal_response(),
+                        ]
+                    ),
+                )
+
+            self.assertTrue(replacement.is_symlink())
+            self.assertEqual(Path(os.readlink(replacement)), target)
+            self.assertEqual(replacement.read_text(encoding="utf-8"), original_content)
+            self.assertEqual(replacement.lstat().st_ino, replacement_identity)
+            remaining = load_receipt(state_home)
+            self.assertEqual(len(remaining["links"]), 1)
+            self.assertEqual(remaining["links"][0]["destination_ino"], original_identity)
+            self.assertFalse(remaining["plugin_installed"])
+            self.assertFalse(remaining["marketplace_added"])
+            with self.assertRaisesRegex(InstallError, "unproven.*depends on its package"):
+                uninstall(repo, codex_home, state_home, FakeRunner([]))
+            self.assertEqual(replacement.read_text(encoding="utf-8"), original_content)
+
+            replacement.unlink()
             uninstall(
                 repo,
                 codex_home,
                 state_home,
-                FakeRunner(
-                    [
-                        plugin_list_response(repo),
-                        marketplace_list_response(repo),
-                        removal_response(),
-                        removal_response(),
-                    ]
-                ),
+                FakeRunner([plugin_list_response(), marketplace_list_response()]),
             )
-
-            self.assertTrue(replacement.is_symlink())
-            self.assertEqual(Path(os.readlink(replacement)), target)
+            self.assertFalse(target.exists())
+            self.assertFalse(managed_repository(repo).exists())
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertFalse(any((codex_home / "agents").iterdir()))
 
     def test_uninstall_restores_user_replacement_racing_atomic_link_retirement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
