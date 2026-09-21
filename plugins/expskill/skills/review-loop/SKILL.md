@@ -50,7 +50,8 @@ Spawn one fixer per non empty top issue. One issue means one fixer. Fixers work
 in the pinned scope only and touch nothing unrelated.
 
 When two fixes could touch the same files, give each fixer its own worktree
-from scripts/worktrees.py and integrate them one at a time. When fixes touch
+using `../../scripts/worktrees.py`, resolved relative to the directory containing
+this loaded `SKILL.md`, and integrate them one at a time. When fixes touch
 disjoint files, fixers may share the checkout. If you are unsure whether files
 overlap, use worktrees. Merging two conflicting edits by hand defeats the
 point.
