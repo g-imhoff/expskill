@@ -213,9 +213,9 @@ class OpencodeContractTests(unittest.TestCase):
         self.assertFalse((PLUGIN_ROOT / "opencode" / "commands").exists())
         self.assertFalse((PLUGIN_ROOT / "opencode" / "agents").exists())
 
-    def test_validation_reports_malformed_overlay_closing(self) -> None:
+    def test_validation_reports_malformed_canonical_closing(self) -> None:
         root = self.copy_repository()
-        overlay = root / "plugins" / "expskill" / "opencode" / "agents.json"
+        overlay = root / "plugins" / "expskill" / "content" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
         del spec["agents"]["expskill-review"]["closing"]
         overlay.write_text(json.dumps(spec), encoding="utf-8")

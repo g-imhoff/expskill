@@ -85,7 +85,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
     def test_unslop_is_directly_invokable_but_not_implicitly_selected(self) -> None:
         root = SKILLS_ROOT / "unslop"
         frontmatter = _frontmatter(root / "SKILL.md")
-        metadata = (PLUGIN_ROOT / "codex" / "skills" / "unslop" / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        metadata = (PLUGIN_ROOT / "codex" / "skill-adapters" / "unslop" / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertEqual(frontmatter["name"], "unslop")
         self.assertIn('$unslop', metadata)
@@ -94,7 +94,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
     def test_grill_me_is_directly_invokable_but_not_implicitly_selected(self) -> None:
         root = SKILLS_ROOT / "grill-me"
         frontmatter = _frontmatter(root / "SKILL.md")
-        metadata = (PLUGIN_ROOT / "codex" / "skills" / "grill-me" / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        metadata = (PLUGIN_ROOT / "codex" / "skill-adapters" / "grill-me" / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertEqual(frontmatter["name"], "grill-me")
         self.assertIn('$grill-me', metadata)

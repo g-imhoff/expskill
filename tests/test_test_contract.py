@@ -22,7 +22,7 @@ CODEX_TEST_METADATA = (
     / "plugins"
     / "expskill"
     / "codex"
-    / "skills"
+    / "skill-adapters"
     / "test"
     / "agents"
     / "openai.yaml"

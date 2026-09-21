@@ -425,7 +425,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             copied = Path(temporary) / "repo"
             shutil.copytree(ROOT, copied)
-            overlay = copied / "plugins" / "expskill" / "opencode" / "agents.json"
+            overlay = copied / "plugins" / "expskill" / "content" / "agents.json"
             spec = json.loads(overlay.read_text(encoding="utf-8"))
             spec["agents"]["expskill-review"].pop("closing")
             overlay.write_text(json.dumps(spec), encoding="utf-8")

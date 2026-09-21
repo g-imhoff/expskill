@@ -79,7 +79,7 @@ def _numbered_workflow(contents: str) -> list[str]:
 class PlanContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.skill_path = PLAN_ROOT / "SKILL.md"
-        self.metadata_path = PLUGIN_ROOT / "codex" / "skills" / "plan" / "agents" / "openai.yaml"
+        self.metadata_path = PLUGIN_ROOT / "codex" / "skill-adapters" / "plan" / "agents" / "openai.yaml"
         self.body = self.skill_path.read_text(encoding="utf-8")
         self.normalized = " ".join(self.body.lower().split())
 

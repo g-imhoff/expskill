@@ -14,10 +14,10 @@ license.
 Generated agents, commands, the runtime catalog, and copied package assets are
 not maintained by hand in the source tree.
 
-`agents.json` is the OpenCode overlay. It supplies model profiles, permission
-maps, runtime text, and closings for the exact seven canonical profiles in
-`plugins/expskill/content/agents/*.md`. Descriptions and developer
-instructions remain in the canonical Markdown bodies.
+`opencode/agents.json` is the OpenCode technical overlay. It supplies model
+profiles and permission maps. Shared descriptions, runtime text, and closings
+live in `content/agents.json`. The seven instruction bodies live in
+`content/agents/*.md`.
 
 ## Pure rendering and explicit build
 

@@ -24,6 +24,7 @@ try:
 except ModuleNotFoundError:  # direct ``python tests/test_cli_install_integration.py``
     from cli_verification import ensure_binary
 
+from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.build_opencode_package import build_opencode_package
 
 
@@ -158,9 +159,12 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 "XDG_STATE_HOME": str(state_home),
             }
             codex = [str(self.codex_bin)]
+            marketplace_root = build_codex_marketplace(ROOT, root / "marketplace")
 
             marketplace = _run_json(
-                codex + ["plugin", "marketplace", "add", str(ROOT), "--json"], env
+                codex
+                + ["plugin", "marketplace", "add", str(marketplace_root), "--json"],
+                env,
             )
             assert isinstance(marketplace, dict)
             self.assertEqual(marketplace.get("marketplaceName"), "expskill")
@@ -168,6 +172,11 @@ class CliInstallIntegrationTests(unittest.TestCase):
             plugin = _run_json(codex + ["plugin", "add", "expskill@expskill", "--json"], env)
             assert isinstance(plugin, dict)
             self.assertEqual(plugin.get("pluginId"), "expskill@expskill")
+            installed_path = Path(str(plugin.get("installedPath")))
+            self.assertEqual(
+                len(tuple(installed_path.glob("skills/*/agents/openai.yaml"))),
+                12,
+            )
 
             installer = _run(
                 [sys.executable, str(INSTALL_SCRIPT), "--agents-only"], env
@@ -179,10 +188,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 with self.subTest(agent=name):
                     link = agents_root / f"{name}.toml"
                     self.assertTrue(link.is_symlink(), f"missing agent link: {link}")
-                    self.assertEqual(
-                        link.resolve().parent.parent.parent.parent,
-                        (ROOT / "plugins" / "expskill").resolve(),
-                    )
+                    self.assertIn(state_home.resolve(), link.resolve().parents)
 
             listed = _run_json(codex + ["plugin", "list", "--json"], env)
             assert isinstance(listed, dict)

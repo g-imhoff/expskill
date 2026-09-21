@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from scripts.install import InstallError, install, main, uninstall
+from scripts.install import InstallError, _codex_managed_root, install, main, uninstall
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,7 +94,8 @@ def seed_repository(path: Path) -> Path:
         or source_plan_helper.stat().st_size == 0
     ):
         raise AssertionError(f"invalid route-neutral plugin helper fixture: {source_helper}")
-    shutil.copytree(ROOT / ".agents", path / ".agents")
+    if (ROOT / ".agents").is_dir():
+        shutil.copytree(ROOT / ".agents", path / ".agents")
     shutil.copytree(source_plugin / ".codex-plugin", destination_plugin / ".codex-plugin")
     shutil.copytree(source_plugin / "content", destination_plugin / "content")
     shutil.copytree(source_plugin / "codex", destination_plugin / "codex")
@@ -116,13 +117,17 @@ def destination_paths(codex_home: Path) -> dict[str, Path]:
     }
 
 
+def managed_repository(repository: Path) -> Path:
+    return _codex_managed_root(repository.resolve(), repository.parent / "state")
+
+
 def marketplace_list_response(
     repository: Path | None = None,
     source: Path | None = None,
 ) -> FakeResult:
     marketplaces: list[dict[str, object]] = []
     if repository is not None:
-        selected_source = repository if source is None else source
+        selected_source = managed_repository(repository) if source is None else source
         marketplaces.append(
             {
                 "name": "expskill",
@@ -141,14 +146,14 @@ def marketplace_add_response(repository: Path, already_added: bool = False) -> F
         0,
         {
             "marketplaceName": "expskill",
-            "installedRoot": str(repository),
+            "installedRoot": str(managed_repository(repository)),
             "alreadyAdded": already_added,
         },
     )
 
 
 def plugin_entry(repository: Path, source: Path | None = None) -> dict[str, object]:
-    plugin_source = repository if source is None else source
+    plugin_source = managed_repository(repository) if source is None else source
     return {
         "pluginId": PLUGIN_SELECTOR,
         "name": "expskill",
@@ -275,7 +280,7 @@ class InstallerTests(unittest.TestCase):
                         / "plugins"
                         / "expskill"
                         / "codex"
-                        / "skills"
+                        / "skill-adapters"
                         / name
                         / "agents"
                         / "openai.yaml"
@@ -337,7 +342,8 @@ class InstallerTests(unittest.TestCase):
 
             def source_fixture(name: str, helper_name: str) -> tuple[Path, Path]:
                 source_root = root / name / "source"
-                shutil.copytree(ROOT / ".agents", source_root / ".agents")
+                if (ROOT / ".agents").is_dir():
+                    shutil.copytree(ROOT / ".agents", source_root / ".agents")
                 shutil.copytree(ROOT / "plugins" / "expskill", source_root / "plugins" / "expskill")
                 shutil.copytree(ROOT / "scripts", source_root / "scripts")
                 return source_root, source_root / "plugins" / "expskill" / "content" / "scripts" / helper_name
@@ -405,10 +411,16 @@ class InstallerTests(unittest.TestCase):
 
     def test_dry_run_prints_canonical_repository_and_only_planned_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            codex_home = Path(temporary) / "codex"
+            root = Path(temporary)
+            codex_home = root / "codex"
+            state_home = root / "state"
             before = tuple(codex_home.parent.iterdir())
             output = StringIO()
-            with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(codex_home), "XDG_STATE_HOME": str(state_home)},
+                clear=False,
+            ):
                 with redirect_stdout(output):
                     result = main(["--dry-run"])
 
@@ -417,7 +429,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(len(lines), len(PROFILE_NAMES) + 2)
             self.assertEqual(
                 lines[-2],
-                f"codex plugin marketplace add {ROOT.resolve()} --json",
+                f"codex plugin marketplace add {_codex_managed_root(ROOT.resolve(), state_home)} --json",
             )
             self.assertEqual(lines[-1], "codex plugin add expskill@expskill --json")
             self.assertEqual(before, tuple(codex_home.parent.iterdir()))
@@ -463,7 +475,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "add",
-                        str(repo.resolve()),
+                        str(managed_repository(repo)),
                         "--json",
                     ),
                     ("codex", "plugin", "list", "--json"),
@@ -482,7 +494,7 @@ class InstallerTests(unittest.TestCase):
             )
             for name, destination in destinations.items():
                 self.assertTrue(destination.is_symlink(), name)
-                expected = repo.resolve() / "plugins" / "expskill" / "codex" / "runtime" / "agents" / f"{name}.toml"
+                expected = managed_repository(repo) / "plugins" / "expskill" / "agents" / f"{name}.toml"
                 self.assertEqual(destination.resolve(), expected)
 
             receipt = load_receipt(state_home)
@@ -541,6 +553,92 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(receipt["plugin_installed"])
             self.assertEqual(receipt, original_receipt)
             self.assertEqual(len(second_runner.calls), 4)
+
+    def test_install_migrates_checkout_based_marketplace_and_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            runner = FakeRunner(
+                [
+                    marketplace_list_response(repo, repo.resolve()),
+                    plugin_list_response(repo, repo.resolve()),
+                    removal_response(),
+                    removal_response(),
+                    marketplace_add_response(repo),
+                    plugin_add_response(repo),
+                ]
+            )
+
+            result = install(repo, codex_home, state_home, runner)
+
+            self.assertTrue(result.marketplace_added)
+            self.assertTrue(result.plugin_installed)
+            self.assertEqual(
+                runner.calls,
+                [
+                    ("codex", "plugin", "marketplace", "list", "--json"),
+                    ("codex", "plugin", "list", "--json"),
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "expskill",
+                        "--json",
+                    ),
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        str(managed_repository(repo)),
+                        "--json",
+                    ),
+                    ("codex", "plugin", "add", PLUGIN_SELECTOR, "--json"),
+                ],
+            )
+            receipt = load_receipt(state_home)
+            self.assertTrue(receipt["marketplace_added"])
+            self.assertTrue(receipt["plugin_installed"])
+
+    def test_uninstall_removes_checkout_based_cli_state_from_owned_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            runner = FakeRunner(
+                [
+                    plugin_list_response(repo, repo.resolve()),
+                    marketplace_list_response(repo, repo.resolve()),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+
+            uninstall(repo, codex_home, state_home, runner)
+
+            self.assertEqual(
+                runner.calls,
+                [
+                    ("codex", "plugin", "list", "--json"),
+                    ("codex", "plugin", "marketplace", "list", "--json"),
+                    ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                    (
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "expskill",
+                        "--json",
+                    ),
+                ],
+            )
+            self.assertFalse(receipt_path(state_home).exists())
 
     def test_install_migrates_owned_retired_profile_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -689,7 +787,7 @@ class InstallerTests(unittest.TestCase):
                         "plugin",
                         "marketplace",
                         "add",
-                        str(repo.resolve()),
+                        str(managed_repository(repo)),
                         "--json",
                     ),
                     (
@@ -844,11 +942,9 @@ class InstallerTests(unittest.TestCase):
             outside_alias = root / "outside-alias.toml"
             outside_alias.symlink_to(outside_file)
             damaged_source = (
-                repo
+                managed_repository(repo)
                 / "plugins"
                 / "expskill"
-                / "codex"
-                / "runtime"
                 / "agents"
                 / "expskill-review.toml"
             )
@@ -1181,11 +1277,9 @@ class InstallerTests(unittest.TestCase):
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
             deleted_source = (
-                repo
+                managed_repository(repo)
                 / "plugins"
                 / "expskill"
-                / "codex"
-                / "runtime"
                 / "agents"
                 / "expskill-review.toml"
             )
@@ -1218,11 +1312,9 @@ class InstallerTests(unittest.TestCase):
             outside_alias = root / "outside-alias.toml"
             outside_alias.symlink_to(outside_file)
             damaged_source = (
-                repo
+                managed_repository(repo)
                 / "plugins"
                 / "expskill"
-                / "codex"
-                / "runtime"
                 / "agents"
                 / "expskill-review.toml"
             )
@@ -1230,11 +1322,9 @@ class InstallerTests(unittest.TestCase):
             damaged_source.symlink_to(outside_file)
             untouched_destination = destination_paths(codex_home)["expskill-implementer"]
             untouched_source = (
-                repo
+                managed_repository(repo)
                 / "plugins"
                 / "expskill"
-                / "codex"
-                / "runtime"
                 / "agents"
                 / "expskill-implementer.toml"
             )
@@ -1255,9 +1345,8 @@ class InstallerTests(unittest.TestCase):
             result = uninstall(repo, codex_home, state_home, runner)
 
             self.assertEqual(len(result.removed_links), len(PROFILE_NAMES) - 1)
-            self.assertTrue(damaged_source.is_symlink())
-            self.assertEqual(damaged_source.read_text(encoding="utf-8"), "user-owned\n")
-            self.assertTrue(untouched_source.is_symlink())
+            self.assertFalse(managed_repository(repo).exists())
+            self.assertEqual(outside_file.read_text(encoding="utf-8"), "user-owned\n")
             self.assertFalse(os.path.lexists(untouched_destination))
             self.assertTrue(retargeted.is_symlink())
             self.assertEqual(os.readlink(retargeted), str(outside_alias))

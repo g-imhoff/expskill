@@ -95,6 +95,30 @@ def load_adapter(repo_root: Path | str | None = None) -> tuple[Path, dict[str, A
     return package, spec
 
 
+def load_agent_content(package: Path) -> dict[str, Any]:
+    spec = _read_json(package / "content" / "agents.json", "canonical agent metadata")
+    if spec.get("schema_version") != "agent-content.v1":
+        raise RenderError("canonical agent metadata has an unsupported schema")
+    agents = spec.get("agents")
+    if not isinstance(agents, dict) or set(agents) != set(EXPECTED_AGENT_NAMES):
+        raise RenderError("canonical agent metadata must contain exactly seven agents")
+    for name, entry in agents.items():
+        if not isinstance(entry, Mapping):
+            raise RenderError(f"canonical agent metadata {name!r} must be an object")
+        if set(entry) != {"description", "closing"}:
+            raise RenderError(
+                f"canonical agent metadata {name!r} must contain description and closing"
+            )
+        for field in ("description", "closing"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise RenderError(f"canonical agent metadata {name!r} has no {field}")
+    runtime = spec.get("runtime_paragraph")
+    if not isinstance(runtime, str) or not runtime.strip():
+        raise RenderError("canonical agent metadata has no runtime_paragraph")
+    return spec
+
+
 def _quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -126,6 +150,7 @@ def render_agent(name: str, metadata: Mapping[str, Any], body: str) -> str:
 
 def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
     package, spec = load_adapter(repo_root)
+    content = load_agent_content(package)
     content_agents = package / "content" / "agents"
     result: dict[str, str] = {}
     for name in EXPECTED_AGENT_NAMES:
@@ -133,7 +158,12 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
         metadata = spec["agents"][name]
         if not isinstance(metadata, Mapping):
             raise RenderError(f"Codex agent metadata {name!r} must be an object")
-        result[f"agents/{name}.toml"] = render_agent(name, metadata, body)
+        shared = content["agents"][name]
+        result[f"agents/{name}.toml"] = render_agent(
+            name,
+            {**metadata, "description": shared["description"]},
+            body,
+        )
     return result
 
 

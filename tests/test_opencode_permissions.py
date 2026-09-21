@@ -188,7 +188,8 @@ class OpencodePermissionContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        shutil.copytree(ROOT / ".agents", temporary / ".agents")
+        if (ROOT / ".agents").is_dir():
+            shutil.copytree(ROOT / ".agents", temporary / ".agents")
         shutil.copytree(ROOT / "plugins", temporary / "plugins")
         shutil.copytree(ROOT / "scripts", temporary / "scripts")
         shutil.copy2(ROOT / "README.md", temporary / "README.md")

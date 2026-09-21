@@ -468,10 +468,11 @@ def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
     for _relative, path in _iter_regular_files(platform_root / PLATFORM_PLUGIN_DIRECTORY, "OpenCode plugin source"):
         add_file(path)
     for _relative, path in _iter_regular_files(
-        canonical_root / "codex" / "skills", "Codex skill overlays"
+        canonical_root / "codex" / "skill-adapters", "Codex skill adapters"
     ):
         add_file(path)
     add_file(canonical_root / "codex" / "agents.json")
+    add_file(canonical_root / "content" / "agents.json")
     for _relative, path in _iter_regular_files(
         canonical_root / "content" / "agents", "canonical agent bodies"
     ):
@@ -1604,7 +1605,7 @@ def build_opencode_package(
         COPY_LICENSES,
         Path("content") / "agents",
         Path("codex") / "agents.json",
-        Path("codex") / "skills",
+        Path("codex") / "skill-adapters",
         Path("opencode") / PLATFORM_PLUGIN_DIRECTORY,
         OPENCODE_README_SOURCE,
     ):
@@ -1617,7 +1618,12 @@ def build_opencode_package(
     # symlink cannot hide in an un-copied input directory.
     list(_iter_regular_files(platform_root, "OpenCode platform source"))
     list(_iter_regular_files(canonical_root / "content" / "agents", "canonical agent bodies"))
-    list(_iter_regular_files(canonical_root / "codex" / "skills", "Codex skill overlays"))
+    list(
+        _iter_regular_files(
+            canonical_root / "codex" / "skill-adapters",
+            "Codex skill adapters",
+        )
+    )
     try:
         canonical_root_resolved = canonical_root.resolve(strict=True)
     except (OSError, RuntimeError) as error:

@@ -119,7 +119,7 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(frontmatter.get("name"), "design")
         description = frontmatter.get("description", "").lower()
         self.assertIn("explicit", description)
-        metadata = _metadata(PLUGIN / "codex" / "skills" / "design" / "agents" / "openai.yaml")
+        metadata = _metadata(PLUGIN / "codex" / "skill-adapters" / "design" / "agents" / "openai.yaml")
         self.assertIn("$design", metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
         public_text = (DESIGN / "SKILL.md").read_text(encoding="utf-8") + metadata
@@ -222,7 +222,7 @@ class DesignContractTests(unittest.TestCase):
 
             metadata_path = Path(temporary) / "openai.yaml"
             metadata_path.write_text(
-                (PLUGIN / "codex" / "skills" / "design" / "agents" / "openai.yaml").read_text(
+                (PLUGIN / "codex" / "skill-adapters" / "design" / "agents" / "openai.yaml").read_text(
                     encoding="utf-8"
                 ),
                 encoding="utf-8",

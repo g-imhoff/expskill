@@ -12,7 +12,7 @@ ROUTER = SKILLS / "use-expskill" / "SKILL.md"
 
 
 def _metadata(name: str) -> dict[str, dict[str, object]]:
-    path = PLUGIN / "codex" / "skills" / name / "agents" / "openai.yaml"
+    path = PLUGIN / "codex" / "skill-adapters" / name / "agents" / "openai.yaml"
     result: dict[str, dict[str, object]] = {}
     section = ""
     for line in path.read_text(encoding="utf-8").splitlines():

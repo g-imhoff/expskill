@@ -25,8 +25,10 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 sys.dont_write_bytecode = True
 
 try:
-    from scripts.build_codex_package import BuildError as CodexBuildError
-    from scripts.build_codex_package import build_codex_package as _build_codex_package
+    from scripts.build_codex_marketplace import BuildError as CodexBuildError
+    from scripts.build_codex_marketplace import (
+        build_codex_marketplace as _build_codex_marketplace,
+    )
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
     from scripts.build_opencode_package import (
         _reject_symlink_components,
@@ -52,8 +54,10 @@ try:
     )
     from scripts.validate import validate_repository
 except ModuleNotFoundError:
-    from build_codex_package import BuildError as CodexBuildError
-    from build_codex_package import build_codex_package as _build_codex_package
+    from build_codex_marketplace import BuildError as CodexBuildError
+    from build_codex_marketplace import (
+        build_codex_marketplace as _build_codex_marketplace,
+    )
     from build_opencode_package import BuildError as OpencodeBuildError
     from build_opencode_package import (
         _reject_symlink_components,
@@ -98,6 +102,13 @@ RETIRED_PROFILE_NAMES = (
     "expskill-reviewer",
     "expskill-verifier",
     "expskill-verifier-low",
+)
+CODEX_MANAGED_DIRECTORY = "codex-marketplace"
+CODEX_MANAGED_MARKER = ".expskill-managed.json"
+CODEX_MANAGED_SCHEMA = "codex-managed-package.v1"
+CODEX_LEGACY_PROFILE_DIRECTORIES = (
+    ("plugins", PLUGIN_NAME, "assets", "agents"),
+    ("plugins", PLUGIN_NAME, "codex", "runtime", "agents"),
 )
 RECEIPT_DIRECTORY = "expskill"
 RECEIPT_FILENAME = "install.json"
@@ -1926,61 +1937,104 @@ def _assert_relative_no_symlink_components(root: Path, relative: Sequence[str]) 
             raise InstallError(f"repository profile path contains a symlink: {current}")
 
 
-def _codex_runtime_root(repository_root: Path) -> Path:
-    return repository_root / "plugins" / PLUGIN_NAME / "codex" / "runtime"
+def _codex_managed_root(repository_root: Path, state_home: Path) -> Path:
+    token = hashlib.sha256(
+        b"codex-managed-package.v1\0" + os.fsencode(_lexical_absolute(repository_root))
+    ).hexdigest()[:32]
+    state_root = Path(state_home).expanduser().resolve(strict=False)
+    return state_root / RECEIPT_DIRECTORY / CODEX_MANAGED_DIRECTORY / token
 
 
-def _materialize_codex_runtime(repository_root: Path) -> Path:
-    """Build the ignored, self-contained Codex profile package.
+def _codex_managed_marker(root: Path, repository_root: Path) -> dict[str, object]:
+    return {
+        "schema_version": CODEX_MANAGED_SCHEMA,
+        "repository_root": str(_lexical_absolute(repository_root)),
+        "root": str(_lexical_absolute(root)),
+    }
 
-    Agent TOML is a Codex runtime representation.  Keeping it in ``codex/``
-    would make it a second authored prompt tree, so the installer publishes a
-    fresh generated package below the adapter's ignored ``runtime`` directory.
-    The authored adapter tree is never used as a write target.
-    """
 
-    package_root = repository_root / "plugins" / PLUGIN_NAME / "codex"
-    _assert_relative_no_symlink_components(
-        repository_root,
-        ("plugins", PLUGIN_NAME, "codex"),
+def _codex_managed_root_is_owned(root: Path, repository_root: Path) -> bool:
+    marker = root / CODEX_MANAGED_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return payload == _codex_managed_marker(root, repository_root)
+
+
+def _write_codex_managed_marker(
+    root: Path,
+    repository_root: Path,
+    identity_root: Path,
+) -> None:
+    marker = root / CODEX_MANAGED_MARKER
+    marker.write_text(
+        json.dumps(
+            _codex_managed_marker(identity_root, repository_root),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    if package_root.is_symlink() or not package_root.is_dir():
-        raise InstallError(f"Codex adapter directory is not a regular directory: {package_root}")
-    runtime = _codex_runtime_root(repository_root)
-    if runtime.is_symlink() or (runtime.exists() and not runtime.is_dir()):
-        raise InstallError(f"Codex runtime output is not a regular directory: {runtime}")
 
-    temporary_parent: Path | None = None
-    candidate: Path | None = None
+
+def _materialize_codex_package(repository_root: Path, state_home: Path) -> Path:
+    managed_root = _codex_managed_root(repository_root, state_home)
+    parent = managed_root.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if managed_root.is_symlink() or (managed_root.exists() and not managed_root.is_dir()):
+        raise InstallError(f"managed Codex package is not a regular directory: {managed_root}")
+    if managed_root.exists() and not _codex_managed_root_is_owned(managed_root, repository_root):
+        raise InstallError(f"refusing unowned managed Codex package: {managed_root}")
+    temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-package-", dir=parent))
+    candidate_root = temporary_parent / "marketplace"
     backup: Path | None = None
     try:
-        temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-runtime-", dir=package_root))
-        candidate = temporary_parent / "runtime"
-        _build_codex_package(repository_root, candidate)
-        if runtime.exists():
-            backup = package_root / f".codex-runtime-old-{uuid.uuid4().hex}"
-            runtime.rename(backup)
-        candidate.rename(runtime)
-        if backup is not None:
-            shutil.rmtree(backup)
-        return runtime
+        _build_codex_marketplace(repository_root, candidate_root)
+        _write_codex_managed_marker(candidate_root, repository_root, managed_root)
     except (CodexBuildError, OSError, RuntimeError) as error:
-        if backup is not None and not runtime.exists() and backup.exists():
-            backup.rename(runtime)
-        raise InstallError(f"Codex runtime package could not be materialized: {error}") from error
+        shutil.rmtree(temporary_parent, ignore_errors=True)
+        raise InstallError(f"Codex package could not be materialized: {error}") from error
+    try:
+        if managed_root.exists():
+            backup = parent / f".{managed_root.name}.old-{uuid.uuid4().hex}"
+            managed_root.rename(backup)
+        candidate_root.rename(managed_root)
+    except OSError as error:
+        if backup is not None and not managed_root.exists() and backup.exists():
+            backup.rename(managed_root)
+        raise InstallError(f"Codex package could not be materialized: {error}") from error
     finally:
-        if temporary_parent is not None and temporary_parent.exists():
-            shutil.rmtree(temporary_parent, ignore_errors=True)
+        shutil.rmtree(temporary_parent, ignore_errors=True)
+    if backup is not None:
+        try:
+            shutil.rmtree(backup)
+        except OSError as error:
+            raise InstallError(
+                f"old managed Codex package could not be removed: {backup}: {error}"
+            ) from error
+    return managed_root
 
 
-def _profile_sources(repository_root: Path) -> tuple[Path, ...]:
-    runtime_root = _materialize_codex_runtime(repository_root)
-    _assert_relative_no_symlink_components(
-        repository_root,
-        ("plugins", PLUGIN_NAME, "codex", "runtime", "agents"),
+def _profile_sources(
+    repository_root: Path,
+    state_home: Path | None = None,
+    *,
+    materialize: bool = True,
+) -> tuple[Path, ...]:
+    selected_state = _default_state_home() if state_home is None else Path(state_home)
+    package_root = (
+        _materialize_codex_package(repository_root, selected_state)
+        if materialize
+        else _codex_managed_root(repository_root, selected_state)
     )
-    agents_root = runtime_root / "agents"
+    agents_root = package_root / "plugins" / PLUGIN_NAME / "agents"
     if not agents_root.is_dir():
+        if not materialize:
+            return tuple(agents_root / f"{name}.toml" for name in PROFILE_NAMES)
         raise InstallError(f"agent source directory is missing: {agents_root}")
     try:
         resolved_agents_root = agents_root.resolve(strict=True)
@@ -2054,10 +2108,24 @@ def _same_owned_link(destination: Path, source: Path) -> bool:
         return False
 
 
-def _expected_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+def _legacy_profile_sources(repository_root: Path) -> tuple[Path, ...]:
+    return tuple(
+        repository_root.joinpath(*directory, f"{name}.toml")
+        for directory in CODEX_LEGACY_PROFILE_DIRECTORIES
+        for name in PROFILE_NAMES
+    )
+
+
+def _expected_links(
+    repo_root: Path,
+    codex_home: Path,
+    state_home: Path | None = None,
+    *,
+    materialize: bool = True,
+) -> tuple[ProfileLink, ...]:
     canonical_root = _canonical_codex_repository_root(repo_root)
     _validate_codex_repository(canonical_root)
-    sources = _profile_sources(canonical_root)
+    sources = _profile_sources(canonical_root, state_home, materialize=materialize)
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
@@ -2067,27 +2135,63 @@ def _expected_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...
     )
 
 
-def _allowlisted_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
+def _allowlisted_links(
+    repo_root: Path,
+    codex_home: Path,
+    state_home: Path | None = None,
+) -> tuple[ProfileLink, ...]:
     canonical_root = _canonical_codex_repository_root(repo_root)
     canonical_codex_home = Path(codex_home).expanduser().resolve(strict=False)
     agents_directory = canonical_codex_home / "agents"
     _validate_agent_directory(agents_directory)
-    source_directory = _codex_runtime_root(canonical_root) / "agents"
-    return tuple(
+    selected_state = _default_state_home() if state_home is None else Path(state_home)
+    source_directory = (
+        _codex_managed_root(canonical_root, selected_state)
+        / "plugins"
+        / PLUGIN_NAME
+        / "agents"
+    )
+    current_links = tuple(
         ProfileLink(
             source=_lexical_absolute(source_directory / f"{name}.toml"),
             destination=agents_directory / f"{name}.toml",
         )
         for name in (*PROFILE_NAMES, *RETIRED_PROFILE_NAMES)
     )
+    legacy_links = tuple(
+        ProfileLink(
+            source=_lexical_absolute(
+                canonical_root.joinpath(*directory, f"{name}.toml")
+            ),
+            destination=agents_directory / f"{name}.toml",
+        )
+        for directory in CODEX_LEGACY_PROFILE_DIRECTORIES
+        for name in (*PROFILE_NAMES, *RETIRED_PROFILE_NAMES)
+    )
+    return current_links + legacy_links
 
 
-def preflight_links(repo_root: Path, codex_home: Path) -> tuple[ProfileLink, ...]:
-    links = _expected_links(repo_root, codex_home)
+def preflight_links(
+    repo_root: Path,
+    codex_home: Path,
+    state_home: Path | None = None,
+    *,
+    materialize: bool = True,
+) -> tuple[ProfileLink, ...]:
+    links = _expected_links(
+        repo_root,
+        codex_home,
+        state_home,
+        materialize=materialize,
+    )
+    legacy_sources = set(_legacy_profile_sources(_canonical_codex_repository_root(repo_root)))
     for link in links:
         if not _lexists(link.destination):
             continue
-        if not _same_owned_link(link.destination, link.source):
+        if not _same_owned_link(link.destination, link.source) and not any(
+            _same_owned_link(link.destination, source)
+            for source in legacy_sources
+        ):
             raise InstallError(f"refusing conflicting agent destination: {link.destination}")
     return links
 
@@ -4505,7 +4609,11 @@ def _canonical_source(value: object) -> Path | None:
         return None
 
 
-def _marketplace_state(payload: Mapping[str, Any], repository_root: Path) -> str:
+def _marketplace_state(
+    payload: Mapping[str, Any],
+    repository_root: Path,
+    legacy_roots: Sequence[Path] = (),
+) -> str:
     marketplaces = payload.get("marketplaces")
     if not isinstance(marketplaces, list):
         raise InstallError("marketplace list JSON did not contain marketplaces")
@@ -4522,6 +4630,8 @@ def _marketplace_state(payload: Mapping[str, Any], repository_root: Path) -> str
             candidates.append(_canonical_source(marketplace_source.get("source")))
         if any(candidate == repository_root for candidate in candidates):
             return "owned"
+        if any(candidate in legacy_roots for candidate in candidates):
+            return "legacy"
     return "foreign" if found else "absent"
 
 
@@ -4554,7 +4664,11 @@ def _plugin_presence(payload: Mapping[str, Any]) -> str:
     return "absent"
 
 
-def _plugin_state(payload: Mapping[str, Any], repository_root: Path) -> str:
+def _plugin_state(
+    payload: Mapping[str, Any],
+    repository_root: Path,
+    legacy_roots: Sequence[Path] = (),
+) -> str:
     for entry in _plugin_entries(payload):
         if entry.get("pluginId") != PLUGIN_SELECTOR:
             continue
@@ -4566,6 +4680,8 @@ def _plugin_state(payload: Mapping[str, Any], repository_root: Path) -> str:
             source = _canonical_source(marketplace_source.get("source"))
         if source == repository_root:
             return "owned"
+        if source in legacy_roots:
+            return "legacy"
         return "foreign"
     return "absent"
 
@@ -4672,6 +4788,55 @@ def _create_links(links: Sequence[ProfileLink], created: list[ProfileLink]) -> N
             )
 
 
+def _migrate_legacy_codex_links(
+    repository_root: Path,
+    links: Sequence[ProfileLink],
+) -> tuple[ProfileLink, ...]:
+    legacy_sources: dict[str, list[Path]] = {}
+    for source in _legacy_profile_sources(repository_root):
+        legacy_sources.setdefault(source.name, []).append(source)
+    migrated: list[ProfileLink] = []
+    for link in links:
+        if not _lexists(link.destination) or _same_owned_link(link.destination, link.source):
+            continue
+        legacy = next(
+            (
+                source
+                for source in legacy_sources.get(link.destination.name, ())
+                if _same_owned_link(link.destination, source)
+            ),
+            None,
+        )
+        if legacy is None:
+            continue
+        try:
+            link.destination.unlink()
+        except OSError as error:
+            raise InstallError(
+                f"cannot migrate legacy agent link: {link.destination}: {error}"
+            ) from error
+        migrated.append(
+            ProfileLink(source=legacy, destination=link.destination)
+        )
+    return tuple(migrated)
+
+
+def _restore_legacy_codex_links(links: Sequence[ProfileLink]) -> list[str]:
+    failures: list[str] = []
+    for link in links:
+        if _lexists(link.destination):
+            if _same_owned_link(link.destination, link.source):
+                continue
+            failures.append(f"legacy link destination changed: {link.destination}")
+            continue
+        try:
+            link.destination.parent.mkdir(parents=True, exist_ok=True)
+            link.destination.symlink_to(link.source)
+        except OSError as error:
+            failures.append(f"legacy link {link.destination}: {error}")
+    return failures
+
+
 def _rollback_links(links: Sequence[ProfileLink]) -> list[str]:
     failures: list[str] = []
     for link in reversed(tuple(links)):
@@ -4770,6 +4935,7 @@ def _cleanup_after_install_failure(
     created_links: Sequence[ProfileLink],
     plugin_new: bool,
     marketplace_new: bool,
+    migrated_legacy_links: Sequence[ProfileLink] = (),
 ) -> None:
     failures: list[str] = []
     if plugin_new:
@@ -4787,6 +4953,10 @@ def _cleanup_after_install_failure(
         if failure:
             failures.append(f"marketplace rollback: {failure}")
     failures.extend(f"link rollback: {failure}" for failure in _rollback_links(created_links))
+    failures.extend(
+        f"legacy link rollback: {failure}"
+        for failure in _restore_legacy_codex_links(migrated_legacy_links)
+    )
     if failures:
         raise InstallError(f"{original}; residual state or rollback failures: {'; '.join(failures)}") from original
     if isinstance(original, InstallError):
@@ -4802,47 +4972,109 @@ def install(
     agents_only: bool = False,
 ) -> InstallResult:
     canonical_root = _canonical_codex_repository_root(repo_root)
-    links = preflight_links(canonical_root, codex_home)
-    receipt_links = _allowlisted_links(canonical_root, codex_home)
+    links = preflight_links(canonical_root, codex_home, state_home)
+    managed_root = _codex_managed_root(canonical_root, state_home)
+    receipt_links = _allowlisted_links(canonical_root, codex_home, state_home)
     plugin_version = _validated_manifest_version(canonical_root)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_codex_receipt(
         receipt_path_value, canonical_root, receipt_links
     )
+    plugin_state: str | None = None
     if not agents_only:
         marketplace_payload = _run_json(
             run,
             ["codex", "plugin", "marketplace", "list", "--json"],
         )
-        marketplace_state = _marketplace_state(marketplace_payload, canonical_root)
+        marketplace_state = _marketplace_state(
+            marketplace_payload,
+            managed_root,
+            (canonical_root,),
+        )
         if marketplace_state == "foreign":
             raise InstallError("marketplace name conflict from another repository")
+        if marketplace_state == "legacy":
+            plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+            plugin_state = _plugin_state(
+                plugin_payload,
+                managed_root,
+                (canonical_root,),
+            )
+            if plugin_state == "foreign":
+                raise InstallError("plugin name conflict from another repository")
+            if plugin_state == "owned":
+                raise InstallError(
+                    "plugin and marketplace sources disagree for this repository"
+                )
     created_links: list[ProfileLink] = []
     marketplace_new = False
     plugin_new = False
     removed_links: tuple[ProfileLink, ...] = ()
+    migrated_legacy_links: tuple[ProfileLink, ...] = ()
     try:
+        migrated_legacy_links = _migrate_legacy_codex_links(canonical_root, links)
         _create_links(links, created_links)
         if not agents_only:
+            if marketplace_state == "legacy":
+                if plugin_state == "legacy":
+                    plugin_remove = [
+                        "codex",
+                        "plugin",
+                        "remove",
+                        PLUGIN_SELECTOR,
+                        "--json",
+                    ]
+                    plugin_remove_result = _run_command(run, plugin_remove)
+                    _require_success(plugin_remove, plugin_remove_result)
+                    _parse_json(plugin_remove, plugin_remove_result)
+                marketplace_remove = [
+                    "codex",
+                    "plugin",
+                    "marketplace",
+                    "remove",
+                    MARKETPLACE_NAME,
+                    "--json",
+                ]
+                marketplace_remove_result = _run_command(run, marketplace_remove)
+                _require_success(marketplace_remove, marketplace_remove_result)
+                _parse_json(marketplace_remove, marketplace_remove_result)
             marketplace_add_command = [
                 "codex",
                 "plugin",
                 "marketplace",
                 "add",
-                str(canonical_root),
+                str(managed_root),
                 "--json",
             ]
             marketplace_add_result = _run_command(run, marketplace_add_command)
             _require_success(marketplace_add_command, marketplace_add_result)
-            marketplace_new = marketplace_state == "absent"
+            marketplace_new = marketplace_state in {"absent", "legacy"}
             marketplace_add_json = _parse_json(marketplace_add_command, marketplace_add_result)
-            _validate_marketplace_add(marketplace_add_json, canonical_root)
-            plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
-            plugin_state = _plugin_presence(plugin_payload)
+            _validate_marketplace_add(marketplace_add_json, managed_root)
+            if plugin_state is None:
+                plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+                plugin_state = _plugin_state(
+                    plugin_payload,
+                    managed_root,
+                    (canonical_root,),
+                )
+            if plugin_state == "foreign":
+                raise InstallError("plugin name conflict from another repository")
+            if plugin_state == "legacy" and marketplace_state != "legacy":
+                plugin_remove = [
+                    "codex",
+                    "plugin",
+                    "remove",
+                    PLUGIN_SELECTOR,
+                    "--json",
+                ]
+                plugin_remove_result = _run_command(run, plugin_remove)
+                _require_success(plugin_remove, plugin_remove_result)
+                _parse_json(plugin_remove, plugin_remove_result)
             plugin_add_command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
             plugin_add_result = _run_command(run, plugin_add_command)
             _require_success(plugin_add_command, plugin_add_result)
-            plugin_new = plugin_state == "absent"
+            plugin_new = plugin_state in {"absent", "legacy"}
             plugin_add_json = _parse_json(plugin_add_command, plugin_add_result)
             _validate_plugin_add(plugin_add_json, plugin_version)
         if receipt is not None:
@@ -4853,6 +5085,11 @@ def install(
             )
         previous_links = () if receipt is None else receipt.links
         merged_links = list(previous_links)
+        for link in links:
+            merged_links = [
+                link if existing.destination == link.destination else existing
+                for existing in merged_links
+            ]
         known_destinations = {link.destination for link in merged_links}
         for link in created_links:
             if link.destination not in known_destinations:
@@ -4872,6 +5109,7 @@ def install(
             created_links,
             plugin_new,
             marketplace_new,
+            migrated_legacy_links,
         )
     return InstallResult(
         links=links,
@@ -4880,10 +5118,6 @@ def install(
         marketplace_added=marketplace_new,
         plugin_installed=plugin_new,
     )
-
-
-def _marketplace_matches(repository_root: Path, payload: Mapping[str, Any]) -> str:
-    return _marketplace_state(payload, repository_root)
 
 
 def _persist_receipt(
@@ -4961,7 +5195,8 @@ def uninstall(
     agents_only: bool = False,
 ) -> InstallResult:
     canonical_root = _canonical_codex_repository_root(repo_root)
-    links = _allowlisted_links(canonical_root, codex_home)
+    managed_root = _codex_managed_root(canonical_root, state_home)
+    links = _allowlisted_links(canonical_root, codex_home, state_home)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_codex_receipt(receipt_path_value, canonical_root, links)
     if receipt is None:
@@ -4971,14 +5206,22 @@ def uninstall(
     marketplace_state: str | None = None
     if not agents_only and receipt.plugin_installed:
         plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
-        plugin_state = _plugin_state(plugin_payload, canonical_root)
+        plugin_state = _plugin_state(
+            plugin_payload,
+            managed_root,
+            (canonical_root,),
+        )
     if not agents_only and receipt.marketplace_added:
         marketplace_payload = _run_json(
             run,
             ["codex", "plugin", "marketplace", "list", "--json"],
         )
-        marketplace_state = _marketplace_matches(canonical_root, marketplace_payload)
-    if plugin_state in {"owned", "absent"}:
+        marketplace_state = _marketplace_state(
+            marketplace_payload,
+            managed_root,
+            (canonical_root,),
+        )
+    if plugin_state in {"owned", "legacy", "absent"}:
         plugin_remove = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
         plugin_remove_result = _run_command(run, plugin_remove)
         _require_success(plugin_remove, plugin_remove_result)
@@ -4990,7 +5233,7 @@ def uninstall(
         current = _persist_codex_receipt(
             receipt_path_value, current, plugin_installed=False
         )
-    if marketplace_state == "owned":
+    if marketplace_state in {"owned", "legacy"}:
         marketplace_remove = [
             "codex",
             "plugin",
@@ -5027,6 +5270,13 @@ def uninstall(
         receipt_path_value.unlink()
     except OSError as error:
         raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
+    if _codex_managed_root_is_owned(managed_root, canonical_root):
+        try:
+            shutil.rmtree(managed_root)
+        except OSError as error:
+            raise InstallError(
+                f"cannot remove managed Codex package: {managed_root}: {error}"
+            ) from error
     return InstallResult(
         links=links,
         removed_links=removed_links,
@@ -5050,14 +5300,16 @@ def _default_state_home() -> Path:
 
 
 def _print_dry_run(repo_root: Path, codex_home: Path, agents_only: bool = False) -> None:
-    links = preflight_links(repo_root, codex_home)
+    state_home = _default_state_home()
+    links = preflight_links(repo_root, codex_home, state_home, materialize=False)
     for link in links:
         print(f"link {link.destination} -> {link.source}")
     if agents_only:
         print("codex agent links only: the plugin itself stays managed through codex plugin CLI")
         return
     repository = _canonical_codex_repository_root(repo_root)
-    print(f"codex plugin marketplace add {repository} --json")
+    managed_root = _codex_managed_root(repository, _default_state_home())
+    print(f"codex plugin marketplace add {managed_root} --json")
     print(f"codex plugin add {PLUGIN_SELECTOR} --json")
 
 
@@ -7524,7 +7776,9 @@ def _install_source_inventory(root: Path) -> list[tuple[str, Path]]:
         result.append((path.relative_to(root).as_posix(), path))
     walk(platform_root / PLATFORM_PLUGIN_DIRECTORY)
     walk(package_root / "content" / "agents")
-    walk(package_root / "codex" / "skills")
+    content_agents = package_root / "content" / "agents.json"
+    result.append((content_agents.relative_to(root).as_posix(), content_agents))
+    walk(package_root / "codex" / "skill-adapters")
     result.append((
         (package_root / "codex" / "agents.json").relative_to(root).as_posix(),
         package_root / "codex" / "agents.json",

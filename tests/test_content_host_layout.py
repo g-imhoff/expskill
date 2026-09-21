@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.build_codex_package import BuildError, build_codex_package
 
 
@@ -52,6 +53,23 @@ class ContentHostLayoutTests(unittest.TestCase):
             ],
             [],
         )
+        self.assertFalse((ROOT / ".agents" / "plugins" / "marketplace.json").exists())
+
+    def test_codex_marketplace_builder_emits_the_only_installable_codex_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marketplace = build_codex_marketplace(
+                ROOT,
+                Path(temporary) / "marketplace",
+            )
+            plugin = marketplace / "plugins" / "expskill"
+            self.assertEqual(len(tuple(plugin.glob("skills/*/SKILL.md"))), 12)
+            self.assertEqual(
+                len(tuple(plugin.glob("skills/*/agents/openai.yaml"))),
+                12,
+            )
+            self.assertTrue(
+                (marketplace / ".agents" / "plugins" / "marketplace.json").is_file()
+            )
 
     def test_codex_builder_emits_policy_in_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

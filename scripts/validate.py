@@ -19,8 +19,8 @@ from typing import Any
 sys.dont_write_bytecode = True
 
 try:
-    from scripts.build_codex_package import BuildError as CodexBuildError
-    from scripts.build_codex_package import build_codex_package
+    from scripts.build_codex_marketplace import BuildError as CodexBuildError
+    from scripts.build_codex_marketplace import build_codex_marketplace
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
     from scripts.build_opencode_package import build_opencode_package
     from scripts.artifact_contract import (
@@ -49,8 +49,8 @@ try:
     )
     from scripts.render_codex import render_agents as render_codex_agents
 except ModuleNotFoundError:
-    from build_codex_package import BuildError as CodexBuildError
-    from build_codex_package import build_codex_package
+    from build_codex_marketplace import BuildError as CodexBuildError
+    from build_codex_marketplace import build_codex_marketplace
     from build_opencode_package import BuildError as OpencodeBuildError
     from build_opencode_package import build_opencode_package
     from artifact_contract import (
@@ -90,12 +90,13 @@ REPOSITORY_URL = "https://github.com/g-imhoff/expskill"
 PLUGIN_CATEGORY = "Developer Tools"
 SKILLS_PATH = "./content/skills/"
 AGENTS_PATH = "content/agents"
+AGENT_CONTENT_PATH = "content/agents.json"
 POLICY_PATH = "content/policies/execution-policy.json"
+UNSLOP_RUNTIME_POLICY_PATH = "content/policies/unslop-runtime.json"
 HELPER_PATH = "content/scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
 UNSLOP_HOOK_CONFIG_PATH = "codex/hooks/hooks.json"
 UNSLOP_HOOK_SCRIPT_PATH = "codex/hooks/inject_unslop.py"
-UNSLOP_HOOK_SCRIPT_SHA256 = "32663196899e0dea7abd8240dcffb53d4046bb0754bc035ccb60c08e650a014e"
 THIRD_PARTY_LOCK_PATH = "content/third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
@@ -1038,11 +1039,6 @@ def validate_repository(
         repository_root = repository_root.resolve(strict=False)
     errors: list[str] = []
     if include_main:
-        marketplace_path = repository_root / ".agents" / "plugins" / "marketplace.json"
-        marketplace = _load_json_object(marketplace_path, "marketplace.json", errors)
-        if marketplace is not None:
-            _validate_marketplace(marketplace, repository_root, errors)
-
         plugin_root = repository_root / "plugins" / PLUGIN_NAME
         if _validate_plugin_root(plugin_root, errors):
             manifest_path = _required_package_path(
@@ -1983,6 +1979,35 @@ def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
 
 
 def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
+    policy_path = _required_package_path(
+        plugin_root,
+        UNSLOP_RUNTIME_POLICY_PATH,
+        "canonical Unslop runtime policy",
+        "file",
+        errors,
+    )
+    policy = (
+        _load_json_object(policy_path, "canonical Unslop runtime policy", errors)
+        if policy_path is not None
+        else None
+    )
+    scope: str | None = None
+    if not isinstance(policy, dict) or set(policy) != {
+        "schema_version",
+        "scope",
+        "compaction_reminder",
+    }:
+        errors.append("canonical Unslop runtime policy must use the exact neutral schema")
+    else:
+        if policy.get("schema_version") != "unslop-runtime.v1":
+            errors.append("canonical Unslop runtime policy has an unsupported schema")
+        for field in ("scope", "compaction_reminder"):
+            value = policy.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"canonical Unslop runtime policy {field} must be non-empty")
+        if isinstance(policy.get("scope"), str):
+            scope = str(policy["scope"]).strip()
+
     hooks_root = _required_package_path(
         plugin_root,
         "codex/hooks",
@@ -2037,23 +2062,29 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     if not script.strip():
         errors.append("Unslop hook script must be non-empty")
         return
-    if hashlib.sha256(script_bytes).hexdigest() != UNSLOP_HOOK_SCRIPT_SHA256:
-        errors.append("Unslop hook script digest does not match the reviewed implementation")
     try:
-        ast.parse(script, filename=str(script_path))
+        parsed = ast.parse(script, filename=str(script_path))
     except SyntaxError as error:
         errors.append(f"Unslop hook script is not valid Python: {error.msg}")
+        parsed = None
+    if parsed is not None:
+        for node in ast.walk(parsed):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value) > 200:
+                errors.append("Unslop hook script must not inline authored prose")
+                break
     normalized_script = script.lower()
     for marker in (
         "sessionstart",
         '"unslop"',
         "additionalcontext",
-        "user-facing prose",
-        "machine-readable data",
-        "higher-priority instructions",
+        "unslop-runtime.json",
+        "content",
+        "assets",
     ):
         if marker not in normalized_script:
             errors.append(f"Unslop hook script is missing required marker {marker!r}")
+    if scope and scope in script:
+        errors.append("Unslop hook script duplicates the canonical runtime scope")
 
 
 def _validate_third_party_sources(plugin_root: Path, errors: list[str]) -> None:
@@ -2432,7 +2463,7 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
     plugin_root = skill_root.parents[2]
     agents_path = _required_package_path(
         plugin_root,
-        f"codex/skills/{skill_root.name}/agents",
+        f"codex/skill-adapters/{skill_root.name}/agents",
         f"skill {skill_root.name!r} agents directory",
         "directory",
         errors,
@@ -2441,7 +2472,7 @@ def _validate_skill_metadata(skill_root: Path, errors: list[str]) -> None:
         return
     metadata_path = _required_package_path(
         plugin_root,
-        f"codex/skills/{skill_root.name}/agents/openai.yaml",
+        f"codex/skill-adapters/{skill_root.name}/agents/openai.yaml",
         f"skill {skill_root.name!r} metadata",
         "file",
         errors,
@@ -2563,7 +2594,6 @@ def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
         path.relative_to(plugin_root).as_posix()
         for path, _ in _lexical_package_entries(plugin_root)
         if path.name == "execution-policy.json"
-        and "codex/runtime" not in path.relative_to(plugin_root).as_posix()
     ]
     if policy_entries != [POLICY_PATH]:
         observed = ", ".join(sorted(policy_entries)) or "none"
@@ -2617,7 +2647,6 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
         )
         for path in plugin_root.rglob("worktrees.py")
         if (path.is_file() or path.is_symlink())
-        and "codex/runtime" not in path.relative_to(plugin_root).as_posix()
     )
     if [relative for relative, _ in helpers] != [HELPER_PATH]:
         observed = ", ".join(relative for relative, _ in helpers) or "none"
@@ -2633,7 +2662,6 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
         path.relative_to(plugin_root).as_posix()
         for path in plugin_root.rglob("plan_graph.py")
         if (path.is_file() or path.is_symlink())
-        and "codex/runtime" not in path.relative_to(plugin_root).as_posix()
     )
     if plan_helpers != [PLAN_GRAPH_HELPER_PATH]:
         observed = ", ".join(plan_helpers) or "none"
@@ -2648,7 +2676,6 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
         path.relative_to(plugin_root).as_posix()
         for path in plugin_root.rglob("design_state.py")
         if (path.is_file() or path.is_symlink())
-        and "codex/runtime" not in path.relative_to(plugin_root).as_posix()
     )
     if design_matches != [design_helper_path]:
         errors.append(f"design state helper must exist only at {design_helper_path}; found {', '.join(design_matches) or 'none'}")
@@ -2672,8 +2699,40 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
     for name in sorted(actual - expected):
         errors.append(f"unexpected agent body {name!r}")
 
+    content_path = plugin_root / AGENT_CONTENT_PATH
+    content = _load_json_object(content_path, "canonical agent metadata", errors)
+    content_entries = content.get("agents") if isinstance(content, dict) else None
+    if not isinstance(content, dict) or set(content) != {
+        "schema_version",
+        "runtime_paragraph",
+        "agents",
+    }:
+        errors.append("canonical agent metadata must use the exact neutral content schema")
+    elif content.get("schema_version") != "agent-content.v1":
+        errors.append("canonical agent metadata schema_version must be 'agent-content.v1'")
+    runtime_paragraph = content.get("runtime_paragraph") if isinstance(content, dict) else None
+    if not isinstance(runtime_paragraph, str) or not runtime_paragraph.strip():
+        errors.append("canonical agent metadata must declare a non-empty runtime_paragraph")
+    if not isinstance(content_entries, dict) or set(content_entries) != set(EXPECTED_AGENTS):
+        errors.append("canonical agent metadata must cover the exact agent roster")
+        content_entries = {}
+    for name, entry in content_entries.items():
+        if not isinstance(entry, dict) or set(entry) != {"description", "closing"}:
+            errors.append(
+                f"canonical agent metadata {name!r} must contain exactly description and closing"
+            )
+            continue
+        for field in ("description", "closing"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"canonical agent metadata {name!r} {field} must be non-empty")
+
     adapter_path = plugin_root / "codex" / "agents.json"
     adapter = _load_json_object(adapter_path, "Codex agent metadata", errors)
+    if not isinstance(adapter, dict) or set(adapter) != {"schema_version", "agents"}:
+        errors.append("Codex agent metadata must contain only technical adapter fields")
+    elif adapter.get("schema_version") != "codex-agents.v1":
+        errors.append("Codex agent metadata schema_version must be 'codex-agents.v1'")
     entries = adapter.get("agents") if isinstance(adapter, dict) else None
     if not isinstance(entries, dict) or set(entries) != set(EXPECTED_AGENTS):
         errors.append("Codex agent metadata must cover the exact agent roster")
@@ -2704,8 +2763,16 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
         metadata = entries.get(expected_name)
         if not isinstance(metadata, dict):
             continue
-        if "developer_instructions" in metadata:
-            errors.append(f"Codex agent metadata {expected_name!r} must not inline instructions")
+        expected_fields = {"model", "model_reasoning_effort", "sandbox_mode", "source"}
+        if set(metadata) != expected_fields:
+            errors.append(
+                f"Codex agent metadata {expected_name!r} must contain only technical fields"
+            )
+        expected_source = f"../content/agents/{expected_name}.md"
+        if metadata.get("source") != expected_source:
+            errors.append(
+                f"Codex agent metadata {expected_name!r} source must be {expected_source!r}"
+            )
         expected_model, expected_effort, expected_sandbox = EXPECTED_AGENTS[expected_name]
         for field, expected_value in (
             ("model", expected_model),
@@ -2732,6 +2799,8 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
             "manifest": ".codex-plugin/plugin.json",
             "canonical_skills": "../content/skills",
             "canonical_agents": "../content/agents",
+            "canonical_agent_metadata": "../content/agents.json",
+            "skill_adapters": "skill-adapters",
             "agent_overlay": "agents.json",
             "hook_config": "hooks/hooks.json",
         }
@@ -2739,7 +2808,11 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
             errors.append("Codex adapter manifest does not match the exact source-boundary contract")
 
     overlay_root = _required_package_path(
-        plugin_root, "codex/skills", "Codex skill overlay directory", "directory", errors
+        plugin_root,
+        "codex/skill-adapters",
+        "Codex skill adapter directory",
+        "directory",
+        errors,
     )
     if overlay_root is None:
         return
@@ -2749,9 +2822,9 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
         if path.is_dir() and not path.is_symlink()
     }
     for name in sorted(EXPECTED_SKILLS - actual_skills):
-        errors.append(f"Codex skill overlay {name!r} is missing")
+        errors.append(f"Codex skill adapter {name!r} is missing")
     for name in sorted(actual_skills - EXPECTED_SKILLS):
-        errors.append(f"unexpected Codex skill overlay {name!r}")
+        errors.append(f"unexpected Codex skill adapter {name!r}")
 
     policy_path = plugin_root / "content" / "policies" / "skills.json"
     shared_policy = _load_json_object(policy_path, "shared skill policy", errors)
@@ -2770,7 +2843,7 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
         } if overlay.is_dir() and not overlay.is_symlink() else set()
         if actual_files != expected_files:
             errors.append(
-                f"Codex skill overlay {name!r} must contain exactly agents/openai.yaml; "
+                f"Codex skill adapter {name!r} must contain exactly agents/openai.yaml; "
                 f"found {sorted(actual_files)!r}"
             )
         metadata_path = overlay / "agents" / "openai.yaml"
@@ -2784,7 +2857,7 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
         if metadata is None:
             continue
         if set(metadata) != {"interface", "policy"}:
-            errors.append(f"Codex skill overlay {name!r} metadata keys are not exact")
+            errors.append(f"Codex skill adapter {name!r} metadata keys are not exact")
             continue
         interface = metadata.get("interface", {})
         overlay_policy = metadata.get("policy", {})
@@ -2815,22 +2888,19 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
         if implicit is not policy_values.get(name):
             errors.append(f"skill {name!r} implicit invocation policy drift")
 
-    # Only the explicit adapter sources may exist here.  A runtime directory
-    # is generated and ignored, so it is intentionally excluded from this
-    # authored-tree inventory.
+    # Only explicit adapter sources may exist here. Generated packages belong
+    # outside the checkout.
     allowed_files = {
-        ".gitignore",
         "agents.json",
         "manifest.json",
         "hooks/hooks.json",
         "hooks/inject_unslop.py",
-        *(f"skills/{name}/agents/openai.yaml" for name in EXPECTED_SKILLS),
+        *(f"skill-adapters/{name}/agents/openai.yaml" for name in EXPECTED_SKILLS),
     }
     actual_files = {
         path.relative_to(codex_root).as_posix()
         for path in codex_root.rglob("*")
         if path.is_file()
-        and "runtime" not in path.relative_to(codex_root).parts
         and "__pycache__" not in path.relative_to(codex_root).parts
     }
     unexpected = sorted(actual_files - allowed_files)
@@ -2844,8 +2914,6 @@ def _validate_runtime_source_boundary(repository_root: Path, errors: list[str]) 
     plugin_root = repository_root / "plugins" / PLUGIN_NAME
     for path in plugin_root.rglob("*.md"):
         relative = path.relative_to(plugin_root)
-        if "runtime" in relative.parts:
-            continue
         if path.name != "SKILL.md" and path.parent.name not in {"agents", "commands"}:
             continue
         if "content" not in relative.parts:
@@ -2883,12 +2951,21 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
     """Build and inspect the generated Codex package and its source provenance."""
 
     with tempfile.TemporaryDirectory(prefix="expskill-codex-validate-") as temporary:
-        artifact = Path(temporary) / "runtime"
+        marketplace_root = Path(temporary) / "marketplace"
         try:
-            build_codex_package(repository_root, artifact)
+            build_codex_marketplace(repository_root, marketplace_root)
         except (CodexBuildError, OSError, RuntimeError) as error:
-            errors.append(f"Codex runtime package could not be built: {error}")
+            errors.append(f"Codex marketplace could not be built: {error}")
             return
+        marketplace_path = marketplace_root / ".agents" / "plugins" / "marketplace.json"
+        marketplace = _load_json_object(
+            marketplace_path,
+            "generated Codex marketplace",
+            errors,
+        )
+        if marketplace is not None:
+            _validate_marketplace(marketplace, marketplace_root, errors)
+        artifact = marketplace_root / "plugins" / PLUGIN_NAME
 
         try:
             manifest = json.loads(
@@ -2902,6 +2979,17 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
                 errors.append("Codex runtime manifest must use the generated ./skills/ tree")
             if manifest.get("hooks") != "./hooks/hooks.json":
                 errors.append("Codex runtime manifest must use generated hooks")
+
+        generated_cache_entries = [
+            path.relative_to(artifact).as_posix()
+            for path in artifact.rglob("*")
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+        ]
+        if generated_cache_entries:
+            errors.append(
+                "Codex runtime package must exclude Python bytecode: "
+                f"{sorted(generated_cache_entries)!r}"
+            )
 
         provenance_path = artifact / "provenance.json"
         try:
@@ -2947,16 +3035,20 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
         required_prefixes = (
             "plugins/expskill/content/skills/",
             "plugins/expskill/content/agents/",
-            "plugins/expskill/codex/skills/",
+            "plugins/expskill/codex/skill-adapters/",
         )
         paths = {item["path"] for item in normalized}
         for prefix in required_prefixes:
             if not any(path.startswith(prefix) for path in paths):
                 errors.append(f"Codex runtime provenance lost canonical source prefix {prefix!r}")
         for required in (
+            "plugins/expskill/content/agents.json",
             "plugins/expskill/content/policies/execution-policy.json",
             "plugins/expskill/content/policies/skills.json",
+            "plugins/expskill/content/policies/unslop-runtime.json",
             "plugins/expskill/codex/agents.json",
+            "scripts/artifact_contract.py",
+            "scripts/build_codex_marketplace.py",
         ):
             if required not in paths:
                 errors.append(f"Codex runtime provenance is missing canonical source {required}")
@@ -2978,7 +3070,7 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
                     source_path = (
                         source / relative
                         if relative.name == "SKILL.md"
-                        else package_root / "codex" / "skills" / name / relative
+                        else package_root / "codex" / "skill-adapters" / name / relative
                     )
                     target_path = target / relative
                     if source_path.read_bytes() != target_path.read_bytes():
@@ -2999,6 +3091,7 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
         for relative, source_relative in (
             ("assets/execution-policy.json", "content/policies/execution-policy.json"),
             ("assets/skill-policies.json", "content/policies/skills.json"),
+            ("assets/unslop-runtime.json", "content/policies/unslop-runtime.json"),
         ):
             try:
                 if (artifact / relative).read_bytes() != (package_root / source_relative).read_bytes():
@@ -3393,7 +3486,8 @@ def _validator_source_inventory(root: Path) -> list[tuple[str, Path]]:
     add(package_root / OPENCODE_README_SOURCE)
     walk(platform_root / PLATFORM_PLUGIN_DIRECTORY)
     walk(package_root / "content" / "agents")
-    walk(package_root / "codex" / "skills")
+    add(package_root / "content" / "agents.json")
+    walk(package_root / "codex" / "skill-adapters")
     add(package_root / "codex" / "agents.json")
     add(root / "scripts/artifact_contract.py")
     add(root / "scripts/build_opencode_package.py")
@@ -3652,6 +3746,14 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
         return
     if spec.get("schema_version") != "opencode-agents.v1":
         errors.append("opencode agent spec schema_version must be 'opencode-agents.v1'")
+    if set(spec) != {
+        "_comment",
+        "schema_version",
+        "agents",
+        "default_model_profile",
+        "model_profiles",
+    }:
+        errors.append("opencode agent spec must contain only technical adapter fields")
     profiles = spec.get("model_profiles")
     if not isinstance(profiles, dict) or not profiles:
         errors.append("opencode agent spec must declare model_profiles")
@@ -3673,10 +3775,6 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
             errors.append(
                 f"opencode model profile {profile_name!r} must declare reasoningEffort"
             )
-    if not isinstance(spec.get("runtime_paragraph"), str) or not str(
-        spec.get("runtime_paragraph")
-    ).strip():
-        errors.append("opencode agent spec must declare a non-empty runtime_paragraph")
     entries = spec.get("agents")
     if not isinstance(entries, dict) or set(entries) != set(OPENCODE_AGENTS):
         errors.append("opencode agent spec agents must cover the exact agent roster")
@@ -3698,6 +3796,14 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
             errors.append(
                 f"opencode agent {name!r} read-only Git permission must preserve the "
                 "canonical rule order because OpenCode uses the last matching rule"
+            )
+    for name, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        allowed = {"permission", "temperature"}
+        if not set(entry).issubset(allowed) or "permission" not in entry:
+            errors.append(
+                f"opencode agent {name!r} must contain only technical permission settings"
             )
 
 
@@ -3874,13 +3980,17 @@ def _validate_opencode_agents(
                 (codex_root / "opencode" / "agents.json").read_text(encoding="utf-8")
             )
             profile = opencode_spec["agents"][name]
+            content_spec = json.loads(
+                (codex_root / "content" / "agents.json").read_text(encoding="utf-8")
+            )
+            content_profile = content_spec["agents"][name]
             body = (codex_root / "content" / "agents" / f"{name}.md").read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError, KeyError, TypeError, json.JSONDecodeError) as error:
             errors.append(f"opencode agent {name!r} canonical source could not be read: {error}")
             continue
         try:
             expected_description = _bounded_description(
-                profile.get("description"), f"canonical agent {name!r} description"
+                content_profile.get("description"), f"canonical agent {name!r} description"
             )
         except AgentSyncError as error:
             errors.append(str(error))
@@ -3919,24 +4029,32 @@ def _validate_opencode_policy_asset(
     package_root: Path,
     errors: list[str],
 ) -> None:
-    canonical = codex_root / POLICY_PATH
-    mirror = _required_package_path(
-        package_root,
-        "assets/execution-policy.json",
-        "opencode execution policy asset",
-        "file",
-        errors,
-    )
-    if mirror is None:
-        return
-    try:
-        canonical_bytes = canonical.read_bytes()
-        mirror_bytes = mirror.read_bytes()
-    except OSError as error:
-        errors.append(f"opencode execution policy asset could not be read: {error}")
-        return
-    if mirror_bytes != canonical_bytes:
-        errors.append("opencode execution policy asset must mirror the canonical shared policy")
+    for source_relative, output_relative, label in (
+        (POLICY_PATH, "assets/execution-policy.json", "execution policy"),
+        (
+            UNSLOP_RUNTIME_POLICY_PATH,
+            "assets/unslop-runtime.json",
+            "Unslop runtime policy",
+        ),
+    ):
+        canonical = codex_root / source_relative
+        mirror = _required_package_path(
+            package_root,
+            output_relative,
+            f"opencode {label} asset",
+            "file",
+            errors,
+        )
+        if mirror is None:
+            continue
+        try:
+            canonical_bytes = canonical.read_bytes()
+            mirror_bytes = mirror.read_bytes()
+        except OSError as error:
+            errors.append(f"opencode {label} asset could not be read: {error}")
+            continue
+        if mirror_bytes != canonical_bytes:
+            errors.append(f"opencode {label} asset must mirror canonical content")
 
 
 def _validate_opencode_catalog(
@@ -3991,9 +4109,20 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
             "5000",
             "unslop-scope",
             "SKILL.md",
+            "unslop-runtime.json",
         ):
             if marker not in unslop:
                 errors.append(f"opencode unslop plugin is missing required marker {marker!r}")
+        for forbidden in ("const SCOPE", "const RULES", "const RUNTIME_SKILL"):
+            if forbidden in unslop:
+                errors.append(
+                    f"opencode unslop plugin must derive authored prose from canonical content, found {forbidden!r}"
+                )
+        policy_path = package_root.parent / UNSLOP_RUNTIME_POLICY_PATH
+        policy = _load_json_object(policy_path, "canonical Unslop runtime policy", errors)
+        scope = policy.get("scope") if isinstance(policy, dict) else None
+        if isinstance(scope, str) and scope.strip() and scope.strip() in unslop:
+            errors.append("opencode unslop plugin duplicates the canonical runtime scope")
     policy = _read_overlay_text(
         plugins_root / "execution-policy.js", "opencode execution-policy plugin", errors
     )

@@ -1,9 +1,9 @@
-"""Build the untracked Codex runtime package from canonical content.
+"""Build a self-contained Codex package from canonical content.
 
-The Codex CLI copies a plugin into its cache, so a manifest cannot safely
-point outside its package root.  This builder materializes a self-contained
-runtime package with regular files.  Its output is intentionally explicit and
-must remain untracked (normally ``plugins/expskill/codex/runtime``).
+The Codex CLI copies a plugin into its cache and does not preserve source-tree
+symlinks.  This builder therefore emits the regular-file package that the CLI
+can install, while keeping that generated package outside the authored
+checkout.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ except ModuleNotFoundError:
 
 
 PROVENANCE_SCHEMA_VERSION = "codex-provenance.v1"
+PYTHON_CACHE_SUFFIXES = {".pyc", ".pyo"}
 
 
 class BuildError(RuntimeError):
@@ -93,6 +94,8 @@ def _iter_files(root: Path, label: str) -> Iterable[tuple[Path, Path]]:
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise BuildError(f"{label} entry must not be a symlink: {path}")
+        if "__pycache__" in path.parts or path.suffix in PYTHON_CACHE_SUFFIXES:
+            continue
         if path.is_file():
             yield path.relative_to(root), path
 
@@ -175,11 +178,13 @@ def build_codex_package(
     required = (
         content / "skills",
         content / "agents",
+        content / "agents.json",
         content / "scripts",
         content / "policies" / "execution-policy.json",
         content / "policies" / "skills.json",
+        content / "policies" / "unslop-runtime.json",
         content / "third-party",
-        codex / "skills",
+        codex / "skill-adapters",
         codex / "agents.json",
         codex / "hooks",
     )
@@ -191,16 +196,23 @@ def build_codex_package(
         _write_manifest(package, staging)
         _copy_tree(content / "skills", staging / "skills", "canonical skills")
         _copy_tree(content / "scripts", staging / "scripts", "canonical shared scripts")
-        _copy_tree(codex / "skills", staging / "skills", "Codex skill overlays")
+        _copy_tree(
+            codex / "skill-adapters",
+            staging / "skills",
+            "Codex skill adapters",
+        )
         _copy_tree(codex / "hooks", staging / "hooks", "Codex hooks")
         _copy_tree(content / "third-party", staging / "third-party", "canonical third-party content")
         policy = content / "policies" / "execution-policy.json"
         skill_policy = content / "policies" / "skills.json"
+        unslop_runtime = content / "policies" / "unslop-runtime.json"
         _regular_file(policy, "canonical execution policy")
         _regular_file(skill_policy, "canonical skill policy")
+        _regular_file(unslop_runtime, "canonical Unslop runtime policy")
         (staging / "assets").mkdir(parents=True, exist_ok=True)
         shutil.copyfile(policy, staging / "assets" / "execution-policy.json")
         shutil.copyfile(skill_policy, staging / "assets" / "skill-policies.json")
+        shutil.copyfile(unslop_runtime, staging / "assets" / "unslop-runtime.json")
         rendered = render_all(root)
         for relative, text in sorted(rendered.items()):
             _write_text(staging / relative, text)
@@ -212,8 +224,11 @@ def build_codex_package(
         source_paths = [
             package / ".codex-plugin" / "plugin.json",
             codex / "agents.json",
+            content / "agents.json",
             root / "scripts" / "render_codex.py",
             root / "scripts" / "build_codex_package.py",
+            root / "scripts" / "build_codex_marketplace.py",
+            root / "scripts" / "artifact_contract.py",
         ]
         for tree in (
             content / "skills",
@@ -221,13 +236,15 @@ def build_codex_package(
             content / "scripts",
             content / "policies",
             content / "third-party",
-            codex / "skills",
+            codex / "skill-adapters",
             codex / "hooks",
         ):
             source_paths.extend(path for _relative, path in _iter_files(tree, f"Codex input {tree}"))
         source_paths = sorted(set(source_paths), key=lambda path: path.as_posix())
         for path in source_paths:
             _regular_file(path, "Codex provenance input")
+            if "__pycache__" in path.parts or path.suffix in PYTHON_CACHE_SUFFIXES:
+                continue
             sources.append((path.relative_to(root).as_posix(), path))
         _write_provenance(sources, staging)
         _normalize(staging)

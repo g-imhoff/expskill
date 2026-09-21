@@ -9,6 +9,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.validate import validate_repository
 from scripts.render_codex import render_agents
 
@@ -115,7 +116,8 @@ class ContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        shutil.copytree(ROOT / ".agents", temporary / ".agents")
+        if (ROOT / ".agents").is_dir():
+            shutil.copytree(ROOT / ".agents", temporary / ".agents")
         shutil.copytree(ROOT / "plugins", temporary / "plugins")
         shutil.copytree(ROOT / "scripts", temporary / "scripts")
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
@@ -129,7 +131,13 @@ class ContractTests(unittest.TestCase):
         )
 
     def load_marketplace(self, root: Path) -> dict[str, object]:
-        return json.loads((root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temporary:
+            output = build_codex_marketplace(root, Path(temporary) / "marketplace")
+            return json.loads(
+                (output / ".agents" / "plugins" / "marketplace.json").read_text(
+                    encoding="utf-8"
+                )
+            )
 
     def load_skill_frontmatter(self, skill_root: Path) -> dict[str, object]:
         try:
@@ -825,8 +833,8 @@ class ContractTests(unittest.TestCase):
                     path = hook_root / "inject_unslop.py"
                     path.write_text(
                         path.read_text(encoding="utf-8").replace(
-                            "explicit user formatting or tone choices win",
-                            "explicit user formatting or tone choices lose",
+                            '"additionalContext"',
+                            '"wrongContext"',
                             1,
                         ),
                         encoding="utf-8",
@@ -984,7 +992,7 @@ class ContractTests(unittest.TestCase):
                 metadata_path = (
                     PLUGIN_ROOT
                     / "codex"
-                    / "skills"
+                    / "skill-adapters"
                     / name
                     / "agents"
                     / "openai.yaml"
@@ -1116,7 +1124,7 @@ class ContractTests(unittest.TestCase):
                     / "plugins"
                     / "expskill"
                     / "codex"
-                    / "skills"
+                    / "skill-adapters"
                     / "brainstorm"
                     / "agents"
                     / "openai.yaml"

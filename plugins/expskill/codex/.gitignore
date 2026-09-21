@@ -1,4 +1,0 @@
-# Codex CLI package materialized by scripts/build_codex_package.py.
-runtime/
-.codex-runtime-*/
-.codex-runtime-old-*/

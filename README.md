@@ -34,18 +34,24 @@ and trust it. Inspect it through `/hooks`, then start a new conversation.
 
 ## Install through the Codex plugin CLI
 
-The plugin itself installs through plain Codex commands with no script
-involved. Point the marketplace at a local checkout or at a reachable Git
-source, then add the plugin:
+Build the Codex marketplace outside the checkout, then pass that generated
+directory to the Codex CLI:
 
 ```bash
-codex plugin marketplace add /path/to/expskill
+codex_marketplace="$(mktemp -d)/expskill-marketplace"
+python3 scripts/build_codex_marketplace.py "$codex_marketplace"
+codex plugin marketplace add "$codex_marketplace"
 codex plugin add expskill@expskill
 ```
 
-That CLI flow installs the skills and the hook. The seven agent profiles
-cannot ride along because Codex loads custom profiles only from the agents
-directory, so link them with the installer in agents-only mode:
+The build combines the canonical content with the Codex adapters as regular
+files. The authored checkout is not a marketplace because Codex copies one
+plugin tree and does not merge a separate adapter tree into it.
+
+That CLI flow installs the skills, their Codex UI metadata, and the hook. The
+seven agent profiles cannot ride along because Codex loads custom profiles
+only from the agents directory. Link them with the installer in agents-only
+mode:
 
 ```bash
 python3 scripts/install.py --agents-only
@@ -56,6 +62,21 @@ Agents-only mode never calls the plugin CLI. It only creates the profile
 links and records them in its own receipt, and a later full
 `python3 scripts/install.py` run keeps those links while claiming the CLI
 ownership it performed.
+
+## Source layout
+
+`plugins/expskill/content` is the only authored source for shared skill and
+agent Markdown. It also owns shared runtime prose and policies.
+
+`plugins/expskill/codex` contains Codex-only mechanics. Its
+`skill-adapters/` tree holds `openai.yaml` UI metadata, while `hooks/` and
+`agents.json` define Codex behavior. It contains no copy of a skill or agent
+Markdown file.
+
+`plugins/expskill/opencode` contains OpenCode-only mechanics such as model and
+permission overlays, package metadata, and JavaScript plugins. The renderers
+and builders combine each adapter with `content/` into a complete host
+package. Generated packages stay outside the checkout.
 
 ## Skills
 

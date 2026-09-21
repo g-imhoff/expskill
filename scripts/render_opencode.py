@@ -136,9 +136,30 @@ def load_overlay(package_root: Path) -> dict[str, Any]:
         raise RenderError(
             f"OpenCode model profile {default_profile!r} has no reasoningEffort"
         )
+    return spec
+
+
+def load_agent_content(canonical_root: Path) -> dict[str, Any]:
+    """Load the neutral authored metadata shared by both hosts."""
+
+    spec = _read_json(canonical_root / "content" / "agents.json", "canonical agent metadata")
+    if spec.get("schema_version") != "agent-content.v1":
+        raise RenderError("canonical agent metadata has an unsupported schema")
+    agents = spec.get("agents")
+    if not isinstance(agents, dict) or set(agents) != set(EXPECTED_AGENT_NAMES):
+        raise RenderError("canonical agent metadata must contain exactly seven agents")
+    for name, entry in agents.items():
+        if not isinstance(entry, Mapping) or set(entry) != {"description", "closing"}:
+            raise RenderError(
+                f"canonical agent metadata {name!r} must contain description and closing"
+            )
+        for field in ("description", "closing"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise RenderError(f"canonical agent metadata {name!r} has no {field}")
     runtime = spec.get("runtime_paragraph")
     if not isinstance(runtime, str) or not runtime.strip():
-        raise RenderError("OpenCode agent overlay has no runtime_paragraph")
+        raise RenderError("canonical agent metadata has no runtime_paragraph")
     return spec
 
 
@@ -235,7 +256,7 @@ def skill_inventory(repo_root: Path | str | None = None) -> tuple[str, ...]:
 def _load_profile(
     canonical_root: Path,
     name: str,
-    overlay_entry: Mapping[str, Any],
+    content_entry: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Load one canonical agent body with OpenCode-facing metadata."""
 
@@ -243,9 +264,9 @@ def _load_profile(
     body = _read_text(body_path, f"canonical agent body {name!r}").strip()
     if not body:
         raise RenderError(f"canonical agent body {name!r} is empty")
-    description = overlay_entry.get("description")
+    description = content_entry.get("description")
     if not isinstance(description, str) or not description.strip():
-        raise RenderError(f"OpenCode agent overlay entry {name!r} has no description")
+        raise RenderError(f"canonical agent metadata {name!r} has no description")
     return {
         "name": name,
         "description": description,
@@ -339,6 +360,7 @@ def render_agent(
     name: str,
     profile: Mapping[str, Any],
     overlay_entry: Mapping[str, Any],
+    content_entry: Mapping[str, Any],
     model: str,
     effort: str,
     runtime_paragraph: str,
@@ -346,13 +368,13 @@ def render_agent(
     """Render one OpenCode agent markdown document."""
 
     description = profile.get("description")
-    closing = overlay_entry.get("closing")
+    closing = content_entry.get("closing")
     permission = overlay_entry.get("permission")
     bounded_description = _bounded_description(
         description, f"canonical agent profile {name!r} description"
     )
     if not isinstance(closing, str) or not closing.strip():
-        raise RenderError(f"OpenCode agent overlay entry {name!r} has no closing")
+        raise RenderError(f"canonical agent metadata {name!r} has no closing")
     if not isinstance(permission, Mapping) or not permission:
         raise RenderError(f"OpenCode agent overlay entry {name!r} has no permission mapping")
     lines = [
@@ -366,24 +388,24 @@ def render_agent(
         lines.append(f"temperature: {_yaml_scalar(overlay_entry['temperature'])}")
     lines.append("permission:")
     lines.extend(_render_mapping(permission, 2))
-    lines.extend(("---", "", _agent_prompt(profile, overlay_entry, runtime_paragraph, name)))
+    lines.extend(("---", "", _agent_prompt(profile, content_entry, runtime_paragraph, name)))
     return "\n".join(lines) + "\n"
 
 
 def _agent_prompt(
     profile: Mapping[str, Any],
-    overlay_entry: Mapping[str, Any],
+    content_entry: Mapping[str, Any],
     runtime_paragraph: str,
     name: str,
 ) -> str:
     instructions = profile.get("developer_instructions")
-    closing = overlay_entry.get("closing")
+    closing = content_entry.get("closing")
     if not isinstance(instructions, str) or not instructions.strip():
         raise RenderError(f"canonical agent profile {name!r} has no developer instructions")
     if not isinstance(closing, str) or not closing.strip():
-        raise RenderError(f"OpenCode agent overlay entry {name!r} has no closing")
+        raise RenderError(f"canonical agent metadata {name!r} has no closing")
     if not isinstance(runtime_paragraph, str) or not runtime_paragraph.strip():
-        raise RenderError("OpenCode agent overlay has no runtime_paragraph")
+        raise RenderError("canonical agent metadata has no runtime_paragraph")
     return "\n\n".join((instructions.strip(), f"{runtime_paragraph.strip()} {closing.strip()}"))
 
 
@@ -394,6 +416,7 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
     canonical_root = root / "plugins" / "expskill"
     package_root = canonical_root / "opencode"
     spec = load_overlay(package_root)
+    content = load_agent_content(canonical_root)
     profiles = spec["model_profiles"]
     active = profiles[spec["default_model_profile"]]
     entries = spec["agents"]
@@ -402,13 +425,15 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
         entry = entries[name]
         if not isinstance(entry, Mapping):
             raise RenderError(f"OpenCode agent overlay entry {name!r} must be an object")
+        content_entry = content["agents"][name]
         result[name] = render_agent(
             name,
-            _load_profile(canonical_root, name, entry),
+            _load_profile(canonical_root, name, content_entry),
             entry,
+            content_entry,
             str(active["model"]),
             str(active["reasoningEffort"]),
-            str(spec["runtime_paragraph"]),
+            str(content["runtime_paragraph"]),
         )
     return result
 
@@ -521,6 +546,7 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
     canonical_root = root / "plugins" / "expskill"
     package_root = canonical_root / "opencode"
     spec = load_overlay(package_root)
+    content = load_agent_content(canonical_root)
     profiles = spec["model_profiles"]
     active = profiles[spec["default_model_profile"]]
     agents: dict[str, Any] = {}
@@ -528,7 +554,8 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
         entry = spec["agents"][name]
         if not isinstance(entry, Mapping):
             raise RenderError(f"OpenCode agent overlay entry {name!r} must be an object")
-        profile = _load_profile(canonical_root, name, entry)
+        content_entry = content["agents"][name]
+        profile = _load_profile(canonical_root, name, content_entry)
         permission = entry.get("permission")
         if not isinstance(permission, Mapping) or not permission:
             raise RenderError(f"OpenCode agent overlay entry {name!r} has no permission mapping")
@@ -543,7 +570,12 @@ def render_catalog(repo_root: Path | str | None = None) -> dict[str, Any]:
         }
         if entry.get("temperature") is not None:
             config["temperature"] = entry["temperature"]
-        config["prompt"] = _agent_prompt(profile, entry, str(spec["runtime_paragraph"]), name)
+        config["prompt"] = _agent_prompt(
+            profile,
+            content_entry,
+            str(content["runtime_paragraph"]),
+            name,
+        )
         agents[name] = config
 
     commands: dict[str, Any] = {}

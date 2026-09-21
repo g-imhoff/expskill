@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+from scripts.build_codex_package import build_codex_package
+from scripts.build_opencode_package import build_opencode_package
+from scripts.install import install, preflight_links
+from scripts.render_codex import render_agents as render_codex_agents
+from scripts.render_opencode import render_agents as render_opencode_agents
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = ROOT / "plugins" / "expskill"
+
+
+class CodexSourceCorrectionTests(unittest.TestCase):
+    def test_agent_prose_has_one_neutral_source(self) -> None:
+        content_path = PLUGIN_ROOT / "content" / "agents.json"
+        content = json.loads(content_path.read_text(encoding="utf-8"))
+        codex = json.loads(
+            (PLUGIN_ROOT / "codex" / "agents.json").read_text(encoding="utf-8")
+        )
+        opencode = json.loads(
+            (PLUGIN_ROOT / "opencode" / "agents.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(set(content), {"schema_version", "runtime_paragraph", "agents"})
+        self.assertEqual(set(content["agents"]), set(codex["agents"]))
+        self.assertEqual(set(content["agents"]), set(opencode["agents"]))
+        for entry in codex["agents"].values():
+            self.assertTrue({"description", "closing"}.isdisjoint(entry))
+        for entry in opencode["agents"].values():
+            self.assertTrue({"description", "closing"}.isdisjoint(entry))
+        self.assertNotIn("runtime_paragraph", opencode)
+
+    def test_agent_metadata_mutation_reaches_both_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            copied = Path(temporary) / "repo"
+            import shutil
+
+            shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            content_path = copied / "plugins" / "expskill" / "content" / "agents.json"
+            content = json.loads(content_path.read_text(encoding="utf-8"))
+            marker = "Canonical metadata mutation marker."
+            content["agents"]["expskill-review"]["description"] = marker
+            content_path.write_text(json.dumps(content, indent=2) + "\n", encoding="utf-8")
+
+            codex = render_codex_agents(copied)["agents/expskill-review.toml"]
+            opencode = render_opencode_agents(copied)["expskill-review"]
+            self.assertIn(marker, codex)
+            self.assertIn(marker, opencode)
+
+    def test_unslop_runtime_prose_is_canonical_content(self) -> None:
+        policy_path = PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            set(policy),
+            {"schema_version", "scope", "compaction_reminder"},
+        )
+        self.assertIn("natural-language user-facing prose", policy["scope"])
+        for adapter in (
+            PLUGIN_ROOT / "codex" / "hooks" / "inject_unslop.py",
+            PLUGIN_ROOT / "opencode" / "plugins" / "unslop.js",
+        ):
+            source = adapter.read_text(encoding="utf-8")
+            self.assertNotIn(policy["scope"].strip(), source)
+            self.assertNotIn("Cut grand claims", source)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            codex = build_codex_package(ROOT, root / "codex")
+            opencode = build_opencode_package(ROOT, root / "opencode")
+            expected = policy_path.read_bytes()
+            self.assertEqual((codex / "assets" / "unslop-runtime.json").read_bytes(), expected)
+            self.assertEqual((opencode / "assets" / "unslop-runtime.json").read_bytes(), expected)
+
+    def test_codex_sources_are_managed_outside_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            codex_home = Path(temporary) / "codex"
+            state_home = Path(temporary) / "state"
+            links = preflight_links(ROOT, codex_home, state_home)
+
+            self.assertEqual(len(links), 7)
+            for link in links:
+                self.assertNotIn(PLUGIN_ROOT / "codex" / "runtime", link.source.parents)
+                self.assertFalse(link.source.is_relative_to(PLUGIN_ROOT))
+
+    def test_codex_package_is_regular_and_provenanced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = build_codex_package(ROOT, Path(temporary) / "package")
+            self.assertEqual(
+                len(tuple(output.glob("skills/*/SKILL.md"))),
+                12,
+            )
+            self.assertEqual(
+                len(tuple(output.glob("skills/*/agents/openai.yaml"))),
+                12,
+            )
+            self.assertFalse(
+                any(
+                    "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+                    for path in output.rglob("*")
+                )
+            )
+            provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                "scripts/artifact_contract.py",
+                {entry["path"] for entry in provenance["inputs"]},
+            )
+            self.assertIn(
+                "scripts/build_codex_marketplace.py",
+                {entry["path"] for entry in provenance["inputs"]},
+            )
+
+    def test_packaged_hook_uses_packaged_skill_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = build_codex_package(ROOT, Path(temporary) / "package")
+            environment = dict(os.environ)
+            environment.pop("PLUGIN_ROOT", None)
+            result = subprocess.run(
+                [sys.executable, str(output / "hooks" / "inject_unslop.py")],
+                input=json.dumps(
+                    {"hook_event_name": "SessionStart", "source": "startup"}
+                )
+                + "\n",
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertIn(
+                "additionalContext",
+                payload["hookSpecificOutput"],
+            )
+
+    def test_legacy_assets_agent_links_are_migrated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            codex_home = root / "codex"
+            state_home = root / "state"
+            destination = codex_home / "agents" / "expskill-review.toml"
+            legacy_source = (
+                ROOT
+                / "plugins"
+                / "expskill"
+                / "assets"
+                / "agents"
+                / "expskill-review.toml"
+            )
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(legacy_source)
+            receipt_path = state_home / "expskill" / "install.json"
+            receipt_path.parent.mkdir(parents=True)
+            receipt_path.write_text(
+                json.dumps(
+                    {
+                        "links": [
+                            {
+                                "destination": str(destination),
+                                "source": str(legacy_source),
+                            }
+                        ],
+                        "marketplace_added": False,
+                        "plugin_installed": False,
+                        "repository_root": str(ROOT.resolve()),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            install(ROOT, codex_home, state_home, lambda _command: None, agents_only=True)
+
+            self.assertTrue(destination.is_symlink())
+            self.assertNotEqual(destination.resolve(strict=False), legacy_source)
+            migrated = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertNotIn("plugins/expskill/assets/agents", migrated["links"][0]["source"])
+
+
+if __name__ == "__main__":
+    unittest.main()

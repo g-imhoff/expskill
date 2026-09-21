@@ -104,7 +104,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 elif mutation == "unexpected-directory":
                     (builder / "scratch").mkdir()
                 elif mutation == "implicit-invocation":
-                    metadata = root / "plugins" / "expskill" / "codex" / "skills" / "skill-builder" / "agents" / "openai.yaml"
+                    metadata = root / "plugins" / "expskill" / "codex" / "skill-adapters" / "skill-builder" / "agents" / "openai.yaml"
                     metadata.write_text(
                         metadata.read_text(encoding="utf-8").replace(
                             "allow_implicit_invocation: false",
@@ -353,7 +353,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     / "plugins"
                     / "expskill"
                     / "codex"
-                    / "skills"
+                    / "skill-adapters"
                     / skill
                     / "agents"
                     / "openai.yaml"

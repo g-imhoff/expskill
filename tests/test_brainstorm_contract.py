@@ -21,7 +21,7 @@ METADATA = (
     / "plugins"
     / "expskill"
     / "codex"
-    / "skills"
+    / "skill-adapters"
     / "brainstorm"
     / "agents"
     / "openai.yaml"

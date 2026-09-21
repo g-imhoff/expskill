@@ -26,7 +26,8 @@ PRE_ANCHOR_PARENT = "f85dd3f6d97aab6575c5df295808a2d271ae1b8c"
 
 def seed_repository(path: Path) -> Path:
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
-    shutil.copytree(ROOT / ".agents", path / ".agents", ignore=ignore)
+    if (ROOT / ".agents").is_dir():
+        shutil.copytree(ROOT / ".agents", path / ".agents", ignore=ignore)
     shutil.copytree(ROOT / "plugins", path / "plugins", ignore=ignore)
     shutil.copytree(ROOT / "scripts", path / "scripts", ignore=ignore)
     shutil.copy2(ROOT / "README.md", path / "README.md")

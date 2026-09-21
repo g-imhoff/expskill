@@ -31,10 +31,12 @@ COPY_TREE_OUTPUTS = {
 COPY_FILES = (
     Path("content/policies/execution-policy.json"),
     Path("content/policies/skills.json"),
+    Path("content/policies/unslop-runtime.json"),
 )
 COPY_FILE_OUTPUTS = {
     Path("content/policies/execution-policy.json"): Path("assets/execution-policy.json"),
     Path("content/policies/skills.json"): Path("assets/skill-policies.json"),
+    Path("content/policies/unslop-runtime.json"): Path("assets/unslop-runtime.json"),
 }
 COPY_LICENSES = Path("content/third-party/licenses")
 COPY_LICENSES_OUTPUT = Path("third-party/licenses")
