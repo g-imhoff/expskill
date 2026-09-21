@@ -2029,12 +2029,26 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _mkdir_durable(path: Path) -> None:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in reversed(missing):
+        _fsync_directory(directory)
+        _fsync_directory(directory.parent)
+
+
 def _materialize_codex_marketplace(
     repository_root: Path,
     target_root: Path,
 ) -> Path:
     parent = target_root.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_durable(parent)
     if target_root.is_symlink() or (target_root.exists() and not target_root.is_dir()):
         raise InstallError(f"managed Codex package is not a regular directory: {target_root}")
     if target_root.exists() and not _codex_managed_root_is_owned(
@@ -4559,6 +4573,7 @@ def _write_receipt(receipt_path: Path, receipt: _Receipt) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary_path, receipt_path)
         temporary_path = None
+        _fsync_directory(receipt_directory)
         directory_fd = os.open(
             receipt_directory,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
