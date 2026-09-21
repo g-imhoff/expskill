@@ -13,7 +13,7 @@ Run only on explicit `$autonomous-run` invocation with one idea and one reposito
 
 ## Start the workflow
 
-Launch one initial provider-CLI conversation in the target repository, using the CLI already in use. Give it the idea, human constraints, delegated decision authority, and draft-PR destination. Explain that you are the AI user supplying answers and confirmations on the human's behalf. Ask it to follow [the `$use-expskill` workflow](../use-expskill/SKILL.md) and address its questions to you.
+Launch one initial provider-CLI conversation in the target repository, using the CLI already in use. Give it the idea, scope, constraints, and draft-PR destination. Ask it to follow [the `$use-expskill` workflow](../use-expskill/SKILL.md).
 
 Follow the instructions and transitions the workflow returns, including requests to open, resume, or switch conversations. One initial launch does not limit the conversations the workflow may subsequently require. The current workflow defines its own process and completion requirements. Do not duplicate those rules or perform its work yourself.
 
