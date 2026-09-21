@@ -1765,6 +1765,82 @@ class InstallerTests(unittest.TestCase):
                 ],
             )
 
+    def test_uninstall_does_not_replay_plugin_removal_after_malformed_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            first_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    FakeResult(0, stdout="not-json"),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON"):
+                uninstall(repo, codex_home, state_home, first_runner)
+
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["plugin_installed"])
+            self.assertTrue(receipt["marketplace_added"])
+            retry_runner = FakeRunner(
+                [
+                    plugin_list_response(),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                ]
+            )
+            uninstall(repo, codex_home, state_home, retry_runner)
+
+            self.assertNotIn(
+                ("codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"),
+                retry_runner.calls,
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
+    def test_uninstall_does_not_replay_marketplace_removal_after_malformed_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            first_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    FakeResult(0, stdout="not-json"),
+                ]
+            )
+
+            with self.assertRaisesRegex(InstallError, "invalid JSON"):
+                uninstall(repo, codex_home, state_home, first_runner)
+
+            receipt = load_receipt(state_home)
+            self.assertFalse(receipt["plugin_installed"])
+            self.assertFalse(receipt["marketplace_added"])
+            retry_runner = FakeRunner(
+                [plugin_list_response(), marketplace_list_response()]
+            )
+            uninstall(repo, codex_home, state_home, retry_runner)
+
+            self.assertNotIn(
+                (
+                    "codex",
+                    "plugin",
+                    "marketplace",
+                    "remove",
+                    "expskill",
+                    "--json",
+                ),
+                retry_runner.calls,
+            )
+            self.assertFalse(receipt_path(state_home).exists())
+
     def test_uninstall_persists_link_progress_after_external_success_and_retries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1867,7 +1943,7 @@ class InstallerTests(unittest.TestCase):
             failed = {"value": True}
 
             def fail_package_once(path: Path, *args: object, **kwargs: object) -> None:
-                if path == managed_root and failed["value"]:
+                if path == managed_root / "plugins" and failed["value"]:
                     failed["value"] = False
                     raise OSError("package busy")
                 original_rmtree(path, *args, **kwargs)
@@ -1878,6 +1954,7 @@ class InstallerTests(unittest.TestCase):
 
             self.assertTrue(receipt_path(state_home).is_file())
             self.assertTrue(managed_root.is_dir())
+            self.assertTrue((managed_root / ".expskill-managed.json").is_file())
 
             retry_runner = FakeRunner(
                 [
@@ -1887,6 +1964,46 @@ class InstallerTests(unittest.TestCase):
             )
             uninstall(repo, codex_home, state_home, retry_runner)
 
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertFalse(managed_root.exists())
+
+    def test_uninstall_retries_after_marker_removal_precedes_root_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home = root / "codex"
+            state_home = root / "state"
+            install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            managed_root = managed_repository(repo)
+            first_runner = FakeRunner(
+                [
+                    plugin_list_response(repo),
+                    marketplace_list_response(repo),
+                    removal_response(),
+                    removal_response(),
+                ]
+            )
+            original_rmdir = Path.rmdir
+            failed = {"value": True}
+
+            def fail_root_once(path: Path) -> None:
+                if path == managed_root and failed["value"]:
+                    failed["value"] = False
+                    raise OSError("root busy")
+                original_rmdir(path)
+
+            with mock.patch.object(Path, "rmdir", fail_root_once):
+                with self.assertRaisesRegex(InstallError, "root busy"):
+                    uninstall(repo, codex_home, state_home, first_runner)
+
+            self.assertTrue(receipt_path(state_home).is_file())
+            self.assertTrue(managed_root.is_dir())
+            self.assertEqual(tuple(managed_root.iterdir()), ())
+
+            retry_runner = FakeRunner([])
+            uninstall(repo, codex_home, state_home, retry_runner)
+
+            self.assertEqual(retry_runner.calls, [])
             self.assertFalse(receipt_path(state_home).exists())
             self.assertFalse(managed_root.exists())
 

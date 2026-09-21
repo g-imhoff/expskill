@@ -1992,6 +1992,43 @@ def _write_codex_managed_marker(
     )
 
 
+def _fsync_codex_marketplace(root: Path) -> None:
+    """Make a generated marketplace durable before publishing its path."""
+
+    for current, directories, files in os.walk(root, topdown=False, followlinks=False):
+        current_path = Path(current)
+        for name in (*directories, *files):
+            if (current_path / name).is_symlink():
+                raise InstallError(
+                    f"generated Codex marketplace contains a symlink: {current_path / name}"
+                )
+        for name in files:
+            path = current_path / name
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        directory_fd = os.open(current_path, _directory_open_flags())
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, _directory_open_flags())
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _materialize_codex_marketplace(
     repository_root: Path,
     target_root: Path,
@@ -2010,7 +2047,8 @@ def _materialize_codex_marketplace(
     try:
         _build_codex_marketplace(repository_root, candidate_root)
         _write_codex_managed_marker(candidate_root, repository_root, target_root)
-    except (CodexBuildError, OSError, RuntimeError) as error:
+        _fsync_codex_marketplace(candidate_root)
+    except (CodexBuildError, InstallError, OSError, RuntimeError) as error:
         shutil.rmtree(temporary_parent, ignore_errors=True)
         raise InstallError(f"Codex package could not be materialized: {error}") from error
     try:
@@ -2018,6 +2056,7 @@ def _materialize_codex_marketplace(
             backup = parent / f".{target_root.name}.old-{uuid.uuid4().hex}"
             target_root.rename(backup)
         candidate_root.rename(target_root)
+        _fsync_directory(parent)
     except OSError as error:
         if backup is not None and not target_root.exists() and backup.exists():
             backup.rename(target_root)
@@ -2027,11 +2066,50 @@ def _materialize_codex_marketplace(
     if backup is not None:
         try:
             shutil.rmtree(backup)
+            _fsync_directory(parent)
         except OSError as error:
             raise InstallError(
                 f"old managed Codex package could not be removed: {backup}: {error}"
             ) from error
     return target_root
+
+
+def _remove_owned_codex_marketplace(root: Path, repository_root: Path) -> None:
+    """Remove an owned marketplace while retaining its marker until the end."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise InstallError(f"managed Codex package is not a regular directory: {root}")
+    if not _codex_managed_root_is_owned(root, repository_root):
+        raise InstallError(f"refusing unowned managed Codex package: {root}")
+    marker = root / CODEX_MANAGED_MARKER
+    try:
+        for child in root.iterdir():
+            if child == marker:
+                continue
+            if child.is_symlink() or not child.is_dir():
+                child.unlink()
+            else:
+                shutil.rmtree(child)
+        marker.unlink()
+        root.rmdir()
+        _fsync_directory(root.parent)
+    except OSError as error:
+        raise InstallError(f"cannot remove managed Codex package: {root}: {error}") from error
+
+
+def _remove_empty_codex_marketplace(root: Path) -> bool:
+    """Finish a marker-last removal interrupted after deleting the marker."""
+
+    if root.is_symlink() or not root.is_dir():
+        return False
+    try:
+        if any(root.iterdir()):
+            return False
+        root.rmdir()
+        _fsync_directory(root.parent)
+    except OSError as error:
+        raise InstallError(f"cannot remove managed Codex package: {root}: {error}") from error
+    return True
 
 
 def _materialize_codex_package(repository_root: Path, state_home: Path) -> Path:
@@ -5620,11 +5698,11 @@ def uninstall(
         plugin_remove = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
         plugin_remove_result = _run_command(run, plugin_remove)
         _require_success(plugin_remove, plugin_remove_result)
-        _parse_json(plugin_remove, plugin_remove_result)
         current = _persist_codex_receipt(
             receipt_path_value, current, plugin_installed=False
         )
         plugin_state = "absent"
+        _parse_json(plugin_remove, plugin_remove_result)
     elif receipt.plugin_installed and plugin_state == "foreign":
         current = _persist_codex_receipt(
             receipt_path_value, current, plugin_installed=False
@@ -5644,11 +5722,11 @@ def uninstall(
         ]
         marketplace_remove_result = _run_command(run, marketplace_remove)
         _require_success(marketplace_remove, marketplace_remove_result)
-        _parse_json(marketplace_remove, marketplace_remove_result)
         current = _persist_codex_receipt(
             receipt_path_value, current, marketplace_added=False
         )
         marketplace_state = "absent"
+        _parse_json(marketplace_remove, marketplace_remove_result)
     elif receipt.marketplace_added and marketplace_state in {"absent", "foreign"}:
         current = _persist_codex_receipt(
             receipt_path_value, current, marketplace_added=False
@@ -5694,13 +5772,15 @@ def uninstall(
     preserve_managed_package = (
         unowned_plugin_reference or unowned_marketplace_reference
     )
-    if not agents_only and managed_package_owned and not preserve_managed_package:
-        try:
-            shutil.rmtree(managed_root)
-        except OSError as error:
+    if not agents_only and not preserve_managed_package:
+        if managed_package_owned:
+            _remove_owned_codex_marketplace(managed_root, canonical_root)
+        elif _lexists(managed_root) and not _remove_empty_codex_marketplace(
+            managed_root
+        ):
             raise InstallError(
-                f"cannot remove managed Codex package: {managed_root}: {error}"
-            ) from error
+                f"refusing unowned managed Codex package: {managed_root}"
+            )
     if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
