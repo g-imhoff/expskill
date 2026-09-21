@@ -41,7 +41,7 @@ Never import a public system's exact values merely because its guidance is reput
 | accessibility | non-text content, semantics, sensory cues, contrast, language, assistive technology |
 | motion | animation, transitions, auto-updates, flashing, parallax, reduced-motion behavior |
 | data-display | charts, tables, dashboards, axes, encodings, provenance, data states, localization |
-| yodea-preview | opt-in hosted preview: publish, auth, labels, caps, proof, cleanup |
+| yodea-preview | every Design run: required hosted preview, PR and handoff links, auth, labels, caps, proof, retention, cleanup |
 
 ## Source labels used by the drafts
 

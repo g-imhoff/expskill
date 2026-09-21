@@ -126,7 +126,7 @@ class DesignContractTests(unittest.TestCase):
         """Regression: skipped gates, empty ceremony, and context bloat weaken design quality."""
         body = _body(DESIGN / "SKILL.md")
         self.assertLess(len(body.splitlines()), 500)
-        positions = [body.lower().find(heading.lower()) for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+        positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
         self.assertTrue(all(position >= 0 for position in positions), positions)
         self.assertEqual(positions, sorted(positions))
         for phrase in ("responsive", "state", "approval", "technical", "synthetic"):
@@ -208,12 +208,12 @@ class DesignContractTests(unittest.TestCase):
             shutil.copytree(DESIGN, copy)
             body_path = copy / "SKILL.md"
             body = _body(body_path)
-            positions = [body.lower().find(heading.lower()) for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+            positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
             self.assertTrue(all(position >= 0 for position in positions))
             self.assertEqual(positions, sorted(positions))
             mutated = re.sub(r"^## Review$", "## Build", body, count=1, flags=re.MULTILINE)
             body_path.write_text(mutated, encoding="utf-8")
-            mutated_positions = [mutated.lower().find(heading.lower()) for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+            mutated_positions = [mutated.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
             self.assertNotEqual(mutated_positions, sorted(mutated_positions))
             self.assertNotEqual(mutated, body)
 
