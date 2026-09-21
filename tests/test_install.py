@@ -4,8 +4,11 @@ import fcntl
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
+import types
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -283,6 +286,370 @@ def wait_for_crashed_child(pid: int, expected_status: int = 73) -> None:
 
 
 class InstallerTests(unittest.TestCase):
+    def test_legacy_retirement_exit_retries_before_destination_preflight(self) -> None:
+        from scripts import install as module
+        for retry in (install, uninstall):
+            for replacement in (None, "public", "private"):
+                with self.subTest(retry=retry.__name__, replacement=replacement), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    repo = seed_repository(root / "repo")
+                    codex_home, state_home = root / "codex", root / "state"
+                    destination = destination_paths(codex_home)["expskill-review"]
+                    destination.parent.mkdir(parents=True)
+                    destination.symlink_to(repo / "plugins/expskill/assets/agents" / destination.name)
+                    pid = os.fork()
+                    if pid == 0:
+                        exchange = module._renameat_exchange
+                        def crash_exchange(*args: object) -> None:
+                            exchange(*args)
+                            os._exit(73)
+                        with mock.patch("scripts.install._renameat_exchange", crash_exchange):
+                            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                        os._exit(74)
+                    wait_for_crashed_child(pid)
+                    self.assertTrue(destination.is_file())
+                    retired, = destination.parent.glob("*.retire")
+                    saved = root / "saved-retirement"
+                    preserved = None
+                    if replacement is not None:
+                        preserved = destination if replacement == "public" else retired
+                        preserved.rename(saved)
+                        preserved.write_text("user replacement")
+                    journal = state_home / "expskill/codex-install.json"
+                    unlink = os.unlink
+                    def interrupt_retirement(path: object, *args: object, **kwargs: object) -> None:
+                        if path == retired.name:
+                            raise SystemExit(73)
+                        unlink(path, *args, **kwargs)
+                    if replacement is None:
+                        for _ in range(2):
+                            with mock.patch("scripts.install.os.unlink", interrupt_retirement), self.assertRaises(SystemExit):
+                                retry(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                            self.assertTrue(journal.is_file())
+                    if replacement == "private" or (replacement == "public" and retry is install):
+                        with self.assertRaises(InstallError):
+                            retry(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                        self.assertEqual(preserved.read_text(), "user replacement")
+                        self.assertTrue(journal.is_file())
+                        preserved.unlink()
+                        if replacement == "private":
+                            saved.rename(retired)
+                    retry(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    if retry is install:
+                        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    self.assertFalse(journal.exists())
+                    self.assertEqual(list(destination.parent.iterdir()), [destination] if replacement == "public" and retry is uninstall else [])
+
+    def test_read_only_rejections_allow_agents_only_retry(self) -> None:
+        for rejection in ("marketplace", "plugin", "plugin-json", "sources", "receipt"):
+            with self.subTest(rejection=rejection), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                results = {
+                    "marketplace": [marketplace_list_response(repo, root / "other")],
+                    "plugin": [marketplace_list_response(repo, repo), plugin_list_response(repo, root / "other")],
+                    "plugin-json": [marketplace_list_response(repo, repo), FakeResult(stdout="bad JSON")],
+                    "sources": [marketplace_list_response(repo, repo), plugin_list_response(repo)],
+                    "receipt": [],
+                }[rejection]
+                if rejection == "receipt":
+                    receipt_path(state_home).parent.mkdir(parents=True)
+                    receipt_path(state_home).write_text("invalid JSON")
+                runner = FakeRunner(results)
+                with self.assertRaises(InstallError):
+                    install(repo, codex_home, state_home, runner)
+                self.assertEqual(runner.results, [])
+                self.assertTrue(all("list" in call for call in runner.calls))
+                self.assertFalse((state_home / "expskill/codex-install.json").exists())
+                if rejection == "receipt":
+                    receipt_path(state_home).unlink()
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+
+    def _install_base_receipt(
+        self, repo: Path, codex_home: Path, state_home: Path, *, agents_only: bool = True
+    ) -> None:
+        source = subprocess.check_output(
+            ["git", "show", "67f554398e72b58e451223bb17cb1af30e0de833:scripts/install.py"], cwd=ROOT
+        )
+        base = types.ModuleType("expskill_base_installer")
+        base.__file__ = str(ROOT / "scripts/install.py")
+        with mock.patch.dict(sys.modules, {base.__name__: base}):
+            exec(compile(source, base.__file__, "exec"), base.__dict__)
+            base.install(
+                repo, codex_home, state_home,
+                FakeRunner([] if agents_only else install_results(repo)),
+                agents_only=agents_only,
+            )
+        self.assertTrue(all(set(entry) == {"source", "destination"} for entry in load_receipt(state_home)["links"]))
+
+    def test_real_base_receipt_upgrade_and_direct_uninstall(self) -> None:
+        for upgrade, agents_only in ((False, True), (True, True), (False, False), (True, False)):
+            with self.subTest(upgrade=upgrade, agents_only=agents_only), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                self._install_base_receipt(repo, codex_home, state_home, agents_only=agents_only)
+                identities = {path: path.lstat().st_ino for path in destination_paths(codex_home).values()}
+                if upgrade:
+                    install(repo, codex_home, state_home, FakeRunner(
+                        [] if agents_only else install_results(repo, True, True)
+                    ), agents_only=agents_only)
+                    self.assertEqual({path: path.lstat().st_ino for path in identities}, identities)
+                uninstall(repo, codex_home, state_home, FakeRunner(
+                    [] if agents_only else [plugin_list_response(repo), marketplace_list_response(repo), removal_response(), removal_response()]
+                ), agents_only=agents_only)
+                self.assertEqual(list((codex_home / "agents").iterdir()), [])
+                self.assertFalse(receipt_path(state_home).exists())
+
+    def test_base_receipt_migration_recovers_process_exit_and_private_replacement(self) -> None:
+        from scripts import install as module
+        for boundary in ("frozen", "anchor", "committed"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                self._install_base_receipt(repo, codex_home, state_home)
+                pid = os.fork()
+                if pid == 0:
+                    write, link = module._write_codex_receipt, os.link
+                    def checkpoint(path: Path, value: object, **kwargs: object) -> None:
+                        write(path, value, **kwargs)
+                        if boundary == ("frozen" if kwargs.get("pending_link_migration") else "committed"):
+                            os._exit(73)
+                    def anchor(*args: object, **kwargs: object) -> None:
+                        link(*args, **kwargs)
+                        if boundary == "anchor":
+                            os._exit(73)
+                    with mock.patch("scripts.install._write_codex_receipt", checkpoint), mock.patch("scripts.install.os.link", anchor):
+                        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    os._exit(74)
+                wait_for_crashed_child(pid)
+                receipt = load_receipt(state_home)
+                self.assertTrue(all("link_anchor" in entry for entry in receipt["links"]))
+                if boundary == "anchor":
+                    anchor = next(path for path in (codex_home / "agents").iterdir() if path.name.endswith(".anchor"))
+                    saved = root / "original-anchor"
+                    anchor.rename(saved)
+                    anchor.write_text("private replacement")
+                    before = receipt_path(state_home).read_bytes()
+                    for _ in range(2):
+                        with self.assertRaisesRegex(InstallError, "anchor is occupied"):
+                            uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                        self.assertEqual(receipt_path(state_home).read_bytes(), before)
+                        self.assertEqual(anchor.read_text(), "private replacement")
+                    anchor.unlink()
+                    saved.rename(anchor)
+                uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertEqual(list((codex_home / "agents").iterdir()), [])
+
+    def test_matching_links_without_base_receipt_do_not_gain_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            self._install_base_receipt(repo, codex_home, state_home)
+            receipt_path(state_home).unlink()
+            paths = list(destination_paths(codex_home).values())
+            identities = {path: path.lstat().st_ino for path in paths}
+            uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(load_receipt(state_home)["links"], [])
+            uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual({path: path.lstat().st_ino for path in paths}, identities)
+
+    def test_base_receipt_migration_preserves_replacements_across_exit(self) -> None:
+        for boundary in ("before-anchor", "after-anchor"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                self._install_base_receipt(repo, codex_home, state_home)
+                destinations = list(destination_paths(codex_home).values())
+                destinations[0].unlink()
+                destinations[0].write_text("regular replacement")
+                destinations[1].unlink()
+                destinations[1].symlink_to(root / "unrelated")
+                original_link = os.link
+                selected = None
+                def interrupt_anchor(source: object, target: object, **kwargs: object) -> None:
+                    nonlocal selected
+                    if ".expskill-codex-link-anchor-" in str(target):
+                        selected = Path(source)
+                        if boundary == "after-anchor":
+                            original_link(source, target, **kwargs)
+                        raise SystemExit(73)
+                    original_link(source, target, **kwargs)
+                with mock.patch("scripts.install.os.link", interrupt_anchor), self.assertRaises(SystemExit):
+                    uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertIsNotNone(selected)
+                old_target = os.readlink(selected)
+                selected.rename(root / "original-inode")
+                selected.symlink_to(old_target)
+                replacement_inode = selected.lstat().st_ino
+                # Same-target replacements stay as dependency evidence, while
+                # all independently owned links and anchors are cleaned up.
+                with self.assertRaisesRegex(InstallError, "unproven.*depends"):
+                    uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertEqual(selected.lstat().st_ino, replacement_inode)
+                self.assertEqual(set((codex_home / "agents").iterdir()), {selected, *destinations[:2]})
+                selected.unlink()
+                uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertEqual(destinations[0].read_text(), "regular replacement")
+                self.assertEqual(os.readlink(destinations[1]), str(root / "unrelated"))
+                self.assertFalse(receipt_path(state_home).exists())
+
+    def test_pending_uninstall_preserves_replacement_without_publishing_links(self) -> None:
+        for boundary in ("receipt", "stage", "anchor", "published"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                from scripts import install as module
+                original_write = module._write_codex_install_journal
+                def write(path: Path, payload: dict[str, object]) -> None:
+                    original_write(path, payload)
+                    phases = {"stage": "anchoring", "anchor": "staged", "published": "published"}
+                    if boundary in phases and any(record["phase"] == phases[boundary] for record in payload["links"]):
+                        raise SystemExit(73)
+                with mock.patch("scripts.install._write_codex_install_journal", write), mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit):
+                    with self.assertRaises(SystemExit):
+                        install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                destination = next(iter(destination_paths(codex_home).values()))
+                if os.path.lexists(destination):
+                    destination.unlink()
+                destination.write_text("user replacement")
+                with mock.patch("scripts.install._create_codex_link", side_effect=AssertionError("uninstall must not publish")), mock.patch("scripts.install._recover_codex_transaction_link", side_effect=AssertionError("uninstall must not resume publication")):
+                    uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertEqual(destination.read_text(), "user replacement")
+                self.assertEqual(list(destination.parent.iterdir()), [destination])
+                self.assertFalse((state_home / "expskill/codex-install.json").exists())
+                self.assertFalse(receipt_path(state_home).exists())
+
+    def test_pending_uninstall_retains_authority_after_cleanup_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            with mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit), self.assertRaises(SystemExit):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            paths = list(destination_paths(codex_home).values())
+            paths[0].unlink()
+            paths[0].write_text("user replacement")
+            from scripts import install as module
+            remove = module._remove_codex_recorded_link
+            def fail_one(link: object) -> bool:
+                if link.destination == paths[1]:
+                    raise InstallError("owned cleanup blocked")
+                return remove(link)
+            for _ in range(2):
+                with mock.patch("scripts.install._remove_codex_recorded_link", fail_one), self.assertRaisesRegex(InstallError, "owned cleanup blocked"):
+                    uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertTrue((state_home / "expskill/codex-install.json").exists() or receipt_path(state_home).exists())
+                self.assertTrue(paths[1].is_symlink())
+                self.assertTrue(all(not os.path.lexists(path) for path in paths[2:]))
+            uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(list(paths[0].parent.iterdir()), [paths[0]])
+
+    def test_pending_uninstall_recovers_staged_retirement_exit(self) -> None:
+        from scripts import install as module
+        for initial_phase in ("staging", "anchoring", "staged"):
+            with self.subTest(initial_phase=initial_phase), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                codex_home, state_home = root / "codex", root / "state"
+                symlink = Path.symlink_to
+                write = module._write_codex_install_journal
+                def create(path: Path, target: object, *args: object, **kwargs: object) -> None:
+                    symlink(path, target, *args, **kwargs)
+                    if initial_phase == "staging" and path.name.endswith(".link"):
+                        raise SystemExit(73)
+                def checkpoint(path: Path, payload: dict[str, object]) -> None:
+                    write(path, payload)
+                    if initial_phase != "staging" and any(item["phase"] == initial_phase for item in payload["links"]):
+                        raise SystemExit(73)
+                with mock.patch.object(Path, "symlink_to", create), mock.patch("scripts.install._write_codex_install_journal", checkpoint), self.assertRaises(SystemExit):
+                    install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                pid = os.fork()
+                if pid == 0:
+                    exchange = module._renameat_exchange
+                    def crash(*args: object) -> None:
+                        exchange(*args)
+                        os._exit(73)
+                    with mock.patch("scripts.install._renameat_exchange", crash):
+                        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    os._exit(74)
+                wait_for_crashed_child(pid)
+                retired, = (codex_home / "agents").glob("*.retire")
+                unlink = os.unlink
+                def interrupt(path: object, *args: object, **kwargs: object) -> None:
+                    if path == retired.name:
+                        raise SystemExit(73)
+                    unlink(path, *args, **kwargs)
+                for _ in range(2):
+                    with mock.patch("scripts.install.os.unlink", interrupt), self.assertRaises(SystemExit):
+                        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                self.assertEqual(list((codex_home / "agents").iterdir()), [])
+
+    def test_pending_uninstall_retires_unpublished_legacy_restoration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            destination = destination_paths(codex_home)["expskill-review"]
+            source = repo / "plugins/expskill/assets/agents" / destination.name
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(source)
+            symlink = Path.symlink_to
+            def crash(path: Path, target: object, *args: object, **kwargs: object) -> None:
+                symlink(path, target, *args, **kwargs)
+                if str(target) == str(source):
+                    raise SystemExit(73)
+            with mock.patch.object(Path, "symlink_to", crash), mock.patch("scripts.install._write_codex_receipt", side_effect=InstallError("receipt failed")), self.assertRaises(SystemExit):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertTrue(any(path.name.endswith(".link") for path in destination.parent.iterdir()))
+            with mock.patch.object(Path, "symlink_to", side_effect=AssertionError("uninstall must not publish")):
+                uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(list(destination.parent.iterdir()), [])
+            self.assertFalse((state_home / "expskill/codex-install.json").exists())
+
+    def test_pending_full_uninstall_transfers_cli_authority_before_journal_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = seed_repository(root / "repo")
+            codex_home, state_home = root / "codex", root / "state"
+            with mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit), self.assertRaises(SystemExit):
+                install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
+            destination = destination_paths(codex_home)["expskill-review"]
+            destination.unlink()
+            destination.write_text("user replacement")
+            with mock.patch("scripts.install._clear_codex_install_journal", side_effect=SystemExit), self.assertRaises(SystemExit):
+                uninstall(repo, codex_home, state_home, FakeRunner([]))
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+            self.assertTrue((state_home / "expskill/codex-install.json").is_file())
+            receipt = load_receipt(state_home)
+            self.assertTrue(receipt["plugin_installed"])
+            self.assertTrue(receipt["marketplace_added"])
+            runner = FakeRunner([
+                plugin_list_response(repo), marketplace_list_response(repo),
+                FakeResult(1, stderr="plugin cleanup blocked"),
+            ])
+            with self.assertRaisesRegex(InstallError, "plugin cleanup blocked"):
+                uninstall(repo, codex_home, state_home, runner)
+            self.assertEqual(load_receipt(state_home), receipt)
+            retry = FakeRunner([
+                plugin_list_response(repo), marketplace_list_response(repo),
+                removal_response(), removal_response(),
+            ])
+            uninstall(repo, codex_home, state_home, retry)
+            self.assertEqual(runner.results + retry.results, [])
+            self.assertFalse(any("add" in call for call in runner.calls + retry.calls))
+            self.assertEqual(destination.read_text(), "user replacement")
+            self.assertFalse(receipt_path(state_home).exists())
+            self.assertFalse(managed_repository(repo).exists())
+
     def test_codex_canonical_alias_lock_contends_across_processes(self) -> None:
         from scripts import install as module
         for alias_first in (False, True):
@@ -574,11 +941,12 @@ class InstallerTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
             runner = FakeRunner(
-                install_results(repo, marketplace_present=True, plugin_present=True)
-                + [plugin_list_response(repo), marketplace_list_response(repo),
+                [plugin_list_response(repo), marketplace_list_response(repo),
                    removal_response(), removal_response()]
             )
             uninstall(repo, codex_home, state_home, runner)
+            self.assertEqual(runner.results, [])
+            self.assertFalse(any("add" in call for call in runner.calls))
             self.assertFalse((state_home / "expskill" / "codex-install.json").exists())
             self.assertFalse(receipt_path(state_home).exists())
             self.assertFalse(managed_repository(repo).exists())

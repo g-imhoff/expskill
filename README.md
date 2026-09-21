@@ -63,6 +63,17 @@ links and records them in its own receipt, and a later full
 `python3 scripts/install.py` run keeps those links while claiming the CLI
 ownership it performed.
 
+Codex receipts from the older path-only format are migrated on install or
+uninstall: a valid receipt authorizes only its recorded source/destination
+pairs, and migration freezes the observed symlink identities before creating
+private anchors. Regular files and links to other targets are preserved.
+The old format cannot distinguish a same-target replacement made before that
+identity checkpoint from the original link; it retains its historical
+path-based ownership contract for that one migration. Newly written receipts
+use explicit identity metadata and do not grant ownership to unproven entries.
+A later same-target replacement is preserved, along with receipt evidence
+and its package dependency until that replacement is removed.
+
 ## Source layout
 
 `plugins/expskill/content` is the only authored source for shared skill and
