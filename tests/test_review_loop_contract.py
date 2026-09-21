@@ -54,6 +54,7 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertRegex(self.body, r"score.*0.*10|0.*10.*score")
         self.assertIn("json", self.body)
         self.assertRegex(self.body, r"one.*reviewer.*one categor|one categor.*one.*reviewer")
+        self.assertIn("read only", self.body)
 
     def test_fixer_dispatch_uses_one_fixer_per_issue_with_worktrees(self) -> None:
         self.assertIn("one fixer", self.body)
@@ -65,11 +66,6 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertRegex(self.body, r"(max|at most|no more than).*three.*cycl|three.*cycl.*(max|limit|total)")
         self.assertIn("fail closed", self.body)
         self.assertRegex(self.body, r"never.*fourth|never.*inflat|inflation")
-
-    def test_relation_to_single_pass_review_is_explicit(self) -> None:
-        self.assertIn("$review", self.raw)
-        self.assertRegex(self.body, r"wrap.*single pass|pre-pr gate")
-        self.assertIn("read only", self.body)
 
     def test_prose_stays_plain_and_bounded(self) -> None:
         self.assertLessEqual(len(self.raw.splitlines()), 220)

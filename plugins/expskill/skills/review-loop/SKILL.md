@@ -5,15 +5,8 @@ description: Invoke $review-loop to run adversarial category reviewers over a ch
 
 # Review loop
 
-Run this before opening a PR or asking a person to review. It wraps the single
-pass $review skill with a fix loop that repeats until the work is ready. A
-single review pass spots problems and leaves them sitting there. This loop
-stays until the fixes land.
-
-$review stays read only and never edits. $review-loop is the pre-PR gate that
-runs reviewers, applies fixes, and scores again. Use $review when you want
-findings alone. Use $review-loop when you want the change driven to a state a
-person can merge.
+Run this before opening a PR or asking a person to review. Review the change
+by category, fix each top issue, and repeat within the cycle limit below.
 
 ## Pin the scope
 

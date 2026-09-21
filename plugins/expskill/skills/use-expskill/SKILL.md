@@ -28,9 +28,9 @@ for non-code work. Let that direct request proceed.
 - Choose `implement` when the implementation facts and any required Design
   deliverables are accepted.
 - Choose `review-loop` when implementation is done and the change needs
-  adversarial category review with fixes before a PR. It wraps the single pass
-  review skill with a scoring loop that repeats until every category reaches 9
-  of 10.
+  adversarial category review with fixes before a PR. It coordinates reviewers
+  and fixers for up to three review cycles, passing when every category reaches
+  9 of 10.
 
 Except for the bounded Plan and Design conversation pair, open only the selected
 skill for the current transition. Explain the choice in plain language. A

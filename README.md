@@ -108,12 +108,14 @@ Correct checks its own repairs. When a repair needs a consequential choice,
 it explains a sound limited fix and its limitations, or offers Brainstorm.
 
 Review runs through the invoking agent and leaves Implement's internal reviewer
-alone. `$review-loop` wraps that single pass with per-category reviewers and
-fixers as the pre-PR gate. Reports live in the installed Review skill's
-`tmp/reports/` directory,
+alone. Reports live in the installed Review skill's `tmp/reports/` directory,
 outside every repository. Filenames include the date and time through seconds.
 The user deletes reports manually. Review does not apply corrections or start
 another skill.
+
+`$review-loop` coordinates per-category reviewers and fixers as the pre-PR gate.
+It runs up to three review cycles and passes when every category scores at
+least 9 of 10.
 
 The live certification chain is unfinished. Its required boundary must use
 fresh `codex exec --ephemeral --ignore-user-config --json` sessions in
