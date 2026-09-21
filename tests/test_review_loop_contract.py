@@ -59,7 +59,13 @@ class ReviewLoopContractTests(unittest.TestCase):
     def test_fixer_dispatch_uses_one_fixer_per_issue_with_worktrees(self) -> None:
         self.assertIn("one fixer", self.body)
         self.assertIn("worktree", self.body)
-        self.assertIn("scripts/worktrees.py", self.raw)
+        helper_path = re.search(r"[\w./-]*scripts/worktrees\.py", self.raw)
+        self.assertIsNotNone(helper_path)
+        self.assertTrue(
+            (SKILL / helper_path.group()).samefile(
+                ROOT / "plugins" / "expskill" / "scripts" / "worktrees.py"
+            )
+        )
 
     def test_loop_gate_requires_nine_with_cycle_limit_and_fail_closed(self) -> None:
         self.assertRegex(self.body, r"9 or higher|>=9|9 of 10")
