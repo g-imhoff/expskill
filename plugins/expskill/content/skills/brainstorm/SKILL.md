@@ -18,7 +18,7 @@ Stay inactive for generic ideation, explanation, summarization, or research that
 1. State the brainstorm-only, read-only, conceptual boundary.
 2. Inspect supplied and relevant accessible context before asking questions. For an existing project, use only lightweight context such as pertinent structure, documentation, interfaces, terminology, behavior, configuration, and history with read-only tools. Do not ground the concept in repository detail. Skip irrelevant context.
 3. Before asking any factual question, check whether the answer is already supplied, safely discoverable locally, present in completed research, obtainable from authoritative public sources, or supportable as a labeled inference. Before confirmation, make only bounded authoritative lookups needed to interpret terminology or verify a fact in the proposed understanding. Do not begin landscape research or exploratory techniques before explicit confirmation.
-4. Never ask the user for information the agent can safely discover. Resolve user-owned questions about intent, preference, priority, lived experience, or authorization through the `$grill-me` skill.
+4. Never ask the user for information the agent can safely discover. Ask one focused question per turn only for user-owned information such as intent, preference, priority, lived experience, or authorization, and resolve those questions through the `$grill-me` skill.
 5. Maintain a concise working understanding covering the intended change, why it matters, affected actors or systems, desired outcome, context, constraints, known evidence, assumptions, and remaining material unknowns.
 6. Present the consolidated shared understanding and require explicit user confirmation before research or exploration.
 
@@ -98,7 +98,7 @@ Do not include the complete transcript, raw research, cosmetic alternatives, imp
 
 ## Boundaries and recovery
 
-This skill is read-only except for one permitted write. That write saves the confirmed Concept Brief to its stated file path. Never create, edit, or delete any other file. Do not run commands or tools with unclear or external side effects. Never open or invoke another product skill. Never select or recommend a downstream skill. Stop after the brainstorm result. The Concept Brief is the canonical decision record for this phase. When the workflow finishes, give the user the file path to the written Concept Brief so they can find and reuse it. A later phase inherits the saved brief as settled and does not re-ask what the brief already answers.
+This skill is permanently read-only: never create, edit, or delete files other than the one permitted Concept Brief write. That write saves the confirmed Concept Brief to its stated file path. Never create, edit, or delete any other file. Do not run commands or tools with unclear or external side effects. Never open or invoke another product skill. Never select or recommend a downstream skill. Stop after the brainstorm result. The Concept Brief remains in the conversation as the canonical decision record, and the saved file preserves it for later phases. When the workflow finishes, give the user the file path to the written Concept Brief so they can find and reuse it. A later phase inherits the saved brief as settled and does not re-ask what the brief already answers.
 
 Stay conceptual. Do not produce technical implementation details, repository-grounded findings beyond lightweight context, or technical plans. Technical questions belong to plan and design. Record them as deferred uncertainties instead of answering them here.
 

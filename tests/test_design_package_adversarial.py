@@ -29,7 +29,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
     def _copy_repository(self) -> Path:
         temporary = Path(tempfile.mkdtemp(prefix="design-package-adversarial-"))
         self.addCleanup(shutil.rmtree, temporary, ignore_errors=True)
-        for name in (".agents", "plugins", "scripts"):
+        for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary

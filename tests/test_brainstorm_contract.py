@@ -195,7 +195,7 @@ class BrainstormContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        for relative in (".agents", "plugins", "scripts"):
+        for relative in ("plugins", "scripts"):
             shutil.copytree(ROOT / relative, temporary / relative)
         return temporary
 
