@@ -1,6 +1,6 @@
 ---
 name: design
-description: Explicitly invoked or router-selected design phase for grounded, production-intended UI components and approval-ready responsive work.
+description: Explicitly invoked or router-selected design phase for grounded, production-intended UI components and responsive review with required Yodea previews and links for approval, handoffs, and PRs.
 ---
 
 # Design
