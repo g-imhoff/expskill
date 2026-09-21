@@ -17,12 +17,14 @@ HOOK_SCRIPT = PLUGIN_ROOT / "codex" / "hooks" / "inject_unslop.py"
 LOCK_PATH = PLUGIN_ROOT / "content" / "third-party" / "upstream-lock.json"
 
 EXPECTED_PUBLIC_SKILLS = {
+    "autonomous-run",
     "brainstorm",
     "design",
     "grill-me",
     "implement",
     "correct",
     "review",
+    "review-loop",
     "plan",
     "setup-ui-testing",
     "skill-builder",
@@ -279,7 +281,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                         violations.append(f"{path.relative_to(ROOT)}: {label}")
         self.assertEqual(violations, [])
 
-    def test_use_expskill_only_offers_grill_me_at_a_user_decision_frontier(self) -> None:
+    def test_use_expskill_only_uses_grill_me_at_a_user_decision_frontier(self) -> None:
         body = " ".join(
             (SKILLS_ROOT / "use-expskill" / "SKILL.md")
             .read_text(encoding="utf-8")
@@ -292,13 +294,12 @@ class ThirdPartySkillContractTests(unittest.TestCase):
             "consequential",
             "connected",
             "only the user can decide",
-            "offer `$grill-me`",
-            "explicit consent",
+            "use `$grill-me`",
+            "confirmed shared understanding",
             "resume the owning skill",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, body)
-        self.assertIn("never automatically invoke `$grill-me`", body)
 
 
 if __name__ == "__main__":
