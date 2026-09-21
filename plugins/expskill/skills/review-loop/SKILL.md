@@ -17,11 +17,11 @@ both identities. Never mix revisions without saying so.
 
 ## Derive categories from the diff
 
-Read the pinned diff first. Name two to five review categories that fit this
+Read the pinned diff first. Name five to eight review categories that fit this
 specific change, with one line each saying what good looks like. Most diffs
 point at correctness, security, tests, or docs, but let the diff decide. A
 docs only change needs no security reviewer. A migration with no UI needs no
-visual check. Keep the set small and tied to what actually changed.
+visual check. Choose the count based on the change's scope and risks.
 
 Write the category list down with weights that add to 100 percent. Every later
 score uses these weights.
