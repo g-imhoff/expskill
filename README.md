@@ -44,8 +44,11 @@ Invoke a skill directly when you know what you want:
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
   fact-grounded interview and mandatory final confirmation.
-- `$autonomous-run` carries one idea through every phase gate to a review-ready
-  draft PR.
+- `$autonomous-run` acts as an AI user on your behalf. It launches one initial
+  `$use-expskill` conversation and follows the workflow's instructions and
+  conversation transitions to a review-ready draft PR.
+  It answers questions and confirms decisions within your scope and constraints.
+  You review and merge the result.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work with

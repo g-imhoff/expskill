@@ -1,6 +1,6 @@
 interface:
   display_name: "Autonomous Run"
-  short_description: "Carry one idea to a review-ready draft PR"
-  default_prompt: "Use $autonomous-run to carry this idea to a review-ready draft PR."
+  short_description: "Act as an AI user to carry an idea to a draft PR"
+  default_prompt: "Use $autonomous-run to act as my AI user and follow the workflow to carry this idea to a review-ready draft PR."
 policy:
   allow_implicit_invocation: false

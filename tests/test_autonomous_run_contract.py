@@ -15,8 +15,8 @@ JARGON = re.compile(
 )
 
 
-# Autonomous-run behavior is evaluated through fresh provider-CLI trials.
-# This file checks the static package and lifecycle boundaries.
+# These checks cover the static package and delivery boundaries. Following
+# workflow transitions needs behavioral trials, not phrase checks.
 class AutonomousRunContractTests(unittest.TestCase):
     def test_runner_has_only_the_small_direct_package(self) -> None:
         skill = SKILLS / "autonomous-run"
@@ -42,28 +42,8 @@ class AutonomousRunContractTests(unittest.TestCase):
         self.assertIn("allow_implicit_invocation: false", text)
         self.assertIn("$autonomous-run", text)
 
-    def test_runner_uses_fresh_cli_conversations_not_subagents(self) -> None:
-        body = RUNNER.read_text(encoding="utf-8")
-        self.assertIn("Never run phase work as in-session subagents.", body)
-        self.assertIn("codex exec", body)
-        self.assertIn("claude -p", body)
-        self.assertIn("opencode run", body)
-
-    def test_runner_preserves_phase_gates(self) -> None:
-        body = RUNNER.read_text(encoding="utf-8")
-        for phrase in (
-            "Concept Brief",
-            "Plan Graph",
-            "Design receipt",
-            "review and spec",
-            "whole-branch gates",
-            "$grill-me",
-        ):
-            self.assertIn(phrase, body)
-
     def test_runner_stops_at_human_review(self) -> None:
         body = RUNNER.read_text(encoding="utf-8")
-        self.assertIn("ready-for-human-review", body)
         self.assertIn("as a draft", body)
         for forbidden in (
             "approve, merge",
@@ -77,7 +57,6 @@ class AutonomousRunContractTests(unittest.TestCase):
     def test_runner_pr_description_explains_choices(self) -> None:
         body = RUNNER.read_text(encoding="utf-8")
         for phrase in (
-            "rejected directions and why they lost",
             "rejected alternatives and their evidence",
             "retained risks",
             "head SHA",
