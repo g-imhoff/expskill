@@ -75,8 +75,8 @@ fail.
 
 A score may rise only when the underlying issue was fixed or disproved with
 evidence. If a reviewer raises a score by two points or more between cycles,
-the fixer evidence for that category must name the exact change. Otherwise
-keep the earlier score.
+the evidence for that category must name the exact fix or provide concrete
+disproof of the issue. Otherwise keep the earlier score.
 
 ## Report
 
