@@ -104,6 +104,7 @@ RETIRED_PROFILE_NAMES = (
     "expskill-verifier-low",
 )
 CODEX_MANAGED_DIRECTORY = "codex-marketplace"
+CODEX_RECOVERY_DIRECTORY = "codex-marketplace-recovery"
 CODEX_MANAGED_MARKER = ".expskill-managed.json"
 CODEX_MANAGED_SCHEMA = "codex-managed-package.v1"
 CODEX_LEGACY_PROFILE_DIRECTORIES = (
@@ -112,6 +113,8 @@ CODEX_LEGACY_PROFILE_DIRECTORIES = (
 )
 RECEIPT_DIRECTORY = "expskill"
 RECEIPT_FILENAME = "install.json"
+CODEX_MIGRATION_JOURNAL_FILENAME = "codex-migration.json"
+CODEX_MIGRATION_SCHEMA = "codex-migration.v1"
 OPENCODE_RECEIPT_FILENAME = "install-opencode.json"
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
 OPENCODE_ARTIFACT_DIRECTORY = "opencode-artifact"
@@ -1945,6 +1948,14 @@ def _codex_managed_root(repository_root: Path, state_home: Path) -> Path:
     return state_root / RECEIPT_DIRECTORY / CODEX_MANAGED_DIRECTORY / token
 
 
+def _codex_recovery_root(repository_root: Path, state_home: Path) -> Path:
+    token = hashlib.sha256(
+        b"codex-recovery-package.v1\0" + os.fsencode(_lexical_absolute(repository_root))
+    ).hexdigest()[:32]
+    state_root = Path(state_home).expanduser().resolve(strict=False)
+    return state_root / RECEIPT_DIRECTORY / CODEX_RECOVERY_DIRECTORY / token
+
+
 def _codex_managed_marker(root: Path, repository_root: Path) -> dict[str, object]:
     return {
         "schema_version": CODEX_MANAGED_SCHEMA,
@@ -1981,31 +1992,35 @@ def _write_codex_managed_marker(
     )
 
 
-def _materialize_codex_package(repository_root: Path, state_home: Path) -> Path:
-    managed_root = _codex_managed_root(repository_root, state_home)
-    parent = managed_root.parent
+def _materialize_codex_marketplace(
+    repository_root: Path,
+    target_root: Path,
+) -> Path:
+    parent = target_root.parent
     parent.mkdir(parents=True, exist_ok=True)
-    if managed_root.is_symlink() or (managed_root.exists() and not managed_root.is_dir()):
-        raise InstallError(f"managed Codex package is not a regular directory: {managed_root}")
-    if managed_root.exists() and not _codex_managed_root_is_owned(managed_root, repository_root):
-        raise InstallError(f"refusing unowned managed Codex package: {managed_root}")
+    if target_root.is_symlink() or (target_root.exists() and not target_root.is_dir()):
+        raise InstallError(f"managed Codex package is not a regular directory: {target_root}")
+    if target_root.exists() and not _codex_managed_root_is_owned(
+        target_root, repository_root
+    ):
+        raise InstallError(f"refusing unowned managed Codex package: {target_root}")
     temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-package-", dir=parent))
     candidate_root = temporary_parent / "marketplace"
     backup: Path | None = None
     try:
         _build_codex_marketplace(repository_root, candidate_root)
-        _write_codex_managed_marker(candidate_root, repository_root, managed_root)
+        _write_codex_managed_marker(candidate_root, repository_root, target_root)
     except (CodexBuildError, OSError, RuntimeError) as error:
         shutil.rmtree(temporary_parent, ignore_errors=True)
         raise InstallError(f"Codex package could not be materialized: {error}") from error
     try:
-        if managed_root.exists():
-            backup = parent / f".{managed_root.name}.old-{uuid.uuid4().hex}"
-            managed_root.rename(backup)
-        candidate_root.rename(managed_root)
+        if target_root.exists():
+            backup = parent / f".{target_root.name}.old-{uuid.uuid4().hex}"
+            target_root.rename(backup)
+        candidate_root.rename(target_root)
     except OSError as error:
-        if backup is not None and not managed_root.exists() and backup.exists():
-            backup.rename(managed_root)
+        if backup is not None and not target_root.exists() and backup.exists():
+            backup.rename(target_root)
         raise InstallError(f"Codex package could not be materialized: {error}") from error
     finally:
         shutil.rmtree(temporary_parent, ignore_errors=True)
@@ -2016,7 +2031,24 @@ def _materialize_codex_package(repository_root: Path, state_home: Path) -> Path:
             raise InstallError(
                 f"old managed Codex package could not be removed: {backup}: {error}"
             ) from error
-    return managed_root
+    return target_root
+
+
+def _materialize_codex_package(repository_root: Path, state_home: Path) -> Path:
+    return _materialize_codex_marketplace(
+        repository_root,
+        _codex_managed_root(repository_root, state_home),
+    )
+
+
+def _materialize_codex_recovery_package(
+    repository_root: Path,
+    state_home: Path,
+) -> Path:
+    return _materialize_codex_marketplace(
+        repository_root,
+        _codex_recovery_root(repository_root, state_home),
+    )
 
 
 def _profile_sources(
@@ -2199,6 +2231,114 @@ def preflight_links(
 def _receipt_path(state_home: Path) -> Path:
     canonical_state_home = Path(state_home).expanduser().resolve(strict=False)
     return canonical_state_home / RECEIPT_DIRECTORY / RECEIPT_FILENAME
+
+
+def _codex_migration_journal_path(state_home: Path) -> Path:
+    canonical_state_home = Path(state_home).expanduser().resolve(strict=False)
+    return canonical_state_home / RECEIPT_DIRECTORY / CODEX_MIGRATION_JOURNAL_FILENAME
+
+
+def _write_codex_migration_journal(
+    journal_path: Path, payload: Mapping[str, object]
+) -> None:
+    """Persist the legacy Codex migration state outside the source checkout."""
+
+    journal_directory = journal_path.parent
+    try:
+        journal_directory.mkdir(parents=True, exist_ok=True)
+        if journal_path.is_symlink() or (
+            journal_path.exists() and not journal_path.is_file()
+        ):
+            raise InstallError(f"migration journal path is not a regular file: {journal_path}")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{CODEX_MIGRATION_JOURNAL_FILENAME}.",
+            suffix=".tmp",
+            dir=journal_directory,
+        )
+        temporary_path: Path | None = Path(temporary_name)
+        write_error: InstallError | None = None
+        write_cause: OSError | None = None
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(dict(payload), stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, journal_path)
+            temporary_path = None
+        except OSError as error:
+            write_cause = error
+            write_error = InstallError(
+                f"cannot write Codex migration journal: {journal_path}: {error}"
+            )
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except OSError as error:
+                    cleanup_failure = (
+                        "temporary Codex migration journal cleanup failed: "
+                        f"{temporary_path}: {error}"
+                    )
+                    if write_error is None:
+                        write_error = InstallError(cleanup_failure)
+                        write_cause = error
+                    else:
+                        write_error = InstallError(
+                            f"{write_error}; {cleanup_failure}"
+                        )
+        if write_error is not None:
+            raise write_error from write_cause
+    except InstallError:
+        raise
+    except (OSError, TypeError, ValueError) as error:
+        raise InstallError(f"cannot write Codex migration journal: {journal_path}: {error}") from error
+
+
+def _read_codex_migration_journal(journal_path: Path) -> dict[str, object] | None:
+    if not _lexists(journal_path):
+        return None
+    if journal_path.is_symlink() or not journal_path.is_file():
+        raise InstallError(f"migration journal path is not a regular file: {journal_path}")
+    try:
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise InstallError(f"migration journal is malformed: {journal_path}: {error}") from error
+    expected_keys = {
+        "schema_version",
+        "repository_root",
+        "recovery_root",
+        "marketplace_state",
+        "plugin_state",
+        "marketplace_removed",
+        "plugin_removed",
+        "committed",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != expected_keys
+        or payload.get("schema_version") != CODEX_MIGRATION_SCHEMA
+        or payload.get("marketplace_state") != "legacy"
+        or payload.get("plugin_state") not in {"legacy", "absent"}
+        or not isinstance(payload.get("marketplace_removed"), bool)
+        or not isinstance(payload.get("plugin_removed"), bool)
+        or not isinstance(payload.get("committed"), bool)
+        or not isinstance(payload.get("repository_root"), str)
+        or not isinstance(payload.get("recovery_root"), str)
+    ):
+        raise InstallError(f"migration journal is malformed: {journal_path}")
+    return payload
+
+
+def _clear_codex_migration_journal(journal_path: Path) -> None:
+    if not _lexists(journal_path):
+        return
+    if journal_path.is_symlink() or not journal_path.is_file():
+        raise InstallError(f"migration journal path is not a regular file: {journal_path}")
+    try:
+        journal_path.unlink()
+    except OSError as error:
+        raise InstallError(f"cannot remove Codex migration journal: {journal_path}: {error}") from error
 
 
 def _opencode_link_staging_path(source: Path, destination: Path) -> Path:
@@ -4929,6 +5069,143 @@ def _remove_command(
     return None
 
 
+def _add_codex_marketplace(
+    run: Runner | Callable[[Sequence[str]], object],
+    root: Path,
+) -> None:
+    command = ["codex", "plugin", "marketplace", "add", str(root), "--json"]
+    result = _run_command(run, command)
+    _require_success(command, result)
+    _validate_marketplace_add(_parse_json(command, result), root)
+
+
+def _add_codex_plugin(
+    run: Runner | Callable[[Sequence[str]], object],
+    expected_version: str,
+) -> None:
+    command = ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
+    result = _run_command(run, command)
+    _require_success(command, result)
+    _validate_plugin_add(_parse_json(command, result), expected_version)
+
+
+def _validate_codex_migration_journal(
+    payload: Mapping[str, object],
+    repository_root: Path,
+    recovery_root: Path,
+    journal_path: Path,
+) -> None:
+    if payload.get("repository_root") != str(repository_root):
+        raise InstallError(f"migration journal repository mismatch: {journal_path}")
+    if payload.get("recovery_root") != str(recovery_root):
+        raise InstallError(f"migration journal recovery root mismatch: {journal_path}")
+    if not _codex_managed_root_is_owned(recovery_root, repository_root):
+        raise InstallError(
+            f"migration recovery marketplace is not owned: {recovery_root}"
+        )
+
+
+def _resume_codex_migration_recovery(
+    repository_root: Path,
+    state_home: Path,
+    run: Runner | Callable[[Sequence[str]], object],
+    plugin_version: str,
+) -> bool:
+    journal_path = _codex_migration_journal_path(state_home)
+    payload = _read_codex_migration_journal(journal_path)
+    if payload is None:
+        return False
+    recovery_root = _codex_recovery_root(repository_root, state_home)
+    _validate_codex_migration_journal(
+        payload,
+        repository_root,
+        recovery_root,
+        journal_path,
+    )
+    managed_root = _codex_managed_root(repository_root, state_home)
+    marketplace_payload = _run_json(
+        run,
+        ["codex", "plugin", "marketplace", "list", "--json"],
+    )
+    if payload["committed"]:
+        committed_marketplace = _marketplace_state(
+            marketplace_payload,
+            managed_root,
+        )
+        plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+        committed_plugin = _plugin_state(plugin_payload, managed_root)
+        if committed_marketplace == "owned" and committed_plugin == "owned":
+            _clear_codex_migration_journal(journal_path)
+            if _codex_managed_root_is_owned(recovery_root, repository_root):
+                shutil.rmtree(recovery_root, ignore_errors=True)
+            return True
+    marketplace_state = _marketplace_state(
+        marketplace_payload,
+        recovery_root,
+        (repository_root,),
+    )
+    if marketplace_state == "foreign":
+        managed_state = _marketplace_state(marketplace_payload, managed_root)
+        if managed_state != "owned":
+            raise InstallError(
+                "unfinished Codex migration found a foreign marketplace"
+            )
+        plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+        current_plugin_state = _plugin_state(
+            plugin_payload,
+            managed_root,
+            (repository_root, recovery_root),
+        )
+        if current_plugin_state == "foreign":
+            raise InstallError(
+                "unfinished Codex migration found a foreign plugin"
+            )
+        if current_plugin_state in {"owned", "legacy"}:
+            command = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
+            result = _run_command(run, command)
+            _require_success(command, result)
+            _parse_json(command, result)
+        command = [
+            "codex",
+            "plugin",
+            "marketplace",
+            "remove",
+            MARKETPLACE_NAME,
+            "--json",
+        ]
+        result = _run_command(run, command)
+        _require_success(command, result)
+        _parse_json(command, result)
+        marketplace_state = "absent"
+    if marketplace_state == "absent":
+        _add_codex_marketplace(run, recovery_root)
+
+    plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+    desired_plugin_state = _plugin_state(
+        plugin_payload,
+        recovery_root,
+        (repository_root,),
+    )
+    original_plugin_present = payload["plugin_state"] == "legacy"
+    if desired_plugin_state == "foreign":
+        managed_plugin_state = _plugin_state(plugin_payload, managed_root)
+        if managed_plugin_state != "owned":
+            raise InstallError("unfinished Codex migration found a foreign plugin")
+        command = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
+        result = _run_command(run, command)
+        _require_success(command, result)
+        _parse_json(command, result)
+        desired_plugin_state = "absent"
+    if original_plugin_present and desired_plugin_state == "absent":
+        _add_codex_plugin(run, plugin_version)
+    elif not original_plugin_present and desired_plugin_state != "absent":
+        raise InstallError(
+            "unfinished Codex migration found an unexpected legacy plugin"
+        )
+    _clear_codex_migration_journal(journal_path)
+    return False
+
+
 def _cleanup_after_install_failure(
     original: Exception,
     run: Runner | Callable[[Sequence[str]], object],
@@ -4936,6 +5213,10 @@ def _cleanup_after_install_failure(
     plugin_new: bool,
     marketplace_new: bool,
     migrated_legacy_links: Sequence[ProfileLink] = (),
+    migration_journal_path: Path | None = None,
+    migration_recovery_root: Path | None = None,
+    migration_state: Mapping[str, object] | None = None,
+    plugin_version: str | None = None,
 ) -> None:
     failures: list[str] = []
     if plugin_new:
@@ -4957,6 +5238,31 @@ def _cleanup_after_install_failure(
         f"legacy link rollback: {failure}"
         for failure in _restore_legacy_codex_links(migrated_legacy_links)
     )
+    if migration_journal_path is not None and migration_state is not None:
+        recovery_failures: list[str] = []
+        if migration_state.get("marketplace_removed"):
+            if migration_recovery_root is None:
+                recovery_failures.append("marketplace recovery root is missing")
+            else:
+                try:
+                    _add_codex_marketplace(run, migration_recovery_root)
+                except InstallError as error:
+                    recovery_failures.append(f"marketplace recovery: {error}")
+        if migration_state.get("plugin_removed") and not recovery_failures:
+            if plugin_version is None:
+                recovery_failures.append("plugin recovery version is missing")
+            else:
+                try:
+                    _add_codex_plugin(run, plugin_version)
+                except InstallError as error:
+                    recovery_failures.append(f"plugin recovery: {error}")
+        if recovery_failures:
+            failures.extend(recovery_failures)
+        else:
+            try:
+                _clear_codex_migration_journal(migration_journal_path)
+            except InstallError as error:
+                failures.append(f"migration journal cleanup: {error}")
     if failures:
         raise InstallError(f"{original}; residual state or rollback failures: {'; '.join(failures)}") from original
     if isinstance(original, InstallError):
@@ -4977,11 +5283,20 @@ def install(
     receipt_links = _allowlisted_links(canonical_root, codex_home, state_home)
     plugin_version = _validated_manifest_version(canonical_root)
     receipt_path_value = _receipt_path(state_home)
+    recovery_root = _codex_recovery_root(canonical_root, state_home)
+    migration_journal_path = _codex_migration_journal_path(state_home)
     receipt = _read_codex_receipt(
         receipt_path_value, canonical_root, receipt_links
     )
     plugin_state: str | None = None
+    resumed_migration = False
     if not agents_only:
+        resumed_migration = _resume_codex_migration_recovery(
+            canonical_root,
+            state_home,
+            run,
+            plugin_version,
+        )
         marketplace_payload = _run_json(
             run,
             ["codex", "plugin", "marketplace", "list", "--json"],
@@ -4989,7 +5304,7 @@ def install(
         marketplace_state = _marketplace_state(
             marketplace_payload,
             managed_root,
-            (canonical_root,),
+            (canonical_root, recovery_root),
         )
         if marketplace_state == "foreign":
             raise InstallError("marketplace name conflict from another repository")
@@ -4998,7 +5313,7 @@ def install(
             plugin_state = _plugin_state(
                 plugin_payload,
                 managed_root,
-                (canonical_root,),
+                (canonical_root, recovery_root),
             )
             if plugin_state == "foreign":
                 raise InstallError("plugin name conflict from another repository")
@@ -5011,11 +5326,28 @@ def install(
     plugin_new = False
     removed_links: tuple[ProfileLink, ...] = ()
     migrated_legacy_links: tuple[ProfileLink, ...] = ()
+    migration_state: dict[str, object] | None = None
+    receipt_committed = False
     try:
         migrated_legacy_links = _migrate_legacy_codex_links(canonical_root, links)
         _create_links(links, created_links)
         if not agents_only:
             if marketplace_state == "legacy":
+                _materialize_codex_recovery_package(canonical_root, state_home)
+                migration_state = {
+                    "schema_version": CODEX_MIGRATION_SCHEMA,
+                    "repository_root": str(canonical_root),
+                    "recovery_root": str(recovery_root),
+                    "marketplace_state": "legacy",
+                    "plugin_state": plugin_state,
+                    "marketplace_removed": False,
+                    "plugin_removed": False,
+                    "committed": False,
+                }
+                _write_codex_migration_journal(
+                    migration_journal_path,
+                    migration_state,
+                )
                 if plugin_state == "legacy":
                     plugin_remove = [
                         "codex",
@@ -5027,6 +5359,11 @@ def install(
                     plugin_remove_result = _run_command(run, plugin_remove)
                     _require_success(plugin_remove, plugin_remove_result)
                     _parse_json(plugin_remove, plugin_remove_result)
+                    migration_state["plugin_removed"] = True
+                    _write_codex_migration_journal(
+                        migration_journal_path,
+                        migration_state,
+                    )
                 marketplace_remove = [
                     "codex",
                     "plugin",
@@ -5038,6 +5375,11 @@ def install(
                 marketplace_remove_result = _run_command(run, marketplace_remove)
                 _require_success(marketplace_remove, marketplace_remove_result)
                 _parse_json(marketplace_remove, marketplace_remove_result)
+                migration_state["marketplace_removed"] = True
+                _write_codex_migration_journal(
+                    migration_journal_path,
+                    migration_state,
+                )
             marketplace_add_command = [
                 "codex",
                 "plugin",
@@ -5056,7 +5398,7 @@ def install(
                 plugin_state = _plugin_state(
                     plugin_payload,
                     managed_root,
-                    (canonical_root,),
+                    (canonical_root, recovery_root),
                 )
             if plugin_state == "foreign":
                 raise InstallError("plugin name conflict from another repository")
@@ -5083,7 +5425,11 @@ def install(
                 receipt,
                 links,
             )
-        previous_links = () if receipt is None else receipt.links
+        previous_links = (
+            links
+            if receipt is None and resumed_migration
+            else (() if receipt is None else receipt.links)
+        )
         merged_links = list(previous_links)
         for link in links:
             merged_links = [
@@ -5098,11 +5444,30 @@ def install(
         merged_receipt = _Receipt(
             repository_root=canonical_root,
             links=tuple(merged_links),
-            marketplace_added=(receipt.marketplace_added if receipt else False) or marketplace_new,
-            plugin_installed=(receipt.plugin_installed if receipt else False) or plugin_new,
+            marketplace_added=(receipt.marketplace_added if receipt else False)
+            or marketplace_new
+            or resumed_migration,
+            plugin_installed=(receipt.plugin_installed if receipt else False)
+            or plugin_new
+            or resumed_migration,
         )
+        if migration_state is not None:
+            migration_state["committed"] = True
+            _write_codex_migration_journal(
+                migration_journal_path,
+                migration_state,
+            )
         _write_codex_receipt(receipt_path_value, merged_receipt)
+        receipt_committed = True
+        if migration_state is not None:
+            _clear_codex_migration_journal(migration_journal_path)
+            if _codex_managed_root_is_owned(recovery_root, canonical_root):
+                shutil.rmtree(recovery_root, ignore_errors=True)
     except Exception as error:
+        if receipt_committed:
+            if isinstance(error, InstallError):
+                raise
+            raise InstallError(str(error)) from error
         _cleanup_after_install_failure(
             error,
             run,
@@ -5110,6 +5475,10 @@ def install(
             plugin_new,
             marketplace_new,
             migrated_legacy_links,
+            migration_journal_path if migration_state is not None else None,
+            recovery_root if migration_state is not None else None,
+            migration_state,
+            plugin_version,
         )
     return InstallResult(
         links=links,
@@ -5196,6 +5565,7 @@ def uninstall(
 ) -> InstallResult:
     canonical_root = _canonical_codex_repository_root(repo_root)
     managed_root = _codex_managed_root(canonical_root, state_home)
+    recovery_root = _codex_recovery_root(canonical_root, state_home)
     links = _allowlisted_links(canonical_root, codex_home, state_home)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_codex_receipt(receipt_path_value, canonical_root, links)
@@ -5204,12 +5574,21 @@ def uninstall(
     current = receipt
     plugin_state: str | None = None
     marketplace_state: str | None = None
-    if not agents_only and receipt.plugin_installed:
+    managed_package_owned = _codex_managed_root_is_owned(
+        managed_root,
+        canonical_root,
+    )
+    inspect_plugin_dependency = (
+        managed_package_owned
+        and receipt.marketplace_added
+        and not receipt.plugin_installed
+    )
+    if not agents_only and (receipt.plugin_installed or inspect_plugin_dependency):
         plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
         plugin_state = _plugin_state(
             plugin_payload,
             managed_root,
-            (canonical_root,),
+            (canonical_root, recovery_root),
         )
     if not agents_only and receipt.marketplace_added:
         marketplace_payload = _run_json(
@@ -5219,9 +5598,15 @@ def uninstall(
         marketplace_state = _marketplace_state(
             marketplace_payload,
             managed_root,
-            (canonical_root,),
+            (canonical_root, recovery_root),
         )
-    if plugin_state in {"owned", "legacy", "absent"}:
+    unowned_plugin_reference = (
+        not receipt.plugin_installed and plugin_state == "owned"
+    )
+    unowned_marketplace_reference = (
+        not receipt.marketplace_added and marketplace_state == "owned"
+    )
+    if receipt.plugin_installed and plugin_state in {"owned", "legacy", "absent"}:
         plugin_remove = ["codex", "plugin", "remove", PLUGIN_SELECTOR, "--json"]
         plugin_remove_result = _run_command(run, plugin_remove)
         _require_success(plugin_remove, plugin_remove_result)
@@ -5229,11 +5614,16 @@ def uninstall(
         current = _persist_codex_receipt(
             receipt_path_value, current, plugin_installed=False
         )
-    elif plugin_state == "foreign":
+        plugin_state = "absent"
+    elif receipt.plugin_installed and plugin_state == "foreign":
         current = _persist_codex_receipt(
             receipt_path_value, current, plugin_installed=False
         )
-    if marketplace_state in {"owned", "legacy"}:
+    if (
+        receipt.marketplace_added
+        and not unowned_plugin_reference
+        and marketplace_state in {"owned", "legacy"}
+    ):
         marketplace_remove = [
             "codex",
             "plugin",
@@ -5248,9 +5638,16 @@ def uninstall(
         current = _persist_codex_receipt(
             receipt_path_value, current, marketplace_added=False
         )
-    elif marketplace_state in {"absent", "foreign"}:
+        marketplace_state = "absent"
+    elif receipt.marketplace_added and marketplace_state in {"absent", "foreign"}:
         current = _persist_codex_receipt(
             receipt_path_value, current, marketplace_added=False
+        )
+    elif receipt.marketplace_added and unowned_plugin_reference:
+        current = _persist_codex_receipt(
+            receipt_path_value,
+            current,
+            marketplace_added=False,
         )
     current, removed_links, link_failures = _remove_owned_links(receipt_path_value, current)
     if link_failures:
@@ -5264,19 +5661,42 @@ def uninstall(
             marketplace_added=current.marketplace_added,
             plugin_installed=current.plugin_installed,
         )
-    if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
-        raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
-    try:
-        receipt_path_value.unlink()
-    except OSError as error:
-        raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
-    if _codex_managed_root_is_owned(managed_root, canonical_root):
+    if not agents_only and managed_package_owned:
+        if plugin_state is None:
+            plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+            plugin_state = _plugin_state(
+                plugin_payload,
+                managed_root,
+                (canonical_root, recovery_root),
+            )
+        if marketplace_state is None:
+            marketplace_payload = _run_json(
+                run,
+                ["codex", "plugin", "marketplace", "list", "--json"],
+            )
+            marketplace_state = _marketplace_state(
+                marketplace_payload,
+                managed_root,
+                (canonical_root, recovery_root),
+            )
+        unowned_plugin_reference = plugin_state == "owned"
+        unowned_marketplace_reference = marketplace_state == "owned"
+    preserve_managed_package = (
+        unowned_plugin_reference or unowned_marketplace_reference
+    )
+    if managed_package_owned and not preserve_managed_package:
         try:
             shutil.rmtree(managed_root)
         except OSError as error:
             raise InstallError(
                 f"cannot remove managed Codex package: {managed_root}: {error}"
             ) from error
+    if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
+        raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
+    try:
+        receipt_path_value.unlink()
+    except OSError as error:
+        raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error
     return InstallResult(
         links=links,
         removed_links=removed_links,
