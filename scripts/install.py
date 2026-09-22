@@ -892,6 +892,25 @@ def _directory_open_flags() -> int:
     )
 
 
+def _conditional_rename_function(label: str) -> Any:
+    """Resolve the supported native ABI; never emulate a conditional rename."""
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            function = libc.renameatx_np
+        elif sys.platform.startswith("linux"):
+            function = libc.renameat2
+        else:
+            raise AttributeError("unsupported platform")
+    except (AttributeError, OSError) as error:
+        raise InstallError(f"{label} is unavailable") from error
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                         ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    return function
+
+
 def _renameat2(
     source_fd: int,
     source_name: str,
@@ -900,21 +919,13 @@ def _renameat2(
     flags: int,
     label: str,
 ) -> None:
-    """Perform the Linux conditional rename primitive used by state publication."""
+    """Dispatch Linux RENAME_NOREPLACE/EXCHANGE to the native equivalent."""
 
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        function = libc.renameat2
-    except (AttributeError, OSError) as error:
-        raise InstallError(f"{label} is unavailable") from error
-    function.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
-    function.restype = ctypes.c_int
+    function = _conditional_rename_function(label)
+    # Apple bsd/sys/stdio.h: RENAME_EXCL=0x4, RENAME_SWAP=0x2,
+    # renameatx_np is available since macOS 10.12.
+    if sys.platform == "darwin":
+        flags = {1: 0x4, 2: 0x2}[flags]
     result = function(
         source_fd,
         os.fsencode(source_name),
@@ -981,6 +992,79 @@ def _link_open_descriptor(source_fd: int, target_fd: int, target_name: str) -> N
         return
     error_number = ctypes.get_errno()
     raise OSError(error_number, os.strerror(error_number))
+
+
+def _try_anonymous_file(parent_fd: int) -> int | None:
+    if not sys.platform.startswith("linux") or not getattr(os, "O_TMPFILE", 0):
+        return None
+    try:
+        return os.open(".", os.O_WRONLY | os.O_TMPFILE | getattr(os, "O_CLOEXEC", 0),
+                       0o600, dir_fd=parent_fd)
+    except OSError as error:
+        if error.errno not in {errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS}:
+            raise
+        return None
+
+
+def _try_link_anonymous_file(descriptor: int, parent_fd: int, name: str) -> bool:
+    try:
+        _link_open_descriptor(descriptor, parent_fd, name)
+    except InstallError:
+        return False  # Missing Linux descriptor-link symbol; use named preparation.
+    except OSError as error:
+        if error.errno not in {errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS, errno.EPERM}:
+            raise
+        return False
+    return True
+
+
+def _preflight_codex_capabilities(codex_home: Path, state_home: Path) -> None:
+    """Probe each destination filesystem before publishing profiles or CLI state."""
+
+    _conditional_rename_function("conditional rename")
+    checked: set[Path] = set()
+    for destination in (codex_home / "agents", state_home / RECEIPT_DIRECTORY):
+        parent = _lexical_absolute(destination)
+        while not parent.exists():
+            parent = parent.parent
+        if parent in checked:
+            continue
+        checked.add(parent)
+        try:
+            with tempfile.TemporaryDirectory(prefix=".expskill-capability-", dir=parent) as temporary:
+                root = Path(temporary)
+                os.symlink("absent-target", root / "source")
+                if sys.platform == "darwin":
+                    os.link(root / "source", root / "anchor", follow_symlinks=False)
+                else:
+                    os.symlink("absent-target", root / "anchor")
+                fd = os.open(root, _directory_open_flags())
+                try:
+                    # Test no-clobber as well as success, plus the mixed
+                    # directory/file exchange used by exact directory cleanup.
+                    try:
+                        _renameat2(fd, "source", fd, "anchor", 1, "exclusive rename")
+                    except FileExistsError:
+                        pass
+                    else:
+                        raise InstallError("exclusive rename did not reject an occupied target")
+                    _renameat2(fd, "source", fd, "published", 1, "exclusive rename")
+                    os.mkdir("directory", dir_fd=fd)
+                    _renameat2(fd, "published", fd, "directory", 2, "exchange rename")
+                    anonymous = _try_anonymous_file(fd)
+                    linked = False
+                    if anonymous is not None:
+                        try:
+                            linked = _try_link_anonymous_file(anonymous, fd, "anonymous")
+                        finally:
+                            os.close(anonymous)
+                    if not linked:
+                        os.link("anchor", "named", src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+        except (OSError, InstallError) as error:
+            raise InstallError(f"required Codex filesystem capability is unavailable: {parent}: {error}") from error
 
 
 def _open_state_binding(
@@ -3172,7 +3256,7 @@ def _read_codex_migration_journal(journal_path: Path) -> dict[str, object] | Non
     }
     if (
         not isinstance(payload, dict)
-        or set(payload) != expected_keys
+        or set(payload) - {"recovery_dev", "recovery_ino", "cleanup_pending"} != expected_keys
         or payload.get("schema_version") != CODEX_MIGRATION_SCHEMA
         or payload.get("marketplace_state") != "legacy"
         or payload.get("plugin_state") not in {"legacy", "absent"}
@@ -3500,6 +3584,9 @@ def _retirement_record_exists(
 ) -> bool:
     """Return whether a private record reserves this exact retirement."""
 
+    preparation = f".{name}.{expected[0]:x}-{expected[1]:x}.prepare.retire{'-dir' if directory else ''}"
+    if preparation in os.listdir(parent_fd):
+        return True
     return any(
         descriptor is not None
         and descriptor[0] == name
@@ -3580,6 +3667,63 @@ def _rmdir_exact_via_exchange(
     )
 
 
+def _prepare_named_retirement(
+    parent_fd: int, prefix: str, suffix: str, label: str,
+) -> tuple[str, tuple[int, int]]:
+    """Prepare a durable, self-identifying named inode without AT_EMPTY_PATH.
+
+    An interrupted creation before its identity is written is deliberately
+    unproven. Retain it and the caller's authority for explicit reconciliation;
+    never adopt an empty or replaced preparation by observing it on retry.
+    """
+
+    preparation = f"{prefix}prepare{suffix}"
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(preparation, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+    except FileExistsError:
+        descriptor = os.open(preparation, flags, dir_fd=parent_fd)
+        created = False
+    else:
+        created = True
+    try:
+        metadata = os.fstat(descriptor)
+        identity = (metadata.st_dev, metadata.st_ino)
+        evidence = f"{preparation}\n{identity[0]:x}-{identity[1]:x}\n".encode()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise InstallError(f"{label} preparation changed type")
+        if created:
+            if os.write(descriptor, evidence) != len(evidence):
+                raise InstallError(f"{label} preparation identity write was incomplete")
+        elif os.read(descriptor, len(evidence) + 1) != evidence:
+            raise InstallError(f"{label} preparation identity is unproven or replaced")
+        os.fsync(descriptor)
+        os.fsync(parent_fd)
+        retirement = f"{prefix}{identity[0]:x}-{identity[1]:x}{suffix}"
+        current = os.stat(preparation, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != identity:
+            raise InstallError(f"{label} preparation identity changed before linking")
+        try:
+            os.link(preparation, retirement, src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        linked = os.stat(retirement, dir_fd=parent_fd, follow_symlinks=False)
+        if (linked.st_dev, linked.st_ino) != identity:
+            raise InstallError(f"{label} retirement preparation link was replaced")
+        os.fsync(parent_fd)
+        current = os.stat(preparation, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != identity:
+            raise InstallError(f"{label} preparation identity changed before removal")
+        # Private-only reclamation under the installer lock, after the durable
+        # identity-bearing hard link exists. No public pathname is unlinked.
+        os.unlink(preparation, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+        return retirement, identity
+    finally:
+        os.close(descriptor)
+
+
 def _remove_exact_via_exchange(
     parent_fd: int,
     name: str,
@@ -3591,7 +3735,7 @@ def _remove_exact_via_exchange(
 ) -> bool:
     """Retire an exact inode using a durable, identity-bearing private name.
 
-    Linux has no conditional unlink-by-inode operation.  The installer lock is
+    Neither supported platform has conditional unlink-by-inode. The installer lock is
     therefore part of the normal-reclamation boundary.  Before exchange, both
     the owned and placeholder identities are encoded in a deterministic name
     and made durable.  A retry can resume every exchange state.  Any observed
@@ -3628,6 +3772,7 @@ def _remove_exact_via_exchange(
             candidate
             for candidate in os.listdir(parent_fd)
             if candidate.startswith(prefix) and candidate.endswith(retire_suffix)
+            and candidate != f"{prefix}prepare{retire_suffix}"
         ]
         if len(matches) > 1:
             raise InstallError(f"{label} has ambiguous retirement records")
@@ -3645,6 +3790,11 @@ def _remove_exact_via_exchange(
         return candidate, placeholder_identity
 
     try:
+        # Finish a named preparation even if its final hard link already exists.
+        # This precedes exchange, so an interruption cannot abandon a prep name.
+        preparation = metadata(f"{prefix}prepare{retire_suffix}")
+        if preparation is not None:
+            _prepare_named_retirement(parent_fd, prefix, retire_suffix, label)
         record = private_names()
         current = metadata(name)
         if record is None:
@@ -3657,27 +3807,23 @@ def _remove_exact_via_exchange(
             # has any pathname.  Its first and only link is therefore already
             # the final receipt-derived retirement record; a crash cannot
             # strand an unjournaled preparation name.
-            descriptor = os.open(
-                ".",
-                os.O_WRONLY
-                | getattr(os, "O_TMPFILE", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-                dir_fd=parent_fd,
-            )
-            try:
-                created = os.fstat(descriptor)
-                placeholder_identity = identity(created)
-                retirement = (
-                    f"{prefix}{placeholder_identity[0]:x}-{placeholder_identity[1]:x}"
-                    f"{retire_suffix}"
-                )
-                os.fsync(descriptor)
-                _link_open_descriptor(descriptor, parent_fd, retirement)
-                os.fsync(parent_fd)
-            finally:
-                os.close(descriptor)
-            record = retirement, placeholder_identity
+            descriptor = _try_anonymous_file(parent_fd)
+            if descriptor is not None:
+                try:
+                    created = os.fstat(descriptor)
+                    placeholder_identity = identity(created)
+                    retirement = (
+                        f"{prefix}{placeholder_identity[0]:x}-{placeholder_identity[1]:x}"
+                        f"{retire_suffix}"
+                    )
+                    os.fsync(descriptor)
+                    if _try_link_anonymous_file(descriptor, parent_fd, retirement):
+                        os.fsync(parent_fd)
+                        record = retirement, placeholder_identity
+                finally:
+                    os.close(descriptor)
+            if record is None:
+                record = _prepare_named_retirement(parent_fd, prefix, retire_suffix, label)
 
         retirement, placeholder_identity = record
         placeholder = (
@@ -5677,6 +5823,8 @@ def _read_codex_receipt(
     receipt_path: Path,
     repository_root: Path,
     expected_links: Sequence[ProfileLink],
+    *,
+    frozen_only: bool = False,
 ) -> _Receipt | None:
     """Read a Codex receipt without applying OpenCode's identity journal."""
 
@@ -5722,6 +5870,10 @@ def _read_codex_receipt(
     legacy = set(payload) == {
         "repository_root", "links", "marketplace_added", "plugin_installed"
     } and all(set(entry) == {"source", "destination"} for entry in payload["links"])
+    if frozen_only:
+        # An early install guard must not start a path-only receipt migration
+        # before the install journal exists. Return only already-frozen evidence.
+        return None if legacy else receipt
     if legacy or pending:
         receipt = _migrate_codex_receipt_links(receipt_path, receipt, freeze=legacy)
     return receipt
@@ -5781,6 +5933,19 @@ def _migrate_codex_receipt_links(
             raise InstallError(f"cannot anchor legacy Codex receipt: {link.destination}: {error}") from error
     _write_codex_receipt(receipt_path, receipt)
     return receipt
+
+
+def _check_frozen_codex_legacy_links(receipt: _Receipt | None) -> None:
+    if receipt is None:
+        return
+    legacy = set(_legacy_profile_sources(receipt.repository_root))
+    for link in receipt.links:
+        if link.source not in legacy or not _same_recorded_link(link.destination, link.source):
+            continue
+        if not _valid_codex_link_anchor_path(link) or not _codex_staged_link_is_exact(
+            link, link.destination, (link.destination_dev, link.destination_ino)
+        ):
+            raise InstallError(f"legacy agent link changed frozen receipt identity: {link.destination}")
 
 
 def _write_codex_receipt(
@@ -6743,6 +6908,15 @@ def _migrate_legacy_codex_links(
     for source in _legacy_profile_sources(repository_root):
         legacy_sources.setdefault(source.name, []).append(source)
     records = {record["destination"]: record for record in journal["links"]}
+    state_home = Path(journal["managed_root"]).parents[2]
+    receipt = _read_codex_receipt(
+        _receipt_path(state_home), repository_root,
+        _allowlisted_links(repository_root, Path(journal["codex_home"]), state_home),
+    )
+    _check_frozen_codex_legacy_links(receipt)
+    frozen = {} if receipt is None else {
+        (link.source, link.destination): link for link in receipt.links
+    }
     migrated: list[ProfileLink] = []
     for link in links:
         if not _lexists(link.destination) or _same_owned_link(link.destination, link.source):
@@ -6760,6 +6934,9 @@ def _migrate_legacy_codex_links(
         try:
             record = records[str(link.destination)]
             expected = (record["preexisting_dev"], record["preexisting_ino"])
+            prior = frozen.get((legacy, link.destination))
+            if prior is not None:
+                expected = (prior.destination_dev, prior.destination_ino)
             if not record["preexisting"] or not _same_owned_link(
                 link.destination, legacy
             ):
@@ -7054,7 +7231,7 @@ def _add_codex_plugin(
 
 
 def _validate_codex_migration_journal(
-    payload: Mapping[str, object],
+    payload: dict[str, object],
     repository_root: Path,
     recovery_root: Path,
     journal_path: Path,
@@ -7063,10 +7240,84 @@ def _validate_codex_migration_journal(
         raise InstallError(f"migration journal repository mismatch: {journal_path}")
     if payload.get("recovery_root") != str(recovery_root):
         raise InstallError(f"migration journal recovery root mismatch: {journal_path}")
-    if not _codex_managed_root_is_owned(recovery_root, repository_root):
+    identity_keys = {"recovery_dev", "recovery_ino", "cleanup_pending"}
+    if not identity_keys.intersection(payload):
+        # Upgrade old marker-only journals once, before removing registrations.
+        if recovery_root.is_symlink() or not _codex_managed_root_is_owned(recovery_root, repository_root):
+            raise InstallError(f"migration recovery marketplace is not owned: {recovery_root}")
+        metadata = recovery_root.stat()
+        payload.update(recovery_dev=metadata.st_dev, recovery_ino=metadata.st_ino, cleanup_pending=False)
+        _write_codex_migration_journal(journal_path, payload)
+    if (
+        any(type(payload.get(key)) is not int or payload[key] <= 0 for key in ("recovery_dev", "recovery_ino"))
+        or type(payload.get("cleanup_pending")) is not bool
+    ):
+        raise InstallError(f"migration recovery identity is malformed: {journal_path}")
+    if payload["cleanup_pending"]:
+        return  # The exact cleanup protocol also recognizes exchanged/absent roots.
+    metadata = os.lstat(recovery_root)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != (payload["recovery_dev"], payload["recovery_ino"])
+        or not _codex_managed_root_is_owned(recovery_root, repository_root)
+    ):
         raise InstallError(
-            f"migration recovery marketplace is not owned: {recovery_root}"
+            f"migration recovery marketplace lost its exact ownership: {recovery_root}"
         )
+
+
+def _cleanup_codex_recovery_package(
+    repository_root: Path, recovery_root: Path, journal_path: Path,
+    payload: dict[str, object],
+) -> None:
+    """Keep the directory identity durable until exact retirement is complete."""
+
+    _validate_codex_migration_journal(payload, repository_root, recovery_root, journal_path)
+    if not payload["cleanup_pending"]:
+        payload["cleanup_pending"] = True
+        _write_codex_migration_journal(journal_path, payload)
+    expected = (payload["recovery_dev"], payload["recovery_ino"])
+    parent_fd = os.open(recovery_root.parent, _directory_open_flags())
+    try:
+        retiring = _retirement_record_exists(parent_fd, recovery_root.name, expected, directory=True)
+        if not retiring and _lexists(recovery_root):
+            fd = os.open(recovery_root.name, _directory_open_flags(), dir_fd=parent_fd)
+            try:
+                metadata = os.fstat(fd)
+                if (metadata.st_dev, metadata.st_ino) != expected:
+                    raise InstallError(f"recovery package lost its exact ownership: {recovery_root}")
+                children = os.listdir(fd)
+                if children and not _codex_managed_root_is_owned(recovery_root, repository_root):
+                    raise InstallError(f"recovery package marker changed: {recovery_root}")
+                # Bind all content removal to the opened exact directory. A
+                # public replacement cannot redirect recursive deletion.
+                for name in children:
+                    if name == CODEX_MANAGED_MARKER:
+                        continue
+                    child = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if stat.S_ISDIR(child.st_mode):
+                        shutil.rmtree(name, dir_fd=fd)
+                    else:
+                        os.unlink(name, dir_fd=fd)
+                os.fsync(fd)
+                if CODEX_MANAGED_MARKER in children:
+                    os.unlink(CODEX_MANAGED_MARKER, dir_fd=fd)
+                    os.fsync(fd)
+            finally:
+                os.close(fd)
+        removed = _remove_exact_via_exchange(
+            parent_fd, recovery_root.name, expected,
+            f"Codex recovery package {recovery_root}", directory=True,
+            preserve_replacements=True,
+        )
+        if not removed and _lexists(recovery_root):
+            raise InstallError(f"recovery package lost its exact ownership: {recovery_root}")
+        os.fsync(parent_fd)
+    except OSError as error:
+        raise InstallError(f"cannot remove Codex recovery package: {recovery_root}: {error}") from error
+    finally:
+        os.close(parent_fd)
+    _clear_codex_migration_journal(journal_path)
 
 
 def _resume_codex_migration_recovery(
@@ -7099,10 +7350,20 @@ def _resume_codex_migration_recovery(
         plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
         committed_plugin = _plugin_state(plugin_payload, managed_root)
         if committed_marketplace == "owned" and committed_plugin == "owned":
-            _clear_codex_migration_journal(journal_path)
-            if _codex_managed_root_is_owned(recovery_root, repository_root):
-                shutil.rmtree(recovery_root, ignore_errors=True)
+            _cleanup_codex_recovery_package(repository_root, recovery_root, journal_path, payload)
             return True
+    if payload["cleanup_pending"]:
+        # Cleanup already began only after dependency checks. Do not restore a
+        # partially deleted package when switching back from teardown to install.
+        if not payload["committed"]:
+            plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
+        if (
+            _marketplace_state(marketplace_payload, recovery_root) == "owned"
+            or _plugin_state(plugin_payload, recovery_root) == "owned"
+        ):
+            raise InstallError("recovery package still has a registration dependency")
+        _cleanup_codex_recovery_package(repository_root, recovery_root, journal_path, payload)
+        return False
     marketplace_state = _marketplace_state(
         marketplace_payload,
         recovery_root,
@@ -7310,6 +7571,7 @@ def install(
         codex_home,
         state_home,
     )
+    _preflight_codex_capabilities(codex_home, state_home)
     with _codex_transaction(state_home, create=True):
         return _install_codex_bound(
             canonical_root,
@@ -7330,6 +7592,14 @@ def _install_codex_bound(
     agents_only: bool,
 ) -> InstallResult:
     managed_root = _codex_managed_root(canonical_root, state_home)
+    # A receipt checkpoint predates, and outranks, any new install observation.
+    # Check it before journal recovery can retire a legacy public pathname.
+    frozen_receipt = _read_codex_receipt(
+        _receipt_path(state_home), canonical_root,
+        _allowlisted_links(canonical_root, codex_home, state_home),
+        frozen_only=True,
+    )
+    _check_frozen_codex_legacy_links(frozen_receipt)
     install_journal_path = _codex_install_journal_path(state_home)
     new_transaction = not _lexists(install_journal_path)
     prior_migration = _lexists(_codex_migration_journal_path(state_home))
@@ -7478,6 +7748,7 @@ def _install_codex_bound(
                     install_journal_path=install_journal_path,
                     install_journal=install_journal,
                 )
+                recovery_metadata = recovery_root.lstat()
                 migration_state = {
                     "schema_version": CODEX_MIGRATION_SCHEMA,
                     "repository_root": str(canonical_root),
@@ -7487,6 +7758,9 @@ def _install_codex_bound(
                     "marketplace_removed": False,
                     "plugin_removed": False,
                     "committed": False,
+                    "recovery_dev": recovery_metadata.st_dev,
+                    "recovery_ino": recovery_metadata.st_ino,
+                    "cleanup_pending": False,
                 }
                 _write_codex_migration_journal(
                     migration_journal_path,
@@ -7641,9 +7915,9 @@ def _install_codex_bound(
         receipt_committed = True
         _retire_codex_superseded_links(install_journal_path, install_journal)
         if migration_state is not None:
-            _clear_codex_migration_journal(migration_journal_path)
-            if _codex_managed_root_is_owned(recovery_root, canonical_root):
-                shutil.rmtree(recovery_root, ignore_errors=True)
+            _cleanup_codex_recovery_package(
+                canonical_root, recovery_root, migration_journal_path, migration_state,
+            )
         _clear_codex_install_journal(install_journal_path)
     except Exception as error:
         if receipt_committed:
@@ -7752,6 +8026,8 @@ def uninstall(
 ) -> InstallResult:
     canonical_root = _canonical_codex_repository_root(repo_root)
     links = _allowlisted_links(canonical_root, codex_home, state_home)
+    if _codex_install_journal_path(state_home).parent.exists():
+        _preflight_codex_capabilities(codex_home, state_home)
     with _codex_transaction(state_home, create=False) as active:
         if not active:
             return InstallResult(links=links)
@@ -7775,6 +8051,10 @@ def _uninstall_codex_bound(
 ) -> InstallResult:
     managed_root = _codex_managed_root(canonical_root, state_home)
     recovery_root = _codex_recovery_root(canonical_root, state_home)
+    migration_path = _codex_migration_journal_path(state_home)
+    migration = _read_codex_migration_journal(migration_path)
+    if migration is not None:
+        _validate_codex_migration_journal(migration, canonical_root, recovery_root, migration_path)
     journal = _read_codex_install_journal(_codex_install_journal_path(state_home))
     if journal is not None:
         pending_agents_only = journal.get("agents_only")
@@ -7791,12 +8071,6 @@ def _uninstall_codex_bound(
             journal_path, canonical_root, codex_home, managed_root,
             links[:len(PROFILE_NAMES)], pending_agents_only,
         )
-        migration_path = _codex_migration_journal_path(state_home)
-        migration = _read_codex_migration_journal(migration_path)
-        if migration is not None:
-            _validate_codex_migration_journal(
-                migration, canonical_root, recovery_root, migration_path
-            )
         _recover_codex_legacy_retirements(journal)
         failures = _rollback_codex_transaction_links(
             journal_path, journal, uninstalling=True
@@ -7822,7 +8096,6 @@ def _uninstall_codex_bound(
             plugin_installed=receipt.plugin_installed
             or journal["plugin_pre_state"] in {"absent", "legacy"},
         )
-        _clear_codex_migration_journal(migration_path)
         _clear_codex_install_journal(journal_path)
     receipt_path_value = _receipt_path(state_home)
     receipt = _read_codex_receipt(receipt_path_value, canonical_root, links)
@@ -7836,7 +8109,7 @@ def _uninstall_codex_bound(
         canonical_root,
     )
     inspect_plugin_dependency = (
-        managed_package_owned
+        (managed_package_owned or migration is not None)
         and receipt.marketplace_added
         and not receipt.plugin_installed
     )
@@ -7858,7 +8131,8 @@ def _uninstall_codex_bound(
             (canonical_root, recovery_root),
         )
     unowned_plugin_reference = (
-        not receipt.plugin_installed and plugin_state == "owned"
+        not receipt.plugin_installed
+        and (plugin_state == "owned" or (migration is not None and plugin_state == "legacy"))
     )
     unowned_marketplace_reference = (
         not receipt.marketplace_added and marketplace_state == "owned"
@@ -7918,7 +8192,7 @@ def _uninstall_codex_bound(
             marketplace_added=current.marketplace_added,
             plugin_installed=current.plugin_installed,
         )
-    if not agents_only and managed_package_owned:
+    if not agents_only and (managed_package_owned or migration is not None):
         if plugin_state is None:
             plugin_payload = _run_json(run, ["codex", "plugin", "list", "--json"])
             plugin_state = _plugin_state(
@@ -7941,6 +8215,12 @@ def _uninstall_codex_bound(
     preserve_managed_package = (
         unowned_plugin_reference or unowned_marketplace_reference
     )
+    if migration is not None:
+        # The migration journal continues to own recovery cleanup after CLI
+        # intent has moved to the receipt. Retain both across dependency blocks.
+        if agents_only or plugin_state in {"owned", "legacy"} or marketplace_state in {"owned", "legacy"}:
+            return InstallResult(links=links, removed_links=removed_links)
+        _cleanup_codex_recovery_package(canonical_root, recovery_root, migration_path, migration)
     if not agents_only and not preserve_managed_package:
         if managed_package_owned:
             _remove_owned_codex_marketplace(managed_root, canonical_root)

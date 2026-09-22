@@ -4,10 +4,12 @@ import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from contextlib import redirect_stdout
@@ -278,7 +280,16 @@ def load_receipt(state_home: Path) -> dict[str, object]:
 
 
 def wait_for_crashed_child(pid: int, expected_status: int = 73) -> None:
-    waited, status = os.waitpid(pid, 0)
+    deadline = time.monotonic() + 30
+    while True:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited:
+            break
+        if time.monotonic() >= deadline:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            raise AssertionError(f"child {pid} exceeded the 30-second interruption bound")
+        time.sleep(0.02)
     if waited != pid or not os.WIFEXITED(status):
         raise AssertionError(f"child {pid} did not exit normally: {status}")
     if os.WEXITSTATUS(status) != expected_status:
@@ -4652,6 +4663,277 @@ def test_recovery_authority_failed_retry_after_receipt_publication(tmp_path: Pat
     assert not receipt_path(state_home).exists()
     assert not (state_home / "expskill/codex-install.json").exists()
     assert not managed_repository(repo).exists()
+
+
+def _checkout_cli_migration_results(repo: Path) -> list[FakeResult]:
+    return [
+        marketplace_list_response(repo, repo), plugin_list_response(repo, repo),
+        removal_response(), removal_response(), marketplace_add_response(repo),
+        plugin_add_response(repo),
+    ]
+
+
+class RecoveryCliRunner:
+    """Persist fake CLI state across real child-process interruption boundaries."""
+
+    def __init__(self, repo: Path, state: Path) -> None:
+        self.repo, self.state = repo, state
+        if not state.exists():
+            state.write_text(json.dumps({"marketplace": str(repo), "plugin": str(repo)}))
+
+    def __call__(self, command: list[str]) -> FakeResult:
+        current = json.loads(self.state.read_text())
+        kind = "marketplace" if command[2] == "marketplace" else "plugin"
+        operation = command[3] if kind == "marketplace" else command[2]
+        source = current[kind]
+        if operation == "list":
+            response = marketplace_list_response if kind == "marketplace" else plugin_list_response
+            return response(self.repo if source else None, Path(source) if source else None)
+        if operation == "remove":
+            current[kind] = None
+            result = removal_response()
+        else:
+            assert operation == "add"
+            current[kind] = command[4] if kind == "marketplace" else current["marketplace"]
+            result = legacy_marketplace_add_response(self.repo, Path(current[kind])) if kind == "marketplace" else plugin_add_response(self.repo)
+        self.state.write_text(json.dumps(current))
+        return result
+
+
+@pytest.mark.parametrize("operation", ["install", "uninstall"])
+@pytest.mark.parametrize("fault", ["error", "content", "marker", "exchange", "removed"])
+def test_recovery_package_cleanup_retains_exact_authority(tmp_path: Path, operation: str, fault: str) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    recovery = recovery_repository(repo)
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    if operation == "uninstall":
+        pid = os.fork()
+        if pid == 0:
+            with mock.patch.object(module, "_write_codex_receipt", side_effect=lambda *a, **k: os._exit(73)):
+                install(repo, home, state, runner)
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    remove_tree, unlink, exchange, clear = shutil.rmtree, os.unlink, module._renameat_exchange, module._clear_codex_migration_journal
+    def removing(path, *args, **kwargs):
+        fd = kwargs.get("dir_fd")
+        cleanup = fd is not None and recovery.exists() and os.fstat(fd).st_ino == recovery.lstat().st_ino
+        if cleanup and fault == "error":
+            raise OSError("recovery content cleanup blocked")
+        remove_tree(path, *args, **kwargs)
+        if cleanup and fault == "content":
+            os._exit(73)
+    def unlinking(path, *args, **kwargs):
+        unlink(path, *args, **kwargs)
+        if fault == "marker" and path == module.CODEX_MANAGED_MARKER:
+            os._exit(73)
+    def exchanging(source_fd, source, target_fd, target):
+        exchange(source_fd, source, target_fd, target)
+        if fault == "exchange" and source == recovery.name:
+            os._exit(73)
+    def clearing(path):
+        if fault == "removed":
+            assert not recovery.exists()
+            os._exit(73)
+        clear(path)
+    def attempt():
+        with mock.patch.object(module.shutil, "rmtree", removing), mock.patch.object(module.os, "unlink", unlinking), mock.patch.object(module, "_renameat_exchange", exchanging), mock.patch.object(module, "_clear_codex_migration_journal", clearing):
+            (install if operation == "install" else uninstall)(repo, home, state, runner)
+    if fault == "error":
+        with pytest.raises(InstallError, match="recovery content cleanup blocked"):
+            attempt()
+    else:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    journal_path = module._codex_migration_journal_path(state)
+    journal = json.loads(journal_path.read_text())
+    assert journal["cleanup_pending"] is True
+    assert journal["recovery_ino"] > 0
+    assert receipt_path(state).exists()
+    if operation == "install":
+        install(repo, home, state, runner)
+    for _ in range(2):
+        uninstall(repo, home, state, runner)
+    assert not recovery.exists()
+    assert list(recovery.parent.iterdir()) == []
+    assert not journal_path.exists()
+    assert not module._codex_install_journal_path(state).exists()
+    assert not receipt_path(state).exists()
+
+
+@pytest.mark.parametrize("replacement", ["empty", "copied-marker", "symlink"])
+def test_recovery_package_cleanup_preserves_replaced_directory(tmp_path, replacement):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    recovery = recovery_repository(repo)
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    pid = os.fork()
+    if pid == 0:
+        with mock.patch.object(module, "_write_codex_receipt", side_effect=lambda *a, **k: os._exit(73)):
+            install(repo, home, state, runner)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    saved = tmp_path / "original-recovery"
+    recovery.rename(saved)
+    if replacement == "symlink":
+        recovery.symlink_to(saved, target_is_directory=True)
+    else:
+        recovery.mkdir()
+        if replacement == "copied-marker":
+            shutil.copy2(saved / module.CODEX_MANAGED_MARKER, recovery / module.CODEX_MANAGED_MARKER)
+            (recovery / "user-data").write_text("keep")
+    inode = recovery.lstat().st_ino
+    for retry in (uninstall, install, uninstall):
+        with pytest.raises(InstallError, match="exact ownership"):
+            retry(repo, home, state, runner)
+        assert recovery.lstat().st_ino == inode
+        assert module._codex_migration_journal_path(state).exists()
+        assert module._codex_install_journal_path(state).exists()
+    if recovery.is_symlink():
+        recovery.unlink()
+    else:
+        shutil.rmtree(recovery)
+    saved.rename(recovery)
+    uninstall(repo, home, state, runner)
+    assert not recovery.exists()
+
+
+def test_recovery_package_replacement_after_marker_removal(tmp_path):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    recovery, saved = recovery_repository(repo), tmp_path / "saved-recovery"
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    remove = module._remove_exact_via_exchange
+    def replace_before_exchange(parent_fd, name, *args, **kwargs):
+        if name == recovery.name and not saved.exists():
+            assert list(recovery.iterdir()) == []
+            recovery.rename(saved)
+            recovery.mkdir()
+            (recovery / "user-data").write_text("keep")
+        return remove(parent_fd, name, *args, **kwargs)
+    with mock.patch.object(module, "_remove_exact_via_exchange", replace_before_exchange), pytest.raises(InstallError, match="exact ownership"):
+        install(repo, home, state, runner)
+    inode = recovery.lstat().st_ino
+    for _ in range(2):
+        with pytest.raises(InstallError, match="exact ownership"):
+            uninstall(repo, home, state, runner)
+        assert recovery.lstat().st_ino == inode
+        assert (recovery / "user-data").read_text() == "keep"
+        assert module._codex_migration_journal_path(state).exists()
+        assert receipt_path(state).exists()
+    shutil.rmtree(recovery)
+    saved.rename(recovery)
+    uninstall(repo, home, state, runner)
+    assert not recovery.exists()
+    assert not receipt_path(state).exists()
+
+
+def test_interrupted_cli_migration_uninstall_removes_recovery_package(tmp_path: Path) -> None:
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    pid = os.fork()
+    if pid == 0:
+        with mock.patch("scripts.install._write_codex_receipt", side_effect=lambda *a, **k: os._exit(73)):
+            install(repo, home, state, FakeRunner(_checkout_cli_migration_results(repo)))
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    assert recovery_repository(repo).is_dir()
+    for _ in range(2):
+        uninstall(repo, home, state, FakeRunner([
+            plugin_list_response(repo), marketplace_list_response(repo),
+            removal_response(), removal_response(),
+        ]))
+    assert not recovery_repository(repo).exists(), "recovery cleanup authority was abandoned"
+    assert not receipt_path(state).exists()
+    assert not (state / "expskill/codex-migration.json").exists()
+    assert not (state / "expskill/codex-install.json").exists()
+
+
+def test_recovery_cleanup_waits_for_unowned_registration_dependency(tmp_path):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    with mock.patch.object(module, "_write_codex_receipt", side_effect=SystemExit), pytest.raises(SystemExit):
+        install(repo, home, state, runner)
+    write = module._write_codex_receipt
+    def checkpoint(path, receipt, **kwargs):
+        write(path, receipt, **kwargs)
+        if receipt.marketplace_added and not receipt.plugin_installed:
+            raise SystemExit
+    with mock.patch.object(module, "_write_codex_receipt", checkpoint), pytest.raises(SystemExit):
+        uninstall(repo, home, state, runner)
+    recovery = recovery_repository(repo)
+    dependency = {"marketplace": str(recovery), "plugin": str(recovery)}
+    runner.state.write_text(json.dumps(dependency))
+    for _ in range(2):
+        uninstall(repo, home, state, runner)
+        assert json.loads(runner.state.read_text()) == dependency
+        assert (recovery / ".agents/plugins/marketplace.json").is_file()
+        assert module._codex_migration_journal_path(state).exists()
+        assert receipt_path(state).exists()
+    runner.state.write_text(json.dumps({"marketplace": None, "plugin": None}))
+    uninstall(repo, home, state, runner)
+    assert not recovery.exists()
+    assert not receipt_path(state).exists()
+    assert not module._codex_migration_journal_path(state).exists()
+
+
+@pytest.mark.parametrize("boundary", ["frozen", "anchor", "committed"])
+@pytest.mark.parametrize("agents_only", [True, False])
+@pytest.mark.parametrize("existing_journal", [False, True])
+def test_frozen_checkout_receipt_survives_operation_switch(
+    tmp_path: Path, boundary: str, agents_only: bool, existing_journal: bool,
+) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    destination = _seed_receipted_checkout_profile(repo, home, state)
+    pid = os.fork()
+    if pid == 0:
+        write, link = module._write_codex_receipt, os.link
+        def checkpoint(path, receipt, **kwargs):
+            write(path, receipt, **kwargs)
+            if boundary == ("frozen" if kwargs.get("pending_link_migration") else "committed"):
+                os._exit(73)
+        def anchor(*args, **kwargs):
+            link(*args, **kwargs)
+            if boundary == "anchor":
+                os._exit(73)
+        with mock.patch.object(module, "_write_codex_receipt", checkpoint), mock.patch.object(module.os, "link", anchor):
+            uninstall(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    frozen = load_receipt(state)["links"]
+    target = os.readlink(destination)
+    destination.rename(tmp_path / "original-link")
+    destination.symlink_to(target)
+    replacement_ino = destination.lstat().st_ino
+    assert replacement_ino != frozen[0]["destination_ino"]
+    if existing_journal:
+        journal = module._new_codex_install_journal(
+            repo, home, managed_repository(repo), module._planned_codex_links(repo, home, state), agents_only,
+        )
+        module._write_codex_install_journal(module._codex_install_journal_path(state), journal)
+    for _ in range(2):
+        with pytest.raises(InstallError, match="identity|unproven"):
+            install(repo, home, state, FakeRunner([] if agents_only else install_results(repo)), agents_only=agents_only)
+        assert destination.lstat().st_ino == replacement_ino
+        assert os.readlink(destination) == target
+        assert load_receipt(state)["links"] == frozen
+    with pytest.raises(InstallError, match="unproven.*depends|ownership changed"):
+        uninstall(repo, home, state, FakeRunner([]), agents_only=agents_only)
+    assert destination.lstat().st_ino == replacement_ino
+    assert load_receipt(state)["links"] == frozen
+    destination.unlink()
+    uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
 
 
 if __name__ == "__main__":
