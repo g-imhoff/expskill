@@ -3015,7 +3015,7 @@ def _validate_codex_install_journal(
         )
         if (
             not isinstance(record, dict)
-            or set(record) - {"legacy_restore"} != link_keys
+            or set(record) - {"legacy_restore", "legacy_source"} != link_keys
             or pair not in expected
             or pair in seen
             or not isinstance(record.get("preexisting"), bool)
@@ -3051,6 +3051,8 @@ def _validate_codex_install_journal(
             raise InstallError(
                 f"install journal link pre-state is malformed: {journal_path}"
             )
+        if "legacy_source" in record and not preexisting:
+            raise InstallError(f"install journal legacy source lacks pre-state: {journal_path}")
         if "legacy_restore" in record:
             restoration = record["legacy_restore"]
             if (
@@ -3107,6 +3109,7 @@ def _validate_codex_install_journal(
             )
     if seen != set(expected):
         raise InstallError(f"install journal links are malformed: {journal_path}")
+    _journaled_legacy_codex_links(payload)
     _codex_superseded_links(journal_path, payload)
     for swap_key in ("swap", "recovery_swap"):
         swap = payload.get(swap_key)
@@ -3396,20 +3399,26 @@ def _codex_staged_link_is_exact(
     link: ProfileLink,
     staged: Path,
     identity: tuple[int, int] | None = None,
+    *,
+    original_target: str | None = None,
 ) -> bool:
-    """Check the target and, once recorded, the exact stage inode."""
+    """Check the target (original spelling for restoration) and recorded inode."""
 
     try:
         metadata = os.lstat(staged)
-        target = Path(os.readlink(staged))
+        raw_target = os.readlink(staged)
     except OSError:
         return False
+    target = Path(raw_target)
     if not target.is_absolute():
         target = staged.parent / target
     return (
         stat.S_ISLNK(metadata.st_mode)
         and (identity is None or (metadata.st_dev, metadata.st_ino) == identity)
-        and _lexical_absolute(target) == _lexical_absolute(link.source)
+        and (
+            raw_target == original_target if original_target is not None
+            else _lexical_absolute(target) == _lexical_absolute(link.source)
+        )
     )
 
 
@@ -6693,7 +6702,8 @@ def _rollback_codex_links(links: Sequence[ProfileLink]) -> list[str]:
 
 
 def _retire_codex_transaction_stage(
-    link: ProfileLink, *, preserve_replacement: bool = False
+    link: ProfileLink, *, preserve_replacement: bool = False,
+    original_target: str | None = None,
 ) -> None:
     staged = link.staged_destination
     if staged is None or not staged.parent.exists():
@@ -6706,7 +6716,9 @@ def _retire_codex_transaction_stage(
         )
         if not pending and not _lexists(staged):
             return
-        if not pending and not _codex_staged_link_is_exact(link, staged, expected):
+        if not pending and not _codex_staged_link_is_exact(
+            link, staged, expected, original_target=original_target,
+        ):
             if preserve_replacement:
                 return
             raise InstallError(f"Codex staged link changed identity: {staged}")
@@ -6762,7 +6774,8 @@ def _rollback_codex_transaction_links(
                 if restoration["dev"] is None and _lexists(legacy_stage):
                     metadata = os.lstat(legacy_stage)
                     if not _codex_staged_link_is_exact(
-                        legacy, legacy_stage, (metadata.st_dev, metadata.st_ino)
+                        legacy, legacy_stage, (metadata.st_dev, metadata.st_ino),
+                        original_target=record["preexisting_target"],
                     ):
                         raise InstallError(f"legacy restoration stage changed: {legacy_stage}")
                     restoration.update(dev=metadata.st_dev, ino=metadata.st_ino)
@@ -6773,10 +6786,13 @@ def _rollback_codex_transaction_links(
                         destination_ino=restoration["ino"],
                         staged_destination=legacy_stage,
                     )
-                    _retire_codex_transaction_stage(restored)
+                    _retire_codex_transaction_stage(
+                        restored, original_target=record["preexisting_target"],
+                    )
                     _retire_codex_transaction_stage(
                         replace(restored, staged_destination=legacy.destination),
                         preserve_replacement=True,
+                        original_target=record["preexisting_target"],
                     )
                 record.pop("legacy_restore")
                 _write_codex_install_journal(journal_path, journal)
@@ -6933,6 +6949,9 @@ def _migrate_legacy_codex_links(
     for source in _legacy_profile_sources(repository_root):
         legacy_sources.setdefault(source.name, []).append(source)
     records = {record["destination"]: record for record in journal["links"]}
+    journaled = {
+        link.destination: link.source for link in _journaled_legacy_codex_links(journal)
+    }
     state_home = Path(journal["managed_root"]).parents[2]
     receipt = _read_codex_receipt(
         _receipt_path(state_home), repository_root,
@@ -6962,17 +6981,25 @@ def _migrate_legacy_codex_links(
             prior = frozen.get((legacy, link.destination))
             if prior is not None:
                 expected = (prior.destination_dev, prior.destination_ino)
-            if not record["preexisting"] or not _same_owned_link(
-                link.destination, legacy
+            if (
+                not record["preexisting"]
+                or journaled.get(link.destination) != legacy
+                or not _same_owned_link(link.destination, legacy)
             ):
                 raise InstallError(
                     f"legacy agent link changed identity: {link.destination}"
                 )
-            if expected != (record["preexisting_dev"], record["preexisting_ino"]):
+            if (
+                expected != (record["preexisting_dev"], record["preexisting_ino"])
+                or record.get("legacy_source") != str(legacy)
+            ):
                 # Path-only receipt migration can authorize a replacement made
                 # after journal creation. Freeze that receipt-selected identity
                 # before exchange so recovery and rollback use the same inode.
                 record["preexisting_dev"], record["preexisting_ino"] = expected
+                # Keep canonical authority separate from the original absolute
+                # or relative alias spelling needed for exact restoration.
+                record["legacy_source"] = str(legacy)
                 _write_codex_install_journal(
                     _codex_install_journal_path(state_home), journal
                 )
@@ -7035,6 +7062,12 @@ def _restore_legacy_codex_links(
     """Publish a journaled restoration inode without adopting a replacement."""
 
     _verify_codex_transaction()
+    try:
+        # CLI work may have redirected an alias since migration. Recheck its
+        # allowlisted authority before publishing the original target spelling.
+        authorized = set(_journaled_legacy_codex_links(journal))
+    except InstallError as error:
+        return [str(error)]
     failures: list[str] = []
     repository_root = Path(journal["repository_root"])
     receipt_path = _receipt_path(journal_path.parent.parent)
@@ -7053,6 +7086,8 @@ def _restore_legacy_codex_links(
     records = {record["destination"]: record for record in journal["links"]}
     for link in links:
         try:
+            if link not in authorized:
+                raise InstallError("Codex legacy restoration lacks journaled legacy authority")
             record = records[str(link.destination)]
             successor = receipted.get(link.destination)
             if (
@@ -7072,6 +7107,7 @@ def _restore_legacy_codex_links(
                     if _codex_staged_link_is_exact(
                         link, link.destination,
                         (record["preexisting_dev"], record["preexisting_ino"]),
+                        original_target=record["preexisting_target"],
                     ):
                         continue
                     raise InstallError(f"legacy link destination changed: {link.destination}")
@@ -7092,7 +7128,9 @@ def _restore_legacy_codex_links(
                         os.link(original.link_anchor, staged, follow_symlinks=False)
                     else:
                         staged.symlink_to(record["preexisting_target"])
-                if not _codex_staged_link_is_exact(link, staged):
+                if not _codex_staged_link_is_exact(
+                    link, staged, original_target=record["preexisting_target"],
+                ):
                     raise InstallError(f"legacy restoration stage changed: {staged}")
                 metadata = os.lstat(staged)
                 _fsync_directory(staged.parent)
@@ -7102,7 +7140,9 @@ def _restore_legacy_codex_links(
                 _write_codex_install_journal(journal_path, journal)
             expected = (restoration["dev"], restoration["ino"])
             if _lexists(staged):
-                if not _codex_staged_link_is_exact(link, staged, expected):
+                if not _codex_staged_link_is_exact(
+                    link, staged, expected, original_target=record["preexisting_target"],
+                ):
                     raise InstallError(f"legacy restoration stage changed identity: {staged}")
                 parent_fd = os.open(staged.parent, _directory_open_flags())
                 try:
@@ -7111,7 +7151,10 @@ def _restore_legacy_codex_links(
                     )
                 finally:
                     os.close(parent_fd)
-            if not _codex_staged_link_is_exact(link, link.destination, expected):
+            if not _codex_staged_link_is_exact(
+                link, link.destination, expected,
+                original_target=record["preexisting_target"],
+            ):
                 raise InstallError(f"legacy link destination changed: {link.destination}")
             _fsync_directory(link.destination.parent)
             record["preexisting_dev"], record["preexisting_ino"] = expected
@@ -7150,8 +7193,29 @@ def _journaled_legacy_codex_links(
         if not target.is_absolute():
             target = destination.parent / target
         source = _lexical_absolute(target)
-        if source in allowed:
-            restored.append(ProfileLink(source=source, destination=destination))
+        if source not in allowed:
+            try:
+                source = target.resolve(strict=False)
+            except (OSError, RuntimeError, ValueError) as error:
+                raise InstallError("Codex install journal legacy source cannot be resolved") from error
+        if "legacy_source" in record:
+            canonical = record["legacy_source"]
+            if (
+                not isinstance(canonical, str)
+                or source not in allowed
+                or canonical != str(source)
+            ):
+                raise InstallError("Codex install journal legacy source lacks allowlisted authority")
+        if source not in allowed:
+            # An old journal may lack canonical evidence. Only a still-proven
+            # legacy alias (or the managed pre-state) is safe to resume; never
+            # turn a resolved arbitrary path into cleanup authority.
+            if "legacy_restore" in record or source != Path(record["source"]):
+                raise InstallError("Codex install journal legacy source lacks allowlisted authority")
+            continue
+        if source.name != destination.name:
+            raise InstallError("Codex install journal legacy source does not match its destination")
+        restored.append(ProfileLink(source=source, destination=destination))
     return tuple(restored)
 
 

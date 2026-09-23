@@ -5388,5 +5388,271 @@ def test_codex_home_alias_journal_rejects_foreign_paths(tmp_path: Path, retry, l
     assert not list(other.rglob("*.toml"))
 
 
+def _seed_legacy_repository_alias(tmp_path: Path, relative: bool):
+    repo = seed_repository(tmp_path / "repo")
+    home, state, alias = tmp_path / "codex", tmp_path / "state", tmp_path / "repo-alias"
+    alias.symlink_to(repo, target_is_directory=True)
+    destination = destination_paths(home)["expskill-review"]
+    source = repo / "plugins/expskill/assets/agents" / destination.name
+    source.parent.mkdir(parents=True)
+    source.write_text('name = "readable legacy review"\n')
+    destination.parent.mkdir(parents=True)
+    target = str(alias / source.relative_to(repo))
+    if relative:
+        target = os.path.relpath(target, destination.parent)
+    destination.symlink_to(target)
+    # Keep the original inode allocated across removal and restoration.
+    os.link(destination, tmp_path / "original-legacy", follow_symlinks=False)
+    return repo, home, state, alias, source, destination, target
+
+
+def _legacy_alias_failure_results(repo: Path, compensation_fails: bool = False):
+    return [
+        marketplace_list_response(), marketplace_add_response(repo),
+        plugin_list_response(), FakeResult(1, stderr="plugin add failed"),
+        FakeResult(1, stderr="marketplace compensation failed")
+        if compensation_fails else removal_response(),
+    ]
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+@pytest.mark.parametrize("compensation_fails", [False, True])
+def test_legacy_repository_alias_failure_restores_original_spelling(
+    tmp_path: Path, relative: bool, compensation_fails: bool,
+) -> None:
+    repo, home, state, alias, source, destination, target = _seed_legacy_repository_alias(tmp_path, relative)
+    runner = FakeRunner(_legacy_alias_failure_results(repo, compensation_fails))
+    with pytest.raises(InstallError, match="plugin add failed") as failure:
+        install(repo, home, state, runner)
+    assert runner.results == []
+    assert "legacy link rollback" not in str(failure.value)
+    assert os.readlink(destination) == target
+    assert destination.read_bytes() == source.read_bytes()
+    journal = state / "expskill/codex-install.json"
+    assert journal.exists() is compensation_fails
+    install(repo, home, state, FakeRunner(install_results(repo, marketplace_present=compensation_fails)))
+    assert destination.is_file()
+    uninstall(repo, home, state, FakeRunner([
+        plugin_list_response(repo), marketplace_list_response(repo),
+        removal_response(), removal_response(),
+    ]))
+    assert not journal.exists()
+    assert not receipt_path(state).exists()
+    assert list(destination.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("old_journal", [False, True], ids=["canonical-evidence", "old-journal"])
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+@pytest.mark.parametrize("boundary", ["intent", "symlink", "identified", "published"])
+def test_legacy_repository_alias_interrupted_restoration(
+    tmp_path: Path, retry, old_journal: bool, relative: bool, boundary: str,
+) -> None:
+    from scripts import install as module
+
+    repo, home, state, alias, source, destination, target = _seed_legacy_repository_alias(tmp_path, relative)
+    write, symlink, rename = module._write_codex_install_journal, Path.symlink_to, module._renameat_noreplace
+
+    def checkpoint(path, payload):
+        write(path, payload)
+        record = next(item for item in payload["links"] if item["destination"] == str(destination))
+        restoration = record.get("legacy_restore")
+        if restoration is not None and (
+            boundary == "intent" or boundary == "identified" and restoration["dev"] is not None
+        ):
+            raise SystemExit(73)
+
+    def staged(path, value, *args, **kwargs):
+        symlink(path, value, *args, **kwargs)
+        if str(value) == target and boundary == "symlink":
+            raise SystemExit(73)
+
+    def published(source_fd, source_name, target_fd, target_name):
+        restoring = target_name == destination.name and os.readlink(source_name, dir_fd=source_fd) == target
+        rename(source_fd, source_name, target_fd, target_name)
+        if restoring and boundary == "published":
+            raise SystemExit(73)
+
+    with mock.patch.object(module, "_write_codex_install_journal", checkpoint), mock.patch.object(Path, "symlink_to", staged), mock.patch.object(module, "_renameat_noreplace", published), pytest.raises(SystemExit):
+        install(repo, home, state, FakeRunner(_legacy_alias_failure_results(repo)))
+    journal = state / "expskill/codex-install.json"
+    payload = json.loads(journal.read_text())
+    record = next(item for item in payload["links"] if item["destination"] == str(destination))
+    assert record["preexisting_target"] == target
+    if old_journal:
+        record.pop("legacy_source", None)
+        journal.write_text(json.dumps(payload))
+    else:
+        assert record["legacy_source"] == str(source)
+    results = install_results(repo) if retry is install else [
+        plugin_list_response(), marketplace_list_response(),
+        removal_response(),
+    ]
+    runner = FakeRunner(results)
+    retry(repo, home, state, runner)
+    assert runner.results == []
+    assert not journal.exists()
+    if retry is install:
+        assert destination.is_file()
+        uninstall(repo, home, state, FakeRunner([
+            plugin_list_response(repo), marketplace_list_response(repo),
+            removal_response(), removal_response(),
+        ]))
+    assert not receipt_path(state).exists()
+    assert list(destination.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("old_journal", [False, True], ids=["canonical-evidence", "old-journal"])
+@pytest.mark.parametrize("replacement", ["regular", "same-target", "stage"])
+def test_legacy_repository_alias_redirect_rejects_without_adopting_replacement(
+    tmp_path: Path, retry, old_journal: bool, replacement: str,
+) -> None:
+    from scripts import install as module
+
+    repo, home, state, alias, source, destination, target = _seed_legacy_repository_alias(tmp_path, True)
+    symlink = Path.symlink_to
+
+    def interrupt(path, value, *args, **kwargs):
+        symlink(path, value, *args, **kwargs)
+        if str(value) == target:
+            raise SystemExit(73)
+
+    with mock.patch.object(Path, "symlink_to", interrupt), pytest.raises(SystemExit):
+        install(repo, home, state, FakeRunner(_legacy_alias_failure_results(repo)))
+    journal = state / "expskill/codex-install.json"
+    payload = json.loads(journal.read_text())
+    record = next(item for item in payload["links"] if item["destination"] == str(destination))
+    if old_journal:
+        record.pop("legacy_source", None)
+        journal.write_text(json.dumps(payload))
+    other = tmp_path / "other"
+    foreign = other / source.relative_to(repo)
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("user source")
+    alias.unlink()
+    alias.symlink_to(other, target_is_directory=True)
+    if replacement == "stage":
+        candidate, = destination.parent.glob("*.link")
+        candidate.rename(tmp_path / "original-stage")
+        candidate.symlink_to(target)
+    else:
+        candidate = destination
+        if replacement == "regular":
+            candidate.write_text("user replacement")
+        else:
+            candidate.symlink_to(target)
+    before = journal.read_bytes()
+    identities = {path: path.lstat() for path in destination.parent.iterdir()}
+    for _ in range(2):
+        with pytest.raises(InstallError, match="legacy.*authority|legacy.*source"):
+            retry(repo, home, state, FakeRunner([]))
+        assert journal.read_bytes() == before
+        assert {path: path.lstat() for path in destination.parent.iterdir()} == identities
+        assert foreign.read_text() == "user source"
+        assert not receipt_path(state).exists()
+    if replacement == "regular":
+        assert candidate.read_text() == "user replacement"
+    else:
+        assert os.readlink(candidate) == target
+
+
+def test_legacy_repository_alias_redirect_during_failed_install(tmp_path: Path) -> None:
+    repo, home, state, alias, source, destination, target = _seed_legacy_repository_alias(tmp_path, True)
+    other = tmp_path / "other"
+    foreign = other / source.relative_to(repo)
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("user source")
+    runner = FakeRunner(_legacy_alias_failure_results(repo))
+
+    def redirect(command):
+        if command[1:3] == ["plugin", "add"]:
+            alias.unlink()
+            alias.symlink_to(other, target_is_directory=True)
+        return runner(command)
+
+    with pytest.raises(InstallError, match="legacy source"):
+        install(repo, home, state, redirect)
+    assert runner.results == []
+    assert not os.path.lexists(destination)
+    assert foreign.read_text() == "user source"
+    assert (state / "expskill/codex-install.json").exists()
+
+
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("replacement", ["regular", "same-target", "stage"])
+def test_legacy_repository_alias_keeps_recorded_restoration_identity(
+    tmp_path: Path, retry, replacement: str,
+) -> None:
+    from scripts import install as module
+
+    repo, home, state, alias, source, destination, target = _seed_legacy_repository_alias(tmp_path, True)
+    write = module._write_codex_install_journal
+
+    def checkpoint(path, payload):
+        write(path, payload)
+        record = next(item for item in payload["links"] if item["destination"] == str(destination))
+        if record.get("legacy_restore", {}).get("dev") is not None:
+            raise SystemExit(73)
+
+    with mock.patch.object(module, "_write_codex_install_journal", checkpoint), pytest.raises(SystemExit):
+        install(repo, home, state, FakeRunner(_legacy_alias_failure_results(repo)))
+    if replacement == "stage":
+        candidate, = destination.parent.glob("*.link")
+        candidate.rename(tmp_path / "original-stage")
+        candidate.symlink_to(target)
+    else:
+        candidate = destination
+        if replacement == "regular":
+            candidate.write_text("user replacement")
+        else:
+            candidate.symlink_to(target)
+    identity = candidate.lstat()
+    for _ in range(2):
+        if retry is install or replacement == "stage":
+            with pytest.raises(InstallError, match="conflicting|legacy link recovery|changed identity"):
+                retry(repo, home, state, FakeRunner([]))
+        else:
+            runner = FakeRunner([
+                plugin_list_response(), marketplace_list_response(),
+                removal_response(),
+            ] if (state / "expskill/codex-install.json").exists() else [])
+            retry(repo, home, state, runner)
+            assert runner.results == []
+        metadata = candidate.lstat()
+        assert (metadata.st_dev, metadata.st_ino) == (identity.st_dev, identity.st_ino)
+        if replacement == "regular":
+            assert candidate.read_text() == "user replacement"
+        else:
+            assert os.readlink(candidate) == target
+
+
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("invalid_source", ["foreign", "alias", "other-profile", "null"])
+def test_legacy_repository_alias_rejects_invalid_canonical_evidence(
+    tmp_path: Path, retry, invalid_source: str,
+) -> None:
+    repo, home, state, alias, source, destination, target = _seed_legacy_repository_alias(tmp_path, False)
+    with pytest.raises(InstallError, match="marketplace compensation failed"):
+        install(repo, home, state, FakeRunner(_legacy_alias_failure_results(repo, True)))
+    journal = state / "expskill/codex-install.json"
+    payload = json.loads(journal.read_text())
+    record = next(item for item in payload["links"] if item["destination"] == str(destination))
+    record["legacy_source"] = {
+        "foreign": str(tmp_path / "foreign" / destination.name),
+        "alias": str(alias / source.relative_to(repo)),
+        "other-profile": str(source.with_name("expskill-planner.toml")),
+        "null": None,
+    }[invalid_source]
+    journal.write_text(json.dumps(payload))
+    before, identity = journal.read_bytes(), destination.lstat()
+    with pytest.raises(InstallError, match="legacy source"):
+        retry(repo, home, state, FakeRunner([]))
+    assert journal.read_bytes() == before
+    assert destination.lstat() == identity
+    assert os.readlink(destination) == target
+    assert destination.read_bytes() == source.read_bytes()
+
+
 if __name__ == "__main__":
     unittest.main()
