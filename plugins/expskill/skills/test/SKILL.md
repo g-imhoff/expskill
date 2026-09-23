@@ -89,6 +89,10 @@ from revision and reachability evidence. Reserve at most one discovered read-onl
 as the terminal recorder action, it may attest surface identity but cannot become behavioral evidence. If exemption is
 not proven, load the complete quality catalog as the fourth grounding call, then make no further grounding call.
 
+The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
+
+Discover repository-local facts autonomously and ask only for an unavailable credential, consequential authority, destructive effect, or genuinely subjective oracle that accepted behavior and product evidence cannot answer. Never ask a discoverable question.
+
 After grounding, Test alone decides `EXEMPT`. Exact-revision evidence must prove the change
 cannot affect runtime behavior, interfaces, configuration, dependencies, schemas, data,
 security, packaging, deployment, generated artifacts, test validity, or a user or client
@@ -153,7 +157,7 @@ or equivalent public surface.
 Declare a compact charter containing the exact target and head, accepted and
 negative behavior, active rules, environment and data, permitted effects,
 checks and journeys, exploratory mission, oracle, evidence, teardown, and stop
-conditions.
+conditions. Use an isolated, resettable, non-production environment and the minimum synthetic data, never use customer or production data.
 
 ## Execute and explore
 
@@ -223,7 +227,7 @@ hide the diagnostic rerun inside the terminal handoff.
 
 Recover ordinary local environment problems autonomously. Environmental
 evidence may supersede a proven environment failure only after the environment
-is corrected and the complete affected scope passes on the same head.
+is corrected and the complete affected scope passes on the same head. Missing authority, credentials, dependencies, a reliable oracle, or an unavailable external system produces `BLOCKED`, never weaken the scope.
 
 Relevant head drift invalidates affected evidence. Rebind the scope and
 environment, rerun every invalidated check and journey, and retain only evidence
@@ -287,7 +291,8 @@ identity field. If freezing fails, correct only the preparation before product e
 python3 .agents/skills/test/scripts/freeze_charter.py --root .test-evidence/<run-id>
 ```
 
-Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes without stealing evidence time.
+Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes without stealing evidence time. Reserve at least 180 seconds of response margin, at least 600 seconds
+total.
 
 Author from this complete contract, do not inspect the helper source to rediscover it.
 

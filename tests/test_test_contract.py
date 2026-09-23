@@ -836,6 +836,8 @@ def _assert_terminal_evidence_transaction(contents: str) -> None:
     required = (
         "canonical private, uncommitted, worktree-bound `.test-evidence/<run-id>/` root",
         "honor the contract's `deadline_reserve_seconds`",
+        "at least 180 seconds of response margin",
+        "at least 600 seconds total",
         "checkpoints",
         "780-second usable budget",
         "recheck that reserve before handoff",
@@ -3027,6 +3029,11 @@ class TestSkillContractTests(unittest.TestCase):
                 "alternate-root",
                 "`.test-evidence/<run-id>/` root",
                 "`/tmp/test-evidence/<run-id>/` root",
+            ),
+            (
+                "insufficient-response-margin",
+                "at least 180 seconds of response margin, at least 600 seconds\ntotal",
+                "only 15 seconds of response margin, 435 seconds total",
             ),
             (
                 "charter-after-product-action",
