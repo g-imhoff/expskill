@@ -74,9 +74,12 @@ use explicit identity metadata and do not grant ownership to unproven entries.
 A later same-target replacement is preserved, along with receipt evidence
 and its package dependency until that replacement is removed.
 This includes links spelled through directory aliases. New installations also
-record the generated package's identity before publication. Full uninstall
-retains a package whose receipt has no package identity, including older
-marker-only packages; move that package aside before retrying teardown.
+record the generated package's identity before publication. Refresh and full
+uninstall retain a package whose receipt has no package identity, including
+older marker-only packages; move that package aside before retrying installation
+or teardown. Install retries finish pending package retirement before publishing
+a replacement. A failed install retains the generated package's recorded identity
+when clearing its install journal, even if no links or CLI registrations remain.
 
 ## Source layout
 

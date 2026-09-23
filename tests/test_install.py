@@ -396,6 +396,40 @@ class InstallerTests(unittest.TestCase):
                 agents_only=agents_only,
             )
         self.assertTrue(all(set(entry) == {"source", "destination"} for entry in load_receipt(state_home)["links"]))
+        self.assertNotIn("codex_package", load_receipt(state_home))
+
+    def _assert_package_only_receipt(self, repo: Path, state: Path) -> None:
+        from scripts import install as module
+        receipt = load_receipt(state)
+        self.assertEqual(receipt["links"], [])
+        self.assertFalse(receipt["marketplace_added"])
+        self.assertFalse(receipt["plugin_installed"])
+        self.assertEqual(receipt["codex_package"], module._codex_package_identity(managed_repository(repo)))
+
+    def test_real_base_receipt_refresh_preserves_unproven_package(self) -> None:
+        for replacement in (False, True):
+            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = seed_repository(root / "repo")
+                home, state = root / "codex", root / "state"
+                self._install_base_receipt(repo, home, state)
+                package = managed_repository(repo)
+                if replacement:
+                    marker = (package / ".expskill-managed.json").read_bytes()
+                    package.rename(root / "original")
+                    package.mkdir()
+                    (package / ".expskill-managed.json").write_bytes(marker)
+                (package / "user-data").write_text("preserve unproven package")
+                identity = package.stat().st_ino
+                for _ in range(2):
+                    try:
+                        install(repo, home, state, FakeRunner([]), agents_only=True)
+                    except InstallError:
+                        pass
+                    self.assertTrue((package / "user-data").is_file())
+                    self.assertEqual((package / "user-data").read_text(), "preserve unproven package")
+                    self.assertEqual(package.stat().st_ino, identity)
+                    self.assertNotIn("codex_package", load_receipt(state))
 
     def test_real_base_receipt_upgrade_and_direct_uninstall(self) -> None:
         for upgrade, agents_only in ((False, True), (True, True), (False, False), (True, False)):
@@ -406,6 +440,9 @@ class InstallerTests(unittest.TestCase):
                 self._install_base_receipt(repo, codex_home, state_home, agents_only=agents_only)
                 identities = {path: path.lstat().st_ino for path in destination_paths(codex_home).values()}
                 if upgrade:
+                    with self.assertRaisesRegex(InstallError, "lost its receipt identity"):
+                        install(repo, codex_home, state_home, FakeRunner([]), agents_only=agents_only)
+                    managed_repository(repo).rename(root / "preserved-old-package")
                     install(repo, codex_home, state_home, FakeRunner(
                         [] if agents_only else install_results(repo, True, True)
                     ), agents_only=agents_only)
@@ -493,6 +530,9 @@ class InstallerTests(unittest.TestCase):
             paths = list(destination_paths(codex_home).values())
             identities = {path: path.lstat().st_ino for path in paths}
             uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            with self.assertRaisesRegex(InstallError, "lost its receipt identity"):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            managed_repository(repo).rename(root / "preserved-unreceipted-package")
             install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
             self.assertEqual(load_receipt(state_home)["links"], [])
             uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
@@ -963,6 +1003,9 @@ class InstallerTests(unittest.TestCase):
             journal = state_home / "expskill" / "codex-install.json"
             # Older interrupted migrations may have only their migration journal.
             journal.unlink()
+            with self.assertRaisesRegex(InstallError, "lost its receipt identity"):
+                install(repo, codex_home, state_home, FakeRunner([]))
+            managed_repository(repo).rename(root / "preserved-unreceipted-package")
             runner = FakeRunner([
                 marketplace_list_response(),
                 legacy_marketplace_add_response(repo, recovery_repository(repo)),
@@ -1361,7 +1404,7 @@ class InstallerTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_dry_run_prints_canonical_repository_and_only_planned_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1598,7 +1641,7 @@ class InstallerTests(unittest.TestCase):
                 (recovery_root / ".agents" / "plugins" / "marketplace.json").is_file()
             )
             self.assertFalse((repo / ".agents").exists())
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_resumed_failure_restores_all_journaled_legacy_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1702,7 +1745,7 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(
                 (state_home / "expskill" / "codex-migration.json").exists()
             )
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_legacy_marketplace_removal_with_malformed_json_is_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1742,7 +1785,7 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(
                 (state_home / "expskill" / "codex-migration.json").exists()
             )
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_legacy_migration_restore_failure_keeps_recovery_journal(self) -> None:
         """If compensation fails, durable migration evidence remains for retry."""
@@ -2688,7 +2731,7 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(os.path.lexists(broken))
             self.assertFalse(receipt_path(state_home).exists())
 
-    def test_marketplace_name_conflict_is_rejected_before_any_mutation(self) -> None:
+    def test_marketplace_name_conflict_is_rejected_before_external_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -2702,7 +2745,7 @@ class InstallerTests(unittest.TestCase):
 
             self.assertEqual(runner.calls, [("codex", "plugin", "marketplace", "list", "--json")])
             self.assertFalse((codex_home / "agents").exists())
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_marketplace_conflict_does_not_poison_successful_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2873,7 +2916,7 @@ class InstallerTests(unittest.TestCase):
                 ),
             )
             self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_successful_marketplace_add_with_malformed_json_rolls_back_owned_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2914,7 +2957,7 @@ class InstallerTests(unittest.TestCase):
                     ),
                 ],
             )
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
             self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
 
     def test_successful_plugin_add_with_malformed_json_rolls_back_plugin_marketplace_and_links(self) -> None:
@@ -2958,7 +3001,7 @@ class InstallerTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(tuple((codex_home / "agents").iterdir()), ())
-            self.assertFalse(receipt_path(state_home).exists())
+            self._assert_package_only_receipt(repo, state_home)
 
     def test_receipt_replace_failure_reports_and_rolls_back_external_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3835,8 +3878,12 @@ class InstallerTests(unittest.TestCase):
                     with self.assertRaisesRegex(InstallError, "receipt disk full") as context:
                         install(repo, codex_home, state_home, runner)
 
-            self.assertEqual(len(temporary_paths), 1)
-            self.assertIn(str(temporary_paths[0]), str(context.exception))
+            # Both receipt publication and the package-identity handoff fail.
+            self.assertEqual(len(temporary_paths), 2)
+            for path in temporary_paths:
+                self.assertIn(str(path), str(context.exception))
+                self.assertTrue(os.path.lexists(path))
+            self.assertTrue((state_home / "expskill/codex-install.json").exists())
             self.assertIn("temporary receipt cleanup", str(context.exception))
             self.assertEqual(
                 runner.calls[-2:],
@@ -3845,7 +3892,6 @@ class InstallerTests(unittest.TestCase):
                     ("codex", "plugin", "marketplace", "remove", "expskill", "--json"),
                 ],
             )
-            self.assertTrue(os.path.lexists(temporary_paths[0]))
             self.assertFalse(receipt_path(state_home).exists())
             self.assertEqual(
                 tuple((codex_home / "agents").iterdir()),
@@ -5547,7 +5593,8 @@ def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str
             assert destination.lstat().st_ino == original.st_ino
         replacement = destination.lstat()
         if retry == "install":
-            install(repo, home, state, FakeRunner([]), agents_only=True)
+            with pytest.raises(InstallError, match="lost its receipt identity"):
+                install(repo, home, state, FakeRunner([]), agents_only=True)
             assert load_receipt(state)["links"] == frozen
         for _ in range(2):
             with pytest.raises(InstallError, match="unproven.*depends"):
@@ -5559,10 +5606,9 @@ def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str
             assert all(not os.path.lexists(item["link_anchor"]) for item in frozen)
         for item in frozen:
             Path(item["destination"]).unlink()
-        if retry == "uninstall":
-            with pytest.raises(InstallError, match="lacks receipt identity"):
-                uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
-            managed_repository(repo).rename(root / "preserved-old-package")
+        with pytest.raises(InstallError, match="lacks receipt identity"):
+            uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        managed_repository(repo).rename(root / "preserved-old-package")
         uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
         assert not receipt_path(state).exists()
         assert not managed_repository(repo).exists()
@@ -6405,8 +6451,9 @@ def test_correction_alias_dependency(tmp_path, operation, alias_root, interrupte
     assert not managed.exists()
 
 
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
 @pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "before-checkpoint", "after-checkpoint", "retired-object", "receipt-clear"])
-def test_correction_normal_package_cleanup_exit(tmp_path, boundary):
+def test_correction_normal_package_cleanup_exit(tmp_path, boundary, retry):
     from scripts import install as module
     repo = seed_repository(tmp_path / "repo")
     home, state = tmp_path / "codex", tmp_path / "state"
@@ -6458,6 +6505,11 @@ def test_correction_normal_package_cleanup_exit(tmp_path, boundary):
         os._exit(74)
     wait_for_crashed_child(pid)
     assert receipt_path(state).exists()
+    if retry == "install":
+        for _ in range(2):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+            assert list(managed.parent.iterdir()) == [managed]
+            assert load_receipt(state)["codex_package"] == module._codex_package_identity(managed)
     for _ in range(2):
         uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
     assert not managed.exists()
@@ -6542,3 +6594,109 @@ def test_correction_unpublished_package_does_not_replace_receipt_authority(tmp_p
     assert not managed.exists()
     assert not receipt_path(state).exists()
     assert not module._codex_install_journal_path(state).exists()
+
+
+@pytest.mark.parametrize("resume", ["direct", "install", "uninstall"])
+@pytest.mark.parametrize("boundary", ["publication", "migration-checkpoint"])
+def test_recovery_publication_preserves_replacement(tmp_path, resume, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    recovery = recovery_repository(repo)
+    saved = tmp_path / "original-recovery"
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    rename, write = module._renameat_noreplace, module._write_codex_migration_journal
+    migration_path = module._codex_migration_journal_path(state)
+
+    def published(sfd, source, dfd, destination):
+        rename(sfd, source, dfd, destination)
+        parent = os.fstat(dfd)
+        if (source == "marketplace" and destination == recovery.name
+                and (parent.st_dev, parent.st_ino)
+                == (recovery.parent.stat().st_dev, recovery.parent.stat().st_ino)):
+            marker = (recovery / module.CODEX_MANAGED_MARKER).read_bytes()
+            recovery.rename(saved)
+            recovery.mkdir()
+            (recovery / module.CODEX_MANAGED_MARKER).write_bytes(marker)
+            (recovery / "user-data").write_text("preserve publication replacement")
+            assert recovery.stat().st_ino != saved.stat().st_ino
+            if resume != "direct" and boundary == "publication":
+                os._exit(73)
+
+    def checkpoint(path, payload):
+        write(path, payload)
+        if resume != "direct" and boundary == "migration-checkpoint":
+            os._exit(73)
+
+    def attempt():
+        with mock.patch.object(module, "_renameat_noreplace", published), mock.patch.object(
+            module, "_write_codex_migration_journal", checkpoint
+        ):
+            try:
+                install(repo, home, state, runner)
+            except InstallError:
+                pass
+
+    if resume == "direct":
+        attempt()
+    else:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    assert saved.is_dir(), "publication injection was not reached"
+    assert (recovery / "user-data").is_file()
+    expected = recovery.stat().st_ino
+    if resume != "direct":
+        operation = install if resume == "install" else uninstall
+        for operation in (operation, operation, install, uninstall):
+            try:
+                operation(repo, home, state, runner)
+            except InstallError:
+                pass
+            assert (recovery / "user-data").read_text() == "preserve publication replacement"
+            assert recovery.stat().st_ino == expected
+    if migration_path.exists():
+        migration = json.loads(migration_path.read_text())
+        assert migration["recovery_ino"] == saved.stat().st_ino
+        assert migration["recovery_package"] == module._codex_package_identity(saved)
+
+
+@pytest.mark.parametrize("resume", ["install", "uninstall"])
+def test_recovery_publication_exit_retains_cleanup_authority(tmp_path, resume):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    recovery = recovery_repository(repo)
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    pid = os.fork()
+    if pid == 0:
+        rename = module._renameat_noreplace
+
+        def published(sfd, source, dfd, destination):
+            rename(sfd, source, dfd, destination)
+            if source == "marketplace" and destination == recovery.name:
+                journal = json.loads(module._codex_install_journal_path(state).read_text())
+                assert journal["recovery_package"] == module._codex_package_identity(recovery)
+                os._exit(73)
+
+        with mock.patch.object(module, "_renameat_noreplace", published):
+            install(repo, home, state, runner)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    assert not module._codex_migration_journal_path(state).exists()
+    operation = install if resume == "install" else uninstall
+    for _ in range(2):
+        operation(repo, home, state, runner)
+    uninstall(repo, home, state, runner)
+    assert not recovery.exists()
+    # Hard exit can leave the empty, unpublished builder parent. Recovery must
+    # retire the published package and every journal-authorized retirement.
+    assert all(
+        path.name.startswith(".codex-package-") and not any(path.iterdir())
+        for path in recovery.parent.iterdir()
+    )
+    assert not receipt_path(state).exists()
+    assert not module._codex_install_journal_path(state).exists()
+    assert not module._codex_migration_journal_path(state).exists()

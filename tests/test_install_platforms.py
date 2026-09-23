@@ -329,10 +329,18 @@ def test_darwin_alias_dependency(tmp_path, darwin_api, operation):
     cases.test_correction_alias_dependency(tmp_path, operation, "state", True)
 
 
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
 @pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "before-checkpoint", "after-checkpoint", "retired-object", "receipt-clear"])
-def test_darwin_normal_package_cleanup_exit(tmp_path, darwin_api, boundary):
+def test_darwin_normal_package_cleanup_exit(tmp_path, darwin_api, boundary, retry):
     from tests import test_install as cases
-    cases.test_correction_normal_package_cleanup_exit(tmp_path, boundary)
+    cases.test_correction_normal_package_cleanup_exit(tmp_path, boundary, retry)
+
+
+@pytest.mark.parametrize("resume", ["direct", "install", "uninstall"])
+@pytest.mark.parametrize("boundary", ["publication", "migration-checkpoint"])
+def test_darwin_recovery_publication_preserves_replacement(tmp_path, darwin_api, resume, boundary):
+    from tests import test_install as cases
+    cases.test_recovery_publication_preserves_replacement(tmp_path, resume, boundary)
 
 
 @pytest.mark.parametrize("boundary", ["before-free", "receipt-clear"])

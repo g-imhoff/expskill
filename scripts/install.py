@@ -2537,7 +2537,7 @@ def _materialize_codex_marketplace(
             pins.callback(os.close, original_fd)
             metadata = os.fstat(original_fd)
             backup_identity = (metadata.st_dev, metadata.st_ino)
-            if package_identities and _codex_package_identity(
+            if (swap_key == "swap" or package_identities) and _codex_package_identity(
                 target_root, directory_fd=original_fd
             ) not in package_identities:
                 raise InstallError(f"managed Codex package lost its receipt identity: {target_root}")
@@ -2584,10 +2584,11 @@ def _materialize_codex_marketplace(
             _verify_codex_transaction()
             candidate_parent_fd = os.open(temporary_parent, _directory_open_flags())
             try:
-                if swap_key == "swap" and install_journal is not None:
+                if install_journal is not None:
                     # Freeze publication identity before the candidate can be
                     # substituted at its public name or the process can exit.
-                    install_journal["package"] = _codex_package_identity(candidate_root)
+                    identity_key = "package" if swap_key == "swap" else "recovery_package"
+                    install_journal[identity_key] = _codex_package_identity(candidate_root)
                     _write_codex_install_journal(install_journal_path, install_journal)
                 _renameat_noreplace(candidate_parent_fd, candidate_root.name, parent_fd, target_root.name)
             finally:
@@ -2714,6 +2715,11 @@ def _materialize_codex_recovery_package(
         install_journal_path=install_journal_path,
         install_journal=install_journal,
         swap_key="recovery_swap",
+        package_identities=(
+            (install_journal["recovery_package"],)
+            if install_journal is not None and install_journal.get("recovery_package") is not None
+            else ()
+        ),
     )
 
 
@@ -3033,7 +3039,9 @@ def _clear_codex_install_journal(journal_path: Path) -> None:
             _allowlisted_links(repository, Path(journal["codex_home"]), state_home),
             frozen_only=True,
         )
-        if receipt is not None and receipt.codex_package != journal["package"]:
+        if receipt is None:
+            receipt = _Receipt(repository, (), False, False)
+        if receipt.codex_package != journal["package"]:
             _validate_codex_package_identity(journal["package"])
             _write_codex_receipt(receipt_path, replace(receipt, codex_package=journal["package"]))
     try:
@@ -3134,7 +3142,7 @@ def _validate_codex_install_journal(
     except (OSError, RuntimeError, ValueError) as error:
         raise InstallError(f"install journal home cannot be resolved: {journal_path}") from error
     if (
-        set(payload) - {"superseded_links", "package"} != expected_keys
+        set(payload) - {"superseded_links", "package", "recovery_package"} != expected_keys
         or payload.get("schema_version") != CODEX_INSTALL_SCHEMA
         or payload.get("repository_root") != str(repository_root)
         or canonical_recorded_home != Path(codex_home).expanduser().resolve(strict=False)
@@ -3278,6 +3286,7 @@ def _validate_codex_install_journal(
     _journaled_legacy_codex_links(payload)
     _codex_superseded_links(journal_path, payload)
     _validate_codex_package_identity(payload.get("package"))
+    _validate_codex_package_identity(payload.get("recovery_package"))
     for swap_key in ("swap", "recovery_swap"):
         swap = payload.get(swap_key)
         if swap is not None and not isinstance(swap, dict):
@@ -3441,7 +3450,7 @@ def _read_codex_migration_journal(journal_path: Path) -> dict[str, object] | Non
     }
     if (
         not isinstance(payload, dict)
-        or set(payload) - {"recovery_dev", "recovery_ino", "cleanup_pending", "retirement"} != expected_keys
+        or set(payload) - {"recovery_dev", "recovery_ino", "recovery_package", "cleanup_pending", "retirement"} != expected_keys
         or payload.get("schema_version") != CODEX_MIGRATION_SCHEMA
         or payload.get("marketplace_state") != "legacy"
         or payload.get("plugin_state") not in {"legacy", "absent"}
@@ -7249,11 +7258,13 @@ def _recover_codex_link_retirements(journal: Mapping[str, object]) -> None:
             os.close(parent_fd)
 
 
-def _recover_codex_receipt_retirements(receipt: _Receipt | None) -> None:
+def _recover_codex_receipt_retirements(
+    receipt: _Receipt | None, receipt_path: Path,
+) -> _Receipt | None:
     """Finish receipt-proven uninstall exchanges before install preflight."""
 
     if receipt is None:
-        return
+        return None
     for link in receipt.links:
         if not _valid_codex_link_anchor_path(link) or not link.destination.parent.exists():
             continue
@@ -7270,6 +7281,28 @@ def _recover_codex_receipt_retirements(receipt: _Receipt | None) -> None:
                 _remove_codex_recorded_link(link)
         finally:
             os.close(parent_fd)
+    package = receipt.codex_package
+    root = _codex_managed_root(receipt.repository_root, receipt_path.parent.parent)
+    if package is not None and root.parent.exists():
+        parent_fd = os.open(root.parent, _directory_open_flags())
+        try:
+            retiring = (
+                "retirement" in package
+                or _retirement_record_exists(
+                    parent_fd, root.name, (package["dev"], package["ino"]), directory=True
+                )
+                or (_lexists(root) and not _lexists(root / CODEX_MANAGED_MARKER))
+            )
+        finally:
+            os.close(parent_fd)
+        if retiring:
+            # Resume the original receipt's exact cleanup, including an exit
+            # before its terminal checkpoint. Keep that authority until every
+            # private retirement artifact is gone, before publishing a successor.
+            _remove_owned_codex_marketplace(root, receipt.repository_root, receipt_path, receipt)
+            receipt = replace(receipt, codex_package=None)
+            _write_codex_receipt(receipt_path, receipt)
+    return receipt
 
 
 def _restore_legacy_codex_links(
@@ -7594,6 +7627,10 @@ def _validate_codex_migration_journal(
         or ("retirement" in payload and not payload.get("cleanup_pending"))
     ):
         raise InstallError(f"migration recovery identity is malformed: {journal_path}")
+    package = payload.get("recovery_package")
+    _validate_codex_package_identity(package)
+    if package is not None and (package["dev"], package["ino"]) != (payload["recovery_dev"], payload["recovery_ino"]):
+        raise InstallError(f"migration recovery identity disagrees with its candidate: {journal_path}")
     if payload["cleanup_pending"]:
         return  # The exact cleanup protocol also recognizes exchanged/absent roots.
     metadata = os.lstat(recovery_root)
@@ -7637,6 +7674,9 @@ def _cleanup_codex_recovery_package(
                 if (metadata.st_dev, metadata.st_ino) != expected:
                     raise InstallError(f"recovery package lost its exact ownership: {recovery_root}")
                 children = os.listdir(fd)
+                if CODEX_MANAGED_MARKER in children and payload.get("recovery_package") is not None:
+                    if _codex_package_identity(recovery_root, directory_fd=fd) != payload["recovery_package"]:
+                        raise InstallError(f"recovery package marker lost its exact ownership: {recovery_root}")
                 if children and not _codex_swap_marker_is_owned(
                     recovery_root, recovery_root, repository_root, directory_fd=fd
                 ):
@@ -7986,7 +8026,7 @@ def _install_codex_bound(
         frozen_only=True,
     )
     _check_frozen_codex_legacy_links(frozen_receipt)
-    _recover_codex_receipt_retirements(frozen_receipt)
+    frozen_receipt = _recover_codex_receipt_retirements(frozen_receipt, _receipt_path(state_home))
     current_destinations = {link.destination for link in planned_links}
     for link in (() if frozen_receipt is None else frozen_receipt.links):
         if (
@@ -8154,7 +8194,7 @@ def _install_codex_bound(
                     install_journal_path=install_journal_path,
                     install_journal=install_journal,
                 )
-                recovery_metadata = recovery_root.lstat()
+                recovery_identity = install_journal["recovery_package"]
                 migration_state = {
                     "schema_version": CODEX_MIGRATION_SCHEMA,
                     "repository_root": str(canonical_root),
@@ -8164,8 +8204,9 @@ def _install_codex_bound(
                     "marketplace_removed": False,
                     "plugin_removed": False,
                     "committed": False,
-                    "recovery_dev": recovery_metadata.st_dev,
-                    "recovery_ino": recovery_metadata.st_ino,
+                    "recovery_dev": recovery_identity["dev"],
+                    "recovery_ino": recovery_identity["ino"],
+                    "recovery_package": recovery_identity,
                     "cleanup_pending": False,
                 }
                 _write_codex_migration_journal(
@@ -8493,6 +8534,27 @@ def _uninstall_codex_bound(
             _resume_codex_marketplace_swap(
                 canonical_root, target, journal_path, journal, swap_key=key
             )
+        if migration is None and journal.get("recovery_package") is not None:
+            # Publication can precede the first migration checkpoint. Transfer
+            # the candidate's original identity before retiring this journal.
+            recovery_identity = journal["recovery_package"]
+            if _lexists(recovery_root) and _codex_package_identity(recovery_root) != recovery_identity:
+                raise InstallError(f"recovery package lost its publication identity: {recovery_root}")
+            migration = {
+                "schema_version": CODEX_MIGRATION_SCHEMA,
+                "repository_root": str(canonical_root),
+                "recovery_root": str(recovery_root),
+                "marketplace_state": "legacy",
+                "plugin_state": "legacy" if journal["plugin_pre_state"] == "legacy" else "absent",
+                "marketplace_removed": False,
+                "plugin_removed": False,
+                "committed": False,
+                "recovery_dev": recovery_identity["dev"],
+                "recovery_ino": recovery_identity["ino"],
+                "recovery_package": recovery_identity,
+                "cleanup_pending": True,
+            }
+            _write_codex_migration_journal(migration_path, migration)
         receipt_path_value = _receipt_path(state_home)
         receipt = _read_codex_receipt(receipt_path_value, canonical_root, links)
         if receipt is None:
