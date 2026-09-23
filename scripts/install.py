@@ -2537,7 +2537,7 @@ def _materialize_codex_marketplace(
             pins.callback(os.close, original_fd)
             metadata = os.fstat(original_fd)
             backup_identity = (metadata.st_dev, metadata.st_ino)
-            if (swap_key == "swap" or package_identities) and _codex_package_identity(
+            if _codex_package_identity(
                 target_root, directory_fd=original_fd
             ) not in package_identities:
                 raise InstallError(f"managed Codex package lost its receipt identity: {target_root}")
@@ -2709,9 +2709,27 @@ def _materialize_codex_recovery_package(
     install_journal_path: Path | None = None,
     install_journal: dict[str, object] | None = None,
 ) -> Path:
+    recovery_root = _codex_recovery_root(repository_root, state_home)
+    migration_path = _codex_migration_journal_path(state_home)
+    migration = _read_codex_migration_journal(migration_path)
+    if migration is not None:
+        # Compensation leaves registrations using this exact recovery package.
+        # Reuse it until migration commits; replacing it would invalidate the
+        # migration journal's authority at a crash between publications.
+        _validate_codex_migration_journal(
+            migration, repository_root, recovery_root, migration_path,
+        )
+        if migration["cleanup_pending"]:
+            raise InstallError("recovery package retirement is still pending")
+        if install_journal is not None:
+            install_journal["recovery_package"] = (
+                migration.get("recovery_package") or _codex_package_identity(recovery_root)
+            )
+            _write_codex_install_journal(install_journal_path, install_journal)
+        return recovery_root
     return _materialize_codex_marketplace(
         repository_root,
-        _codex_recovery_root(repository_root, state_home),
+        recovery_root,
         install_journal_path=install_journal_path,
         install_journal=install_journal,
         swap_key="recovery_swap",
@@ -3028,11 +3046,19 @@ def _clear_codex_install_journal(journal_path: Path) -> None:
             f"install journal path is not a regular file: {journal_path}"
         )
     journal = _read_codex_install_journal(journal_path)
+    repository = Path(journal["repository_root"])
+    state_home = journal_path.parent.parent
+    if (
+        journal.get("recovery_package") is not None
+        and _lexists(_codex_recovery_root(repository, state_home))
+        and not _lexists(_codex_migration_journal_path(state_home))
+    ):
+        # Recovery publication can precede a failed migration checkpoint.
+        # Keep the only frozen authority until retry can hand it off or retire it.
+        raise InstallError("recovery package cleanup remains pending in install journal")
     if journal.get("package") is not None:
         # Package publication precedes CLI work. Even a compensated failure
         # must transfer its new identity before discarding the only journal.
-        repository = Path(journal["repository_root"])
-        state_home = journal_path.parent.parent
         receipt_path = _receipt_path(state_home)
         receipt = _read_codex_receipt(
             receipt_path, repository,
@@ -3041,9 +3067,17 @@ def _clear_codex_install_journal(journal_path: Path) -> None:
         )
         if receipt is None:
             receipt = _Receipt(repository, (), False, False)
-        if receipt.codex_package != journal["package"]:
-            _validate_codex_package_identity(journal["package"])
-            _write_codex_receipt(receipt_path, replace(receipt, codex_package=journal["package"]))
+        retained = {link.destination: link for link in receipt.links}
+        for record in journal["links"]:
+            link = ProfileLink(source=Path(record["source"]), destination=Path(record["destination"]))
+            # Path-only entries retain dependencies, never symlink ownership.
+            if record["preexisting"] and _codex_link_has_dependency(link.destination, link.source):
+                retained.setdefault(link.destination, link)
+        package = journal.get("package", receipt.codex_package)
+        _validate_codex_package_identity(package)
+        updated = replace(receipt, links=tuple(retained.values()), codex_package=package)
+        if updated != receipt:
+            _write_codex_receipt(receipt_path, updated)
     try:
         journal_path.unlink()
         _fsync_directory(journal_path.parent)
@@ -7638,6 +7672,7 @@ def _validate_codex_migration_journal(
         not stat.S_ISDIR(metadata.st_mode)
         or (metadata.st_dev, metadata.st_ino) != (payload["recovery_dev"], payload["recovery_ino"])
         or not _codex_managed_root_is_owned(recovery_root, repository_root)
+        or (package is not None and _codex_package_identity(recovery_root) != package)
     ):
         raise InstallError(
             f"migration recovery marketplace lost its exact ownership: {recovery_root}"
@@ -7853,7 +7888,8 @@ def _resume_codex_migration_recovery(
         raise InstallError(
             "unfinished Codex migration found an unexpected legacy plugin"
         )
-    _clear_codex_migration_journal(journal_path)
+    # The restored registrations still depend on this package. Keep its frozen
+    # identity through compensation and the next install or teardown attempt.
     return False
 
 
@@ -7946,10 +7982,8 @@ def _cleanup_after_install_failure(
             failures.extend(recovery_failures)
         else:
             migration_restored = True
-            try:
-                _clear_codex_migration_journal(migration_journal_path)
-            except InstallError as error:
-                failures.append(f"migration journal cleanup: {error}")
+            # CLI compensation does not retire the recovery package. Its
+            # migration journal remains the authority for later reuse/cleanup.
     if install_journal is not None:
         if install_journal.get("superseded_links"):
             failures.append("superseded link cleanup remains pending in install journal")
@@ -8326,7 +8360,6 @@ def _install_codex_bound(
             if link.destination in previous_by_destination
             else link
             for link in links
-            if link.destination in previous_by_destination
         ]
         merged_links.extend(
             link for link in previous_links
@@ -8698,6 +8731,10 @@ def _uninstall_codex_bound(
         _cleanup_codex_recovery_package(canonical_root, recovery_root, migration_path, migration)
     if not agents_only and not preserve_managed_package:
         _remove_owned_codex_marketplace(managed_root, canonical_root, receipt_path_value, current)
+    elif current.codex_package is not None or _lexists(managed_root):
+        # Partial teardown and unowned CLI dependencies preserve the package;
+        # its exact identity must survive for refresh and eventual full cleanup.
+        return InstallResult(links=links, removed_links=removed_links)
     if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:

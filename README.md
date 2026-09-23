@@ -62,6 +62,8 @@ Agents-only mode never calls the plugin CLI. It only creates the profile
 links and records them in its own receipt, and a later full
 `python3 scripts/install.py` run keeps those links while claiming the CLI
 ownership it performed.
+Agents-only uninstall retains the generated package and its identity in the
+receipt, so reinstall and later full uninstall can still verify ownership.
 
 Codex receipts from the older path-only format are migrated on install or
 uninstall: a valid receipt authorizes only its recorded source/destination
@@ -73,6 +75,9 @@ path-based ownership contract for that one migration. Newly written receipts
 use explicit identity metadata and do not grant ownership to unproven entries.
 A later same-target replacement is preserved, along with receipt evidence
 and its package dependency until that replacement is removed.
+Matching profile symlinks that already exist at installation are also recorded
+as dependencies, without granting permission to delete them. Full uninstall
+retains their package and receipt until those links are removed or redirected.
 This includes links spelled through directory aliases. New installations also
 record the generated package's identity before publication. Refresh and full
 uninstall retain a package whose receipt has no package identity, including
@@ -80,6 +85,9 @@ older marker-only packages; move that package aside before retrying installation
 or teardown. Install retries finish pending package retirement before publishing
 a replacement. A failed install retains the generated package's recorded identity
 when clearing its install journal, even if no links or CLI registrations remain.
+If a failed legacy migration restores CLI registrations to a recovery package,
+its migration journal retains that package's frozen identity. Retry verifies
+and reuses the recovery package; a copied marker cannot authorize a replacement.
 
 ## Source layout
 

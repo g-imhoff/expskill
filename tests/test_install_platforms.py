@@ -67,6 +67,23 @@ def test_darwin_codex_lifecycle(tmp_path: Path, darwin_api, rollback: bool):
     assert set(darwin_api) == {0x2, 0x4}
 
 
+def test_darwin_agents_only_partial_teardown_reinstall(tmp_path, darwin_api):
+    from tests.test_install import test_agents_only_package_receipt_lifecycle
+    test_agents_only_package_receipt_lifecycle(tmp_path, full_uninstall_first=False)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_darwin_preexisting_profile_dependency(tmp_path, darwin_api, interrupted):
+    from tests.test_install import test_preexisting_profile_dependency_retains_package
+    test_preexisting_profile_dependency_retains_package(tmp_path, "package-alias", interrupted)
+
+
+@pytest.mark.parametrize("boundary", ["direct", "before-clear", "after-clear"])
+def test_darwin_compensated_recovery_authority(tmp_path, darwin_api, boundary):
+    from tests.test_install import test_compensated_recovery_replacement_keeps_frozen_authority
+    test_compensated_recovery_replacement_keeps_frozen_authority(tmp_path, boundary, "install")
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_missing_conditional_rename_rejected_before_install_mutation(tmp_path, platform):
     repo = seed_repository(tmp_path / "repo")
