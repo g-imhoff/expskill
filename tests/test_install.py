@@ -2531,23 +2531,25 @@ class InstallerTests(unittest.TestCase):
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
             receipt = load_receipt(state_home)
+            retired_entries = []
             retired_destinations: list[Path] = []
             for name in RETIRED_PROFILE_NAMES:
                 source = (
                     repo.resolve()
                     / "plugins"
                     / "expskill"
-                    / "codex"
-                    / "runtime"
+                    / "assets"
                     / "agents"
                     / f"{name}.toml"
                 )
                 destination = codex_home.resolve() / "agents" / f"{name}.toml"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(f'name = "{name}"\n', encoding="utf-8")
                 destination.symlink_to(source)
                 retired_destinations.append(destination)
-                receipt["links"].append(
-                    {"destination": str(destination), "source": str(source)}
-                )
+                entry = {"destination": str(destination), "source": str(source)}
+                retired_entries.append(entry)
+                receipt["links"].append(entry)
             receipt_path(state_home).write_text(
                 json.dumps(receipt, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -2558,12 +2560,14 @@ class InstallerTests(unittest.TestCase):
 
             self.assertEqual(result.removed_links, ())
             self.assertTrue(all(path.is_symlink() for path in retired_destinations))
+            self.assertTrue(all(path.is_file() for path in retired_destinations))
+            self.assertTrue(all(entry in load_receipt(state_home)["links"] for entry in retired_entries))
             self.assertEqual(
                 {
                     Path(entry["destination"]).stem
                     for entry in load_receipt(state_home)["links"]
                 },
-                set(PROFILE_NAMES),
+                set(PROFILE_NAMES + RETIRED_PROFILE_NAMES),
             )
 
     def test_retired_link_removal_is_fsynced_before_receipt_progress(self) -> None:
@@ -5072,6 +5076,182 @@ def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str
         uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
         assert not receipt_path(state).exists()
         assert not managed_repository(repo).exists()
+
+
+def seed_recorded_retired_profile(repo: Path, home: Path, state: Path, *, legacy: bool = False) -> dict:
+    from scripts import install as module
+
+    name = RETIRED_PROFILE_NAMES[0] + ".toml"
+    directory = (
+        repo / "plugins/expskill/assets/agents"
+        if legacy else managed_repository(repo) / "plugins/expskill/agents"
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    source, destination = directory / name, home / "agents" / name
+    source.write_text(f'name = "{RETIRED_PROFILE_NAMES[0]}"\n', encoding="utf-8")
+    destination.symlink_to(source)
+    metadata = destination.lstat()
+    anchor = module._codex_link_anchor_path(destination, metadata.st_dev, metadata.st_ino)
+    os.link(destination, anchor, follow_symlinks=False)
+    entry = dict(
+        source=str(source), destination=str(destination),
+        destination_dev=metadata.st_dev, destination_ino=metadata.st_ino,
+        link_anchor=str(anchor), link_anchor_dev=metadata.st_dev, link_anchor_ino=metadata.st_ino,
+    )
+    receipt = load_receipt(state)
+    receipt["links"].append(entry)
+    receipt_path(state).write_text(json.dumps(receipt), encoding="utf-8")
+    parsed = module._read_codex_receipt(
+        receipt_path(state), repo, module._allowlisted_links(repo, home, state)
+    )
+    assert any(link.destination == destination and module._codex_link_path_is_live(link) for link in parsed.links)
+    return entry
+
+
+@pytest.mark.parametrize("retired", [False, True], ids=["current", "retired"])
+@pytest.mark.parametrize("interrupted", [False, True], ids=["fresh", "pending-refresh"])
+def test_reinstall_preserves_replacement_package_dependency(tmp_path: Path, retired: bool, interrupted: bool) -> None:
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    entry = seed_recorded_retired_profile(repo, home, state) if retired else load_receipt(state)["links"][0]
+    source, destination = Path(entry["source"]), Path(entry["destination"])
+    journal = state / "expskill/codex-install.json"
+    if interrupted:
+        with mock.patch("scripts.install._materialize_codex_package", side_effect=SystemExit), pytest.raises(SystemExit):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        assert journal.is_file()
+    destination.unlink()
+    destination.symlink_to(source)
+    replacement = destination.lstat().st_ino
+    assert replacement != entry["destination_ino"]
+    before_receipt = receipt_path(state).read_bytes()
+    before_journal = journal.read_bytes() if journal.exists() else None
+    before_package = managed_repository(repo).stat()
+    before_source = source.read_bytes()
+    if retired:
+        # The renderer no longer produces this target, so refresh must refuse
+        # before touching the package or its original dependency evidence.
+        with pytest.raises(InstallError, match="unproven.*depends"):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        assert receipt_path(state).read_bytes() == before_receipt
+        assert (journal.read_bytes() if journal.exists() else None) == before_journal
+        assert managed_repository(repo).stat() == before_package
+        assert source.read_bytes() == before_source
+    else:
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert destination.lstat().st_ino == replacement
+    assert source.is_file()
+    assert entry in load_receipt(state)["links"]
+    for _ in range(2):
+        with pytest.raises(InstallError, match="unproven.*depends"):
+            uninstall(repo, home, state, FakeRunner([]))
+        assert destination.lstat().st_ino == replacement
+        assert source.is_file()
+        assert entry in load_receipt(state)["links"]
+    destination.unlink()
+    uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
+    assert not journal.exists()
+    assert not managed_repository(repo).exists()
+    assert not list((home / "agents").iterdir())
+
+
+@pytest.mark.parametrize("boundary", ["receipt", "journal-clear"])
+def test_retired_replacement_receipt_survives_interrupted_merge(tmp_path: Path, boundary: str) -> None:
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    # Checkout targets survive managed package refresh, so this case can
+    # succeed while retaining the retired entry through pruning and merging.
+    entry = seed_recorded_retired_profile(repo, home, state, legacy=True)
+    destination, source = Path(entry["destination"]), Path(entry["source"])
+    destination.unlink()
+    destination.symlink_to(source)
+    replacement = destination.lstat().st_ino
+    hook = "_write_codex_receipt" if boundary == "receipt" else "_clear_codex_install_journal"
+    with mock.patch(f"scripts.install.{hook}", side_effect=SystemExit), pytest.raises(SystemExit):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert entry in load_receipt(state)["links"]
+    assert destination.lstat().st_ino == replacement
+    assert destination.is_file()
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert entry in load_receipt(state)["links"]
+    with pytest.raises(InstallError, match="unproven.*depends"):
+        uninstall(repo, home, state, FakeRunner([]))
+    assert source.is_file()
+    assert destination.lstat().st_ino == replacement
+    destination.unlink()
+    uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
+    assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("alias_first", [True, False], ids=["alias-to-real", "real-to-alias"])
+@pytest.mark.parametrize("legacy_journal", [False, True], ids=["canonical-journal", "old-alias-journal"])
+def test_codex_home_alias_journal_recovery(tmp_path: Path, retry, alias_first: bool, legacy_journal: bool) -> None:
+    repo = seed_repository(tmp_path / "repo")
+    home, state, alias = tmp_path / "codex", tmp_path / "state", tmp_path / "alias"
+    home.mkdir()
+    alias.symlink_to(home, target_is_directory=True)
+    first, second = (alias, home) if alias_first else (home, alias)
+    with mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit), pytest.raises(SystemExit):
+        install(repo, first, state, FakeRunner([]), agents_only=True)
+    journal = state / "expskill/codex-install.json"
+    payload = json.loads(journal.read_text())
+    identities = {path: path.lstat().st_ino for path in destination_paths(home).values()}
+    assert len(identities) == 7
+    if legacy_journal:
+        payload["codex_home"] = str(alias)
+        journal.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        assert payload["codex_home"] == str(home)
+    retry(repo, second, state, FakeRunner([]), agents_only=True)
+    assert not journal.exists()
+    if retry is install:
+        assert {path: path.lstat().st_ino for path in identities} == identities
+        assert len(load_receipt(state)["links"]) == 7
+        uninstall(repo, second, state, FakeRunner([]), agents_only=True)
+    assert not receipt_path(state).exists()
+    assert not list((home / "agents").iterdir())
+
+
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("legacy_journal", [False, True], ids=["canonical-journal", "old-alias-journal"])
+@pytest.mark.parametrize("changed", ["redirect", "foreign", "destination"])
+def test_codex_home_alias_journal_rejects_foreign_paths(tmp_path: Path, retry, legacy_journal: bool, changed: str) -> None:
+    repo = seed_repository(tmp_path / "repo")
+    home, state, alias = tmp_path / "codex", tmp_path / "state", tmp_path / "alias"
+    home.mkdir()
+    alias.symlink_to(home, target_is_directory=True)
+    with mock.patch("scripts.install._write_codex_receipt", side_effect=SystemExit), pytest.raises(SystemExit):
+        install(repo, alias, state, FakeRunner([]), agents_only=True)
+    journal = state / "expskill/codex-install.json"
+    payload = json.loads(journal.read_text())
+    payload["codex_home"] = str(alias if legacy_journal else home)
+    other = tmp_path / "other"
+    other.mkdir()
+    selected = alias
+    if changed == "redirect":
+        alias.unlink()
+        alias.symlink_to(other, target_is_directory=True)
+    elif changed == "foreign":
+        selected = other
+    else:
+        payload["links"][0]["destination"] = str(other / "agents" / (PROFILE_NAMES[0] + ".toml"))
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    before = journal.read_bytes()
+    identities = {path: path.lstat().st_ino for path in destination_paths(home).values()}
+    package = managed_repository(repo).stat()
+    with pytest.raises(InstallError, match="install journal"):
+        retry(repo, selected, state, FakeRunner([]), agents_only=True)
+    assert journal.read_bytes() == before
+    assert {path: path.lstat().st_ino for path in identities} == identities
+    assert all(path.is_file() for path in identities)
+    assert managed_repository(repo).stat() == package
+    assert not receipt_path(state).exists()
+    assert not list(other.rglob("*.toml"))
 
 
 if __name__ == "__main__":

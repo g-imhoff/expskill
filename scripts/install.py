@@ -2920,7 +2920,7 @@ def _new_codex_install_journal(
     return {
         "schema_version": CODEX_INSTALL_SCHEMA,
         "repository_root": str(repository_root),
-        "codex_home": str(_lexical_absolute(codex_home)),
+        "codex_home": str(Path(codex_home).expanduser().resolve(strict=False)),
         "managed_root": str(managed_root),
         "agents_only": agents_only,
         "stage_secret": secrets.token_hex(32),
@@ -2958,11 +2958,20 @@ def _validate_codex_install_journal(
         "swap",
         "recovery_swap",
     }
+    recorded_home = payload.get("codex_home")
+    try:
+        canonical_recorded_home = (
+            Path(recorded_home).resolve(strict=False)
+            if isinstance(recorded_home, str) and Path(recorded_home).is_absolute()
+            else None
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise InstallError(f"install journal home cannot be resolved: {journal_path}") from error
     if (
         set(payload) - {"superseded_links"} != expected_keys
         or payload.get("schema_version") != CODEX_INSTALL_SCHEMA
         or payload.get("repository_root") != str(repository_root)
-        or payload.get("codex_home") != str(_lexical_absolute(codex_home))
+        or canonical_recorded_home != Path(codex_home).expanduser().resolve(strict=False)
         or payload.get("managed_root") != str(managed_root)
         or payload.get("agents_only") is not agents_only
         or not isinstance(payload.get("stage_secret"), str)
@@ -3167,6 +3176,12 @@ def _load_or_start_codex_install_journal(
         links,
         agents_only,
     )
+    # Older journals stored the alias spelling. Only normalize after both home
+    # equivalence and every exact source/destination pair have been validated.
+    canonical_home = str(Path(codex_home).expanduser().resolve(strict=False))
+    if payload["codex_home"] != canonical_home:
+        payload["codex_home"] = canonical_home
+        _write_codex_install_journal(journal_path, payload)
     return payload
 
 
@@ -7196,6 +7211,10 @@ def _prune_retired_links(
             raise InstallError(
                 f"cannot remove retired agent link: {link.destination}: {error}"
             ) from error
+        if _same_recorded_link(link.destination, link.source):
+            # A preserved replacement still needs this target. Keep the old
+            # evidence without claiming the replacement's identity.
+            continue
         if removed_owned:
             removed.append(link)
         current = _persist_codex_receipt(receipt_path, current, links=remaining)
@@ -7610,6 +7629,19 @@ def _install_codex_bound(
         frozen_only=True,
     )
     _check_frozen_codex_legacy_links(frozen_receipt)
+    current_destinations = {link.destination for link in planned_links}
+    for link in (() if frozen_receipt is None else frozen_receipt.links):
+        if (
+            link.destination not in current_destinations
+            and managed_root in link.source.parents
+            and _same_recorded_link(link.destination, link.source)
+            and not _codex_link_path_is_live(link)
+        ):
+            # Refresh no longer renders retired profiles. Refuse before any
+            # package swap or receipt mutation can strand this replacement.
+            raise InstallError(
+                f"unproven retired link still depends on its package: {link.destination}"
+            )
     install_journal_path = _codex_install_journal_path(state_home)
     new_transaction = not _lexists(install_journal_path)
     prior_migration = _lexists(_codex_migration_journal_path(state_home))
@@ -7891,6 +7923,10 @@ def _install_codex_bound(
             for link in links
             if link.destination in previous_by_destination
         ]
+        merged_links.extend(
+            link for link in previous_links
+            if link.destination not in current_destinations
+        )
         known_destinations = {link.destination for link in merged_links}
         for link in created_links:
             merged_links = [
