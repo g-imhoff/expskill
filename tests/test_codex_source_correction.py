@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -21,6 +22,39 @@ PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 
 
 class CodexSourceCorrectionTests(unittest.TestCase):
+    def test_marketplace_builder_preserves_container_replaced_at_final_cleanup(self) -> None:
+        from scripts.build_codex_marketplace import build_codex_marketplace
+
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "marketplace"
+                rename, rmdir = Path.rename, os.rmdir
+                containers = []
+
+                def published(path, target):
+                    if target == output:
+                        containers.append(path.parent)
+                        if failed:
+                            raise OSError(errno.EIO, "injected publication failure")
+                    return rename(path, target)
+
+                def cleanup(path, *args, **kwargs):
+                    if containers and Path(path) == containers[0]:
+                        rename(Path(path), root / "original-container")
+                        Path(path).mkdir()
+                        (Path(path) / "user-data").write_text("preserve replacement")
+                    return rmdir(path, *args, **kwargs)
+
+                with mock.patch.object(Path, "rename", published), mock.patch.object(os, "rmdir", cleanup):
+                    if failed:
+                        with self.assertRaises(OSError):
+                            build_codex_marketplace(ROOT, output)
+                    else:
+                        self.assertEqual(build_codex_marketplace(ROOT, output), output)
+                self.assertEqual((containers[0] / "user-data").read_text(), "preserve replacement")
+                self.assertEqual(output.exists(), not failed)
+
     def test_marketplace_builder_retains_constructed_directory_before_publication(self) -> None:
         from scripts.build_codex_marketplace import (
             build_codex_marketplace, build_codex_marketplace_pinned,

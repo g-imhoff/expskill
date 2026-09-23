@@ -42,6 +42,44 @@ def darwin_api():
 
 
 @pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+@pytest.mark.parametrize("boundary", ["rename", "cleanup"])
+def test_darwin_correction_builder_failure_replacement(tmp_path, darwin_api, kind, boundary):
+    from tests import test_install as cases
+    cases.test_correction_builder_failure_replacement(tmp_path, kind, boundary)
+
+
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_darwin_correction_legacy_identity_free_stage(tmp_path, darwin_api, retry, replacement):
+    from tests import test_install as cases
+    cases.test_correction_legacy_identity_free_stage(tmp_path, retry, replacement)
+
+
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize("captured", [False, True])
+def test_darwin_correction_old_record_rollback_witness(tmp_path, darwin_api, retry, crash, captured):
+    from tests import test_install as cases
+    cases.test_correction_old_record_rollback_witness(tmp_path, retry, crash, captured)
+
+
+@pytest.mark.parametrize("boundary", ["validated", "unlink"])
+def test_darwin_correction_rollback_stage_replacement(tmp_path, darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_correction_rollback_stage_replacement(tmp_path, boundary)
+
+
+def test_darwin_correction_fresh_stage_creation_replacement(tmp_path, darwin_api):
+    from tests import test_install as cases
+    cases.test_correction_fresh_stage_creation_replacement(tmp_path)
+
+
+def test_darwin_correction_creation_witness_survives_failed_anchor(tmp_path, darwin_api):
+    from tests import test_install as cases
+    cases.test_correction_creation_witness_survives_failed_anchor(tmp_path)
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
 @pytest.mark.parametrize("contents", ["marker", "valid-package"])
 def test_darwin_builder_handoff_preserves_replacement(tmp_path, darwin_api, kind, contents):
     from tests import test_install as cases
@@ -266,7 +304,9 @@ def test_darwin_named_retirement_interruption(tmp_path, darwin_api, boundary, ro
         opening, syncing, linking, unlinking = os.open, os.fsync, os.link, os.unlink
         exchange = module._renameat_exchange
         def is_preparation(name):
-            return str(name).endswith(".prepare.retire")
+            # Exercise public profile rollback, after private construction has
+            # finished; its own retirement now uses the same primitive.
+            return "expskill-" in str(name) and str(name).endswith(".prepare.retire")
         def opened(path, *args, **kwargs):
             fd = opening(path, *args, **kwargs)
             if boundary == "created" and is_preparation(path):

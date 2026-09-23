@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -87,12 +87,23 @@ def build_codex_marketplace_pinned(
         )
         _normalize(staging)
         staging.rename(output)
-        shutil.rmtree(container, ignore_errors=True)
     except BaseException:
         if descriptor is not None:
             os.close(descriptor)
-        shutil.rmtree(container, ignore_errors=True)
+            descriptor = None
         raise
+    finally:
+        # Never recursively reclaim a pathname after publication or failure:
+        # staging (or container itself) may now hold unrelated user data. An
+        # empty-only removal is safe even when substitution races this syscall.
+        # Failed builds deliberately retain nonempty staging for reconciliation.
+        try:
+            container.rmdir()
+        except OSError as error:
+            if error.errno not in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST, errno.ENOTDIR}:
+                if descriptor is not None:
+                    os.close(descriptor)
+                raise
     assert descriptor is not None
     return output, descriptor
 

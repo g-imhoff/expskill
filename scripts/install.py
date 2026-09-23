@@ -1386,7 +1386,7 @@ def _commit_codex_record_witness(parent_fd: int, name: str, old: tuple[int, int]
     # Validate the created link before it can grant authority on retry.
     list(_codex_record_witnesses(parent_fd))
     for candidate, record, identity in witnesses:
-        if record == name and identity == old:
+        if record == name and identity == old and identity != new:
             os.unlink(candidate, dir_fd=parent_fd)
             os.fsync(parent_fd)
 
@@ -1475,6 +1475,10 @@ def _recover_codex_record_publications(parent_fd: int) -> None:
         if current not in {old, new}:
             raise InstallError(f"Codex state record changed during publication: {name}")
         if staged is not None:
+            # Rollback may restore an older record that predates witnesses.
+            # Keep its inode alive before deleting the last transition proof;
+            # a copied public replacement must still be rejected after exit.
+            _commit_codex_record_witness(parent_fd, name, current, current)
             os.unlink(publication, dir_fd=parent_fd)
             os.fsync(parent_fd)
 
@@ -7035,6 +7039,11 @@ def _recover_codex_transaction_link(
 ) -> ProfileLink | None:
     _verify_codex_transaction()
     phase = record.get("phase")
+    if phase == "staging" and record.get("staged_destination") is not None:
+        _retire_codex_creation_directory(
+            Path(record["staged_destination"]),
+            (record["destination_dev"], record["destination_ino"]),
+        )
     if phase in {"planned", "preexisting"}:
         for staged in (
             _codex_link_staging_path(link.source, link.destination),
@@ -7083,7 +7092,10 @@ def _recover_codex_transaction_link(
         )
         anchor_live = _codex_anchor_is_live(recorded)
         if not staged_live and not anchor_live:
-            if _lexists(recorded.staged_destination) or _lexists(recorded.link_anchor):
+            if (
+                _lexists(recorded.staged_destination) or _lexists(recorded.link_anchor)
+                or _lexists(_codex_creation_directory(recorded.staged_destination))
+            ):
                 raise InstallError(
                     f"Codex link intent artifacts changed identity: {link.destination}"
                 )
@@ -7122,6 +7134,9 @@ def _recover_codex_transaction_link(
             raise InstallError(
                 f"cannot recover Codex link anchor: {link.destination}: {error}"
             ) from error
+        # The restored anchor now pins the original inode. Do not retire the
+        # creation witness while either exposed name is still unproven.
+        _retire_codex_creation_directory(recorded.staged_destination, identity)
         record["phase"] = "staged"
         _write_codex_install_journal(journal_path, journal)
     recorded = _codex_transaction_link(record, link, journal)
@@ -7172,6 +7187,75 @@ def _recover_codex_transaction_link(
     return None
 
 
+def _codex_creation_directory(staged: Path) -> Path:
+    return staged.with_name(staged.name + ".create")
+
+
+def _retire_codex_creation_directory(
+    staged: Path, expected: tuple[int | None, int | None], *, directory_fd: int | None = None,
+) -> None:
+    nursery = _codex_creation_directory(staged)
+    if directory_fd is None and not _lexists(nursery):
+        return
+    if None in expected:
+        raise InstallError(f"Codex link creation identity is unproven; reconcile: {nursery}")
+    descriptor = os.open(nursery, _directory_open_flags()) if directory_fd is None else os.dup(directory_fd)
+    try:
+        _remove_exact_via_exchange(
+            descriptor, "link", expected, f"Codex private creation link {nursery}",
+            directory=False, preserve_replacements=True,
+        )
+        if os.listdir(descriptor):
+            raise InstallError(f"Codex link creation directory changed; reconcile: {nursery}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        # Empty-only removal cannot delete data even if the directory's public
+        # name is substituted after the descriptor check.
+        nursery.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise InstallError(f"Codex link creation directory changed; reconcile: {nursery}") from error
+    _fsync_directory(staged.parent)
+
+
+@contextmanager
+def _created_codex_symlink(staged: Path, target: Path) -> Iterator[os.stat_result]:
+    """Expose a hard link to a symlink constructed in a private directory.
+
+    symlink(2) returns no descriptor. Establish identity inside the locked
+    installer's private creation directory, before exposing the staging name.
+    Keep that private link alive until the durable anchor exists: observing a
+    replacement at the exposed name can never establish creation ownership.
+    Like private retirement names, this directory is inside the installer-lock
+    boundary; it is not a defence against arbitrary writes to private internals.
+    """
+
+    nursery = _codex_creation_directory(staged)
+    nursery.mkdir(mode=0o700)
+    descriptor = os.open(nursery, _directory_open_flags())
+    try:
+        os.symlink(target, "link", dir_fd=descriptor)
+        metadata = os.stat("link", dir_fd=descriptor, follow_symlinks=False)
+        os.fsync(descriptor)
+        os.link("link", staged, src_dir_fd=descriptor, follow_symlinks=False)
+        current = os.lstat(staged)
+        if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise InstallError(f"Codex staged agent link changed during creation: {staged}")
+        yield metadata
+        # Only successful anchoring can retire the creation witness. Exceptions
+        # (including a process exit) leave it for journal-bound recovery.
+        # Address private creation contents through the retained directory, so
+        # replacing its external name cannot redirect cleanup to another tree.
+        _retire_codex_creation_directory(
+            staged, (metadata.st_dev, metadata.st_ino), directory_fd=descriptor,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def _create_codex_link(
     link: ProfileLink,
     record: dict[str, object],
@@ -7189,27 +7273,24 @@ def _create_codex_link(
         record["phase"] = "staging"
         record["staged_destination"] = str(staged)
         _write_codex_install_journal(journal_path, journal)
-        staged.symlink_to(link.source)
-        metadata = os.lstat(staged)
-        if not stat.S_ISLNK(metadata.st_mode):
-            raise InstallError(f"Codex staged agent link is not a symlink: {staged}")
-        identity = (metadata.st_dev, metadata.st_ino)
-        anchor = _codex_link_anchor_path(link.destination, *identity)
-        if _lexists(anchor):
-            raise InstallError(f"Codex link anchor path is occupied: {anchor}")
-        record["phase"] = "anchoring"
-        record["destination_dev"] = identity[0]
-        record["destination_ino"] = identity[1]
-        record["link_anchor"] = str(anchor)
-        _write_codex_install_journal(journal_path, journal)
-        os.link(staged, anchor, follow_symlinks=False)
-        anchored = os.lstat(anchor)
-        if (
-            not stat.S_ISLNK(anchored.st_mode)
-            or (anchored.st_dev, anchored.st_ino) != identity
-        ):
-            raise InstallError(f"Codex link anchor changed identity: {anchor}")
-        _fsync_directory(link.destination.parent)
+        with _created_codex_symlink(staged, link.source) as metadata:
+            identity = (metadata.st_dev, metadata.st_ino)
+            anchor = _codex_link_anchor_path(link.destination, *identity)
+            if _lexists(anchor):
+                raise InstallError(f"Codex link anchor path is occupied: {anchor}")
+            record["phase"] = "anchoring"
+            record["destination_dev"] = identity[0]
+            record["destination_ino"] = identity[1]
+            record["link_anchor"] = str(anchor)
+            _write_codex_install_journal(journal_path, journal)
+            os.link(staged, anchor, follow_symlinks=False)
+            anchored = os.lstat(anchor)
+            if (
+                not stat.S_ISLNK(anchored.st_mode)
+                or (anchored.st_dev, anchored.st_ino) != identity
+            ):
+                raise InstallError(f"Codex link anchor changed identity: {anchor}")
+            _fsync_directory(link.destination.parent)
         record["phase"] = "staged"
         _write_codex_install_journal(journal_path, journal)
         parent_fd = os.open(link.destination.parent, _directory_open_flags())
@@ -7284,17 +7365,11 @@ def _rollback_codex_links(links: Sequence[ProfileLink]) -> list[str]:
     _verify_codex_transaction()
     failures: list[str] = []
     for link in reversed(tuple(links)):
-        if (
-            link.staged_destination is not None
-            and _codex_link_path_is_live(link, link.staged_destination)
-        ):
-            try:
-                link.staged_destination.unlink()
-                _fsync_directory(link.staged_destination.parent)
-            except OSError as error:
-                failures.append(
-                    f"staged link {link.staged_destination}: {error}"
-                )
+        try:
+            _retire_codex_transaction_stage(link)
+        except (OSError, InstallError) as error:
+            failures.append(f"staged link {link.staged_destination}: {error}")
+            continue
         try:
             removed = _remove_codex_recorded_link(link)
         except InstallError as error:
@@ -7321,6 +7396,7 @@ def _retire_codex_transaction_stage(
             parent_fd, staged.name, expected, directory=False
         )
         if not pending and not _lexists(staged):
+            _retire_codex_creation_directory(staged, expected)
             return
         if not pending and not _codex_staged_link_is_exact(
             link, staged, expected, original_target=original_target,
@@ -7335,6 +7411,9 @@ def _retire_codex_transaction_stage(
     finally:
         os.close(parent_fd)
     _fsync_directory(staged.parent)
+    if _lexists(staged) and not preserve_replacement:
+        raise InstallError(f"Codex staged link changed identity: {staged}")
+    _retire_codex_creation_directory(staged, expected)
 
 
 def _rollback_codex_transaction_links(
@@ -7378,14 +7457,9 @@ def _rollback_codex_transaction_links(
                     legacy.source, legacy.destination, journal["stage_secret"]
                 )
                 if restoration["dev"] is None and _lexists(legacy_stage):
-                    metadata = os.lstat(legacy_stage)
-                    if not _codex_staged_link_is_exact(
-                        legacy, legacy_stage, (metadata.st_dev, metadata.st_ino),
-                        original_target=record["preexisting_target"],
-                    ):
-                        raise InstallError(f"legacy restoration stage changed: {legacy_stage}")
-                    restoration.update(dev=metadata.st_dev, ino=metadata.st_ino)
-                    _write_codex_install_journal(journal_path, journal)
+                    raise InstallError(
+                        f"legacy restoration stage identity is unproven; reconcile: {legacy_stage}"
+                    )
                 if restoration["dev"] is not None:
                     restored = replace(
                         legacy, destination_dev=restoration["dev"],
@@ -7424,6 +7498,7 @@ def _rollback_codex_transaction_links(
                     raise InstallError(
                         f"Codex link staging identity is unproven; reconcile: {staged}"
                     )
+                _retire_codex_creation_directory(staged, (None, None))
             if phase in {"anchoring", "staged", "published"}:
                 recorded = _codex_transaction_link(record, link, journal)
                 if recorded is None:
@@ -7776,14 +7851,17 @@ def _restore_legacy_codex_links(
                 _write_codex_install_journal(journal_path, journal)
             link.destination.parent.mkdir(parents=True, exist_ok=True)
             if restoration["dev"] is None:
-                if not _lexists(staged):
-                    original = retained.get((link.source, link.destination))
-                    if original is not None and _valid_codex_link_anchor_path(original):
-                        if not _codex_anchor_is_live(original):
-                            raise InstallError(f"legacy receipt anchor changed: {original.link_anchor}")
-                        os.link(original.link_anchor, staged, follow_symlinks=False)
-                    else:
-                        staged.symlink_to(record["preexisting_target"])
+                if _lexists(staged):
+                    raise InstallError(
+                        f"legacy restoration stage identity is unproven; reconcile: {staged}"
+                    )
+                original = retained.get((link.source, link.destination))
+                if original is not None and _valid_codex_link_anchor_path(original):
+                    if not _codex_anchor_is_live(original):
+                        raise InstallError(f"legacy receipt anchor changed: {original.link_anchor}")
+                    os.link(original.link_anchor, staged, follow_symlinks=False)
+                else:
+                    staged.symlink_to(record["preexisting_target"])
                 if not _codex_staged_link_is_exact(
                     link, staged, original_target=record["preexisting_target"],
                 ):

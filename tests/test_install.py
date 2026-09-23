@@ -33,6 +33,306 @@ from scripts.install import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_correction_legacy_identity_free_stage(tmp_path, retry, replacement):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    destination = destination_paths(home)["expskill-review"]
+    source = repo / "plugins/expskill/assets/agents" / destination.name
+    destination.parent.mkdir(parents=True)
+    destination.symlink_to(source)
+    pid = os.fork()
+    if pid == 0:
+        symlink = Path.symlink_to
+
+        def created(path, target, *args, **kwargs):
+            symlink(path, target, *args, **kwargs)
+            if str(target) == str(source):
+                os._exit(73)
+
+        with mock.patch.object(Path, "symlink_to", created), mock.patch.object(
+            module, "_write_codex_receipt", side_effect=InstallError("receipt failed")
+        ):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    journal_path = module._codex_install_journal_path(state)
+    journal = json.loads(journal_path.read_text())
+    record = next(item for item in journal["links"] if "legacy_restore" in item)
+    assert record["legacy_restore"] == {"dev": None, "ino": None}
+    stage = module._codex_link_staging_path(source, destination, journal["stage_secret"])
+    if replacement:
+        stage.rename(tmp_path / "original-stage")
+        stage.symlink_to(source)
+    inode = stage.lstat().st_ino
+    for _ in range(2):
+        with pytest.raises(InstallError, match="unproven"):
+            getattr(module, retry)(repo, home, state, FakeRunner([]), agents_only=True)
+        assert stage.lstat().st_ino == inode
+        assert os.readlink(stage) == str(source)
+        retained = json.loads(journal_path.read_text())
+        assert next(item for item in retained["links"] if "legacy_restore" in item)["legacy_restore"] == {"dev": None, "ino": None}
+
+
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize("captured", [False, True])
+def test_correction_old_record_rollback_witness(tmp_path, retry, crash, captured):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    record = receipt_path(state)
+    contents = record.read_bytes()
+    # Model a receipt written by the older installer, which has no witness.
+    for witness in record.parent.glob("*.committed"):
+        witness.unlink()
+    pid = os.fork()
+    if pid == 0:
+        rename = module._renameat_noreplace
+
+        def interrupted(sfd, source, dfd, target):
+            if (captured and str(source).endswith(".publish") and target == record.name
+                or not captured and source == record.name and str(target).endswith(".previous")):
+                os._exit(73)
+            return rename(sfd, source, dfd, target)
+
+        with module._codex_transaction(state, create=True):
+            module._read_codex_record(record)
+            with mock.patch.object(module, "_renameat_noreplace", interrupted):
+                module._write_codex_install_journal(record, json.loads(contents))
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    evidence = tmp_path / "replacement-inode"
+
+    def recover():
+        unlink = os.unlink
+
+        def substituted(path, *args, **kwargs):
+            selected = str(path).endswith(".publish") and not evidence.exists()
+            if selected:
+                record.rename(tmp_path / "old-record")
+                record.write_bytes(contents)
+                evidence.write_text(str(record.stat().st_ino))
+            result = unlink(path, *args, **kwargs)
+            if selected and crash:
+                os._exit(73)
+            return result
+
+        with mock.patch.object(module.os, "unlink", substituted):
+            try:
+                with module._codex_transaction(state, create=False):
+                    pass
+            except InstallError:
+                pass
+
+    if crash:
+        pid = os.fork()
+        if pid == 0:
+            recover()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        recover()
+    inode = int(evidence.read_text())
+    for _ in range(2):
+        with pytest.raises(InstallError, match="record changed"):
+            getattr(module, retry)(repo, home, state, FakeRunner([]), agents_only=True)
+        assert record.stat().st_ino == inode
+        assert record.read_bytes() == contents
+
+
+@pytest.mark.parametrize("boundary", ["validated", "unlink"])
+def test_correction_rollback_stage_replacement(tmp_path, boundary):
+    from scripts import install as module
+
+    source, destination, stage = tmp_path / "source", tmp_path / "profile", tmp_path / "stage"
+    stage.symlink_to(source)
+    metadata = stage.lstat()
+    anchor = module._codex_link_anchor_path(destination, metadata.st_dev, metadata.st_ino)
+    os.link(stage, anchor, follow_symlinks=False)
+    link = module.ProfileLink(
+        source, destination, destination_dev=metadata.st_dev, destination_ino=metadata.st_ino,
+        staged_destination=stage, link_anchor=anchor,
+        link_anchor_dev=metadata.st_dev, link_anchor_ino=metadata.st_ino,
+    )
+    live, exact, unlink = module._codex_link_path_is_live, module._codex_staged_link_is_exact, os.unlink
+    replacements = []
+
+    def substitute():
+        if replacements:
+            return
+        if os.path.lexists(stage):
+            stage.rename(tmp_path / "saved-stage")
+        stage.write_text("user data\n")
+        replacements.append(stage.stat().st_ino)
+
+    def validated(check, path=None, *args, **kwargs):
+        result = live(check, path, *args, **kwargs)
+        if path == stage and result and boundary == "validated":
+            substitute()
+        return result
+
+    def checked(check, path, *args, **kwargs):
+        result = exact(check, path, *args, **kwargs)
+        if path == stage and result and boundary == "validated":
+            substitute()
+        return result
+
+    def unlinked(path, *args, **kwargs):
+        if boundary == "unlink" and (Path(path).name == stage.name or str(path).endswith(".retire")):
+            substitute()
+        return unlink(path, *args, **kwargs)
+
+    with mock.patch.object(module, "_codex_link_path_is_live", validated), mock.patch.object(
+        module, "_codex_staged_link_is_exact", checked
+    ), mock.patch.object(module.os, "unlink", unlinked):
+        module._rollback_codex_links([link])
+    assert replacements, "rollback boundary was not reached"
+    assert stage.exists(), "rollback deleted the replacement at the staged path"
+    assert stage.stat().st_ino == replacements[0]
+    assert stage.read_text() == "user data\n"
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+@pytest.mark.parametrize("boundary", ["rename", "cleanup"])
+def test_correction_builder_failure_replacement(tmp_path, kind, boundary):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    if kind == "refresh":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    rename, rmtree, rmdir = Path.rename, shutil.rmtree, os.rmdir
+    candidates, replacements = [], []
+    target = module._codex_recovery_root(repo, state) if kind == "recovery" else module._codex_managed_root(repo, state)
+
+    def substitute():
+        if replacements:
+            return
+        candidate = candidates[0]
+        rename(candidate, tmp_path / "original-builder-stage")
+        candidate.mkdir()
+        (candidate / "user-data").write_text("preserve me\n")
+        replacements.append((candidate, candidate.stat().st_ino))
+
+    def failed(path, output):
+        if path.parent.name.startswith(".codex-marketplace-build-") and target.parent in path.parents:
+            candidates.append(path)
+            if boundary == "rename":
+                substitute()
+            raise OSError(errno.EIO, "injected builder rename failure")
+        return rename(path, output)
+
+    def cleanup(path, *args, **kwargs):
+        if candidates and str(path) == str(candidates[0].parent) and boundary == "cleanup":
+            substitute()
+        return rmtree(path, *args, **kwargs)
+
+    def empty_cleanup(path, *args, **kwargs):
+        if candidates and str(path) == str(candidates[0].parent) and boundary == "cleanup":
+            substitute()
+        return rmdir(path, *args, **kwargs)
+
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "recovery" else FakeRunner([])
+    with mock.patch.object(Path, "rename", failed), mock.patch.object(shutil, "rmtree", cleanup), mock.patch.object(os, "rmdir", empty_cleanup):
+        with pytest.raises(InstallError):
+            install(repo, home, state, runner, agents_only=kind != "recovery")
+    assert replacements, "builder cleanup boundary was not reached"
+    candidate, inode = replacements[0]
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            try:
+                operation(repo, home, state, runner if kind == "recovery" else FakeRunner([]), agents_only=kind != "recovery")
+            except InstallError:
+                pass
+        assert candidate.exists(), "builder cleanup deleted the replacement"
+        assert candidate.stat().st_ino == inode
+        assert (candidate / "user-data").read_text() == "preserve me\n"
+
+
+def test_correction_fresh_stage_creation_replacement(tmp_path):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    symlink, hardlink = Path.symlink_to, os.link
+    replacements = []
+
+    def substitute(path):
+        path = Path(path)
+        if path.parent == home / "agents" and path.name.startswith(module.CODEX_LINK_STAGE_PREFIX) and not replacements:
+            path.rename(tmp_path / "created-stage")
+            symlink(path, os.readlink(tmp_path / "created-stage"))
+            replacements.append((path, path.lstat().st_ino, os.readlink(path)))
+
+    def created(path, target, *args, **kwargs):
+        symlink(path, target, *args, **kwargs)
+        substitute(path)
+
+    def linked(source, target, *args, **kwargs):
+        hardlink(source, target, *args, **kwargs)
+        if kwargs.get("dst_dir_fd") is None:
+            substitute(target)
+
+    with mock.patch.object(Path, "symlink_to", created), mock.patch.object(module.os, "link", linked):
+        try:
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        except InstallError:
+            pass
+    assert replacements, "stage creation boundary was not reached"
+    path, inode, target = replacements[0]
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            try:
+                operation(repo, home, state, FakeRunner([]), agents_only=True)
+            except InstallError:
+                pass
+        assert path.is_symlink(), "installer adopted the fresh stage replacement"
+        assert path.lstat().st_ino == inode
+        assert os.readlink(path) == target
+        if receipt_path(state).exists():
+            assert all(item.get("destination_ino") != inode for item in load_receipt(state)["links"])
+
+
+def test_correction_creation_witness_survives_failed_anchor(tmp_path):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    write = module._write_codex_install_journal
+    stages = []
+
+    def failed(path, payload):
+        write(path, payload)
+        for record in payload["links"]:
+            if record["phase"] == "anchoring" and not stages:
+                stage = Path(record["staged_destination"])
+                stages.append((stage, stage.lstat().st_ino))
+                stage.unlink()
+                stage.symlink_to(record["source"])
+                raise SystemExit(73)
+
+    with mock.patch.object(module, "_write_codex_install_journal", failed), pytest.raises(SystemExit):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    stage, original = stages[0]
+    witness = module._codex_creation_directory(stage) / "link"
+    replacement = stage.lstat().st_ino
+    assert replacement != original
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            with pytest.raises(InstallError):
+                operation(repo, home, state, FakeRunner([]), agents_only=True)
+        assert witness.is_symlink(), "failed anchoring discarded its last inode witness"
+        assert witness.lstat().st_ino == original
+        assert stage.lstat().st_ino == replacement
+        assert module._codex_install_journal_path(state).exists()
+
+
 @pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
 @pytest.mark.parametrize("contents", ["marker", "valid-package"])
 def test_builder_handoff_preserves_replacement(tmp_path, kind, contents):
@@ -94,14 +394,14 @@ def test_identity_free_stage_requires_reconciliation(tmp_path, retry, replacemen
     home, state = tmp_path / "home", tmp_path / "state"
     pid = os.fork()
     if pid == 0:
-        symlink = Path.symlink_to
+        hardlink = os.link
 
-        def created(path, target, *args, **kwargs):
-            symlink(path, target, *args, **kwargs)
-            if path.name.startswith(module.CODEX_LINK_STAGE_PREFIX):
+        def created(source, path, *args, **kwargs):
+            hardlink(source, path, *args, **kwargs)
+            if Path(path).name.startswith(module.CODEX_LINK_STAGE_PREFIX):
                 os._exit(73)
 
-        with mock.patch.object(Path, "symlink_to", created):
+        with mock.patch.object(module.os, "link", created):
             install(repo, home, state, FakeRunner([]), agents_only=True)
         os._exit(74)
     wait_for_crashed_child(pid)
@@ -127,6 +427,7 @@ def test_identity_free_stage_requires_reconciliation(tmp_path, retry, replacemen
         assert entry["destination_ino"] is None
     # Explicit reconciliation of the unproven stage permits normal retry.
     stage.unlink()
+    shutil.rmtree(module._codex_creation_directory(stage))
     getattr(module, retry)(repo, home, state, FakeRunner([]), agents_only=True)
 
 
@@ -1514,17 +1815,17 @@ class InstallerTests(unittest.TestCase):
                 root = Path(temporary)
                 repo = seed_repository(root / "repo")
                 codex_home, state_home = root / "codex", root / "state"
-                symlink = Path.symlink_to
+                hardlink = os.link
                 write = module._write_codex_install_journal
-                def create(path: Path, target: object, *args: object, **kwargs: object) -> None:
-                    symlink(path, target, *args, **kwargs)
-                    if initial_phase == "staging" and path.name.endswith(".link"):
+                def create(source: object, path: Path, *args: object, **kwargs: object) -> None:
+                    hardlink(source, path, *args, **kwargs)
+                    if initial_phase == "staging" and Path(path).name.endswith(".link"):
                         raise SystemExit(73)
                 def checkpoint(path: Path, payload: dict[str, object]) -> None:
                     write(path, payload)
                     if initial_phase != "staging" and any(item["phase"] == initial_phase for item in payload["links"]):
                         raise SystemExit(73)
-                with mock.patch.object(Path, "symlink_to", create), mock.patch("scripts.install._write_codex_install_journal", checkpoint), self.assertRaises(SystemExit):
+                with mock.patch.object(module.os, "link", create), mock.patch("scripts.install._write_codex_install_journal", checkpoint), self.assertRaises(SystemExit):
                     install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                 if initial_phase == "staging":
                     stage, = (codex_home / "agents").glob("*.link")
@@ -1533,6 +1834,7 @@ class InstallerTests(unittest.TestCase):
                         uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                     self.assertEqual(stage.lstat().st_ino, inode)
                     stage.unlink()  # Explicit reconciliation; no deletion authority survived.
+                    shutil.rmtree(module._codex_creation_directory(stage))
                     uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                     continue
                 pid = os.fork()
@@ -1557,7 +1859,7 @@ class InstallerTests(unittest.TestCase):
                 uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                 self.assertEqual(list((codex_home / "agents").iterdir()), [])
 
-    def test_pending_uninstall_retires_unpublished_legacy_restoration(self) -> None:
+    def test_pending_uninstall_preserves_unproven_legacy_restoration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -1574,8 +1876,14 @@ class InstallerTests(unittest.TestCase):
             with mock.patch.object(Path, "symlink_to", crash), mock.patch("scripts.install._write_codex_receipt", side_effect=InstallError("receipt failed")), self.assertRaises(SystemExit):
                 install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
             self.assertTrue(any(path.name.endswith(".link") for path in destination.parent.iterdir()))
-            with mock.patch.object(Path, "symlink_to", side_effect=AssertionError("uninstall must not publish")):
+            stage, = destination.parent.glob("*.link")
+            inode = stage.lstat().st_ino
+            with mock.patch.object(Path, "symlink_to", side_effect=AssertionError("uninstall must not publish")), self.assertRaisesRegex(InstallError, "unproven"):
                 uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(stage.lstat().st_ino, inode)
+            self.assertTrue((state_home / "expskill/codex-install.json").exists())
+            stage.unlink()  # Explicit manual reconciliation of identity-free state.
+            uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
             self.assertEqual(list(destination.parent.iterdir()), [])
             self.assertFalse((state_home / "expskill/codex-install.json").exists())
 
@@ -1723,6 +2031,13 @@ class InstallerTests(unittest.TestCase):
                     os._exit(74)
                 wait_for_crashed_child(pid)
                 self.assertTrue((state_home / "expskill" / "codex-install.json").is_file())
+                if boundary == "symlink":
+                    stage, = destination.parent.glob("*.link")
+                    inode = stage.lstat().st_ino
+                    with self.assertRaisesRegex(InstallError, "unproven"):
+                        install(repo, codex_home, state_home, FakeRunner([]))
+                    self.assertEqual(stage.lstat().st_ino, inode)
+                    stage.unlink()  # No durable identity survived this boundary.
                 install(repo, codex_home, state_home, FakeRunner(install_results(repo, marketplace_present=True)))
                 uninstall(repo, codex_home, state_home, FakeRunner([
                     plugin_list_response(repo), marketplace_list_response(repo),
@@ -2882,24 +3197,25 @@ class InstallerTests(unittest.TestCase):
                 )
             )
 
-    def test_install_preserves_unproven_stage_after_symlink_creation_exit(self) -> None:
+    def test_install_preserves_unproven_stage_after_link_creation_exit(self) -> None:
+        from scripts import install as module
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             codex_home = root / "codex"
             state_home = root / "state"
-            original_symlink_to = Path.symlink_to
+            original_link = os.link
             pid = os.fork()
             if pid == 0:
                 def crash_after_stage(
-                    path: Path, target: Path, *args: object, **kwargs: object
+                    source: object, path: Path, *args: object, **kwargs: object
                 ) -> None:
-                    original_symlink_to(path, target, *args, **kwargs)
-                    if path.name.startswith(".expskill-codex-link-stage-"):
+                    original_link(source, path, *args, **kwargs)
+                    if Path(path).name.startswith(".expskill-codex-link-stage-"):
                         os._exit(73)
 
                 try:
-                    with mock.patch.object(Path, "symlink_to", crash_after_stage):
+                    with mock.patch.object(module.os, "link", crash_after_stage):
                         install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                 finally:
                     os._exit(74)
@@ -2908,12 +3224,13 @@ class InstallerTests(unittest.TestCase):
             journal = state_home / "expskill" / "codex-install.json"
             interrupted = json.loads(journal.read_text(encoding="utf-8"))
             self.assertIn("staging", {entry["phase"] for entry in interrupted["links"]})
-            stage, = (codex_home / "agents").glob(".expskill-codex-link-stage-*")
+            stage, = (codex_home / "agents").glob(".expskill-codex-link-stage-*.link")
             inode = stage.lstat().st_ino
             with self.assertRaisesRegex(InstallError, "unproven"):
                 install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
             self.assertEqual(stage.lstat().st_ino, inode)
             stage.unlink()  # User reconciliation permits a new creation attempt.
+            shutil.rmtree(module._codex_creation_directory(stage))
             install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
 
             self.assertFalse(journal.exists())
@@ -6975,6 +7292,14 @@ def test_legacy_repository_alias_interrupted_restoration(
         journal.write_text(json.dumps(payload))
     else:
         assert record["legacy_source"] == str(source)
+    if boundary == "symlink":
+        stage = module._codex_link_staging_path(source, destination, payload["stage_secret"])
+        inode = stage.lstat().st_ino
+        with pytest.raises(InstallError, match="unproven"):
+            retry(repo, home, state, FakeRunner([]))
+        assert stage.lstat().st_ino == inode
+        assert journal.exists()
+        stage.unlink()  # Explicit reconciliation is required before retry.
     results = install_results(repo) if retry is install else [
         plugin_list_response(), marketplace_list_response(),
         removal_response(),
