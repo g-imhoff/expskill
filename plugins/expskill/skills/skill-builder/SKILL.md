@@ -54,7 +54,7 @@ Bind the baseline to the target snapshot and run revision. If the target changes
 
 ### 3. Run three blind research lanes
 
-Launch exactly three bounded, blind, independent web research lanes. Assign GPT-5.6-Luna at max reasoning to each lane:
+Launch exactly three bounded, blind, independent web research lanes. Assign GPT-6-Luna at max reasoning to each lane:
 
 1. Domain techniques relevant to the target's job.
 2. Agent-skill design, instruction, interaction, and tooling practices.

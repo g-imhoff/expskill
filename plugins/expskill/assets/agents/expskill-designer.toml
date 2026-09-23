@@ -1,6 +1,6 @@
 name = "expskill-designer"
 description = "Run one Design session inside its isolated helper-owned worktree."
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 model_reasoning_effort = "max"
 sandbox_mode = "workspace-write"
 developer_instructions = """

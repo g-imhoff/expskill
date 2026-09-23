@@ -134,7 +134,7 @@ For create mode, record the absent-target proof, overlap map, host conventions, 
 
 ### Research pack
 
-Record exactly three lane identities, each lane's bounded question, GPT-5.6-Luna with max reasoning, source scope, evidence budget, start and end state, and limitations. Each evidence card contains:
+Record exactly three lane identities, each lane's bounded question, GPT-6-Luna with max reasoning, source scope, evidence budget, start and end state, and limitations. Each evidence card contains:
 
 - claim
 - technique or practice

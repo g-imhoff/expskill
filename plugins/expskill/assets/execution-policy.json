@@ -4,7 +4,7 @@
     "expskill-explorer": {
       "agent_type": "expskill-explorer",
       "role": "explorer",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "read-only",
       "escalation": null
@@ -12,7 +12,7 @@
     "expskill-test-engineer": {
       "agent_type": "expskill-test-engineer",
       "role": "test-engineer",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "read-only",
       "escalation": null
@@ -20,7 +20,7 @@
     "expskill-implementer": {
       "agent_type": "expskill-implementer",
       "role": "implementer",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
@@ -28,7 +28,7 @@
     "expskill-planner": {
       "agent_type": "expskill-planner",
       "role": "planner",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
@@ -36,7 +36,7 @@
     "expskill-designer": {
       "agent_type": "expskill-designer",
       "role": "designer",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
@@ -44,7 +44,7 @@
     "expskill-review": {
       "agent_type": "expskill-review",
       "role": "review",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "effort": "xhigh",
       "sandbox_mode": "read-only",
       "escalation": null
@@ -52,7 +52,7 @@
     "expskill-spec": {
       "agent_type": "expskill-spec",
       "role": "spec",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "effort": "xhigh",
       "sandbox_mode": "read-only",
       "escalation": null
