@@ -723,6 +723,7 @@ class _Receipt:
     # distinguishes that prepared state from a fully committed migration.
     pending_migration: bool = False
     pending_retirement: _PendingRetirement | None = None
+    codex_package: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -2275,6 +2276,7 @@ def _remove_exact_codex_swap_backup(
     repository_root: Path,
     *,
     before_remove: Callable[[str], None] | None = None,
+    package_identity: Mapping[str, object] | None = None,
 ) -> None:
     _verify_codex_transaction()
     parent_fd = os.open(backup.parent, _directory_open_flags())
@@ -2295,6 +2297,18 @@ def _remove_exact_codex_swap_backup(
                 if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
                     raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
                 children = os.listdir(descriptor)
+                if package_identity is not None and CODEX_MANAGED_MARKER in children:
+                    # The path check is diagnostic only. All deletion authority
+                    # is bound to this descriptor and the durable receipt.
+                    if not _codex_managed_root_is_owned(backup, repository_root):
+                        raise InstallError(f"refusing unowned managed Codex package: {backup}")
+                    marker = os.stat(CODEX_MANAGED_MARKER, dir_fd=descriptor, follow_symlinks=False)
+                    if (
+                        not stat.S_ISREG(marker.st_mode)
+                        or (marker.st_dev, marker.st_ino, marker.st_ctime_ns)
+                        != tuple(package_identity[key] for key in ("marker_dev", "marker_ino", "marker_ctime_ns"))
+                    ):
+                        raise InstallError(f"managed Codex package marker lost its exact ownership: {backup}")
                 if CODEX_MANAGED_MARKER not in children:
                     if children:
                         raise InstallError(f"markerless Codex swap backup is not empty: {backup}")
@@ -2411,6 +2425,8 @@ def _resume_codex_marketplace_swap(
         metadata = target_root.lstat() if target_exists else None
         if metadata is None or not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
             raise InstallError(f"managed Codex package changed before swap: {target_root}")
+        if swap_key == "swap":
+            journal.pop("package", None)
     elif backup_exists and not target_exists:
         metadata = os.lstat(backup)
         if (
@@ -2418,6 +2434,15 @@ def _resume_codex_marketplace_swap(
             or stat.S_ISLNK(metadata.st_mode)
             or (metadata.st_dev, metadata.st_ino) != expected
         ):
+            # A substitution at the rename boundary moved an unowned object.
+            # Return it to the vacant public name, including after process exit.
+            if swap["phase"] == "prepared":
+                parent_fd = os.open(backup.parent, _directory_open_flags())
+                try:
+                    _renameat_noreplace(parent_fd, backup.name, parent_fd, target_root.name)
+                    os.fsync(parent_fd)
+                finally:
+                    os.close(parent_fd)
             raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
         if not _lexists(backup / CODEX_MANAGED_MARKER):
             _remove_exact_codex_swap_backup(
@@ -2432,13 +2457,26 @@ def _resume_codex_marketplace_swap(
         ):
             raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
         try:
-            backup.rename(target_root)
-            _fsync_directory(target_root.parent)
+            parent_fd = os.open(backup.parent, _directory_open_flags())
+            try:
+                _renameat_noreplace(parent_fd, backup.name, parent_fd, target_root.name)
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            if swap_key == "swap":
+                # The candidate never became live. Preserve the prior receipt's
+                # identity instead of handing off the unpublished candidate.
+                journal.pop("package", None)
         except OSError as error:
             raise InstallError(
                 f"cannot restore interrupted Codex package swap: {error}"
             ) from error
     elif target_exists:
+        if not backup_exists and swap_key == "swap":
+            metadata = target_root.lstat()
+            if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == expected:
+                # Recover an exit after restoration but before its checkpoint.
+                journal.pop("package", None)
         # The public backup may already be gone while its exact retirement
         # record still needs cleanup after an interrupted exchange.
         _remove_exact_codex_swap_backup(
@@ -2471,6 +2509,7 @@ def _materialize_codex_marketplace(
     install_journal_path: Path | None = None,
     install_journal: dict[str, object] | None = None,
     swap_key: str = "swap",
+    package_identities: Sequence[Mapping[str, object]] = (),
 ) -> Path:
     _verify_codex_transaction()
     parent = target_root.parent
@@ -2498,6 +2537,10 @@ def _materialize_codex_marketplace(
             pins.callback(os.close, original_fd)
             metadata = os.fstat(original_fd)
             backup_identity = (metadata.st_dev, metadata.st_ino)
+            if package_identities and _codex_package_identity(
+                target_root, directory_fd=original_fd
+            ) not in package_identities:
+                raise InstallError(f"managed Codex package lost its receipt identity: {target_root}")
             if not _codex_swap_marker_is_owned(
                 target_root, target_root, repository_root, directory_fd=original_fd
             ):
@@ -2532,6 +2575,8 @@ def _materialize_codex_marketplace(
                 _fsync_directory(parent)
                 metadata = os.lstat(backup)
                 if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != backup_identity:
+                    _renameat_noreplace(parent_fd, backup.name, parent_fd, target_root.name)
+                    os.fsync(parent_fd)
                     raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
                 if install_journal_path is not None and install_journal is not None:
                     install_journal[swap_key]["phase"] = "backup-created"
@@ -2539,6 +2584,11 @@ def _materialize_codex_marketplace(
             _verify_codex_transaction()
             candidate_parent_fd = os.open(temporary_parent, _directory_open_flags())
             try:
+                if swap_key == "swap" and install_journal is not None:
+                    # Freeze publication identity before the candidate can be
+                    # substituted at its public name or the process can exit.
+                    install_journal["package"] = _codex_package_identity(candidate_root)
+                    _write_codex_install_journal(install_journal_path, install_journal)
                 _renameat_noreplace(candidate_parent_fd, candidate_root.name, parent_fd, target_root.name)
             finally:
                 os.close(candidate_parent_fd)
@@ -2553,6 +2603,9 @@ def _materialize_codex_marketplace(
                 if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == backup_identity:
                     _renameat_noreplace(parent_fd, backup.name, parent_fd, target_root.name)
                     _fsync_directory(parent)
+                    if swap_key == "swap" and install_journal is not None:
+                        install_journal.pop("package", None)
+                        _write_codex_install_journal(install_journal_path, install_journal)
             raise InstallError(f"Codex package could not be materialized: {error}") from error
         finally:
             _verify_codex_transaction()
@@ -2574,45 +2627,61 @@ def _materialize_codex_marketplace(
     return target_root
 
 
-def _remove_owned_codex_marketplace(root: Path, repository_root: Path) -> None:
-    """Remove an owned marketplace while retaining its marker until the end."""
-
-    _verify_codex_transaction()
-    if root.is_symlink() or not root.is_dir():
-        raise InstallError(f"managed Codex package is not a regular directory: {root}")
-    if not _codex_managed_root_is_owned(root, repository_root):
-        raise InstallError(f"refusing unowned managed Codex package: {root}")
-    marker = root / CODEX_MANAGED_MARKER
+def _codex_package_identity(root: Path, *, directory_fd: int | None = None) -> dict[str, object]:
+    descriptor = os.open(root, _directory_open_flags()) if directory_fd is None else os.dup(directory_fd)
     try:
-        for child in root.iterdir():
-            if child == marker:
-                continue
-            if child.is_symlink() or not child.is_dir():
-                child.unlink()
-            else:
-                shutil.rmtree(child)
-        _fsync_directory(root)
-        marker.unlink()
-        root.rmdir()
-        _fsync_directory(root.parent)
+        directory = os.fstat(descriptor)
+        marker = os.stat(CODEX_MANAGED_MARKER, dir_fd=descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(marker.st_mode):
+            raise InstallError(f"managed Codex package marker is not regular: {root}")
+        return {
+            "dev": directory.st_dev, "ino": directory.st_ino,
+            "marker_dev": marker.st_dev, "marker_ino": marker.st_ino,
+            # Copying a marker, even onto a recycled inode, changes ctime.
+            "marker_ctime_ns": marker.st_ctime_ns,
+        }
     except OSError as error:
-        raise InstallError(f"cannot remove managed Codex package: {root}: {error}") from error
+        raise InstallError(f"cannot verify managed Codex package identity: {root}: {error}") from error
+    finally:
+        os.close(descriptor)
 
 
-def _remove_empty_codex_marketplace(root: Path) -> bool:
-    """Finish a marker-last removal interrupted after deleting the marker."""
+def _validate_codex_package_identity(value: object) -> None:
+    if value is None:
+        return
+    keys = {"dev", "ino", "marker_dev", "marker_ino", "marker_ctime_ns"}
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"retirement"} != keys
+        or any(type(value.get(key)) is not int or value[key] <= 0 for key in keys)
+        or ("retirement" in value and not isinstance(value["retirement"], str))
+    ):
+        raise InstallError("Codex package receipt identity is malformed")
 
-    _verify_codex_transaction()
-    if root.is_symlink() or not root.is_dir():
-        return False
-    try:
-        if any(root.iterdir()):
-            return False
-        root.rmdir()
-        _fsync_directory(root.parent)
-    except OSError as error:
-        raise InstallError(f"cannot remove managed Codex package: {root}: {error}") from error
-    return True
+
+def _remove_owned_codex_marketplace(
+    root: Path, repository_root: Path, receipt_path: Path, receipt: _Receipt,
+) -> None:
+    """Bind cleanup to the published receipt and checkpoint before freeing it."""
+
+    package = receipt.codex_package
+    if package is None:
+        if _lexists(root):
+            raise InstallError(f"managed Codex package lacks receipt identity: {root}")
+        return
+    expected = (package["dev"], package["ino"])
+    if "retirement" in package:
+        _finish_codex_directory_retirement(root, expected, package["retirement"])
+        return
+
+    def checkpoint(retirement: str) -> None:
+        package["retirement"] = retirement
+        _write_codex_receipt(receipt_path, receipt)
+
+    _remove_exact_codex_swap_backup(
+        root, expected, root, repository_root,
+        before_remove=checkpoint, package_identity=package,
+    )
 
 
 def _materialize_codex_package(
@@ -2621,12 +2690,14 @@ def _materialize_codex_package(
     *,
     install_journal_path: Path | None = None,
     install_journal: dict[str, object] | None = None,
+    package_identities: Sequence[Mapping[str, object]] = (),
 ) -> Path:
     return _materialize_codex_marketplace(
         repository_root,
         _codex_managed_root(repository_root, state_home),
         install_journal_path=install_journal_path,
         install_journal=install_journal,
+        package_identities=package_identities,
     )
 
 
@@ -2950,6 +3021,21 @@ def _clear_codex_install_journal(journal_path: Path) -> None:
         raise InstallError(
             f"install journal path is not a regular file: {journal_path}"
         )
+    journal = _read_codex_install_journal(journal_path)
+    if journal.get("package") is not None:
+        # Package publication precedes CLI work. Even a compensated failure
+        # must transfer its new identity before discarding the only journal.
+        repository = Path(journal["repository_root"])
+        state_home = journal_path.parent.parent
+        receipt_path = _receipt_path(state_home)
+        receipt = _read_codex_receipt(
+            receipt_path, repository,
+            _allowlisted_links(repository, Path(journal["codex_home"]), state_home),
+            frozen_only=True,
+        )
+        if receipt is not None and receipt.codex_package != journal["package"]:
+            _validate_codex_package_identity(journal["package"])
+            _write_codex_receipt(receipt_path, replace(receipt, codex_package=journal["package"]))
     try:
         journal_path.unlink()
         _fsync_directory(journal_path.parent)
@@ -3048,7 +3134,7 @@ def _validate_codex_install_journal(
     except (OSError, RuntimeError, ValueError) as error:
         raise InstallError(f"install journal home cannot be resolved: {journal_path}") from error
     if (
-        set(payload) - {"superseded_links"} != expected_keys
+        set(payload) - {"superseded_links", "package"} != expected_keys
         or payload.get("schema_version") != CODEX_INSTALL_SCHEMA
         or payload.get("repository_root") != str(repository_root)
         or canonical_recorded_home != Path(codex_home).expanduser().resolve(strict=False)
@@ -3191,6 +3277,7 @@ def _validate_codex_install_journal(
         raise InstallError(f"install journal links are malformed: {journal_path}")
     _journaled_legacy_codex_links(payload)
     _codex_superseded_links(journal_path, payload)
+    _validate_codex_package_identity(payload.get("package"))
     for swap_key in ("swap", "recovery_swap"):
         swap = payload.get(swap_key)
         if swap is not None and not isinstance(swap, dict):
@@ -3354,7 +3441,7 @@ def _read_codex_migration_journal(journal_path: Path) -> dict[str, object] | Non
     }
     if (
         not isinstance(payload, dict)
-        or set(payload) - {"recovery_dev", "recovery_ino", "cleanup_pending"} != expected_keys
+        or set(payload) - {"recovery_dev", "recovery_ino", "cleanup_pending", "retirement"} != expected_keys
         or payload.get("schema_version") != CODEX_MIGRATION_SCHEMA
         or payload.get("marketplace_state") != "legacy"
         or payload.get("plugin_state") not in {"legacy", "absent"}
@@ -5965,11 +6052,13 @@ def _read_codex_receipt(
     if not isinstance(marketplace_added, bool) or not isinstance(plugin_installed, bool):
         raise InstallError(f"receipt ownership flags are malformed: {receipt_path}")
     links = _codex_receipt_links(payload.get("links"), receipt_path, expected_links)
+    _validate_codex_package_identity(payload.get("codex_package"))
     receipt = _Receipt(
         repository_root=recorded_root,
         links=links,
         marketplace_added=marketplace_added,
         plugin_installed=plugin_installed,
+        codex_package=payload.get("codex_package"),
     )
     version = payload.get("codex_link_identity")
     pending = payload.get("pending_link_migration", False)
@@ -6122,6 +6211,8 @@ def _write_codex_receipt(
     }
     if pending_link_migration:
         payload["pending_link_migration"] = True
+    if receipt.codex_package is not None:
+        payload["codex_package"] = receipt.codex_package
     temporary_path: Path | None = None
     write_error: InstallError | None = None
     write_cause: OSError | None = None
@@ -6183,6 +6274,7 @@ def _persist_codex_receipt(
             if plugin_installed is None
             else plugin_installed
         ),
+        codex_package=receipt.codex_package,
     )
     _write_codex_receipt(receipt_path, updated)
     return updated
@@ -6640,7 +6732,7 @@ def _recover_codex_transaction_link(
             _write_codex_install_journal(journal_path, journal)
             return recorded
     _retire_codex_transaction_stage(recorded)
-    if _same_recorded_link(link.destination, link.source):
+    if _codex_link_has_dependency(link.destination, link.source):
         # Preserve the original identity as dependency evidence. Neither this
         # journal nor the successor receipt may adopt the replacement inode.
         return recorded
@@ -6929,7 +7021,7 @@ def _rollback_codex_transaction_links(
                 _remove_codex_recorded_link(recorded)
                 if _lexists(recorded.destination) and (
                     not uninstalling
-                    or _same_recorded_link(recorded.destination, recorded.source)
+                    or _codex_link_has_dependency(recorded.destination, recorded.source)
                 ):
                     raise InstallError(
                         "link preserved because ownership changed: "
@@ -7391,6 +7483,27 @@ def _same_recorded_link(destination: Path, source: Path) -> bool:
     return _lexical_absolute(stored_target) == _lexical_absolute(source)
 
 
+def _codex_link_has_dependency(destination: Path, source: Path) -> bool:
+    """Resolved aliases retain dependencies, never deletion authority."""
+
+    if _same_recorded_link(destination, source):
+        return True
+    if not destination.is_symlink():
+        return False
+    try:
+        resolved = destination.resolve(strict=False)
+        if resolved == _lexical_absolute(source):
+            return True
+        return any(
+            parent.parent.name in {CODEX_MANAGED_DIRECTORY, CODEX_RECOVERY_DIRECTORY}
+            and (resolved == parent or parent in resolved.parents)
+            for parent in source.parents
+        )
+    except (OSError, RuntimeError):
+        # An unresolvable replacement does not prove dependency disappearance.
+        return True
+
+
 def _prune_retired_links(
     receipt_path: Path,
     receipt: _Receipt,
@@ -7409,7 +7522,7 @@ def _prune_retired_links(
             raise InstallError(
                 f"cannot remove retired agent link: {link.destination}: {error}"
             ) from error
-        if _same_recorded_link(link.destination, link.source):
+        if _codex_link_has_dependency(link.destination, link.source):
             # A preserved replacement still needs this target. Keep the old
             # evidence without claiming the replacement's identity.
             continue
@@ -7478,6 +7591,7 @@ def _validate_codex_migration_journal(
     if (
         any(type(payload.get(key)) is not int or payload[key] <= 0 for key in ("recovery_dev", "recovery_ino"))
         or type(payload.get("cleanup_pending")) is not bool
+        or ("retirement" in payload and not payload.get("cleanup_pending"))
     ):
         raise InstallError(f"migration recovery identity is malformed: {journal_path}")
     if payload["cleanup_pending"]:
@@ -7504,6 +7618,15 @@ def _cleanup_codex_recovery_package(
         payload["cleanup_pending"] = True
         _write_codex_migration_journal(journal_path, payload)
     expected = (payload["recovery_dev"], payload["recovery_ino"])
+    if "retirement" in payload:
+        _finish_codex_directory_retirement(recovery_root, expected, payload["retirement"])
+        _clear_codex_migration_journal(journal_path)
+        return
+
+    def checkpoint(retirement: str) -> None:
+        payload["retirement"] = retirement
+        _write_codex_migration_journal(journal_path, payload)
+
     parent_fd = os.open(recovery_root.parent, _directory_open_flags())
     try:
         retiring = _retirement_record_exists(parent_fd, recovery_root.name, expected, directory=True)
@@ -7514,7 +7637,9 @@ def _cleanup_codex_recovery_package(
                 if (metadata.st_dev, metadata.st_ino) != expected:
                     raise InstallError(f"recovery package lost its exact ownership: {recovery_root}")
                 children = os.listdir(fd)
-                if children and not _codex_managed_root_is_owned(recovery_root, repository_root):
+                if children and not _codex_swap_marker_is_owned(
+                    recovery_root, recovery_root, repository_root, directory_fd=fd
+                ):
                     raise InstallError(f"recovery package marker changed: {recovery_root}")
                 # Bind all content removal to the opened exact directory. A
                 # public replacement cannot redirect recursive deletion.
@@ -7536,6 +7661,7 @@ def _cleanup_codex_recovery_package(
             parent_fd, recovery_root.name, expected,
             f"Codex recovery package {recovery_root}", directory=True,
             preserve_replacements=True,
+            before_remove=checkpoint,
         )
         if not removed and _lexists(recovery_root):
             raise InstallError(f"recovery package lost its exact ownership: {recovery_root}")
@@ -7545,6 +7671,39 @@ def _cleanup_codex_recovery_package(
     finally:
         os.close(parent_fd)
     _clear_codex_migration_journal(journal_path)
+
+
+def _finish_codex_directory_retirement(
+    root: Path, expected: tuple[int, int], retirement: object,
+) -> None:
+    """A terminal checkpoint never grants authority over the public name."""
+
+    record = (
+        _retirement_record_descriptor(retirement, directory=True)
+        if isinstance(retirement, str) and Path(retirement).name == retirement
+        else None
+    )
+    if record is None or record[:2] != (root.name, expected):
+        raise InstallError(f"Codex package retirement is malformed: {root}")
+    parent_fd = os.open(root.parent, _directory_open_flags())
+    try:
+        if _lexists(root):
+            raise InstallError(f"Codex package lost its exact ownership: {root}")
+        try:
+            metadata = os.stat(retirement, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
+                raise InstallError(f"Codex package retirement lost its exact ownership: {root}")
+            # The contents were removed before the checkpoint. Even a recycled
+            # private inode must never receive recursive deletion authority.
+            os.rmdir(retirement, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except OSError as error:
+        raise InstallError(f"cannot finish Codex package retirement: {root}: {error}") from error
+    finally:
+        os.close(parent_fd)
 
 
 def _resume_codex_migration_recovery(
@@ -7833,7 +7992,7 @@ def _install_codex_bound(
         if (
             link.destination not in current_destinations
             and managed_root in link.source.parents
-            and _same_recorded_link(link.destination, link.source)
+            and _codex_link_has_dependency(link.destination, link.source)
             and not _codex_link_path_is_live(link)
         ):
             # Refresh no longer renders retired profiles. Refuse before any
@@ -7892,6 +8051,12 @@ def _install_codex_bound(
             state_home,
             install_journal_path=install_journal_path,
             install_journal=install_journal,
+            package_identities=tuple(
+                identity for identity in (
+                    None if frozen_receipt is None else frozen_receipt.codex_package,
+                    install_journal.get("package"),
+                ) if identity is not None
+            ),
         )
         links = preflight_links(
             canonical_root,
@@ -8145,6 +8310,7 @@ def _install_codex_bound(
             plugin_installed=(receipt.plugin_installed if receipt else False)
             or plugin_new
             or resumed_migration,
+            codex_package=install_journal.get("package"),
         )
         _retain_codex_superseded_links(
             install_journal_path, install_journal,
@@ -8245,7 +8411,7 @@ def _remove_owned_links(
         except InstallError as error:
             failures.append(f"link {link.destination}: {error}")
             continue
-        if _same_recorded_link(link.destination, link.source):
+        if _codex_link_has_dependency(link.destination, link.source):
             # Keep the original entry as dependency evidence, without adopting
             # the replacement inode.  Retry can finish once the user removes it.
             failures.append(
@@ -8331,6 +8497,8 @@ def _uninstall_codex_bound(
         receipt = _read_codex_receipt(receipt_path_value, canonical_root, links)
         if receipt is None:
             receipt = _Receipt(canonical_root, (), False, False)
+        if journal.get("package") is not None:
+            receipt = replace(receipt, codex_package=journal["package"])
         # Transfer CLI intent before deleting the journal.  The normal teardown
         # below checks current sources before removing a possible uncheckpointed
         # add; it never needs to add CLI registrations or publish missing links.
@@ -8467,14 +8635,7 @@ def _uninstall_codex_bound(
             return InstallResult(links=links, removed_links=removed_links)
         _cleanup_codex_recovery_package(canonical_root, recovery_root, migration_path, migration)
     if not agents_only and not preserve_managed_package:
-        if managed_package_owned:
-            _remove_owned_codex_marketplace(managed_root, canonical_root)
-        elif _lexists(managed_root) and not _remove_empty_codex_marketplace(
-            managed_root
-        ):
-            raise InstallError(
-                f"refusing unowned managed Codex package: {managed_root}"
-            )
+        _remove_owned_codex_marketplace(managed_root, canonical_root, receipt_path_value, current)
     if receipt_path_value.is_symlink() or not receipt_path_value.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:

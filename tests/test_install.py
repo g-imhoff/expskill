@@ -410,9 +410,21 @@ class InstallerTests(unittest.TestCase):
                         [] if agents_only else install_results(repo, True, True)
                     ), agents_only=agents_only)
                     self.assertEqual({path: path.lstat().st_ino for path in identities}, identities)
-                uninstall(repo, codex_home, state_home, FakeRunner(
+                runner = FakeRunner(
                     [] if agents_only else [plugin_list_response(repo), marketplace_list_response(repo), removal_response(), removal_response()]
-                ), agents_only=agents_only)
+                )
+                if not upgrade and not agents_only:
+                    # Old receipts never recorded package identity. Retain the
+                    # package and evidence rather than adopting its marker.
+                    managed = managed_repository(repo)
+                    before = managed.stat().st_ino
+                    with self.assertRaisesRegex(InstallError, "lacks receipt identity"):
+                        uninstall(repo, codex_home, state_home, runner)
+                    self.assertEqual(managed.stat().st_ino, before)
+                    self.assertTrue(receipt_path(state_home).exists())
+                    managed.rename(root / "preserved-old-package")
+                    runner = FakeRunner([])
+                uninstall(repo, codex_home, state_home, runner, agents_only=agents_only)
                 self.assertEqual(list((codex_home / "agents").iterdir()), [])
                 self.assertFalse(receipt_path(state_home).exists())
 
@@ -926,7 +938,11 @@ class InstallerTests(unittest.TestCase):
             before = journal.read_bytes()
             with self.assertRaisesRegex(InstallError, "inspection failed"):
                 install(repo, codex_home, state_home, FakeRunner([FakeResult(1, stderr="inspection failed")]))
-            self.assertEqual(journal.read_bytes(), before)
+            previous, current = json.loads(before), json.loads(journal.read_bytes())
+            self.assertEqual(current.pop("package")["ino"], managed_repository(repo).stat().st_ino)
+            previous.pop("package")
+            self.assertEqual(current, previous)
+            before = journal.read_bytes()
             with self.assertRaisesRegex(InstallError, "does not match this install"):
                 install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
             self.assertEqual(journal.read_bytes(), before)
@@ -1489,6 +1505,8 @@ class InstallerTests(unittest.TestCase):
             receipt = load_receipt(state_home)
             self.assertTrue(receipt["marketplace_added"])
             self.assertTrue(receipt["plugin_installed"])
+            self.assertEqual(receipt.pop("codex_package")["ino"], managed_repository(repo).stat().st_ino)
+            original_receipt.pop("codex_package")
             self.assertEqual(receipt, original_receipt)
             self.assertEqual(len(second_runner.calls), 4)
 
@@ -4063,7 +4081,8 @@ class InstallerTests(unittest.TestCase):
             failed = {"value": True}
 
             def fail_package_once(path: Path, *args: object, **kwargs: object) -> None:
-                if path == managed_root / "plugins" and failed["value"]:
+                descriptor = kwargs.get("dir_fd")
+                if path == "plugins" and descriptor is not None and os.fstat(descriptor).st_ino == managed_root.stat().st_ino and failed["value"]:
                     failed["value"] = False
                     raise OSError("package busy")
                 original_rmtree(path, *args, **kwargs)
@@ -4103,22 +4122,25 @@ class InstallerTests(unittest.TestCase):
                     removal_response(),
                 ]
             )
-            original_rmdir = Path.rmdir
+            original_rmdir = os.rmdir
             failed = {"value": True}
 
-            def fail_root_once(path: Path) -> None:
-                if path == managed_root and failed["value"]:
+            def fail_root_once(path: Path, *args: object, **kwargs: object) -> None:
+                from scripts import install as module
+                record = module._retirement_record_descriptor(str(path), directory=True)
+                if record and record[0] == managed_root.name and failed["value"]:
                     failed["value"] = False
                     raise OSError("root busy")
-                original_rmdir(path)
+                original_rmdir(path, *args, **kwargs)
 
-            with mock.patch.object(Path, "rmdir", fail_root_once):
+            with mock.patch("scripts.install.os.rmdir", fail_root_once):
                 with self.assertRaisesRegex(InstallError, "root busy"):
                     uninstall(repo, codex_home, state_home, first_runner)
 
             self.assertTrue(receipt_path(state_home).is_file())
-            self.assertTrue(managed_root.is_dir())
-            self.assertEqual(tuple(managed_root.iterdir()), ())
+            self.assertFalse(managed_root.exists())
+            retired, = managed_root.parent.glob("*.retire-dir")
+            self.assertEqual(tuple(retired.iterdir()), ())
 
             retry_runner = FakeRunner([])
             uninstall(repo, codex_home, state_home, retry_runner)
@@ -4556,6 +4578,7 @@ def test_legacy_migration_retires_identity_selected_after_journal_creation(
                 assert (public.lstat().st_dev, public.lstat().st_ino) == (
                     entry["destination_dev"], entry["destination_ino"],
                 ) == (anchor.lstat().st_dev, anchor.lstat().st_ino)
+            assert receipt.pop("codex_package")["ino"] == managed_repository(repo).stat().st_ino
             receipts.append(receipt)
         else:
             assert not receipt_path(state).exists()
@@ -5488,12 +5511,12 @@ def test_retirement_recovery_retains_public_replacement_dependency(
 
 
 @pytest.mark.parametrize("retry", ["uninstall", "install"])
-@pytest.mark.parametrize("reuse", [False, True])
-def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str, reuse: bool) -> None:
+@pytest.mark.parametrize("reintroduced", [False, True])
+def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str, reintroduced: bool) -> None:
     from scripts import install as module
-    # The deterministic case needs no replacement: even a matching public inode
-    # cannot prove a missing anchor. The disk case actually frees and reuses it.
-    with tempfile.TemporaryDirectory(prefix="expskill-migration-", dir="/var/tmp" if reuse else None) as temporary:
+    # Even the same public inode cannot prove a missing anchor. Reintroduce
+    # that inode after removing its public name without relying on an allocator.
+    with tempfile.TemporaryDirectory(prefix="expskill-migration-") as temporary:
         root = Path(temporary)
         repo = seed_repository(root / "repo")
         home, state = root / "codex", root / "state"
@@ -5515,16 +5538,13 @@ def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str
         original = destination.lstat()
         assert original.st_nlink == 1
         assert not os.path.lexists(entry["link_anchor"])
-        if reuse:
+        if reintroduced:
+            saved = root / "unanchored-link"
+            destination.rename(saved)
+            destination.symlink_to(source)
             destination.unlink()
-            for _ in range(10000):
-                destination.symlink_to(source)
-                if destination.lstat().st_ino == original.st_ino:
-                    break
-                destination.unlink()
-            else:
-                pytest.skip("disk filesystem did not reuse the freed symlink inode")
-            assert destination.lstat().st_ctime_ns != original.st_ctime_ns
+            saved.rename(destination)
+            assert destination.lstat().st_ino == original.st_ino
         replacement = destination.lstat()
         if retry == "install":
             install(repo, home, state, FakeRunner([]), agents_only=True)
@@ -5539,6 +5559,10 @@ def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str
             assert all(not os.path.lexists(item["link_anchor"]) for item in frozen)
         for item in frozen:
             Path(item["destination"]).unlink()
+        if retry == "uninstall":
+            with pytest.raises(InstallError, match="lacks receipt identity"):
+                uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+            managed_repository(repo).rename(root / "preserved-old-package")
         uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
         assert not receipt_path(state).exists()
         assert not managed_repository(repo).exists()
@@ -6052,11 +6076,13 @@ def test_package_replacement_during_build_preserves_original_authority(tmp_path,
 
 
 @pytest.mark.parametrize("boundary", ["retired-object", "journal-clear"])
-def test_swap_backup_inode_reuse_after_removal_preserves_replacement(boundary):
+def test_swap_backup_terminal_checkpoint_preserves_replacement(boundary):
     from scripts import install as module
 
-    # Use the disk filesystem to exercise actual inode reuse, not mocked stat.
-    with tempfile.TemporaryDirectory(prefix="expskill-swap-reuse-", dir="/var/tmp") as temporary:
+    # Reintroduce the same inode after its terminal checkpoint, then separately
+    # exercise actual removal before journal clearing. Neither needs inode reuse
+    # from a particular allocator, and all stat results are real.
+    with tempfile.TemporaryDirectory(prefix="expskill-swap-retirement-") as temporary:
         root = Path(temporary)
         repo = seed_repository(root / "repo")
         home, state = root / "codex", root / "state"
@@ -6066,17 +6092,19 @@ def test_swap_backup_inode_reuse_after_removal_preserves_replacement(boundary):
         expected = (original.st_dev, original.st_ino)
         backup = module._codex_swap_backup_path(managed, expected)
         marker = (managed / module.CODEX_MANAGED_MARKER).read_bytes()
-        allocations = root / "inode-allocations"
-        allocations.mkdir()
         pid = os.fork()
         if pid == 0:
             rmdir, write = os.rmdir, module._write_codex_install_journal
 
             def removing(path, *args, **kwargs):
-                rmdir(path, *args, **kwargs)
                 record = module._retirement_record_descriptor(str(path), directory=True)
                 if boundary == "retired-object" and record and record[:2] == (backup.name, expected):
+                    durable = json.loads(module._codex_install_journal_path(state).read_text())
+                    assert durable["swap"]["phase"] == "retired"
+                    assert durable["swap"]["retirement"] == str(path)
+                    os.rename(path, backup.name, src_dir_fd=kwargs["dir_fd"], dst_dir_fd=kwargs["dir_fd"])
                     os._exit(73)
+                rmdir(path, *args, **kwargs)
 
             def writing(path, journal):
                 if boundary == "journal-clear" and journal.get("swap") is None and not backup.exists() and managed.lstat().st_ino != expected[1]:
@@ -6089,14 +6117,13 @@ def test_swap_backup_inode_reuse_after_removal_preserves_replacement(boundary):
         wait_for_crashed_child(pid)
         journal_path = module._codex_install_journal_path(state)
         assert json.loads(journal_path.read_text())["swap"]["backup_ino"] == expected[1]
-        assert not backup.exists()
-        for attempt in range(10000):
+        assert json.loads(journal_path.read_text())["swap"]["phase"] == "retired"
+        if boundary == "journal-clear":
+            assert not backup.exists()
             backup.mkdir()
-            if backup.lstat().st_ino == expected[1]:
-                break
-            backup.rename(allocations / str(attempt))
         else:
-            pytest.skip("disk filesystem did not reuse the freed directory inode")
+            assert backup.lstat().st_ino == expected[1]
+        replacement_inode = backup.lstat().st_ino
         (backup / module.CODEX_MANAGED_MARKER).write_bytes(marker)
         (backup / "user-data").write_text("keep reused inode data")
         for _ in range(2):
@@ -6107,7 +6134,7 @@ def test_swap_backup_inode_reuse_after_removal_preserves_replacement(boundary):
             assert (backup / "user-data").is_file(), "retry deleted data through a recycled backup inode"
             assert (backup / "user-data").read_text() == "keep reused inode data"
             assert (backup / module.CODEX_MANAGED_MARKER).read_bytes() == marker
-            assert backup.lstat().st_ino == expected[1]
+            assert backup.lstat().st_ino == replacement_inode
         backup.rename(root / "preserved-replacement")
         for _ in range(2):
             install(repo, home, state, FakeRunner([]), agents_only=True)
@@ -6183,3 +6210,335 @@ def test_receipt_retirement_recovers_before_install_conflicts(tmp_path, replacem
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("boundary", ["between-invocations", "validated", "content"])
+def test_correction_normal_package_replacement(tmp_path, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = managed_repository(repo)
+    saved, foreign = tmp_path / "saved", tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "user-data").write_text("keep replacement")
+    shutil.copyfile(managed / module.CODEX_MANAGED_MARKER, foreign / module.CODEX_MANAGED_MARKER)
+    expected = foreign.stat().st_ino
+    replaced, checks = False, 0
+    owned, removing = module._codex_managed_root_is_owned, shutil.rmtree
+
+    def substitute():
+        nonlocal replaced
+        managed.rename(saved)
+        foreign.rename(managed)
+        replaced = True
+
+    def checked(path, repository):
+        nonlocal checks
+        result = owned(path, repository)
+        if path == managed:
+            checks += 1
+            if boundary == "validated" and checks == 2 and result:
+                substitute()
+        return result
+
+    def remove(path, *args, **kwargs):
+        if boundary == "content" and not replaced and (
+            path == managed / "plugins" or
+            (path == "plugins" and kwargs.get("dir_fd") is not None)
+        ):
+            substitute()
+        return removing(path, *args, **kwargs)
+
+    if boundary == "between-invocations":
+        substitute()
+    for retry in (uninstall, install, uninstall):
+        try:
+            with mock.patch.object(module, "_codex_managed_root_is_owned", checked), mock.patch.object(module.shutil, "rmtree", remove):
+                retry(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]), agents_only=retry is install)
+        except InstallError:
+            pass
+        assert replaced
+        assert (managed / "user-data").read_text() == "keep replacement"
+        assert managed.stat().st_ino == expected
+        assert receipt_path(state).exists()
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_correction_publication_boundary_restores_replacement(tmp_path, interrupted):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed, saved = managed_repository(repo), tmp_path / "saved"
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "user-data").write_text("keep public replacement")
+    expected = foreign.stat().st_ino
+    rename = module._renameat_noreplace
+    injected = False
+
+    def renamed(sfd, source, dfd, destination):
+        nonlocal injected
+        if source == managed.name and "swap-backup-" in destination and not injected:
+            managed.rename(saved)
+            foreign.rename(managed)
+            injected = True
+            rename(sfd, source, dfd, destination)
+            if interrupted:
+                raise SystemExit(73)
+            return
+        return rename(sfd, source, dfd, destination)
+
+    with mock.patch.object(module, "_renameat_noreplace", renamed), pytest.raises((InstallError, SystemExit)):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert injected
+    for _ in range(2):
+        try:
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        except InstallError:
+            pass
+        assert managed.exists(), "replacement was stranded under a private backup name"
+        assert managed.stat().st_ino == expected
+        assert (managed / "user-data").read_text() == "keep public replacement"
+    managed.rename(foreign)
+    saved.rename(managed)
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert (foreign / "user-data").is_file()
+
+
+@pytest.mark.parametrize("boundary", ["before-free", "journal-clear"])
+def test_correction_recovery_terminal_checkpoint(tmp_path, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    recovery = recovery_repository(repo)
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json")
+    journal_path = module._codex_migration_journal_path(state)
+    rmdir, clear = os.rmdir, module._clear_codex_migration_journal
+    reached = False
+
+    def removing(path, *args, **kwargs):
+        nonlocal reached
+        record = module._retirement_record_descriptor(str(path), directory=True)
+        if record and record[0] == recovery.name:
+            journal = json.loads(journal_path.read_text())
+            assert journal.get("retirement") == str(path), "released inode still has recursive cleanup authority"
+            if boundary == "before-free":
+                # Return the exact retired inode to the public name. This
+                # deterministically exercises released identity reuse without
+                # relying on a filesystem allocator or falsifying stat data.
+                os.rename(path, recovery.name, src_dir_fd=kwargs["dir_fd"], dst_dir_fd=kwargs["dir_fd"])
+                module._write_codex_managed_marker(recovery, repo, recovery)
+                (recovery / "user-data").write_text("keep released identity")
+                reached = True
+                raise SystemExit(73)
+        return rmdir(path, *args, **kwargs)
+
+    def clearing(path):
+        nonlocal reached
+        if boundary == "journal-clear":
+            journal = json.loads(path.read_text())
+            assert journal.get("retirement"), "journal retained live authority after removal"
+            recovery.mkdir()
+            module._write_codex_managed_marker(recovery, repo, recovery)
+            (recovery / "user-data").write_text("keep released identity")
+            reached = True
+            raise SystemExit(73)
+        clear(path)
+
+    with mock.patch.object(module.os, "rmdir", removing), mock.patch.object(module, "_clear_codex_migration_journal", clearing), pytest.raises(SystemExit):
+        install(repo, home, state, runner)
+    assert reached
+    expected = recovery.stat().st_ino
+    for retry in (uninstall, install, uninstall):
+        try:
+            retry(repo, home, state, runner)
+        except InstallError:
+            pass
+        assert recovery.stat().st_ino == expected
+        assert (recovery / "user-data").read_text() == "keep released identity"
+        assert journal_path.exists()
+    shutil.rmtree(recovery)
+    for _ in range(2):
+        uninstall(repo, home, state, runner)
+    assert not journal_path.exists()
+
+
+@pytest.mark.parametrize("operation", ["uninstall", "retired-reinstall"])
+@pytest.mark.parametrize("alias_root", ["state", "package"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_correction_alias_dependency(tmp_path, operation, alias_root, interrupted):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    entry = seed_recorded_retired_profile(repo, home, state) if operation == "retired-reinstall" else load_receipt(state)["links"][0]
+    source, destination = Path(entry["source"]), Path(entry["destination"])
+    managed = managed_repository(repo)
+    alias = tmp_path / "alias"
+    aliased = state if alias_root == "state" else managed
+    alias.symlink_to(aliased, target_is_directory=True)
+    if interrupted:
+        with mock.patch.object(module, "_materialize_codex_package", side_effect=SystemExit), pytest.raises(SystemExit):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+    destination.unlink()
+    destination.symlink_to(os.path.relpath(alias / source.relative_to(aliased), destination.parent))
+    expected = destination.lstat().st_ino
+    before = source.read_bytes()
+    for _ in range(2):
+        try:
+            if operation == "uninstall":
+                uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+            else:
+                install(repo, home, state, FakeRunner([]), agents_only=True)
+        except InstallError:
+            pass
+        assert source.is_file(), "preserved alias link lost its package dependency"
+        assert source.read_bytes() == before
+        assert destination.lstat().st_ino == expected
+        assert entry in load_receipt(state)["links"]
+    destination.unlink()
+    for _ in range(2):
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
+    assert not managed.exists()
+
+
+@pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "before-checkpoint", "after-checkpoint", "retired-object", "receipt-clear"])
+def test_correction_normal_package_cleanup_exit(tmp_path, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = managed_repository(repo)
+    expected = managed.stat().st_ino
+    pid = os.fork()
+    if pid == 0:
+        rmtree, unlink, exchange, rmdir, write = shutil.rmtree, os.unlink, module._renameat_exchange, os.rmdir, module._write_codex_receipt
+
+        def tree(path, *args, **kwargs):
+            descriptor = kwargs.get("dir_fd")
+            owned = descriptor is not None and os.fstat(descriptor).st_ino == expected
+            rmtree(path, *args, **kwargs)
+            if owned and boundary == "content":
+                os._exit(73)
+
+        def unlinked(path, *args, **kwargs):
+            if boundary == "receipt-clear" and Path(path) == receipt_path(state):
+                os._exit(73)
+            unlink(path, *args, **kwargs)
+            if boundary == "marker" and path == module.CODEX_MANAGED_MARKER:
+                os._exit(73)
+
+        def exchanged(sfd, source, dfd, destination):
+            exchange(sfd, source, dfd, destination)
+            if source == managed.name and boundary == "exchange":
+                os._exit(73)
+
+        def written(path, receipt, **kwargs):
+            retiring = receipt.codex_package and "retirement" in receipt.codex_package
+            if retiring and boundary == "before-checkpoint":
+                os._exit(73)
+            write(path, receipt, **kwargs)
+            if retiring and boundary == "after-checkpoint":
+                os._exit(73)
+
+        def removed(path, *args, **kwargs):
+            record = module._retirement_record_descriptor(str(path), directory=True)
+            owned = record and record[0] == managed.name
+            if owned:
+                assert load_receipt(state)["codex_package"]["retirement"] == str(path)
+            rmdir(path, *args, **kwargs)
+            if owned and boundary == "retired-object":
+                os._exit(73)
+
+        with mock.patch.object(module.shutil, "rmtree", tree), mock.patch.object(module.os, "unlink", unlinked), mock.patch.object(module, "_renameat_exchange", exchanged), mock.patch.object(module.os, "rmdir", removed), mock.patch.object(module, "_write_codex_receipt", written):
+            uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    assert receipt_path(state).exists()
+    for _ in range(2):
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not managed.exists()
+    assert list(managed.parent.iterdir()) == []
+    assert not receipt_path(state).exists()
+
+
+@pytest.mark.parametrize("boundary", ["before-free", "receipt-clear"])
+def test_correction_normal_terminal_replacement(tmp_path, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = managed_repository(repo)
+    original = managed.stat().st_ino
+    rmdir, unlink = os.rmdir, os.unlink
+    injected = False
+
+    def replace_with_user_data():
+        nonlocal injected
+        module._write_codex_managed_marker(managed, repo, managed)
+        (managed / "user-data").write_text("keep terminal replacement")
+        injected = True
+        raise SystemExit(73)
+
+    def removing(path, *args, **kwargs):
+        record = module._retirement_record_descriptor(str(path), directory=True)
+        if boundary == "before-free" and record and record[0] == managed.name:
+            assert load_receipt(state)["codex_package"]["retirement"] == str(path)
+            os.rename(path, managed.name, src_dir_fd=kwargs["dir_fd"], dst_dir_fd=kwargs["dir_fd"])
+            assert managed.stat().st_ino == original
+            replace_with_user_data()
+        return rmdir(path, *args, **kwargs)
+
+    def unlinking(path, *args, **kwargs):
+        if boundary == "receipt-clear" and Path(path) == receipt_path(state):
+            assert load_receipt(state)["codex_package"].get("retirement")
+            managed.mkdir()
+            replace_with_user_data()
+        return unlink(path, *args, **kwargs)
+
+    with mock.patch.object(module.os, "rmdir", removing), mock.patch.object(module.os, "unlink", unlinking), pytest.raises(SystemExit):
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert injected
+    expected = managed.stat().st_ino
+    for retry in (uninstall, install, uninstall):
+        with pytest.raises(InstallError):
+            retry(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]), agents_only=retry is install)
+        assert managed.stat().st_ino == expected
+        assert (managed / "user-data").read_text() == "keep terminal replacement"
+        assert receipt_path(state).exists()
+    managed.rename(tmp_path / "preserved")
+    for _ in range(2):
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
+
+
+@pytest.mark.parametrize("failure", [OSError, SystemExit, "restore-exit"])
+def test_correction_unpublished_package_does_not_replace_receipt_authority(tmp_path, failure):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = managed_repository(repo)
+    original = managed.stat().st_ino
+    rename = module._renameat_noreplace
+
+    def interrupted(sfd, source, dfd, destination):
+        if source == "marketplace" and destination == managed.name:
+            exception = OSError if failure == "restore-exit" else failure
+            raise exception("candidate publication interrupted")
+        result = rename(sfd, source, dfd, destination)
+        if failure == "restore-exit" and "swap-backup-" in source and destination == managed.name:
+            raise SystemExit("restoration checkpoint interrupted")
+        return result
+
+    with mock.patch.object(module, "_renameat_noreplace", interrupted), pytest.raises((InstallError, SystemExit)):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert load_receipt(state)["codex_package"]["ino"] == original
+    for _ in range(2):
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not managed.exists()
+    assert not receipt_path(state).exists()
+    assert not module._codex_install_journal_path(state).exists()

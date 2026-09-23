@@ -294,12 +294,48 @@ def test_darwin_package_replacement_during_build(tmp_path, darwin_api, interrupt
 
 
 @pytest.mark.parametrize("boundary", ["retired-object", "journal-clear"])
-def test_darwin_swap_backup_inode_reuse(darwin_api, boundary):
+def test_darwin_swap_backup_terminal_checkpoint(darwin_api, boundary):
     from tests import test_install as cases
-    cases.test_swap_backup_inode_reuse_after_removal_preserves_replacement(boundary)
+    cases.test_swap_backup_terminal_checkpoint_preserves_replacement(boundary)
 
 
 @pytest.mark.parametrize("replacement", [None, "public-file", "public-link", "private"])
 def test_darwin_receipt_retirement_recovers_before_install_conflicts(tmp_path, darwin_api, replacement):
     from tests import test_install as cases
     cases.test_receipt_retirement_recovers_before_install_conflicts(tmp_path, replacement)
+
+
+@pytest.mark.parametrize("boundary", ["between-invocations", "validated", "content"])
+def test_darwin_normal_package_replacement(tmp_path, darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_correction_normal_package_replacement(tmp_path, boundary)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_darwin_publication_boundary_replacement(tmp_path, darwin_api, interrupted):
+    from tests import test_install as cases
+    cases.test_correction_publication_boundary_restores_replacement(tmp_path, interrupted)
+
+
+@pytest.mark.parametrize("boundary", ["before-free", "journal-clear"])
+def test_darwin_recovery_terminal_checkpoint(tmp_path, darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_correction_recovery_terminal_checkpoint(tmp_path, boundary)
+
+
+@pytest.mark.parametrize("operation", ["uninstall", "retired-reinstall"])
+def test_darwin_alias_dependency(tmp_path, darwin_api, operation):
+    from tests import test_install as cases
+    cases.test_correction_alias_dependency(tmp_path, operation, "state", True)
+
+
+@pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "before-checkpoint", "after-checkpoint", "retired-object", "receipt-clear"])
+def test_darwin_normal_package_cleanup_exit(tmp_path, darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_correction_normal_package_cleanup_exit(tmp_path, boundary)
+
+
+@pytest.mark.parametrize("boundary", ["before-free", "receipt-clear"])
+def test_darwin_normal_terminal_replacement(tmp_path, darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_correction_normal_terminal_replacement(tmp_path, boundary)

@@ -73,6 +73,10 @@ path-based ownership contract for that one migration. Newly written receipts
 use explicit identity metadata and do not grant ownership to unproven entries.
 A later same-target replacement is preserved, along with receipt evidence
 and its package dependency until that replacement is removed.
+This includes links spelled through directory aliases. New installations also
+record the generated package's identity before publication. Full uninstall
+retains a package whose receipt has no package identity, including older
+marker-only packages; move that package aside before retrying teardown.
 
 ## Source layout
 
