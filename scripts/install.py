@@ -3824,9 +3824,9 @@ def _remove_exact_via_exchange(
         if record is None:
             if current is None:
                 return False
-            require_kind(current, "pathname")
             if identity(current) != expected:
                 return False
+            require_kind(current, "pathname")
             # O_TMPFILE gives the exchange placeholder an identity before it
             # has any pathname.  Its first and only link is therefore already
             # the final receipt-derived retirement record; a crash cannot
@@ -6980,6 +6980,12 @@ def _migrate_legacy_codex_links(
             expected = (record["preexisting_dev"], record["preexisting_ino"])
             prior = frozen.get((legacy, link.destination))
             if prior is not None:
+                # An unproven receipt entry cannot replace valid journal
+                # evidence, even when its alias resolves to the legacy source.
+                if not _codex_link_path_is_live(prior):
+                    raise InstallError(
+                        f"legacy agent link changed frozen receipt identity: {link.destination}"
+                    )
                 expected = (prior.destination_dev, prior.destination_ino)
             if (
                 not record["preexisting"]

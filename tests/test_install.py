@@ -4370,6 +4370,68 @@ def _seed_receipted_checkout_profile(repo: Path, codex_home: Path, state_home: P
     return destination
 
 
+@pytest.mark.parametrize("retry", [install, uninstall], ids=["install", "uninstall"])
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_legacy_receipt_alias_rejection_keeps_valid_recovery_identity(
+    tmp_path: Path, retry, relative: bool,
+) -> None:
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    destination = _seed_receipted_checkout_profile(repo, home, state)
+    source = Path(os.readlink(destination))
+    source.parent.mkdir(parents=True)
+    source.write_text('name = "legacy review"\n')
+    alias = tmp_path / "repo-alias"
+    alias.symlink_to(repo, target_is_directory=True)
+    target = str(alias / source.relative_to(repo))
+    if relative:
+        target = os.path.relpath(target, destination.parent)
+    destination.rename(tmp_path / "original-link")
+    destination.symlink_to(target)
+    replacement = destination.lstat()
+    journal_path = module._codex_install_journal_path(state)
+    writes = []
+    write = module._write_codex_install_journal
+
+    def checkpoint(path, payload):
+        write(path, payload)
+        writes.append(json.loads(path.read_text()))
+
+    # Keep the journal after rejection to exercise recovery from the exact
+    # durable evidence, including an interrupted rollback cleanup.
+    with mock.patch.object(module, "_write_codex_install_journal", checkpoint), mock.patch.object(
+        module, "_clear_codex_install_journal",
+        side_effect=InstallError("journal cleanup interrupted"),
+    ), pytest.raises(InstallError):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert writes
+    for payload in [*writes, json.loads(journal_path.read_text())]:
+        record = next(item for item in payload["links"] if item["destination"] == str(destination))
+        assert (record["preexisting_dev"], record["preexisting_ino"]) == (
+            replacement.st_dev, replacement.st_ino,
+        )
+        assert record["preexisting_target"] == target
+    assert (destination.lstat().st_dev, destination.lstat().st_ino) == (
+        replacement.st_dev, replacement.st_ino,
+    )
+    assert os.readlink(destination) == target
+    assert destination.read_bytes() == source.read_bytes()
+    destination.unlink()
+    for _ in range(2):
+        retry(repo, home, state, FakeRunner(
+            [] if retry is install else [plugin_list_response(), marketplace_list_response()]
+        ), agents_only=retry is install)
+        assert not journal_path.exists()
+    if retry is install:
+        assert all(path.is_file() for path in destination_paths(home).values())
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
+    assert not managed_repository(repo).exists()
+    assert not list(destination.parent.iterdir())
+
+
 @pytest.mark.parametrize("retry", ["install", "uninstall"])
 @pytest.mark.parametrize("pending_receipt", [False, True])
 @pytest.mark.parametrize("replacement", [None, "regular", "same-target", "other-target"])
@@ -4507,7 +4569,7 @@ def test_legacy_migration_retires_identity_selected_after_journal_creation(
 @pytest.mark.parametrize("agents_only", [True, False], ids=["agents", "full"])
 @pytest.mark.parametrize("existing_receipt", [False, True], ids=["first", "existing"])
 @pytest.mark.parametrize("resume", [False, True], ids=["direct-uninstall", "resume-install"])
-@pytest.mark.parametrize("replacement", ["missing", "regular", "same-target", "other-target"])
+@pytest.mark.parametrize("replacement", ["missing", "regular", "directory", "same-target", "other-target"])
 def test_recovery_authority_public_replacement_matrix(
     tmp_path: Path, agents_only: bool, existing_receipt: bool, resume: bool, replacement: str,
 ) -> None:
@@ -4534,6 +4596,9 @@ def test_recovery_authority_public_replacement_matrix(
     destination.unlink()
     if replacement == "regular":
         destination.write_text("user replacement")
+    elif replacement == "directory":
+        destination.mkdir()
+        (destination / "user-data").write_text("user replacement")
     elif replacement in {"same-target", "other-target"}:
         destination.symlink_to(target if replacement == "same-target" else tmp_path / "unrelated")
     replacement_inode = destination.lstat().st_ino if replacement != "missing" else None
@@ -4541,7 +4606,7 @@ def test_recovery_authority_public_replacement_matrix(
         assert replacement_inode != original_inode
     if resume:
         runner = FakeRunner([] if agents_only else install_results(repo, True, True))
-        if replacement in {"regular", "other-target"}:
+        if replacement in {"regular", "directory", "other-target"}:
             with pytest.raises(InstallError, match="conflict"):
                 install(repo, codex_home, state_home, runner, agents_only=agents_only)
         else:
@@ -4577,13 +4642,76 @@ def test_recovery_authority_public_replacement_matrix(
             marketplace_list_response(repo if cli_present else None),
             removal_response(), removal_response(),
         ]))
-    survivors = {destination} if replacement in {"regular", "other-target"} else set()
+    survivors = {destination} if replacement in {"regular", "directory", "other-target"} else set()
     assert set(destination.parent.iterdir()) == survivors
     if survivors:
         assert destination.lstat().st_ino == replacement_inode
+    if replacement == "directory":
+        assert (destination / "user-data").read_text() == "user replacement"
     assert not receipt_path(state_home).exists()
     assert not (state_home / "expskill/codex-install.json").exists()
     assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("interrupted", [False, True], ids=["direct", "anchor-exchange"])
+def test_uninstall_preserves_directory_replacement(tmp_path: Path, interrupted: bool) -> None:
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    entry = load_receipt(state)["links"][0]
+    destination, anchor = Path(entry["destination"]), Path(entry["link_anchor"])
+    destination.unlink()
+    destination.mkdir()
+    (destination / "user-data").write_text("keep")
+    replacement = destination.lstat()
+    if interrupted:
+        exchange = module._renameat_exchange
+
+        def exchanged(source_fd, source, target_fd, target):
+            exchange(source_fd, source, target_fd, target)
+            if source == anchor.name:
+                raise SystemExit(73)
+
+        with mock.patch.object(module, "_renameat_exchange", exchanged), pytest.raises(SystemExit):
+            uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        assert entry in load_receipt(state)["links"]
+    for _ in range(2):
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        assert (destination.lstat().st_dev, destination.lstat().st_ino) == (
+            replacement.st_dev, replacement.st_ino,
+        )
+        assert (destination / "user-data").read_text() == "keep"
+        assert list(destination.parent.iterdir()) == [destination]
+        assert not receipt_path(state).exists()
+        assert not (state / "expskill/codex-install.json").exists()
+        assert not managed_repository(repo).exists()
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_exact_retirement_rejects_original_identity_with_wrong_type(tmp_path: Path, directory: bool) -> None:
+    from scripts import install as module
+
+    path = tmp_path / "original"
+    if directory:
+        path.write_text("keep")
+    else:
+        path.mkdir()
+        (path / "user-data").write_text("keep")
+    original = path.lstat()
+    parent_fd = os.open(tmp_path, module._directory_open_flags())
+    try:
+        with pytest.raises(InstallError, match="pathname changed type"):
+            module._remove_exact_via_exchange(
+                parent_fd, path.name, (original.st_dev, original.st_ino),
+                "owned object", directory=directory, preserve_replacements=True,
+            )
+    finally:
+        os.close(parent_fd)
+    assert path.lstat() == original
+    assert list(tmp_path.iterdir()) == [path]
+    assert (path if directory else path / "user-data").read_text() == "keep"
 
 
 @pytest.mark.parametrize("legacy", [False, True], ids=["missing-repair", "checkout-migration"])
