@@ -41,6 +41,39 @@ def darwin_api():
         yield calls
 
 
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+@pytest.mark.parametrize("symlink", [False, True])
+def test_darwin_marker_creation_preserves_replaced_staging_parent(tmp_path, darwin_api, kind, symlink):
+    from tests import test_install as cases
+    cases.test_marker_creation_preserves_replaced_staging_parent(tmp_path, kind, symlink)
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_darwin_first_record_publication_preserves_valid_replacement_on_retry(tmp_path, darwin_api, kind, interrupted):
+    from tests import test_install as cases
+    cases.test_first_record_publication_preserves_valid_replacement_on_retry(tmp_path, kind, interrupted)
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+def test_darwin_failed_record_publication_preserves_substituted_temporary(tmp_path, darwin_api, kind):
+    from tests import test_install as cases
+    cases.test_failed_record_publication_preserves_substituted_temporary(tmp_path, kind)
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+def test_darwin_failed_package_publication_preserves_substituted_candidate(tmp_path, darwin_api, kind):
+    from tests import test_install as cases
+    cases.test_failed_package_publication_preserves_substituted_candidate(tmp_path, kind)
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["prepared", "anchored", "before-publication", "published", "before-cleanup", "after-cleanup"])
+def test_darwin_first_record_publication_recovers_process_exit(tmp_path, darwin_api, kind, boundary):
+    from tests import test_install as cases
+    cases.test_first_record_publication_recovers_process_exit(tmp_path, kind, boundary)
+
+
 @pytest.mark.parametrize("rollback", [False, True])
 def test_darwin_codex_lifecycle(tmp_path: Path, darwin_api, rollback: bool):
     repo = seed_repository(tmp_path / "repo")

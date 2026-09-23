@@ -1291,32 +1291,38 @@ def _publish_codex_record(temporary: Path, path: Path, descriptor: int) -> None:
         _recover_codex_record_publications(parent_fd)
         _check_codex_record(path)
         pinned = None if lease is None else lease.record_pins.get(path.name)
+        new = os.fstat(descriptor)
+        old_identity = (0, 0) if pinned is None else (os.fstat(pinned).st_dev, os.fstat(pinned).st_ino)
+        publication = (
+            f".{path.name}.{old_identity[0]:x}-{old_identity[1]:x}."
+            f"{new.st_dev:x}-{new.st_ino:x}.publish"
+        )
+        # The candidate's name freezes its identity before any public rename.
+        _renameat_noreplace(parent_fd, temporary.name, parent_fd, publication)
+        os.fsync(parent_fd)
+        staged = os.stat(publication, dir_fd=parent_fd, follow_symlinks=False)
+        if (staged.st_dev, staged.st_ino) != (new.st_dev, new.st_ino):
+            raise InstallError(f"Codex state publication candidate changed: {path}")
         if pinned is None:
-            # No prior read grants overwrite authority, including on creation.
-            _renameat_noreplace(parent_fd, temporary.name, parent_fd, path.name)
-        else:
-            old, new = os.fstat(pinned), os.fstat(descriptor)
-            publication = (
-                f".{path.name}.{old.st_dev:x}-{old.st_ino:x}."
-                f"{new.st_dev:x}-{new.st_ino:x}.publish"
-            )
-            # Give the candidate a durable recovery name before moving the old
-            # record. Every public rename is exclusive; a boundary replacement
-            # is captured and returned, never overwritten or unlinked.
-            _renameat_noreplace(parent_fd, temporary.name, parent_fd, publication)
+            # First publication has no old record to retain. A durable hard
+            # link keeps the expected inode and its recovery name alive even
+            # if the process exits immediately after the public rename.
+            os.link(publication, publication + ".previous", src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd, follow_symlinks=False)
             os.fsync(parent_fd)
-            staged = os.stat(publication, dir_fd=parent_fd, follow_symlinks=False)
-            if (staged.st_dev, staged.st_ino) != (new.st_dev, new.st_ino):
+            anchor = os.stat(publication + ".previous", dir_fd=parent_fd, follow_symlinks=False)
+            if (anchor.st_dev, anchor.st_ino) != (new.st_dev, new.st_ino):
                 raise InstallError(f"Codex state publication candidate changed: {path}")
+        else:
+            # A boundary replacement is captured and returned, never clobbered.
             _renameat_noreplace(parent_fd, path.name, parent_fd, publication + ".previous")
             os.fsync(parent_fd)
             captured = os.stat(publication + ".previous", dir_fd=parent_fd, follow_symlinks=False)
-            if (captured.st_dev, captured.st_ino) != (old.st_dev, old.st_ino):
+            if (captured.st_dev, captured.st_ino) != old_identity:
                 _recover_codex_record_publications(parent_fd)
                 raise InstallError(f"Codex state record changed at publication: {path}")
-            _renameat_noreplace(parent_fd, publication, parent_fd, path.name)
-            # The .previous name retains both identities after this rename
-            # consumes the candidate, until the old record is reclaimed.
+        _renameat_noreplace(parent_fd, publication, parent_fd, path.name)
+        # The .previous name retains identity evidence until reclamation.
         _pin_codex_record(path, descriptor)
         _check_codex_record(path)
         os.fsync(parent_fd)
@@ -1353,7 +1359,8 @@ def _recover_codex_record_publications(parent_fd: int) -> None:
                 continue
             old = tuple(int(value, 16) for value in old_text.split("-"))
             new = tuple(int(value, 16) for value in new_text.split("-"))
-            if len(old) != 2 or len(new) != 2 or min(*old, *new) <= 0 or old == new:
+            if (len(old) != 2 or len(new) != 2 or min(new) <= 0
+                or (old != (0, 0) and min(old) <= 0) or old == new):
                 raise ValueError("invalid identity")
         except ValueError as error:
             raise InstallError(f"malformed Codex record publication: {publication}") from error
@@ -1361,6 +1368,20 @@ def _recover_codex_record_publications(parent_fd: int) -> None:
         staged, captured, current = identity(publication), identity(previous), identity(name)
         if staged not in {None, new}:
             raise InstallError(f"Codex state publication candidate changed: {publication}")
+        if old == (0, 0):
+            # A first publication may be absent (preparation interrupted) or
+            # exactly the frozen candidate. Never parse a substituted record.
+            if captured not in {None, new} or current not in {None, new}:
+                raise InstallError(f"Codex state record changed during publication: {name}")
+            if current is None and staged is None:
+                raise InstallError(f"Codex state record changed during publication: {name}")
+            if captured is not None:
+                os.unlink(previous, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            if staged is not None:
+                os.unlink(publication, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            continue
         if captured is not None and current is None and staged == new:
             # Includes a replacement captured at the first rename boundary.
             # Restoring it never grants it authority for a later checkpoint.
@@ -1394,6 +1415,28 @@ def _clear_codex_record(path: Path) -> None:
     if _lexists(path):
         raise InstallError(f"Codex state record changed during retirement: {path}")
     os.close(lease.record_pins.pop(path.name))
+
+
+def _cleanup_codex_record_temporary(path: Path, descriptor: int) -> None:
+    """Reclaim the still-pinned temporary inode, preserving a substituted name."""
+
+    _verify_codex_transaction()
+    lease = _codex_record_lease(path)
+    parent_fd = (os.open(path.parent, _directory_open_flags()) if lease is None
+                 else os.dup(lease.binding.directory_fd))
+    try:
+        metadata = os.fstat(descriptor)
+        _remove_exact_via_exchange(
+            parent_fd, path.name, (metadata.st_dev, metadata.st_ino),
+            f"temporary Codex record {path}", directory=False, preserve_replacements=True,
+        )
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise InstallError(f"temporary Codex record changed; preserved: {path}")
+    finally:
+        os.close(parent_fd)
 
 
 def _recover_codex_record_retirements(binding: _StateBinding) -> None:
@@ -2375,47 +2418,75 @@ def _write_codex_managed_marker(
     root: Path,
     repository_root: Path,
     identity_root: Path,
+    *,
+    directory_fd: int | None = None,
 ) -> None:
     _verify_codex_transaction()
-    marker = root / CODEX_MANAGED_MARKER
-    marker.write_text(
-        json.dumps(
-            _codex_managed_marker(identity_root, repository_root),
-            indent=2,
-            sort_keys=True,
+    parent_fd = os.open(root, _directory_open_flags()) if directory_fd is None else os.dup(directory_fd)
+    try:
+        descriptor = os.open(
+            CODEX_MANAGED_MARKER,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o644, dir_fd=parent_fd,
         )
-        + "\n",
-        encoding="utf-8",
-    )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(_codex_managed_marker(identity_root, repository_root), stream,
+                      indent=2, sort_keys=True)
+            stream.write("\n")
+    finally:
+        os.close(parent_fd)
 
 
-def _fsync_codex_marketplace(root: Path) -> None:
-    """Make a generated marketplace durable before publishing its path."""
+def _fsync_codex_marketplace(root: Path, *, directory_fd: int | None = None) -> None:
+    """Sync the pinned generated tree without following replacement paths."""
 
-    for current, directories, files in os.walk(root, topdown=False, followlinks=False):
-        current_path = Path(current)
-        for name in (*directories, *files):
-            if (current_path / name).is_symlink():
-                raise InstallError(
-                    f"generated Codex marketplace contains a symlink: {current_path / name}"
-                )
-        for name in files:
-            path = current_path / name
-            descriptor = os.open(
-                path,
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-            )
+    descriptor = os.open(root, _directory_open_flags()) if directory_fd is None else os.dup(directory_fd)
+    try:
+        for name in os.listdir(descriptor):
+            metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                child = os.open(name, _directory_open_flags(), dir_fd=descriptor)
+            elif stat.S_ISREG(metadata.st_mode):
+                child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                                | getattr(os, "O_CLOEXEC", 0), dir_fd=descriptor)
+            else:
+                raise InstallError(f"generated Codex marketplace contains a non-regular entry: {root / name}")
             try:
-                os.fsync(descriptor)
+                opened = os.fstat(child)
+                if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise InstallError(f"generated Codex marketplace entry changed: {root / name}")
+                if stat.S_ISDIR(opened.st_mode):
+                    _fsync_codex_marketplace(root / name, directory_fd=child)
+                else:
+                    os.fsync(child)
             finally:
-                os.close(descriptor)
-        directory_fd = os.open(current_path, _directory_open_flags())
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+                os.close(child)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _cleanup_codex_candidate(parent_fd: int, name: str, descriptor: int) -> None:
+    """Empty only the retained candidate, then retire its exact directory entry."""
+
+    expected = os.fstat(descriptor)
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return  # Publication consumed the staging name.
+    if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+        raise InstallError(f"Codex package staging candidate changed: {name}")
+    for child in os.listdir(descriptor):
+        metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            shutil.rmtree(child, dir_fd=descriptor)
+        else:
+            os.unlink(child, dir_fd=descriptor)
+    os.fsync(descriptor)
+    _remove_exact_via_exchange(
+        parent_fd, name, (expected.st_dev, expected.st_ino),
+        f"Codex package staging candidate {name}", directory=True, preserve_replacements=True,
+    )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -2778,12 +2849,13 @@ def _materialize_codex_marketplace(
         pins.callback(os.close, candidate_parent_fd)
         temporary_metadata = os.fstat(candidate_parent_fd)
         candidate_root = temporary_parent / "marketplace"
+        candidate_fd = None
         try:
             _build_codex_marketplace(repository_root, candidate_root)
-            _write_codex_managed_marker(candidate_root, repository_root, target_root)
-            _fsync_codex_marketplace(candidate_root)
             candidate_fd = os.open(candidate_root.name, _directory_open_flags(), dir_fd=candidate_parent_fd)
             pins.callback(os.close, candidate_fd)
+            _write_codex_managed_marker(candidate_root, repository_root, target_root, directory_fd=candidate_fd)
+            _fsync_codex_marketplace(candidate_root, directory_fd=candidate_fd)
             candidate_identity = _codex_package_identity(candidate_root, directory_fd=candidate_fd)
             _verify_codex_transaction()
             if backup is not None:
@@ -2832,15 +2904,12 @@ def _materialize_codex_marketplace(
             raise InstallError(f"Codex package could not be materialized: {error}") from error
         finally:
             _verify_codex_transaction()
-            # The staging name can now refer to unrelated user data. Reclaim
-            # only children of the directory pinned at creation, then retire
-            # its public name only if it still selects that same directory.
-            for name in os.listdir(candidate_parent_fd):
-                child = os.stat(name, dir_fd=candidate_parent_fd, follow_symlinks=False)
-                if stat.S_ISDIR(child.st_mode):
-                    shutil.rmtree(name, dir_fd=candidate_parent_fd)
-                else:
-                    os.unlink(name, dir_fd=candidate_parent_fd)
+            # Both the staging parent and candidate name may be replaced.
+            # Only the retained candidate grants recursive cleanup authority.
+            if candidate_fd is not None:
+                _cleanup_codex_candidate(candidate_parent_fd, candidate_root.name, candidate_fd)
+            if os.listdir(candidate_parent_fd):
+                raise InstallError(f"Codex package staging directory contains unowned entries: {temporary_parent}")
             os.fsync(candidate_parent_fd)
             _remove_exact_via_exchange(
                 parent_fd, temporary_parent.name,
@@ -3215,6 +3284,7 @@ def _write_codex_install_journal(
     _verify_codex_transaction()
     journal_directory = journal_path.parent
     temporary_path: Path | None = None
+    temporary_fd: int | None = None
     try:
         _mkdir_durable(journal_directory)
         if journal_path.is_symlink() or (
@@ -3229,6 +3299,7 @@ def _write_codex_install_journal(
             dir=journal_directory,
         )
         temporary_path = Path(temporary_name)
+        temporary_fd = os.dup(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(dict(payload), stream, indent=2, sort_keys=True)
             stream.write("\n")
@@ -3244,12 +3315,12 @@ def _write_codex_install_journal(
             f"cannot write Codex install journal: {journal_path}: {error}"
         ) from error
     finally:
-        if temporary_path is not None:
-            _verify_codex_transaction()
-            try:
-                temporary_path.unlink()
-            except OSError:
-                pass
+        try:
+            if temporary_path is not None and temporary_fd is not None:
+                _cleanup_codex_record_temporary(temporary_path, temporary_fd)
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
 
 
 def _read_codex_install_journal(
@@ -3652,8 +3723,9 @@ def _write_codex_migration_journal(
             dir=journal_directory,
         )
         temporary_path: Path | None = Path(temporary_name)
+        temporary_fd = os.dup(descriptor)
         write_error: InstallError | None = None
-        write_cause: OSError | None = None
+        write_cause: OSError | InstallError | None = None
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(dict(payload), stream, indent=2, sort_keys=True)
@@ -3673,22 +3745,22 @@ def _write_codex_migration_journal(
                 f"cannot write Codex migration journal: {journal_path}: {error}"
             )
         finally:
-            if temporary_path is not None:
-                _verify_codex_transaction()
-                try:
-                    temporary_path.unlink()
-                except OSError as error:
-                    cleanup_failure = (
-                        "temporary Codex migration journal cleanup failed: "
-                        f"{temporary_path}: {error}"
-                    )
-                    if write_error is None:
-                        write_error = InstallError(cleanup_failure)
-                        write_cause = error
-                    else:
-                        write_error = InstallError(
-                            f"{write_error}; {cleanup_failure}"
+            try:
+                if temporary_path is not None:
+                    try:
+                        _cleanup_codex_record_temporary(temporary_path, temporary_fd)
+                    except (OSError, InstallError) as error:
+                        cleanup_failure = (
+                            "temporary Codex migration journal cleanup failed: "
+                            f"{temporary_path}: {error}"
                         )
+                        if write_error is None:
+                            write_error = InstallError(cleanup_failure)
+                            write_cause = error
+                        else:
+                            write_error = InstallError(f"{write_error}; {cleanup_failure}")
+            finally:
+                os.close(temporary_fd)
         if write_error is not None:
             raise write_error from write_cause
     except InstallError:
@@ -6491,13 +6563,15 @@ def _write_codex_receipt(
     if receipt.codex_package is not None:
         payload["codex_package"] = receipt.codex_package
     temporary_path: Path | None = None
+    temporary_fd: int | None = None
     write_error: InstallError | None = None
-    write_cause: OSError | None = None
+    write_cause: OSError | InstallError | None = None
     try:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{RECEIPT_FILENAME}.", suffix=".tmp", dir=receipt_directory
         )
         temporary_path = Path(temporary_name)
+        temporary_fd = os.dup(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, indent=2, sort_keys=True)
             stream.write("\n")
@@ -6510,19 +6584,22 @@ def _write_codex_receipt(
         write_cause = error
         write_error = InstallError(f"cannot write receipt: {receipt_path}: {error}")
     finally:
-        if temporary_path is not None:
-            try:
-                _verify_codex_transaction()
-                temporary_path.unlink()
-            except OSError as error:
-                cleanup_failure = (
-                    f"temporary receipt cleanup failed: {temporary_path}: {error}"
-                )
-                if write_error is None:
-                    write_error = InstallError(cleanup_failure)
-                    write_cause = error
-                else:
-                    write_error = InstallError(f"{write_error}; {cleanup_failure}")
+        try:
+            if temporary_path is not None and temporary_fd is not None:
+                try:
+                    _cleanup_codex_record_temporary(temporary_path, temporary_fd)
+                except (OSError, InstallError) as error:
+                    cleanup_failure = (
+                        f"temporary receipt cleanup failed: {temporary_path}: {error}"
+                    )
+                    if write_error is None:
+                        write_error = InstallError(cleanup_failure)
+                        write_cause = error
+                    else:
+                        write_error = InstallError(f"{write_error}; {cleanup_failure}")
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
     if write_error is not None:
         raise write_error from write_cause
 

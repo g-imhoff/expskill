@@ -33,6 +33,249 @@ from scripts.install import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+@pytest.mark.parametrize("symlink", [False, True])
+def test_marker_creation_preserves_replaced_staging_parent(tmp_path, kind, symlink):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    target = module._codex_recovery_root(repo, state) if kind == "recovery" else module._codex_managed_root(repo, state)
+    if kind == "refresh":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    build = module._build_codex_marketplace
+    external = tmp_path / "external"
+    external.write_text("unrelated external file\n")
+    observed = []
+
+    def substitute(source, candidate):
+        result = build(source, candidate)
+        if candidate.parent.parent != target.parent:
+            return result
+        candidate.parent.rename(tmp_path / "original-stage")
+        candidate.mkdir(parents=True)
+        marker = candidate / module.CODEX_MANAGED_MARKER
+        if symlink:
+            marker.symlink_to(external)
+        else:
+            marker.write_text("unrelated marker\n")
+        (candidate / "user-data").write_text("unrelated candidate\n")
+        observed.append((candidate, candidate.stat().st_ino, marker.lstat().st_ino))
+        return result
+
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "recovery" else FakeRunner([])
+    with mock.patch.object(module, "_build_codex_marketplace", substitute):
+        try:
+            install(repo, home, state, runner, agents_only=kind != "recovery")
+        except InstallError:
+            pass
+    assert len(observed) == 1
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            operation(repo, home, state, runner if kind == "recovery" else FakeRunner(
+                [] if operation is install else [plugin_list_response(), marketplace_list_response()]
+            ), agents_only=operation is install and kind != "recovery")
+        candidate, inode, marker_inode = observed[0]
+        marker = candidate / module.CODEX_MANAGED_MARKER
+        assert external.read_text() == "unrelated external file\n"
+        assert candidate.stat().st_ino == inode
+        assert marker.lstat().st_ino == marker_inode
+        assert marker.is_symlink() == symlink
+        assert marker.read_text() == ("unrelated external file\n" if symlink else "unrelated marker\n")
+        assert (candidate / "user-data").read_text() == "unrelated candidate\n"
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_first_record_publication_preserves_valid_replacement_on_retry(tmp_path, kind, interrupted):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    record = {"receipt": receipt_path(state),
+              "install": module._codex_install_journal_path(state),
+              "migration": module._codex_migration_journal_path(state)}[kind]
+    evidence, saved = tmp_path / "replacement-inode", tmp_path / "original-record"
+    rename = module._renameat_noreplace
+
+    def renamed(sfd, source, dfd, destination):
+        result = rename(sfd, source, dfd, destination)
+        if destination == record.name and not evidence.exists():
+            record.rename(saved)
+            record.write_bytes(saved.read_bytes())
+            evidence.write_text(str(record.stat().st_ino))
+            if interrupted:
+                os._exit(73)
+        return result
+
+    def attempt():
+        runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+        with mock.patch.object(module, "_renameat_noreplace", renamed), pytest.raises(InstallError):
+            install(repo, home, state, runner, agents_only=kind != "migration")
+
+    if interrupted:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        attempt()
+    assert evidence.exists(), "first publication boundary was not reached"
+    for operation in (install, uninstall, install):
+        runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner(
+            [] if operation is install else [plugin_list_response(), marketplace_list_response()]
+        )
+        with pytest.raises(InstallError, match="record changed"):
+            operation(repo, home, state, runner, agents_only=operation is install and kind != "migration")
+        assert record.stat().st_ino == int(evidence.read_text())
+        assert record.read_bytes() == saved.read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+def test_failed_record_publication_preserves_substituted_temporary(tmp_path, kind):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    record = {"receipt": receipt_path(state),
+              "install": module._codex_install_journal_path(state),
+              "migration": module._codex_migration_journal_path(state)}[kind]
+    rename = module._renameat_noreplace
+    observed = []
+
+    def fail_publication(sfd, source, dfd, destination):
+        if str(source).startswith("." + record.name + ".") and str(source).endswith(".tmp") and not observed:
+            temporary = record.parent / source
+            temporary.rename(tmp_path / "original-temporary")
+            temporary.write_text("unrelated replacement\n")
+            observed.append((temporary, temporary.stat().st_ino))
+            raise OSError(errno.EIO, "injected publication failure")
+        return rename(sfd, source, dfd, destination)
+
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+    with mock.patch.object(module, "_renameat_noreplace", fail_publication), pytest.raises(InstallError, match="temporary Codex record changed"):
+        install(repo, home, state, runner, agents_only=kind != "migration")
+    assert observed, "publication boundary was not reached"
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            operation(repo, home, state, runner if kind == "migration" else FakeRunner(
+                [] if operation is install else [plugin_list_response(), marketplace_list_response()]
+            ), agents_only=operation is install and kind != "migration")
+        temporary, inode = observed[0]
+        assert temporary.exists(), "cleanup deleted an unrelated temporary record replacement"
+        assert temporary.stat().st_ino == inode
+        assert temporary.read_text() == "unrelated replacement\n"
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+def test_failed_package_publication_preserves_substituted_candidate(tmp_path, kind):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    target = module._codex_recovery_root(repo, state) if kind == "recovery" else module._codex_managed_root(repo, state)
+    if kind == "refresh":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    rename = module._renameat_noreplace
+    observed = []
+
+    def fail_publication(sfd, source, dfd, destination):
+        if source == "marketplace" and destination == target.name and not observed:
+            stage = next(p for p in target.parent.iterdir() if p.stat().st_ino == os.fstat(sfd).st_ino)
+            candidate = stage / source
+            candidate.rename(tmp_path / "original-candidate")
+            candidate.mkdir()
+            (candidate / "user-data").write_text("unrelated replacement\n")
+            observed.append((candidate, candidate.stat().st_ino))
+            raise OSError(errno.EIO, "injected publication failure")
+        return rename(sfd, source, dfd, destination)
+
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "recovery" else FakeRunner([])
+    with mock.patch.object(module, "_renameat_noreplace", fail_publication), pytest.raises(InstallError, match="staging candidate changed"):
+        install(repo, home, state, runner, agents_only=kind != "recovery")
+    assert observed, "publication boundary was not reached"
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            operation(repo, home, state, runner if kind == "recovery" else FakeRunner(
+                [] if operation is install else [plugin_list_response(), marketplace_list_response()]
+            ), agents_only=operation is install and kind != "recovery")
+        candidate, inode = observed[0]
+        assert candidate.exists(), "cleanup deleted an unrelated package candidate replacement"
+        assert candidate.stat().st_ino == inode
+        assert (candidate / "user-data").read_text() == "unrelated replacement\n"
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["prepared", "anchored", "before-publication", "published", "before-cleanup", "after-cleanup"])
+def test_first_record_publication_recovers_process_exit(tmp_path, kind, boundary):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    record = {"receipt": receipt_path(state),
+              "install": module._codex_install_journal_path(state),
+              "migration": module._codex_migration_journal_path(state)}[kind]
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+    pid = os.fork()
+    if pid == 0:
+        rename, link, unlink, fsync = module._renameat_noreplace, os.link, os.unlink, os.fsync
+        anchor_synced = False
+        anchor_created = False
+
+        def selected(name):
+            return str(name).startswith(f".{record.name}.0-0.")
+
+        def synced(fd):
+            nonlocal anchor_synced
+            fsync(fd)
+            if anchor_created and os.fstat(fd).st_ino == record.parent.stat().st_ino:
+                anchor_synced = True
+
+        def renamed(sfd, source, dfd, destination):
+            publishing = selected(source) and destination == record.name
+            if publishing:
+                assert anchor_synced, "first publication preceded durable identity evidence"
+                if boundary == "before-publication":
+                    os._exit(73)
+            rename(sfd, source, dfd, destination)
+            if ((selected(destination) and destination.endswith(".publish") and boundary == "prepared")
+                or (publishing and boundary == "published")):
+                os._exit(73)
+
+        def linked(source, destination, *args, **kwargs):
+            nonlocal anchor_created
+            result = link(source, destination, *args, **kwargs)
+            if selected(destination) and str(destination).endswith(".publish.previous"):
+                anchor_created = True
+                if boundary == "anchored":
+                    os._exit(73)
+            return result
+
+        def unlinked(path, *args, **kwargs):
+            retiring = selected(path) and str(path).endswith(".publish.previous")
+            if retiring and boundary == "before-cleanup":
+                os._exit(73)
+            result = unlink(path, *args, **kwargs)
+            if retiring and boundary == "after-cleanup":
+                os._exit(73)
+            return result
+
+        with mock.patch.object(module, "_renameat_noreplace", renamed), mock.patch.object(
+            module.os, "link", linked
+        ), mock.patch.object(module.os, "unlink", unlinked), mock.patch.object(module.os, "fsync", synced):
+            install(repo, home, state, runner, agents_only=kind != "migration")
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    install(repo, home, state, runner, agents_only=kind != "migration")
+    for _ in range(2):
+        uninstall(repo, home, state, runner if kind == "migration" else FakeRunner([
+            plugin_list_response(), marketplace_list_response(),
+        ]))
+    assert not record.exists()
+    assert not any(".publish" in path.name for path in record.parent.iterdir())
+
+
 @pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_record_checkpoint_preserves_boundary_replacement(tmp_path, kind, interrupted):
@@ -189,8 +432,10 @@ def test_package_identity_uses_pinned_candidate_parent(tmp_path):
     sync = module._fsync_codex_marketplace
     replacements = []
 
-    def substitute(candidate):
-        sync(candidate)
+    def substitute(candidate, *, directory_fd=None):
+        sync(candidate, directory_fd=directory_fd)
+        if candidate.name != "marketplace":
+            return
         stage = candidate.parent
         saved = tmp_path / "original-stage"
         stage.rename(saved)
@@ -4240,23 +4485,23 @@ class InstallerTests(unittest.TestCase):
             runner = FakeRunner(install_results(repo) + [removal_response(), removal_response()])
             receipt_directory = state_home / "expskill"
             temporary_paths: list[Path] = []
-            original_unlink = Path.unlink
             from scripts import install as module
             original_publish = module._publish_codex_record
+            original_cleanup = module._cleanup_codex_record_temporary
 
             def fail_receipt_replace(source: Path, destination: Path, descriptor: int) -> None:
                 if Path(destination) == receipt_path(state_home):
                     raise OSError("receipt disk full")
                 original_publish(source, destination, descriptor)
 
-            def fail_temporary(path: Path, *args: object, **kwargs: object) -> None:
+            def fail_temporary(path: Path, descriptor: int) -> None:
                 if path.parent == receipt_directory and path.name.startswith(".install.json."):
                     temporary_paths.append(path)
                     raise OSError("temporary receipt busy")
-                original_unlink(path, *args, **kwargs)
+                original_cleanup(path, descriptor)
 
             with mock.patch("scripts.install._publish_codex_record", fail_receipt_replace):
-                with mock.patch.object(Path, "unlink", fail_temporary):
+                with mock.patch.object(module, "_cleanup_codex_record_temporary", fail_temporary):
                     with self.assertRaisesRegex(InstallError, "receipt disk full") as context:
                         install(repo, codex_home, state_home, runner)
 
