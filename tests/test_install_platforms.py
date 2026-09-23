@@ -194,7 +194,7 @@ def test_darwin_named_retirement_interruption(tmp_path, darwin_api, boundary, ro
                 os._exit(73)
         def exchanged(*args):
             exchange(*args)
-            if boundary == "exchanged":
+            if boundary == "exchanged" and str(args[1]).endswith(".toml"):
                 os._exit(73)
         with mock.patch.object(module.os, "open", opened), mock.patch.object(module.os, "fsync", synced), mock.patch.object(module.os, "link", linked), mock.patch.object(module.os, "unlink", unlinked), mock.patch.object(module, "_renameat_exchange", exchanged):
             if rollback:
@@ -364,3 +364,23 @@ def test_darwin_recovery_publication_preserves_replacement(tmp_path, darwin_api,
 def test_darwin_normal_terminal_replacement(tmp_path, darwin_api, boundary):
     from tests import test_install as cases
     cases.test_correction_normal_terminal_replacement(tmp_path, boundary)
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["before-exchange", "at-exchange", "after-exchange"])
+def test_darwin_final_record_preserves_replacement(tmp_path, darwin_api, kind, boundary):
+    from tests import test_install as cases
+    cases.test_correction_final_record_preserves_replacement(tmp_path, kind, boundary)
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["prepared", "exchanged", "sentinel-moved", "before-unlink", "after-unlink"])
+def test_darwin_final_record_retirement_recovers_exit(tmp_path, darwin_api, kind, boundary):
+    from tests import test_install as cases
+    cases.test_correction_final_record_retirement_recovers_exit(tmp_path, kind, boundary)
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+def test_darwin_staging_cleanup_preserves_replacement(tmp_path, darwin_api, kind):
+    from tests import test_install as cases
+    cases.test_correction_staging_cleanup_preserves_replacement(tmp_path, kind)

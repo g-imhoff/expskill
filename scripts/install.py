@@ -879,6 +879,7 @@ class _CodexTransactionLease:
     lock_binding: _StateBinding
     owner: int
     depth: int = 1
+    record_pins: dict[str, int] = field(default_factory=dict)
 
 
 _CODEX_TRANSACTION_LEASES: dict[str, _CodexTransactionLease] = {}
@@ -1200,12 +1201,15 @@ def _codex_transaction(
     _CODEX_TRANSACTION_LEASES[key] = lease
     _STATE_BINDINGS[key] = binding
     try:
+        _recover_codex_record_retirements(binding)
         yield True
     finally:
         if lease.depth != 1:
             raise InstallError("Codex transaction nesting did not unwind")
         _STATE_BINDINGS.pop(key, None)
         _CODEX_TRANSACTION_LEASES.pop(key, None)
+        for descriptor in lease.record_pins.values():
+            os.close(descriptor)
         _close_state_binding(binding)
         _close_state_binding(lock_binding)
 
@@ -1222,6 +1226,104 @@ def _verify_codex_transaction() -> None:
                 raise InstallError(
                     f"Codex state directory binding was replaced: {lease.binding.directory}"
                 ) from error
+
+
+def _codex_record_lease(path: Path) -> _CodexTransactionLease | None:
+    return _CODEX_TRANSACTION_LEASES.get(str(_lexical_absolute(path.parent)))
+
+
+def _pin_codex_record(path: Path, descriptor: int) -> None:
+    lease = _codex_record_lease(path)
+    if lease is not None:
+        previous = lease.record_pins.get(path.name)
+        lease.record_pins[path.name] = os.dup(descriptor)
+        if previous is not None:
+            os.close(previous)
+
+
+def _check_codex_record(path: Path) -> None:
+    """A later observation cannot replace this transaction's read/write authority."""
+
+    _verify_codex_transaction()
+    lease = _codex_record_lease(path)
+    if lease is None or path.name not in lease.record_pins:
+        return
+    pinned = os.fstat(lease.record_pins[path.name])
+    try:
+        current = os.stat(path.name, dir_fd=lease.binding.directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise InstallError(f"Codex state record changed: {path}") from error
+    if (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino):
+        raise InstallError(f"Codex state record changed: {path}")
+
+
+def _read_codex_record(path: Path) -> str:
+    _check_codex_record(path)
+    lease = _codex_record_lease(path)
+    descriptor = os.open(
+        path if lease is None else path.name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=None if lease is None else lease.binding.directory_fd,
+    )
+    with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise InstallError(f"Codex state record is not a regular file: {path}")
+        # Pin the inode supplying the bytes, not a later pathname observation.
+        contents = stream.read()
+        _check_codex_record(path)
+        _pin_codex_record(path, stream.fileno())
+        _check_codex_record(path)
+        return contents
+
+
+def _publish_codex_record(temporary: Path, path: Path, descriptor: int) -> None:
+    _check_codex_record(path)
+    os.replace(temporary, path)
+    # Retain the descriptor that wrote the checkpoint, even if publication is
+    # immediately followed by a pathname replacement or directory sync failure.
+    _pin_codex_record(path, descriptor)
+    _check_codex_record(path)
+
+
+def _clear_codex_record(path: Path) -> None:
+    _check_codex_record(path)
+    lease = _codex_record_lease(path)
+    if lease is None or path.name not in lease.record_pins:
+        raise InstallError(f"Codex state record has no pinned authority: {path}")
+    metadata = os.fstat(lease.record_pins[path.name])
+    _remove_exact_via_exchange(
+        lease.binding.directory_fd, path.name, (metadata.st_dev, metadata.st_ino),
+        f"Codex state record {path}", directory=False, preserve_replacements=True,
+    )
+    if _lexists(path):
+        raise InstallError(f"Codex state record changed during retirement: {path}")
+    os.close(lease.record_pins.pop(path.name))
+
+
+def _recover_codex_record_retirements(binding: _StateBinding) -> None:
+    """Finish a committed final deletion before parsing or creating state files."""
+
+    names = {RECEIPT_FILENAME, CODEX_INSTALL_JOURNAL_FILENAME, CODEX_MIGRATION_JOURNAL_FILENAME}
+    records: set[tuple[str, tuple[int, int]]] = set()
+    for candidate in os.listdir(binding.directory_fd):
+        record = _retirement_record_descriptor(candidate)
+        if record is not None and record[0] in names:
+            records.add((record[0], record[1]))
+        elif candidate.endswith(".prepare.retire"):
+            try:
+                base, encoded = candidate.removesuffix(".prepare.retire").rsplit(".", 1)
+                expected = tuple(int(value, 16) for value in encoded.split("-"))
+            except ValueError:
+                continue
+            if base.removeprefix(".") in names and len(expected) == 2 and min(expected) > 0:
+                records.add((base.removeprefix("."), expected))
+    for name, expected in sorted(records):
+        _remove_exact_via_exchange(
+            binding.directory_fd, name, expected, f"Codex state record {binding.directory / name}",
+            directory=False, preserve_replacements=True,
+        )
+        if _lexists(binding.directory / name):
+            raise InstallError(f"Codex state record changed during retirement: {binding.directory / name}")
 
 
 def _verify_state_binding(binding: _StateBinding) -> None:
@@ -2561,6 +2663,9 @@ def _materialize_codex_marketplace(
                 }
                 _write_codex_install_journal(install_journal_path, install_journal)
         temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-package-", dir=parent))
+        candidate_parent_fd = os.open(temporary_parent, _directory_open_flags())
+        pins.callback(os.close, candidate_parent_fd)
+        temporary_metadata = os.fstat(candidate_parent_fd)
         candidate_root = temporary_parent / "marketplace"
         try:
             _build_codex_marketplace(repository_root, candidate_root)
@@ -2582,18 +2687,14 @@ def _materialize_codex_marketplace(
                     install_journal[swap_key]["phase"] = "backup-created"
                     _write_codex_install_journal(install_journal_path, install_journal)
             _verify_codex_transaction()
-            candidate_parent_fd = os.open(temporary_parent, _directory_open_flags())
-            try:
-                if install_journal is not None:
-                    # Freeze publication identity before the candidate can be
-                    # substituted at its public name or the process can exit.
-                    identity_key = "package" if swap_key == "swap" else "recovery_package"
-                    install_journal[identity_key] = _codex_package_identity(candidate_root)
-                    _write_codex_install_journal(install_journal_path, install_journal)
-                _renameat_noreplace(candidate_parent_fd, candidate_root.name, parent_fd, target_root.name)
-            finally:
-                os.close(candidate_parent_fd)
-            _fsync_directory(temporary_parent)
+            if install_journal is not None:
+                # Freeze publication identity before the candidate can be
+                # substituted at its public name or the process can exit.
+                identity_key = "package" if swap_key == "swap" else "recovery_package"
+                install_journal[identity_key] = _codex_package_identity(candidate_root)
+                _write_codex_install_journal(install_journal_path, install_journal)
+            _renameat_noreplace(candidate_parent_fd, candidate_root.name, parent_fd, target_root.name)
+            os.fsync(candidate_parent_fd)
             _fsync_directory(parent)
             if backup is not None and install_journal_path is not None and install_journal is not None:
                 install_journal[swap_key]["phase"] = "published"
@@ -2610,7 +2711,22 @@ def _materialize_codex_marketplace(
             raise InstallError(f"Codex package could not be materialized: {error}") from error
         finally:
             _verify_codex_transaction()
-            shutil.rmtree(temporary_parent, ignore_errors=True)
+            # The staging name can now refer to unrelated user data. Reclaim
+            # only children of the directory pinned at creation, then retire
+            # its public name only if it still selects that same directory.
+            for name in os.listdir(candidate_parent_fd):
+                child = os.stat(name, dir_fd=candidate_parent_fd, follow_symlinks=False)
+                if stat.S_ISDIR(child.st_mode):
+                    shutil.rmtree(name, dir_fd=candidate_parent_fd)
+                else:
+                    os.unlink(name, dir_fd=candidate_parent_fd)
+            os.fsync(candidate_parent_fd)
+            _remove_exact_via_exchange(
+                parent_fd, temporary_parent.name,
+                (temporary_metadata.st_dev, temporary_metadata.st_ino),
+                f"Codex package staging directory {temporary_parent}",
+                directory=True, preserve_replacements=True,
+            )
             _fsync_directory(parent)
     if backup is not None:
         if backup_identity is None:
@@ -2997,8 +3113,7 @@ def _write_codex_install_journal(
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        _verify_codex_transaction()
-        os.replace(temporary_path, journal_path)
+            _publish_codex_record(temporary_path, journal_path, stream.fileno())
         temporary_path = None
         _fsync_directory(journal_directory)
     except InstallError:
@@ -3027,7 +3142,7 @@ def _read_codex_install_journal(
             f"install journal path is not a regular file: {journal_path}"
         )
     try:
-        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_codex_record(journal_path))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise InstallError(
             f"install journal is malformed: {journal_path}: {error}"
@@ -3063,7 +3178,6 @@ def _clear_codex_install_journal(journal_path: Path) -> None:
         receipt = _read_codex_receipt(
             receipt_path, repository,
             _allowlisted_links(repository, Path(journal["codex_home"]), state_home),
-            frozen_only=True,
         )
         if receipt is None:
             receipt = _Receipt(repository, (), False, False)
@@ -3079,7 +3193,7 @@ def _clear_codex_install_journal(journal_path: Path) -> None:
         if updated != receipt:
             _write_codex_receipt(receipt_path, updated)
     try:
-        journal_path.unlink()
+        _clear_codex_record(journal_path)
         _fsync_directory(journal_path.parent)
     except OSError as error:
         raise InstallError(
@@ -3425,8 +3539,7 @@ def _write_codex_migration_journal(
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            _verify_codex_transaction()
-            os.replace(temporary_path, journal_path)
+                _publish_codex_record(temporary_path, journal_path, stream.fileno())
             temporary_path = None
             directory_fd = os.open(journal_directory, _directory_open_flags())
             try:
@@ -3469,7 +3582,7 @@ def _read_codex_migration_journal(journal_path: Path) -> dict[str, object] | Non
     if journal_path.is_symlink() or not journal_path.is_file():
         raise InstallError(f"migration journal path is not a regular file: {journal_path}")
     try:
-        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_codex_record(journal_path))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise InstallError(f"migration journal is malformed: {journal_path}: {error}") from error
     expected_keys = {
@@ -3505,7 +3618,7 @@ def _clear_codex_migration_journal(journal_path: Path) -> None:
     if journal_path.is_symlink() or not journal_path.is_file():
         raise InstallError(f"migration journal path is not a regular file: {journal_path}")
     try:
-        journal_path.unlink()
+        _clear_codex_record(journal_path)
         directory_fd = os.open(journal_path.parent, _directory_open_flags())
         try:
             os.fsync(directory_fd)
@@ -6074,7 +6187,7 @@ def _read_codex_receipt(
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise InstallError(f"receipt path is not a regular file: {receipt_path}")
     try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_codex_record(receipt_path))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(f"receipt is malformed: {receipt_path}: {error}") from error
     if not isinstance(payload, dict):
@@ -6269,8 +6382,7 @@ def _write_codex_receipt(
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        _verify_codex_transaction()
-        os.replace(temporary_path, receipt_path)
+            _publish_codex_record(temporary_path, receipt_path, stream.fileno())
         temporary_path = None
         _fsync_directory(receipt_directory)
     except OSError as error:
@@ -8088,6 +8200,13 @@ def _install_codex_bound(
         agents_only,
     )
     try:
+        # Freeze the actual base-format receipt before construction can fail
+        # or a destination can change. The install journal now exists, so its
+        # cleanup can safely retain both old ownership and new package identity.
+        frozen_receipt = _read_codex_receipt(
+            _receipt_path(state_home), canonical_root,
+            _allowlisted_links(canonical_root, codex_home, state_home),
+        )
         _recover_codex_link_retirements(install_journal)
         _check_codex_link_conflicts(canonical_root, planned_links)
         restoring = {
@@ -8739,7 +8858,7 @@ def _uninstall_codex_bound(
         raise InstallError(f"receipt path is not a regular file: {receipt_path_value}")
     try:
         _verify_codex_transaction()
-        receipt_path_value.unlink()
+        _clear_codex_record(receipt_path_value)
         _fsync_directory(receipt_path_value.parent)
     except OSError as error:
         raise InstallError(f"cannot remove receipt: {receipt_path_value}: {error}") from error

@@ -327,7 +327,8 @@ class InstallerTests(unittest.TestCase):
                         exchange = module._renameat_exchange
                         def crash_exchange(*args: object) -> None:
                             exchange(*args)
-                            os._exit(73)
+                            if args[1] == destination.name:
+                                os._exit(73)
                         with mock.patch("scripts.install._renameat_exchange", crash_exchange):
                             install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                         os._exit(74)
@@ -1148,7 +1149,7 @@ class InstallerTests(unittest.TestCase):
             root = Path(temporary)
             repo = seed_repository(root / "repo")
             events = []
-            original_rename, original_fsync, original_rmtree = module._renameat_noreplace, os.fsync, shutil.rmtree
+            original_rename, original_fsync, original_rmdir = module._renameat_noreplace, os.fsync, os.rmdir
             def rename(source_fd: int, source: str, target_fd: int, target: str) -> None:
                 original_rename(source_fd, source, target_fd, target)
                 source_parent = Path(os.readlink(f"/proc/self/fd/{source_fd}"))
@@ -1157,11 +1158,13 @@ class InstallerTests(unittest.TestCase):
             def fsync(fd: int) -> None:
                 events.append(("sync", Path(os.readlink(f"/proc/self/fd/{fd}"))))
                 original_fsync(fd)
-            def rmtree(path: Path, *args: object, **kwargs: object) -> None:
-                original_rmtree(path, *args, **kwargs)
-                if Path(path).name.startswith(".codex-package-"):
-                    events.append(("remove", Path(path)))
-            with mock.patch.object(module, "_renameat_noreplace", rename), mock.patch("scripts.install.os.fsync", fsync), mock.patch("scripts.install.shutil.rmtree", rmtree):
+            def rmdir(path: Path, *args: object, **kwargs: object) -> None:
+                original_rmdir(path, *args, **kwargs)
+                record = module._retirement_record_descriptor(str(path), directory=True)
+                if record and record[0].startswith(".codex-package-"):
+                    parent = Path(os.readlink(f"/proc/self/fd/{kwargs['dir_fd']}"))
+                    events.append(("remove", parent / record[0]))
+            with mock.patch.object(module, "_renameat_noreplace", rename), mock.patch("scripts.install.os.fsync", fsync), mock.patch("scripts.install.os.rmdir", rmdir):
                 install(repo, root / "codex", root / "state", FakeRunner([]), agents_only=True)
             index = next(i for i, event in enumerate(events) if event[0] == "rename")
             _, source_parent, target_parent = events[index]
@@ -4090,6 +4093,7 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(receipt_path(state_home).exists())
 
     def test_uninstall_retries_final_receipt_removal_without_replaying_external_commands(self) -> None:
+        from scripts import install as module
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -4097,7 +4101,7 @@ class InstallerTests(unittest.TestCase):
             state_home = root / "state"
             install(repo, codex_home, state_home, FakeRunner(install_results(repo)))
             receipt = receipt_path(state_home)
-            original_unlink = Path.unlink
+            original_unlink = module._clear_codex_record
             failed = {"value": True}
 
             def fail_receipt_once(path: Path, *args: object, **kwargs: object) -> None:
@@ -4114,7 +4118,7 @@ class InstallerTests(unittest.TestCase):
                     removal_response(),
                 ]
             )
-            with mock.patch.object(Path, "unlink", fail_receipt_once):
+            with mock.patch.object(module, "_clear_codex_record", fail_receipt_once):
                 with self.assertRaisesRegex(InstallError, "receipt busy"):
                     uninstall(repo, codex_home, state_home, runner)
 
@@ -5335,7 +5339,8 @@ def test_managed_rollback_retirement_recovers_before_install_conflicts(tmp_path,
 
         def exchanged(*args):
             exchange(*args)
-            os._exit(73)
+            if str(args[1]).endswith(".toml"):
+                os._exit(73)
 
         with mock.patch.object(module, "_write_codex_receipt", side_effect=InstallError("receipt publication failed")), mock.patch.object(module, "_renameat_exchange", exchanged):
             install(repo, home, state, FakeRunner([]), agents_only=True)
@@ -6690,13 +6695,13 @@ def test_correction_normal_package_cleanup_exit(tmp_path, boundary, retry):
                 os._exit(73)
 
         def unlinked(path, *args, **kwargs):
-            if boundary == "receipt-clear" and Path(path) == receipt_path(state):
-                os._exit(73)
             unlink(path, *args, **kwargs)
             if boundary == "marker" and path == module.CODEX_MANAGED_MARKER:
                 os._exit(73)
 
         def exchanged(sfd, source, dfd, destination):
+            if boundary == "receipt-clear" and source == receipt_path(state).name:
+                os._exit(73)
             exchange(sfd, source, dfd, destination)
             if source == managed.name and boundary == "exchange":
                 os._exit(73)
@@ -6743,7 +6748,7 @@ def test_correction_normal_terminal_replacement(tmp_path, boundary):
     install(repo, home, state, FakeRunner([]), agents_only=True)
     managed = managed_repository(repo)
     original = managed.stat().st_ino
-    rmdir, unlink = os.rmdir, os.unlink
+    rmdir, clear = os.rmdir, module._clear_codex_record
     injected = False
 
     def replace_with_user_data():
@@ -6762,14 +6767,14 @@ def test_correction_normal_terminal_replacement(tmp_path, boundary):
             replace_with_user_data()
         return rmdir(path, *args, **kwargs)
 
-    def unlinking(path, *args, **kwargs):
+    def clearing(path, *args, **kwargs):
         if boundary == "receipt-clear" and Path(path) == receipt_path(state):
             assert load_receipt(state)["codex_package"].get("retirement")
             managed.mkdir()
             replace_with_user_data()
-        return unlink(path, *args, **kwargs)
+        return clear(path, *args, **kwargs)
 
-    with mock.patch.object(module.os, "rmdir", removing), mock.patch.object(module.os, "unlink", unlinking), pytest.raises(SystemExit):
+    with mock.patch.object(module.os, "rmdir", removing), mock.patch.object(module, "_clear_codex_record", clearing), pytest.raises(SystemExit):
         uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
     assert injected
     expected = managed.stat().st_ino
@@ -6918,3 +6923,234 @@ def test_recovery_publication_exit_retains_cleanup_authority(tmp_path, resume):
     assert not receipt_path(state).exists()
     assert not module._codex_install_journal_path(state).exists()
     assert not module._codex_migration_journal_path(state).exists()
+
+
+@pytest.mark.parametrize("trigger", ["publication-sync", "construction-conflict"])
+def test_correction_base_receipt_survives_failed_upgrade(tmp_path, trigger):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    InstallerTests()._install_base_receipt(repo, home, state, agents_only=False)
+    original = load_receipt(state)
+    assert original["marketplace_added"] is original["plugin_installed"] is True
+    assert len(original["links"]) == 7
+    identities = {
+        item["destination"]: Path(item["destination"]).lstat().st_ino
+        for item in original["links"]
+    }
+    managed = managed_repository(repo)
+    managed.rename(tmp_path / "old-package")
+    selected = Path(original["links"][0]["destination"])
+    saved_link = selected.with_name("saved-original-link")
+    sync, build = module._fsync_directory, module._build_codex_marketplace
+    injected = False
+
+    def syncing(path):
+        nonlocal injected
+        if trigger == "publication-sync" and managed.exists() and not injected:
+            injected = True
+            raise OSError("injected publication sync failure")
+        sync(path)
+
+    def building(*args, **kwargs):
+        nonlocal injected
+        result = build(*args, **kwargs)
+        if trigger == "construction-conflict":
+            selected.rename(saved_link)
+            selected.write_text("user conflict")
+            injected = True
+        return result
+
+    with mock.patch.object(module, "_fsync_directory", syncing), mock.patch.object(
+        module, "_build_codex_marketplace", building
+    ), pytest.raises(InstallError):
+        install(repo, home, state, FakeRunner([]))
+    assert injected
+    after = load_receipt(state)
+    assert after["marketplace_added"] is after["plugin_installed"] is True
+    assert len(after["links"]) == 7
+    assert {item["destination"]: item["destination_ino"] for item in after["links"]} == identities
+    if trigger == "construction-conflict":
+        assert selected.read_text() == "user conflict"
+        selected.unlink()
+        saved_link.rename(selected)
+    install(repo, home, state, FakeRunner(install_results(repo, True, True)))
+    uninstall(repo, home, state, FakeRunner([
+        plugin_list_response(repo), marketplace_list_response(repo),
+        removal_response(), removal_response(),
+    ]))
+    assert all(not os.path.lexists(item["destination"]) for item in original["links"])
+    assert not receipt_path(state).exists()
+    assert not managed.exists()
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["before-exchange", "at-exchange", "after-exchange"])
+def test_correction_final_record_preserves_replacement(tmp_path, kind, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    paths = {"receipt": receipt_path(state), "install": module._codex_install_journal_path(state),
+             "migration": module._codex_migration_journal_path(state)}
+    record = paths[kind]
+    saved = tmp_path / "original-record.json"
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+    if kind == "receipt":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+        runner = FakeRunner([plugin_list_response(), marketplace_list_response()])
+    unlink, exchange = Path.unlink, module._renameat_exchange
+    cleanup, clear_install, clear_migration = (module._remove_owned_codex_marketplace,
+        module._clear_codex_install_journal, module._clear_codex_migration_journal)
+    injected = False
+
+    def substitute():
+        nonlocal injected
+        if not injected:
+            record.rename(saved)
+            record.write_text("unrelated replacement record\n")
+            injected = True
+
+    def unlinked(path, *args, **kwargs):
+        # The rejected implementation uses this final public pathname unlink.
+        if path == record:
+            substitute()
+        return unlink(path, *args, **kwargs)
+
+    def exchanged(sfd, source, dfd, destination):
+        if source == record.name and boundary != "after-exchange":
+            substitute()
+        result = exchange(sfd, source, dfd, destination)
+        if source == record.name and boundary == "after-exchange":
+            substitute()
+        return result
+
+    def cleaned(*args, **kwargs):
+        result = cleanup(*args, **kwargs)
+        if kind == "receipt" and boundary == "before-exchange":
+            substitute()
+        return result
+
+    def cleared(path):
+        if boundary == "before-exchange":
+            substitute()
+        return (clear_install if kind == "install" else clear_migration)(path)
+
+    with mock.patch.object(Path, "unlink", unlinked), mock.patch.object(module, "_renameat_exchange", exchanged), mock.patch.object(
+        module, "_remove_owned_codex_marketplace", cleaned
+    ), mock.patch.object(module, "_clear_codex_install_journal", cleared if kind == "install" else clear_install), mock.patch.object(
+        module, "_clear_codex_migration_journal", cleared if kind == "migration" else clear_migration
+    ):
+        try:
+            (uninstall if kind == "receipt" else install)(repo, home, state, runner, agents_only=kind == "install")
+        except InstallError:
+            pass
+    assert injected
+    assert record.read_text() == "unrelated replacement record\n"
+    expected = record.stat().st_ino
+    for _ in range(2):
+        with pytest.raises(InstallError):
+            uninstall(repo, home, state, FakeRunner([]))
+        assert record.stat().st_ino == expected
+        assert record.read_text() == "unrelated replacement record\n"
+    record.unlink()
+    if boundary != "after-exchange":
+        saved.rename(record)
+    for _ in range(2):
+        uninstall(repo, home, state, runner if kind == "migration" else FakeRunner([
+            plugin_list_response(), marketplace_list_response(),
+        ]))
+    assert not record.exists()
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+def test_correction_staging_cleanup_preserves_replacement(tmp_path, kind):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    target = (module._codex_recovery_root(repo, state) if kind == "recovery"
+              else module._codex_managed_root(repo, state))
+    if kind == "refresh":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    rename = module._renameat_noreplace
+    injected = []
+
+    def published(sfd, source, dfd, destination):
+        result = rename(sfd, source, dfd, destination)
+        if source == "marketplace" and destination == target.name:
+            identity = os.fstat(sfd)
+            staging = next(path for path in target.parent.iterdir()
+                           if path.stat().st_ino == identity.st_ino)
+            staging.rename(tmp_path / "original-staging")
+            staging.mkdir()
+            (staging / "user-data").write_text("preserve unrelated directory\n")
+            injected.append((staging, staging.stat().st_ino))
+        return result
+
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "recovery" else FakeRunner([])
+    with mock.patch.object(module, "_renameat_noreplace", published):
+        install(repo, home, state, runner, agents_only=kind != "recovery")
+    assert len(injected) == 1
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            operation(repo, home, state, runner if kind == "recovery" else FakeRunner(
+                [] if operation is install else [plugin_list_response(), marketplace_list_response()]
+            ), agents_only=operation is install and kind != "recovery")
+        staging, inode = injected[0]
+        assert staging.stat().st_ino == inode
+        assert (staging / "user-data").read_text() == "preserve unrelated directory\n"
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["prepared", "exchanged", "sentinel-moved", "before-unlink", "after-unlink"])
+def test_correction_final_record_retirement_recovers_exit(tmp_path, kind, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    paths = {"receipt": receipt_path(state), "install": module._codex_install_journal_path(state),
+             "migration": module._codex_migration_journal_path(state)}
+    record = paths[kind]
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+    if kind == "receipt":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+        runner = FakeRunner([plugin_list_response(), marketplace_list_response()])
+    pid = os.fork()
+    if pid == 0:
+        exchange, rename, unlink = module._renameat_exchange, module._renameat_noreplace, os.unlink
+
+        def exchanged(sfd, source, dfd, destination):
+            if source == record.name and boundary == "prepared":
+                os._exit(73)
+            exchange(sfd, source, dfd, destination)
+            if source == record.name and boundary == "exchanged":
+                os._exit(73)
+
+        def renamed(sfd, source, dfd, destination):
+            rename(sfd, source, dfd, destination)
+            if source == record.name and boundary == "sentinel-moved":
+                os._exit(73)
+
+        def unlinked(path, *args, **kwargs):
+            retired = module._retirement_record_descriptor(str(path))
+            owned = retired is not None and retired[0] == record.name
+            if owned and boundary == "before-unlink":
+                os._exit(73)
+            unlink(path, *args, **kwargs)
+            if owned and boundary == "after-unlink":
+                os._exit(73)
+
+        with mock.patch.object(module, "_renameat_exchange", exchanged), mock.patch.object(
+            module, "_renameat_noreplace", renamed
+        ), mock.patch.object(module.os, "unlink", unlinked):
+            (uninstall if kind == "receipt" else install)(repo, home, state, runner, agents_only=kind == "install")
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    for _ in range(2):
+        uninstall(repo, home, state, runner if kind == "migration" else FakeRunner([
+            plugin_list_response(), marketplace_list_response(),
+        ]))
+    assert all(not path.exists() for path in paths.values())
+    assert all(
+        path.name in {"codex-marketplace", "codex-marketplace-recovery"}
+        and path.is_dir() and not any(path.iterdir())
+        for path in record.parent.iterdir()
+    )
