@@ -486,18 +486,42 @@ def _provenance_sources(root: Path) -> list[tuple[str, Path]]:
     return sorted(sources, key=lambda item: item[0])
 
 
-def _snapshot_sources(root: Path) -> tuple[Path, Path]:
+def _discard_owned_directory(path: Path, expected: os.stat_result) -> None:
+    """Best-effort reclaim of a directory still holding its creation identity.
+
+    A pathname swap after creation preserves the replacement; cleanup never
+    masks the build fault that caused it.
+    """
+
+    try:
+        parent_fd = os.open(path.parent, _directory_open_flags())
+    except OSError:
+        return
+    try:
+        _remove_tree_at(parent_fd, path.name, expected)
+    except BaseException:
+        pass
+    finally:
+        _close_owned_descriptors(parent_fd)
+
+
+def _snapshot_sources(root: Path) -> tuple[Path, Path, os.stat_result]:
     """Copy all build inputs into one private, verified source snapshot.
 
     Rendering, copying, and provenance hashing all consume this snapshot.  A
     second inventory/digest pass over the live checkout detects edits during
     snapshot creation and aborts before publishing an inconsistent artifact.
+
+    The returned identity freezes the snapshot parent at creation so later
+    cleanup can preserve a replacement instead of deleting it.
     """
 
     initial = _provenance_sources(root)
     snapshot_parent = Path(tempfile.mkdtemp(prefix=".opencode-source-snapshot-"))
     snapshot_root = snapshot_parent / "root"
+    snapshot_identity: os.stat_result | None = None
     try:
+        snapshot_identity = os.lstat(snapshot_parent)
         snapshot_manifest: list[tuple[str, str]] = []
         for relative, source in initial:
             target = snapshot_root / relative
@@ -515,12 +539,11 @@ def _snapshot_sources(root: Path) -> tuple[Path, Path]:
         if snapshot_manifest != written_manifest or snapshot_manifest != final_manifest:
             raise BuildError("repository sources changed while creating a private OpenCode snapshot")
     except BaseException:
-        try:
-            shutil.rmtree(snapshot_parent, ignore_errors=True)
-        except BaseException:
-            pass
+        if snapshot_identity is not None:
+            _discard_owned_directory(snapshot_parent, snapshot_identity)
         raise
-    return snapshot_root, snapshot_parent
+    assert snapshot_identity is not None
+    return snapshot_root, snapshot_parent, snapshot_identity
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -1693,8 +1716,9 @@ def build_opencode_package(
     _OUTPUT_BINDINGS[binding_key] = binding
     snapshot_root: Path | None = None
     snapshot_parent: Path | None = None
+    snapshot_identity: os.stat_result | None = None
     try:
-        snapshot_root, snapshot_parent = _snapshot_sources(root)
+        snapshot_root, snapshot_parent, snapshot_identity = _snapshot_sources(root)
         # Revalidate the live inventory at the handoff from snapshot capture to
         # rendering.  Later edits during rendering are intentionally harmless:
         # every copied/rendered byte and provenance digest still comes solely
@@ -1731,11 +1755,8 @@ def build_opencode_package(
             pass
         raise
     finally:
-        if snapshot_parent is not None:
-            try:
-                shutil.rmtree(snapshot_parent, ignore_errors=True)
-            except BaseException:
-                pass
+        if snapshot_parent is not None and snapshot_identity is not None:
+            _discard_owned_directory(snapshot_parent, snapshot_identity)
         _OUTPUT_BINDINGS.pop(binding_key, None)
         _close_owned_descriptors(
             binding.staging_fd,

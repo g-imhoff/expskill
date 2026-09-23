@@ -111,6 +111,83 @@ def _copy_tree(source: Path, target: Path, label: str) -> list[tuple[Path, Path]
     return copied
 
 
+def _empty_owned_directory(descriptor: int) -> None:
+    """Remove a pinned directory's entries without following pathname swaps."""
+
+    for name in os.listdir(descriptor):
+        try:
+            child = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(child.st_mode) and not stat.S_ISLNK(child.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=descriptor,
+            )
+            try:
+                _empty_owned_directory(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=descriptor)
+        elif stat.S_ISREG(child.st_mode) or stat.S_ISLNK(child.st_mode):
+            os.unlink(name, dir_fd=descriptor)
+        else:
+            raise BuildError(f"generated staging entry has an unexpected type: {name}")
+
+
+def _discard_owned_staging(
+    staging_fd: int, staging: Path, expected: tuple[int, int]
+) -> None:
+    """Reclaim only the staging tree still holding its creation identity.
+
+    A pathname swap after creation is preserved, never reclaimed.  Cleanup is
+    best effort and never masks the build fault that caused it.
+    """
+
+    try:
+        current = os.lstat(staging)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if (
+        (current.st_dev, current.st_ino) != expected
+        or not stat.S_ISDIR(current.st_mode)
+    ):
+        return
+    try:
+        _empty_owned_directory(staging_fd)
+        os.fsync(staging_fd)
+        current = os.lstat(staging)
+        if (current.st_dev, current.st_ino) != expected:
+            return
+        # Empty-only removal cannot delete data even if the public name is
+        # substituted after this final check.
+        os.rmdir(staging)
+    except (OSError, BuildError):
+        return
+
+
+def _require_staging_identity(
+    staging_fd: int, staging: Path, expected: tuple[int, int]
+) -> None:
+    """Refuse to publish a staging pathname that no longer holds its build."""
+
+    try:
+        current = os.lstat(staging)
+    except OSError as error:
+        raise BuildError(f"Codex package staging candidate changed: {staging}: {error}") from error
+    if (
+        (current.st_dev, current.st_ino) != expected
+        or not stat.S_ISDIR(current.st_mode)
+    ):
+        raise BuildError(f"Codex package staging candidate changed: {staging}")
+    opened = os.fstat(staging_fd)
+    if (opened.st_dev, opened.st_ino) != expected:
+        raise BuildError(f"Codex package staging candidate changed: {staging}")
+
+
 def _write_text(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(contents, encoding="utf-8")
@@ -191,8 +268,13 @@ def build_codex_package(
     for path in required:
         _reject_symlink_components(path, "Codex package input")
     staging = Path(tempfile.mkdtemp(prefix=".codex-build-", dir=output.parent))
-    sources: list[tuple[str, Path]] = []
+    staging_fd = os.open(
+        staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
     try:
+        owned = os.fstat(staging_fd)
+        staging_identity = (owned.st_dev, owned.st_ino)
+        sources: list[tuple[str, Path]] = []
         _write_manifest(package, staging)
         _copy_tree(content / "skills", staging / "skills", "canonical skills")
         _copy_tree(content / "scripts", staging / "scripts", "canonical shared scripts")
@@ -248,13 +330,16 @@ def build_codex_package(
             sources.append((path.relative_to(root).as_posix(), path))
         _write_provenance(sources, staging)
         _normalize(staging)
+        _require_staging_identity(staging_fd, staging, staging_identity)
         staging.rename(output)
     except RenderError as error:
-        shutil.rmtree(staging, ignore_errors=True)
+        _discard_owned_staging(staging_fd, staging, staging_identity)
         raise BuildError(str(error)) from error
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        _discard_owned_staging(staging_fd, staging, staging_identity)
         raise
+    finally:
+        os.close(staging_fd)
     return output
 
 

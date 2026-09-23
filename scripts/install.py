@@ -1020,6 +1020,87 @@ def _try_link_anonymous_file(descriptor: int, parent_fd: int, name: str) -> bool
     return True
 
 
+def _discard_preflight_artifact(probe_fd: int, temporary: Path, expected: tuple[int, int]) -> None:
+    """Reclaim a disposable preflight artifact bound to its creation identity.
+
+    A pathname swap after creation is preserved and reported, never reclaimed.
+    Only an empty-only removal may touch the public name, so even a swap in
+    the final gap cannot delete user data.
+    """
+
+    try:
+        current = os.lstat(temporary)
+    except FileNotFoundError:
+        return
+    if (
+        (current.st_dev, current.st_ino) != expected
+        or not stat.S_ISDIR(current.st_mode)
+    ):
+        raise InstallError(f"preflight artifact changed; preserved: {temporary}")
+    for name in os.listdir(probe_fd):
+        metadata = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            shutil.rmtree(name, dir_fd=probe_fd)
+        else:
+            os.unlink(name, dir_fd=probe_fd)
+    os.fsync(probe_fd)
+    current = os.lstat(temporary)
+    if (current.st_dev, current.st_ino) != expected:
+        raise InstallError(f"preflight artifact changed; preserved: {temporary}")
+    os.rmdir(temporary)
+
+
+def _retire_capability_probe(probe_fd: int, temporary: Path, expected: tuple[int, int]) -> None:
+    """Reclaim a capability probe directory bound to its creation identity.
+
+    A pathname swap after creation is preserved and reported, never reclaimed.
+    Only an empty-only removal may touch the public name, so even a swap in
+    the final gap cannot delete user data.
+    """
+
+    try:
+        current = os.lstat(temporary)
+    except FileNotFoundError:
+        return
+    if (
+        (current.st_dev, current.st_ino) != expected
+        or not stat.S_ISDIR(current.st_mode)
+    ):
+        raise InstallError(f"capability probe directory changed; preserved: {temporary}")
+    for name in os.listdir(probe_fd):
+        try:
+            child = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(child.st_mode) and not stat.S_ISLNK(child.st_mode):
+            child_fd = os.open(name, _directory_open_flags(), dir_fd=probe_fd)
+            try:
+                for entry in os.listdir(child_fd):
+                    try:
+                        entry_metadata = os.stat(entry, dir_fd=child_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISDIR(entry_metadata.st_mode):
+                        raise InstallError(
+                            f"capability probe directory changed; preserved: {temporary}"
+                        )
+                    os.unlink(entry, dir_fd=child_fd)
+                os.fsync(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=probe_fd)
+        else:
+            os.unlink(name, dir_fd=probe_fd)
+    os.fsync(probe_fd)
+    try:
+        current = os.lstat(temporary)
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) != expected:
+        raise InstallError(f"capability probe directory changed; preserved: {temporary}")
+    os.rmdir(temporary)
+
+
 def _preflight_codex_capabilities(codex_home: Path, state_home: Path) -> None:
     """Probe each destination filesystem before publishing profiles or CLI state."""
 
@@ -1032,9 +1113,14 @@ def _preflight_codex_capabilities(codex_home: Path, state_home: Path) -> None:
         if parent in checked:
             continue
         checked.add(parent)
+        probe_fd: int | None = None
         try:
-            with tempfile.TemporaryDirectory(prefix=".expskill-capability-", dir=parent) as temporary:
-                root = Path(temporary)
+            temporary = Path(tempfile.mkdtemp(prefix=".expskill-capability-", dir=parent))
+            probe_fd = os.open(temporary, _directory_open_flags())
+            owned = os.fstat(probe_fd)
+            expected = (owned.st_dev, owned.st_ino)
+            try:
+                root = temporary
                 os.symlink("absent-target", root / "source")
                 if sys.platform == "darwin":
                     os.link(root / "source", root / "anchor", follow_symlinks=False)
@@ -1065,6 +1151,12 @@ def _preflight_codex_capabilities(codex_home: Path, state_home: Path) -> None:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
+            finally:
+                if probe_fd is not None:
+                    try:
+                        _retire_capability_probe(probe_fd, temporary, expected)
+                    finally:
+                        os.close(probe_fd)
         except (OSError, InstallError) as error:
             raise InstallError(f"required Codex filesystem capability is unavailable: {parent}: {error}") from error
 
@@ -7855,23 +7947,62 @@ def _restore_legacy_codex_links(
                     raise InstallError(
                         f"legacy restoration stage identity is unproven; reconcile: {staged}"
                     )
+                nursery = _codex_creation_directory(staged)
+                if _lexists(nursery):
+                    # A crash before the first private link leaves an empty
+                    # directory that proves nothing and owns nothing.  Reclaim
+                    # only the empty name; a nonempty nursery still needs
+                    # explicit reconciliation.  Empty-only removal cannot
+                    # delete data even if the name is substituted.
+                    try:
+                        os.rmdir(nursery)
+                        _fsync_directory(staged.parent)
+                    except OSError:
+                        raise InstallError(
+                            f"legacy restoration creation is unproven; reconcile: {nursery}"
+                        ) from None
                 original = retained.get((link.source, link.destination))
                 if original is not None and _valid_codex_link_anchor_path(original):
                     if not _codex_anchor_is_live(original):
                         raise InstallError(f"legacy receipt anchor changed: {original.link_anchor}")
+                    before = os.lstat(original.link_anchor)
                     os.link(original.link_anchor, staged, follow_symlinks=False)
+                    staged_metadata = os.lstat(staged)
+                    after = os.lstat(original.link_anchor)
+                    if (
+                        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                        or (staged_metadata.st_dev, staged_metadata.st_ino) != (before.st_dev, before.st_ino)
+                    ):
+                        raise InstallError(f"legacy restoration stage changed during creation: {staged}")
+                    if not _codex_staged_link_is_exact(
+                        link, staged, (before.st_dev, before.st_ino),
+                        original_target=record["preexisting_target"],
+                    ):
+                        raise InstallError(f"legacy restoration stage changed: {staged}")
+                    _fsync_directory(staged.parent)
+                    restoration.update(dev=before.st_dev, ino=before.st_ino)
+                    # Freeze identity before publication so either pathname can
+                    # be verified after a process exit during the rename.
+                    _write_codex_install_journal(journal_path, journal)
                 else:
-                    staged.symlink_to(record["preexisting_target"])
-                if not _codex_staged_link_is_exact(
-                    link, staged, original_target=record["preexisting_target"],
-                ):
-                    raise InstallError(f"legacy restoration stage changed: {staged}")
-                metadata = os.lstat(staged)
-                _fsync_directory(staged.parent)
-                restoration.update(dev=metadata.st_dev, ino=metadata.st_ino)
-                # Freeze identity before publication so either pathname can
-                # be verified after a process exit during the rename.
-                _write_codex_install_journal(journal_path, journal)
+                    # Establish creation identity inside the private nursery
+                    # before exposing the staging name.  Recording an observed
+                    # staged inode here would adopt a same-target replacement
+                    # swapped in between creation and its first proof.  The
+                    # nursery retires on clean exit, so only the checkpoint
+                    # below still needs crash recovery through the journal.
+                    with _created_codex_symlink(staged, Path(record["preexisting_target"])) as created:
+                        identity = (created.st_dev, created.st_ino)
+                        if not _codex_staged_link_is_exact(
+                            link, staged, identity,
+                            original_target=record["preexisting_target"],
+                        ):
+                            raise InstallError(f"legacy restoration stage changed during creation: {staged}")
+                    _fsync_directory(staged.parent)
+                    restoration.update(dev=identity[0], ino=identity[1])
+                    # Freeze identity before publication so either pathname can
+                    # be verified after a process exit during the rename.
+                    _write_codex_install_journal(journal_path, journal)
             expected = (restoration["dev"], restoration["ino"])
             if _lexists(staged):
                 if not _codex_staged_link_is_exact(
@@ -12703,20 +12834,32 @@ def preflight_opencode_links(
 ) -> tuple[ProfileLink, ...]:
     canonical_root = _canonical_opencode_repository_root(repo_root)
     _validate_repository(canonical_root)
-    temporary: tempfile.TemporaryDirectory[str] | None = None
+    temporary_path: Path | None = None
+    temporary_fd: int | None = None
+    temporary_identity: tuple[int, int] | None = None
     if artifact_root is None:
         # Preflight is read-only.  Even when a state home is supplied, build
         # into a disposable artifact rather than adopting or replacing state.
-        temporary = tempfile.TemporaryDirectory(prefix="expskill-opencode-preflight-")
-        artifact_root = Path(temporary.name) / "artifact"
+        # The disposable directory is reclaimed bound to its creation
+        # identity, so a pathname swap preserves the replacement.
+        temporary_path = Path(tempfile.mkdtemp(prefix="expskill-opencode-preflight-"))
+        temporary_fd = os.open(temporary_path, _directory_open_flags())
+        owned = os.fstat(temporary_fd)
+        temporary_identity = (owned.st_dev, owned.st_ino)
+        artifact_root = temporary_path / "artifact"
         try:
             build_opencode_package(canonical_root, artifact_root)
         except (OpencodeBuildError, OSError) as error:
-            temporary.cleanup()
+            held_fd, temporary_fd = temporary_fd, None
+            assert held_fd is not None
+            try:
+                _discard_preflight_artifact(held_fd, temporary_path, temporary_identity)
+            finally:
+                os.close(held_fd)
             raise InstallError(f"cannot build OpenCode artifact: {error}") from error
     try:
         links = _opencode_expected_links(canonical_root, config_dir, artifact_root)
-        if temporary is not None:
+        if temporary_path is not None:
             # The temporary artifact is validation-only.  Remap every source
             # to the fixed receipt-owned path before conflict checks and before
             # returning links to callers, so dry-run output is stable.
@@ -12731,8 +12874,15 @@ def preflight_opencode_links(
                 )
             links = tuple(remapped)
     finally:
-        if temporary is not None:
-            temporary.cleanup()
+        if (
+            temporary_path is not None
+            and temporary_fd is not None
+            and temporary_identity is not None
+        ):
+            try:
+                _discard_preflight_artifact(temporary_fd, temporary_path, temporary_identity)
+            finally:
+                os.close(temporary_fd)
     for link in links:
         if not _lexists(link.destination):
             continue
