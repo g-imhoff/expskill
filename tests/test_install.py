@@ -5049,6 +5049,194 @@ def test_recovery_package_cleanup_retains_exact_authority(tmp_path: Path, operat
     assert not receipt_path(state).exists()
 
 
+@pytest.mark.parametrize("replacement", ["directory", "symlink"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_swap_backup_replacement_after_validation(tmp_path, replacement, interrupted):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = module._codex_managed_root(repo, state)
+    metadata = managed.lstat()
+    expected = (metadata.st_dev, metadata.st_ino)
+    backup = module._codex_swap_backup_path(managed, expected)
+    saved, user = tmp_path / "saved-backup", tmp_path / "user-directory"
+    user.mkdir()
+    (user / "user-data").write_text("keep root data")
+    (user / "plugins").mkdir()
+    (user / "plugins/user-data").write_text("keep nested data")
+    shutil.copy2(managed / module.CODEX_MANAGED_MARKER, user / module.CODEX_MANAGED_MARKER)
+    marker_bytes = (user / module.CODEX_MANAGED_MARKER).read_bytes()
+    owned, remove_tree = module._codex_swap_marker_is_owned, shutil.rmtree
+
+    def checked(path, *args, **kwargs):
+        result = owned(path, *args, **kwargs)
+        if path == backup and result and not saved.exists():
+            backup.rename(saved)
+            if replacement == "directory":
+                user.rename(backup)
+            else:
+                backup.symlink_to(user, target_is_directory=True)
+        return result
+
+    def removing(path, *args, **kwargs):
+        fd = kwargs.get("dir_fd")
+        cleanup = (fd is not None and (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == expected) or (
+            fd is None and Path(path).parent == backup
+        )
+        remove_tree(path, *args, **kwargs)
+        if interrupted and cleanup:
+            os._exit(73)
+
+    def attempt():
+        with mock.patch.object(module, "_codex_swap_marker_is_owned", checked), mock.patch.object(module.shutil, "rmtree", removing):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+
+    if interrupted:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        with pytest.raises(InstallError):
+            attempt()
+    replacement_inode = backup.lstat().st_ino
+    journal_path = module._codex_install_journal_path(state)
+    for _ in range(2):
+        assert (backup / "user-data").read_text() == "keep root data"
+        assert (backup / "plugins/user-data").read_text() == "keep nested data"
+        assert (backup / module.CODEX_MANAGED_MARKER).read_bytes() == marker_bytes
+        assert backup.lstat().st_ino == replacement_inode
+        assert json.loads(journal_path.read_text())["swap"]["backup_ino"] == expected[1]
+        with pytest.raises(InstallError, match="exact ownership"):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+    # Restore the exact original; retries must also finish partially emptied
+    # and markerless originals without touching the saved user replacement.
+    backup.rename(tmp_path / "preserved-replacement")
+    saved.rename(backup)
+    for _ in range(2):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert not os.path.lexists(backup)
+    assert list(managed.parent.iterdir()) == [managed]
+    assert not journal_path.exists()
+    assert (tmp_path / "preserved-replacement/plugins/user-data").read_text() == "keep nested data"
+
+
+@pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "sentinel", "removed"])
+def test_swap_backup_cleanup_process_exit(tmp_path, boundary):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = module._codex_managed_root(repo, state)
+    metadata = managed.lstat()
+    expected = (metadata.st_dev, metadata.st_ino)
+    backup = module._codex_swap_backup_path(managed, expected)
+    pid = os.fork()
+    if pid == 0:
+        remove_tree, unlink = shutil.rmtree, os.unlink
+        exchange, write = module._renameat_exchange, module._write_codex_install_journal
+
+        def removing(path, *args, **kwargs):
+            fd = kwargs.get("dir_fd")
+            cleanup = fd is not None and (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == expected
+            remove_tree(path, *args, **kwargs)
+            if boundary == "content" and cleanup:
+                os._exit(73)
+
+        def unlinking(path, *args, **kwargs):
+            unlink(path, *args, **kwargs)
+            if boundary == "marker" and path == module.CODEX_MANAGED_MARKER:
+                os._exit(73)
+            if boundary == "sentinel" and str(path).startswith(f".{backup.name}.") and str(path).endswith(".sentinel-dir"):
+                os._exit(73)
+
+        def exchanging(source_fd, source, target_fd, target):
+            exchange(source_fd, source, target_fd, target)
+            if boundary == "exchange" and source == backup.name:
+                os._exit(73)
+
+        def writing(path, journal):
+            if boundary == "removed" and journal.get("swap") is None and not backup.exists() and managed.lstat().st_ino != expected[1]:
+                os._exit(73)
+            write(path, journal)
+
+        with mock.patch.object(module.shutil, "rmtree", removing), mock.patch.object(module.os, "unlink", unlinking), mock.patch.object(module, "_renameat_exchange", exchanging), mock.patch.object(module, "_write_codex_install_journal", writing):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    journal_path = module._codex_install_journal_path(state)
+    assert json.loads(journal_path.read_text())["swap"]["backup_ino"] == expected[1]
+    for _ in range(2):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    assert list(managed.parent.iterdir()) == [managed]
+    assert not journal_path.exists()
+
+
+@pytest.mark.parametrize("replacement", [None, "public-file", "public-link", "private"])
+def test_managed_rollback_retirement_recovers_before_install_conflicts(tmp_path, replacement):
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    pid = os.fork()
+    if pid == 0:
+        exchange = module._renameat_exchange
+
+        def exchanged(*args):
+            exchange(*args)
+            os._exit(73)
+
+        with mock.patch.object(module, "_write_codex_receipt", side_effect=InstallError("receipt publication failed")), mock.patch.object(module, "_renameat_exchange", exchanged):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    retired, = (home / "agents").glob("*.retire")
+    destination = home / "agents" / module._retirement_record_descriptor(retired.name)[0]
+    assert destination.is_file() and not destination.is_symlink()
+    assert retired.is_symlink()
+    journal_path = module._codex_install_journal_path(state)
+    saved, user = tmp_path / "saved-retirement", tmp_path / "user-data"
+    preserved = None
+    if replacement is not None:
+        preserved = retired if replacement == "private" else destination
+        preserved.rename(saved)
+        if replacement == "public-link":
+            user.write_text("keep")
+            preserved.symlink_to(user)
+        else:
+            preserved.write_text("keep")
+        identity = preserved.lstat().st_ino
+        for _ in range(2):
+            with pytest.raises(InstallError):
+                install(repo, home, state, FakeRunner([]), agents_only=True)
+            assert preserved.lstat().st_ino == identity
+            assert preserved.read_text() == "keep"
+            assert journal_path.exists()
+        preserved.unlink()
+        if replacement == "private":
+            saved.rename(retired)
+    else:
+        unlink = os.unlink
+
+        def interrupted(path, *args, **kwargs):
+            if path == retired.name:
+                raise SystemExit(73)
+            unlink(path, *args, **kwargs)
+
+        for _ in range(2):
+            with mock.patch.object(module.os, "unlink", interrupted), pytest.raises(SystemExit):
+                install(repo, home, state, FakeRunner([]), agents_only=True)
+            assert journal_path.exists()
+    for _ in range(2):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+        assert destination.is_symlink()
+        assert not journal_path.exists()
+    uninstall(repo, home, state, FakeRunner([]), agents_only=True)
+    assert list(destination.parent.iterdir()) == []
+    assert not receipt_path(state).exists()
+
+
 @pytest.mark.parametrize("replacement", ["empty", "copied-marker", "symlink"])
 def test_recovery_package_cleanup_preserves_replaced_directory(tmp_path, replacement):
     from scripts import install as module

@@ -263,3 +263,22 @@ def test_darwin_named_retirement_preserves_replacements(tmp_path, darwin_api, re
 def test_darwin_recovery_directory_cleanup(tmp_path, darwin_api, fault):
     from tests import test_install as cases
     cases.test_recovery_package_cleanup_retains_exact_authority(tmp_path, "uninstall", fault)
+
+
+@pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "sentinel", "removed"])
+def test_darwin_swap_backup_cleanup_process_exit(tmp_path, darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_swap_backup_cleanup_process_exit(tmp_path, boundary)
+
+
+@pytest.mark.parametrize("replacement", ["directory", "symlink"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_darwin_swap_backup_replacement_after_validation(tmp_path, darwin_api, replacement, interrupted):
+    from tests import test_install as cases
+    cases.test_swap_backup_replacement_after_validation(tmp_path, replacement, interrupted)
+
+
+@pytest.mark.parametrize("replacement", [None, "public-file", "public-link", "private"])
+def test_darwin_managed_rollback_retirement_recovers_before_install_conflicts(tmp_path, darwin_api, replacement):
+    from tests import test_install as cases
+    cases.test_managed_rollback_retirement_recovers_before_install_conflicts(tmp_path, replacement)

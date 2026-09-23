@@ -2250,13 +2250,19 @@ def _codex_swap_backup_path(
 
 
 def _codex_swap_marker_is_owned(
-    backup: Path, target_root: Path, repository_root: Path
+    backup: Path, target_root: Path, repository_root: Path,
+    *, directory_fd: int | None = None,
 ) -> bool:
-    marker = backup / CODEX_MANAGED_MARKER
-    if marker.is_symlink() or not marker.is_file():
-        return False
     try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
+        descriptor = os.open(
+            backup / CODEX_MANAGED_MARKER if directory_fd is None else CODEX_MANAGED_MARKER,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return False
+            payload = json.load(stream)
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     return payload == _codex_managed_marker(target_root, repository_root)
@@ -2269,49 +2275,64 @@ def _remove_exact_codex_swap_backup(
     repository_root: Path,
 ) -> None:
     _verify_codex_transaction()
+    parent_fd = os.open(backup.parent, _directory_open_flags())
     try:
-        metadata = os.lstat(backup)
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise InstallError(f"cannot inspect Codex swap backup: {backup}: {error}") from error
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or (metadata.st_dev, metadata.st_ino) != expected
-    ):
-        raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
-    marker = backup / CODEX_MANAGED_MARKER
-    if not _lexists(marker):
+        retiring = _retirement_record_exists(
+            parent_fd, backup.name, expected, directory=True
+        )
+        if not retiring:
+            try:
+                descriptor = os.open(backup.name, _directory_open_flags(), dir_fd=parent_fd)
+            except FileNotFoundError:
+                os.fsync(parent_fd)
+                return
+            except OSError as error:
+                raise InstallError(f"Codex swap backup lost its exact ownership: {backup}") from error
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
+                    raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
+                children = os.listdir(descriptor)
+                if CODEX_MANAGED_MARKER not in children:
+                    if children:
+                        raise InstallError(f"markerless Codex swap backup is not empty: {backup}")
+                elif not _codex_swap_marker_is_owned(
+                    backup, target_root, repository_root, directory_fd=descriptor
+                ):
+                    raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
+                # Validate and remove through the same exact directory. Replacing
+                # its public pathname must never redirect recursive deletion.
+                for name in children:
+                    if name == CODEX_MANAGED_MARKER:
+                        continue
+                    child = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    if stat.S_ISDIR(child.st_mode):
+                        shutil.rmtree(name, dir_fd=descriptor)
+                    else:
+                        os.unlink(name, dir_fd=descriptor)
+                os.fsync(descriptor)
+                if CODEX_MANAGED_MARKER in children:
+                    os.unlink(CODEX_MANAGED_MARKER, dir_fd=descriptor)
+                    os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        # The journal retains the original identity across every retirement
+        # checkpoint, including an exit after moving the public placeholder.
+        _remove_exact_via_exchange(
+            parent_fd, backup.name, expected, f"Codex swap backup {backup}",
+            directory=True, preserve_replacements=True,
+        )
         try:
-            if any(backup.iterdir()):
-                raise InstallError(
-                    f"markerless Codex swap backup is not empty: {backup}"
-                )
-            backup.rmdir()
-            _fsync_directory(backup.parent)
-            return
-        except OSError as error:
-            raise InstallError(
-                f"empty Codex swap backup could not be removed: {backup}: {error}"
-            ) from error
-    if not _codex_swap_marker_is_owned(backup, target_root, repository_root):
-        raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
-    try:
-        for child in backup.iterdir():
-            if child == marker:
-                continue
-            if child.is_symlink() or not child.is_dir():
-                child.unlink()
-            else:
-                shutil.rmtree(child)
-        _fsync_directory(backup)
-        marker.unlink()
-        _fsync_directory(backup)
-        backup.rmdir()
-        _fsync_directory(backup.parent)
+            os.stat(backup.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
+        os.fsync(parent_fd)
     except OSError as error:
         raise InstallError(f"old managed Codex package could not be removed: {backup}: {error}") from error
+    finally:
+        os.close(parent_fd)
 
 
 def _resume_codex_marketplace_swap(
@@ -2377,7 +2398,9 @@ def _resume_codex_marketplace_swap(
             raise InstallError(
                 f"cannot restore interrupted Codex package swap: {error}"
             ) from error
-    elif backup_exists:
+    elif target_exists:
+        # The public backup may already be gone while its exact retirement
+        # record still needs cleanup after an interrupted exchange.
         _remove_exact_codex_swap_backup(
             backup, expected, target_root, repository_root
         )
@@ -7036,24 +7059,35 @@ def _migrate_legacy_codex_links(
     return tuple(migrated)
 
 
-def _recover_codex_legacy_retirements(journal: Mapping[str, object]) -> None:
+def _recover_codex_link_retirements(journal: Mapping[str, object]) -> None:
     """Reconcile only journal-authorized exchanges before public preflight."""
 
     _verify_codex_transaction()
     records = {record["destination"]: record for record in journal["links"]}
+    retirements = []
     for link in _journaled_legacy_codex_links(journal):
         record = records[str(link.destination)]
         expected = (record["preexisting_dev"], record["preexisting_ino"])
-        if not link.destination.parent.exists():
+        retirements.append((link.destination, expected))
+    for record in records.values():
+        link = _codex_transaction_link(
+            record, ProfileLink(Path(record["source"]), Path(record["destination"])), journal
+        )
+        if link is not None:
+            expected = (link.destination_dev, link.destination_ino)
+            for path in (link.staged_destination, link.destination, link.link_anchor):
+                if path is not None:
+                    retirements.append((path, expected))
+    for path, expected in retirements:
+        if not path.parent.exists():
             continue
-        parent_fd = os.open(link.destination.parent, _directory_open_flags())
+        parent_fd = os.open(path.parent, _directory_open_flags())
         try:
             if _retirement_record_exists(
-                parent_fd, link.destination.name, expected, directory=False
+                parent_fd, path.name, expected, directory=False
             ):
                 _remove_exact_via_exchange(
-                    parent_fd, link.destination.name, expected,
-                    f"legacy Codex agent link {link.destination}",
+                    parent_fd, path.name, expected, f"Codex agent link {path}",
                     directory=False, preserve_replacements=True,
                 )
         finally:
@@ -7734,7 +7768,7 @@ def _install_codex_bound(
         agents_only,
     )
     try:
-        _recover_codex_legacy_retirements(install_journal)
+        _recover_codex_link_retirements(install_journal)
         _check_codex_link_conflicts(canonical_root, planned_links)
         restoring = {
             record["destination"]
@@ -8195,7 +8229,7 @@ def _uninstall_codex_bound(
             journal_path, canonical_root, codex_home, managed_root,
             links[:len(PROFILE_NAMES)], pending_agents_only,
         )
-        _recover_codex_legacy_retirements(journal)
+        _recover_codex_link_retirements(journal)
         failures = _rollback_codex_transaction_links(
             journal_path, journal, uninstalling=True
         )
