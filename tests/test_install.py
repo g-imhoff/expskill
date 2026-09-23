@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -30,6 +31,363 @@ from scripts.install import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_record_checkpoint_preserves_boundary_replacement(tmp_path, kind, interrupted):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    record = {"receipt": receipt_path(state),
+              "install": module._codex_install_journal_path(state),
+              "migration": module._codex_migration_journal_path(state)}[kind]
+    if kind == "receipt":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    saved = tmp_path / "original-record"
+    evidence = tmp_path / "replacement-inode"
+    replace, rename = os.replace, module._renameat_noreplace
+
+    def substitute():
+        record.rename(saved)
+        record.write_text("unrelated replacement record\n")
+        evidence.write_text(str(record.stat().st_ino))
+
+    def replaced(source, destination, *args, **kwargs):
+        inject = Path(destination) == record and record.exists() and not evidence.exists()
+        if inject:
+            substitute()
+        result = replace(source, destination, *args, **kwargs)
+        if inject and interrupted:
+            os._exit(73)
+        return result
+
+    def renamed(sfd, source, dfd, destination):
+        inject = source == record.name and str(destination).endswith(".previous") and not evidence.exists()
+        if inject:
+            substitute()
+        result = rename(sfd, source, dfd, destination)
+        if inject and interrupted:
+            os._exit(73)
+        return result
+
+    def attempt():
+        runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+        with mock.patch.object(module.os, "replace", replaced), mock.patch.object(module, "_renameat_noreplace", renamed):
+            try:
+                (uninstall if kind == "receipt" else install)(repo, home, state, runner, agents_only=kind != "migration")
+            except InstallError:
+                pass
+
+    if interrupted:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        attempt()
+    assert evidence.exists(), "publication boundary was not reached"
+    for operation in (install, uninstall):
+        with pytest.raises(InstallError):
+            operation(repo, home, state, FakeRunner([]), agents_only=True)
+        assert record.read_text() == "unrelated replacement record\n"
+        assert record.stat().st_ino == int(evidence.read_text())
+
+
+@pytest.mark.parametrize("operation", [install, uninstall])
+def test_identity_free_migration_journal_preserves_copied_marker(tmp_path, operation):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    InstallerTests()._install_base_receipt(repo, home, state, agents_only=True)
+    if operation is install:
+        module._codex_managed_root(repo, state).rename(tmp_path / "original-managed")
+    recovery = module._materialize_codex_recovery_package(repo, state)
+    journal = module._codex_migration_journal_path(state)
+    journal.write_text(json.dumps({
+        "schema_version": module.CODEX_MIGRATION_SCHEMA,
+        "repository_root": str(repo), "recovery_root": str(recovery),
+        "marketplace_state": "legacy", "plugin_state": "legacy",
+        "marketplace_removed": True, "plugin_removed": True, "committed": True,
+    }))
+    marker = (recovery / module.CODEX_MANAGED_MARKER).read_bytes()
+    recovery.rename(tmp_path / "original-recovery")
+    recovery.mkdir()
+    (recovery / module.CODEX_MANAGED_MARKER).write_bytes(marker)
+    sentinel = recovery / "user-data"
+    sentinel.write_text("preserve unowned recovery package")
+    identity, original_journal = recovery.stat().st_ino, journal.read_bytes()
+    for _ in range(2):
+        try:
+            operation(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        except InstallError:
+            pass
+        assert sentinel.read_text() == "preserve unowned recovery package"
+        assert recovery.stat().st_ino == identity
+        assert journal.read_bytes() == original_journal
+
+
+@pytest.mark.parametrize("prior_receipt", [False, True])
+@pytest.mark.parametrize("retry", [install, uninstall])
+@pytest.mark.parametrize("rollback_exit", [False, True])
+def test_restored_package_retains_complete_authority(tmp_path, prior_receipt, retry, rollback_exit):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    if prior_receipt:
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    pid = os.fork()
+    if pid == 0:
+        with mock.patch.object(module, "preflight_links", side_effect=lambda *a, **k: os._exit(73)):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    managed = module._codex_managed_root(repo, state)
+    identity = module._codex_package_identity(managed)
+    rename = module._renameat_noreplace
+
+    def fail_publication(sfd, source, dfd, destination):
+        if source == "marketplace" and destination == managed.name:
+            raise OSError(errno.EIO, "injected candidate publication failure")
+        result = rename(sfd, source, dfd, destination)
+        if rollback_exit and destination == managed.name:
+            os._exit(73)  # Restored, but the package identity checkpoint is stale.
+        return result
+
+    def fail_retry():
+        with mock.patch.object(module, "_renameat_noreplace", fail_publication), pytest.raises(InstallError, match="injected candidate publication failure"):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+
+    if rollback_exit:
+        pid = os.fork()
+        if pid == 0:
+            fail_retry()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        fail_retry()
+    assert module._codex_package_identity(managed) == identity
+    retry(repo, home, state, FakeRunner([] if retry is install else [
+        plugin_list_response(), marketplace_list_response(),
+    ]), **({"agents_only": True} if retry is install else {}))
+    if retry is install:
+        assert load_receipt(state)["codex_package"] == module._codex_package_identity(managed)
+    else:
+        assert not managed.exists()
+        assert not receipt_path(state).exists()
+
+
+def test_package_identity_uses_pinned_candidate_parent(tmp_path):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    sync = module._fsync_codex_marketplace
+    replacements = []
+
+    def substitute(candidate):
+        sync(candidate)
+        stage = candidate.parent
+        saved = tmp_path / "original-stage"
+        stage.rename(saved)
+        shutil.copytree(saved, stage)
+        replacements.append((stage, stage.stat().st_ino))
+
+    with mock.patch.object(module, "_fsync_codex_marketplace", substitute):
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    managed = module._codex_managed_root(repo, state)
+    assert load_receipt(state)["codex_package"] == module._codex_package_identity(managed)
+    uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not managed.exists()
+    assert len(replacements) == 1
+    stage, inode = replacements[0]
+    assert stage.stat().st_ino == inode
+    assert (stage / "marketplace" / module.CODEX_MANAGED_MARKER).is_file()
+
+
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("boundary", ["prepared", "captured", "published", "before-cleanup", "after-cleanup"])
+def test_record_checkpoint_recovers_process_exit(tmp_path, kind, boundary):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    record = {"receipt": receipt_path(state),
+              "install": module._codex_install_journal_path(state),
+              "migration": module._codex_migration_journal_path(state)}[kind]
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "migration" else FakeRunner([])
+    if kind == "receipt":
+        install(repo, home, state, runner, agents_only=True)
+    pid = os.fork()
+    if pid == 0:
+        rename, unlink = module._renameat_noreplace, os.unlink
+
+        def renamed(sfd, source, dfd, destination):
+            result = rename(sfd, source, dfd, destination)
+            selected = str(destination).startswith(f".{record.name}.")
+            if ((boundary == "prepared" and selected and destination.endswith(".publish"))
+                or (boundary == "captured" and source == record.name and destination.endswith(".previous"))
+                or (boundary == "published" and source.endswith(".publish") and destination == record.name)):
+                os._exit(73)
+            return result
+
+        def unlinked(path, *args, **kwargs):
+            selected = str(path).startswith(f".{record.name}.") and str(path).endswith(".publish.previous")
+            if selected and boundary == "before-cleanup":
+                os._exit(73)
+            result = unlink(path, *args, **kwargs)
+            if selected and boundary == "after-cleanup":
+                os._exit(73)
+            return result
+
+        with mock.patch.object(module, "_renameat_noreplace", renamed), mock.patch.object(module.os, "unlink", unlinked):
+            (uninstall if kind == "receipt" else install)(repo, home, state, runner, agents_only=kind != "migration")
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    for _ in range(2):
+        uninstall(repo, home, state, runner if kind == "migration" else FakeRunner([
+            plugin_list_response(), marketplace_list_response(),
+        ]))
+    assert not record.exists()
+    assert not any(".publish" in path.name for path in record.parent.iterdir())
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_package_publication_rejects_substituted_candidate(tmp_path, interrupted):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    managed = module._codex_managed_root(repo, state)
+    rename = module._renameat_noreplace
+    evidence = tmp_path / "replacement-inode"
+
+    def renamed(sfd, source, dfd, destination):
+        selected = source == "marketplace" and destination == managed.name
+        if selected:
+            staging = next(path for path in managed.parent.iterdir()
+                           if path.stat().st_ino == os.fstat(sfd).st_ino)
+            (staging / source).rename(tmp_path / "original-candidate")
+            shutil.copytree(tmp_path / "original-candidate", staging / source)
+            (staging / source / "user-data").write_text("preserve replacement candidate")
+            evidence.write_text(str((staging / source).stat().st_ino))
+        result = rename(sfd, source, dfd, destination)
+        if selected and interrupted:
+            os._exit(73)
+        return result
+
+    def attempt():
+        with mock.patch.object(module, "_renameat_noreplace", renamed):
+            with pytest.raises(InstallError, match="published Codex package changed identity"):
+                install(repo, home, state, FakeRunner([]), agents_only=True)
+
+    if interrupted:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        attempt()
+    assert evidence.exists()
+    for _ in range(2):
+        with pytest.raises(InstallError, match="exact ownership"):
+            uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        assert managed.stat().st_ino == int(evidence.read_text())
+        assert (managed / "user-data").read_text() == "preserve replacement candidate"
+
+
+@pytest.mark.parametrize("boundary", ["capture", "publish", "published"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_record_publication_never_adopts_valid_replacement(tmp_path, boundary, interrupted):
+    from scripts import install as module
+
+    state = tmp_path / "state"
+    record = module._codex_install_journal_path(state)
+    with module._codex_transaction(state, create=True):
+        module._write_codex_install_journal(record, {"original": True})
+    evidence = tmp_path / "replacement-inode"
+    rename = module._renameat_noreplace
+
+    def substitute():
+        if record.exists():
+            record.rename(tmp_path / "displaced-record")
+        # Valid JSON must not be adopted on retry merely because it parses.
+        record.write_text('{"original": true}\n')
+        evidence.write_text(str(record.stat().st_ino))
+
+    def renamed(sfd, source, dfd, destination):
+        selected = (source == record.name and destination.endswith(".previous")
+                    if boundary == "capture" else source.endswith(".publish") and destination == record.name)
+        if selected and boundary != "published":
+            substitute()
+        result = rename(sfd, source, dfd, destination)
+        if selected and boundary == "published":
+            substitute()
+        if selected and interrupted:
+            os._exit(73)
+        return result
+
+    def attempt():
+        with module._codex_transaction(state, create=True):
+            module._read_codex_record(record)
+            with mock.patch.object(module, "_renameat_noreplace", renamed):
+                try:
+                    module._write_codex_install_journal(record, {"successor": True})
+                except InstallError:
+                    if interrupted:
+                        os._exit(73)
+
+    if interrupted:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        attempt()
+    assert evidence.exists()
+    for _ in range(2):
+        with pytest.raises(InstallError, match="record changed"):
+            with module._codex_transaction(state, create=False):
+                pytest.fail("replacement was accepted as a checkpoint")
+        assert record.read_text() == '{"original": true}\n'
+        assert record.stat().st_ino == int(evidence.read_text())
+
+
+@pytest.mark.parametrize("compensation", ["checkpoint", "retirement"])
+def test_record_checkpoint_retries_failed_preparation_in_same_transaction(tmp_path, compensation):
+    from scripts import install as module
+
+    state = tmp_path / "state"
+    record = module._codex_install_journal_path(state)
+    rename = module._renameat_noreplace
+
+    def failed_preparation(sfd, source, dfd, destination):
+        rename(sfd, source, dfd, destination)
+        if destination.endswith(".publish"):
+            raise OSError(errno.EIO, "checkpoint preparation interrupted")
+
+    with module._codex_transaction(state, create=True):
+        module._write_codex_install_journal(record, {"phase": "original"})
+        with mock.patch.object(module, "_renameat_noreplace", failed_preparation):
+            with pytest.raises(InstallError, match="checkpoint preparation interrupted"):
+                module._write_codex_install_journal(record, {"phase": "failed"})
+        if compensation == "retirement":
+            module._clear_codex_record(record)
+        else:
+            module._write_codex_install_journal(record, {"phase": "compensated"})
+    if compensation == "checkpoint":
+        assert json.loads(record.read_text()) == {"phase": "compensated"}
+    assert list(record.parent.iterdir()) == ([record] if compensation == "checkpoint" else [])
+    with module._codex_transaction(state, create=False):
+        pass  # Compensation must leave no ambiguous publication for the retry.
+
+
 PROFILE_NAMES = (
     "expskill-explorer",
     "expskill-planner",
@@ -3034,14 +3392,15 @@ class InstallerTests(unittest.TestCase):
             runner = FakeRunner(
                 install_results(repo) + [removal_response(), removal_response()]
             )
-            original_replace = os.replace
+            from scripts import install as module
+            original_publish = module._publish_codex_record
 
-            def fail_receipt_replace(source: Path, destination: Path) -> None:
+            def fail_receipt_replace(source: Path, destination: Path, descriptor: int) -> None:
                 if Path(destination) == receipt_path(state_home):
                     raise OSError("receipt disk full")
-                original_replace(source, destination)
+                original_publish(source, destination, descriptor)
 
-            with mock.patch("scripts.install.os.replace", fail_receipt_replace):
+            with mock.patch("scripts.install._publish_codex_record", fail_receipt_replace):
                 with self.assertRaisesRegex(InstallError, "receipt disk full"):
                     install(repo, codex_home, state_home, runner)
 
@@ -3882,12 +4241,13 @@ class InstallerTests(unittest.TestCase):
             receipt_directory = state_home / "expskill"
             temporary_paths: list[Path] = []
             original_unlink = Path.unlink
-            original_replace = os.replace
+            from scripts import install as module
+            original_publish = module._publish_codex_record
 
-            def fail_receipt_replace(source: Path, destination: Path) -> None:
+            def fail_receipt_replace(source: Path, destination: Path, descriptor: int) -> None:
                 if Path(destination) == receipt_path(state_home):
                     raise OSError("receipt disk full")
-                original_replace(source, destination)
+                original_publish(source, destination, descriptor)
 
             def fail_temporary(path: Path, *args: object, **kwargs: object) -> None:
                 if path.parent == receipt_directory and path.name.startswith(".install.json."):
@@ -3895,7 +4255,7 @@ class InstallerTests(unittest.TestCase):
                     raise OSError("temporary receipt busy")
                 original_unlink(path, *args, **kwargs)
 
-            with mock.patch("scripts.install.os.replace", fail_receipt_replace):
+            with mock.patch("scripts.install._publish_codex_record", fail_receipt_replace):
                 with mock.patch.object(Path, "unlink", fail_temporary):
                     with self.assertRaisesRegex(InstallError, "receipt disk full") as context:
                         install(repo, codex_home, state_home, runner)
@@ -6831,22 +7191,27 @@ def test_recovery_publication_preserves_replacement(tmp_path, resume, boundary):
     rename, write = module._renameat_noreplace, module._write_codex_migration_journal
     migration_path = module._codex_migration_journal_path(state)
 
+    def substitute():
+        marker = (recovery / module.CODEX_MANAGED_MARKER).read_bytes()
+        recovery.rename(saved)
+        recovery.mkdir()
+        (recovery / module.CODEX_MANAGED_MARKER).write_bytes(marker)
+        (recovery / "user-data").write_text("preserve publication replacement")
+        assert recovery.stat().st_ino != saved.stat().st_ino
+
     def published(sfd, source, dfd, destination):
         rename(sfd, source, dfd, destination)
         parent = os.fstat(dfd)
-        if (source == "marketplace" and destination == recovery.name
+        if (boundary == "publication" and source == "marketplace" and destination == recovery.name
                 and (parent.st_dev, parent.st_ino)
                 == (recovery.parent.stat().st_dev, recovery.parent.stat().st_ino)):
-            marker = (recovery / module.CODEX_MANAGED_MARKER).read_bytes()
-            recovery.rename(saved)
-            recovery.mkdir()
-            (recovery / module.CODEX_MANAGED_MARKER).write_bytes(marker)
-            (recovery / "user-data").write_text("preserve publication replacement")
-            assert recovery.stat().st_ino != saved.stat().st_ino
-            if resume != "direct" and boundary == "publication":
+            substitute()
+            if resume != "direct":
                 os._exit(73)
 
     def checkpoint(path, payload):
+        if boundary == "migration-checkpoint" and not saved.exists():
+            substitute()
         write(path, payload)
         if resume != "direct" and boundary == "migration-checkpoint":
             os._exit(73)
@@ -7126,7 +7491,7 @@ def test_correction_final_record_retirement_recovers_exit(tmp_path, kind, bounda
 
         def renamed(sfd, source, dfd, destination):
             rename(sfd, source, dfd, destination)
-            if source == record.name and boundary == "sentinel-moved":
+            if source == record.name and destination.endswith(".sentinel") and boundary == "sentinel-moved":
                 os._exit(73)
 
         def unlinked(path, *args, **kwargs):

@@ -72,6 +72,30 @@ def test_darwin_agents_only_partial_teardown_reinstall(tmp_path, darwin_api):
     test_agents_only_package_receipt_lifecycle(tmp_path, full_uninstall_first=False)
 
 
+@pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_darwin_checkpoint_boundary_replacement(tmp_path, darwin_api, kind, interrupted):
+    from tests.test_install import test_record_checkpoint_preserves_boundary_replacement
+    test_record_checkpoint_preserves_boundary_replacement(tmp_path, kind, interrupted)
+
+
+@pytest.mark.parametrize("boundary", ["prepared", "captured", "published", "before-cleanup", "after-cleanup"])
+def test_darwin_checkpoint_process_exit(tmp_path, darwin_api, boundary):
+    from tests.test_install import test_record_checkpoint_recovers_process_exit
+    test_record_checkpoint_recovers_process_exit(tmp_path, "receipt", boundary)
+
+
+@pytest.mark.parametrize("prior_receipt", [False, True])
+def test_darwin_restored_package_authority(tmp_path, darwin_api, prior_receipt):
+    from tests.test_install import test_restored_package_retains_complete_authority
+    test_restored_package_retains_complete_authority(tmp_path, prior_receipt, module.install, True)
+
+
+def test_darwin_candidate_parent_identity(tmp_path, darwin_api):
+    from tests.test_install import test_package_identity_uses_pinned_candidate_parent
+    test_package_identity_uses_pinned_candidate_parent(tmp_path)
+
+
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_darwin_preexisting_profile_dependency(tmp_path, darwin_api, interrupted):
     from tests.test_install import test_preexisting_profile_dependency_retains_package

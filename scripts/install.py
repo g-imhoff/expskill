@@ -1201,6 +1201,7 @@ def _codex_transaction(
     _CODEX_TRANSACTION_LEASES[key] = lease
     _STATE_BINDINGS[key] = binding
     try:
+        _recover_codex_record_publications(binding.directory_fd)
         _recover_codex_record_retirements(binding)
         yield True
     finally:
@@ -1278,11 +1279,104 @@ def _read_codex_record(path: Path) -> str:
 
 def _publish_codex_record(temporary: Path, path: Path, descriptor: int) -> None:
     _check_codex_record(path)
-    os.replace(temporary, path)
-    # Retain the descriptor that wrote the checkpoint, even if publication is
-    # immediately followed by a pathname replacement or directory sync failure.
-    _pin_codex_record(path, descriptor)
-    _check_codex_record(path)
+    lease = _codex_record_lease(path)
+    parent_fd = (
+        os.open(path.parent, _directory_open_flags()) if lease is None
+        else os.dup(lease.binding.directory_fd)
+    )
+    try:
+        # A caught preparation/sync error may be followed by compensation in
+        # this same transaction. Retire its pending candidate before preparing
+        # another checkpoint, without replacing the retained read authority.
+        _recover_codex_record_publications(parent_fd)
+        _check_codex_record(path)
+        pinned = None if lease is None else lease.record_pins.get(path.name)
+        if pinned is None:
+            # No prior read grants overwrite authority, including on creation.
+            _renameat_noreplace(parent_fd, temporary.name, parent_fd, path.name)
+        else:
+            old, new = os.fstat(pinned), os.fstat(descriptor)
+            publication = (
+                f".{path.name}.{old.st_dev:x}-{old.st_ino:x}."
+                f"{new.st_dev:x}-{new.st_ino:x}.publish"
+            )
+            # Give the candidate a durable recovery name before moving the old
+            # record. Every public rename is exclusive; a boundary replacement
+            # is captured and returned, never overwritten or unlinked.
+            _renameat_noreplace(parent_fd, temporary.name, parent_fd, publication)
+            os.fsync(parent_fd)
+            staged = os.stat(publication, dir_fd=parent_fd, follow_symlinks=False)
+            if (staged.st_dev, staged.st_ino) != (new.st_dev, new.st_ino):
+                raise InstallError(f"Codex state publication candidate changed: {path}")
+            _renameat_noreplace(parent_fd, path.name, parent_fd, publication + ".previous")
+            os.fsync(parent_fd)
+            captured = os.stat(publication + ".previous", dir_fd=parent_fd, follow_symlinks=False)
+            if (captured.st_dev, captured.st_ino) != (old.st_dev, old.st_ino):
+                _recover_codex_record_publications(parent_fd)
+                raise InstallError(f"Codex state record changed at publication: {path}")
+            _renameat_noreplace(parent_fd, publication, parent_fd, path.name)
+            # The .previous name retains both identities after this rename
+            # consumes the candidate, until the old record is reclaimed.
+        _pin_codex_record(path, descriptor)
+        _check_codex_record(path)
+        os.fsync(parent_fd)
+        _recover_codex_record_publications(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _recover_codex_record_publications(parent_fd: int) -> None:
+    """Roll back an uncommitted checkpoint, or finish private-only cleanup.
+
+    A deterministic name freezes both inode identities before the public old
+    record is moved. An exit at either rename is distinguishable without
+    parsing or adopting the current public record. Private unlink operations
+    use the same retained installer lock boundary as record retirement.
+    """
+
+    names = {RECEIPT_FILENAME, CODEX_INSTALL_JOURNAL_FILENAME, CODEX_MIGRATION_JOURNAL_FILENAME}
+
+    def identity(name: str) -> tuple[int, int] | None:
+        try:
+            value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        return value.st_dev, value.st_ino
+
+    publications = {name.removesuffix(".previous") for name in os.listdir(parent_fd)
+                    if name.endswith((".publish", ".publish.previous"))}
+    for publication in sorted(publications):
+        try:
+            base, old_text, new_text = publication.removesuffix(".publish").rsplit(".", 2)
+            name = base.removeprefix(".")
+            if name not in names:
+                continue
+            old = tuple(int(value, 16) for value in old_text.split("-"))
+            new = tuple(int(value, 16) for value in new_text.split("-"))
+            if len(old) != 2 or len(new) != 2 or min(*old, *new) <= 0 or old == new:
+                raise ValueError("invalid identity")
+        except ValueError as error:
+            raise InstallError(f"malformed Codex record publication: {publication}") from error
+        previous = publication + ".previous"
+        staged, captured, current = identity(publication), identity(previous), identity(name)
+        if staged not in {None, new}:
+            raise InstallError(f"Codex state publication candidate changed: {publication}")
+        if captured is not None and current is None and staged == new:
+            # Includes a replacement captured at the first rename boundary.
+            # Restoring it never grants it authority for a later checkpoint.
+            _renameat_noreplace(parent_fd, previous, parent_fd, name)
+            os.fsync(parent_fd)
+            current, captured = identity(name), None
+        if captured is not None:
+            if captured != old or current != new or staged is not None:
+                raise InstallError(f"Codex state record changed during publication: {name}")
+            os.unlink(previous, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        if current not in {old, new}:
+            raise InstallError(f"Codex state record changed during publication: {name}")
+        if staged is not None:
+            os.unlink(publication, dir_fd=parent_fd)
+            os.fsync(parent_fd)
 
 
 def _clear_codex_record(path: Path) -> None:
@@ -1290,6 +1384,8 @@ def _clear_codex_record(path: Path) -> None:
     lease = _codex_record_lease(path)
     if lease is None or path.name not in lease.record_pins:
         raise InstallError(f"Codex state record has no pinned authority: {path}")
+    _recover_codex_record_publications(lease.binding.directory_fd)
+    _check_codex_record(path)
     metadata = os.fstat(lease.record_pins[path.name])
     _remove_exact_via_exchange(
         lease.binding.directory_fd, path.name, (metadata.st_dev, metadata.st_ino),
@@ -2475,7 +2571,7 @@ def _resume_codex_marketplace_swap(
     }
     if (
         not isinstance(swap, dict)
-        or set(swap) != expected_keys | ({"retirement"} if swap.get("phase") == "retired" else set())
+        or set(swap) - {"prior_package"} != expected_keys | ({"retirement"} if swap.get("phase") == "retired" else set())
         or swap.get("target") != str(target_root)
         or not isinstance(swap.get("backup"), str)
         or not isinstance(swap.get("backup_dev"), int)
@@ -2486,6 +2582,20 @@ def _resume_codex_marketplace_swap(
     ):
         raise InstallError(f"install journal swap is malformed: {journal_path}")
     expected = (swap["backup_dev"], swap["backup_ino"])
+    prior_package = swap.get("prior_package")
+    _validate_codex_package_identity(prior_package)
+    if prior_package is not None and (prior_package["dev"], prior_package["ino"]) != expected:
+        raise InstallError(f"install journal prior package disagrees with backup: {journal_path}")
+
+    def restore_package_identity() -> None:
+        identity_key = "package" if swap_key == "swap" else "recovery_package"
+        if prior_package is not None:
+            journal[identity_key] = prior_package
+        else:
+            # Older swaps lack complete frozen marker evidence. Never infer it
+            # from the restored pathname; the prior receipt remains authoritative.
+            journal.pop(identity_key, None)
+
     backup = _lexical_absolute(Path(swap["backup"]))
     if backup != _codex_swap_backup_path(target_root, expected):
         raise InstallError(f"install journal swap backup is invalid: {journal_path}")
@@ -2527,8 +2637,7 @@ def _resume_codex_marketplace_swap(
         metadata = target_root.lstat() if target_exists else None
         if metadata is None or not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
             raise InstallError(f"managed Codex package changed before swap: {target_root}")
-        if swap_key == "swap":
-            journal.pop("package", None)
+        restore_package_identity()
     elif backup_exists and not target_exists:
         metadata = os.lstat(backup)
         if (
@@ -2565,20 +2674,17 @@ def _resume_codex_marketplace_swap(
                 os.fsync(parent_fd)
             finally:
                 os.close(parent_fd)
-            if swap_key == "swap":
-                # The candidate never became live. Preserve the prior receipt's
-                # identity instead of handing off the unpublished candidate.
-                journal.pop("package", None)
+            restore_package_identity()
         except OSError as error:
             raise InstallError(
                 f"cannot restore interrupted Codex package swap: {error}"
             ) from error
     elif target_exists:
-        if not backup_exists and swap_key == "swap":
+        if not backup_exists:
             metadata = target_root.lstat()
             if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == expected:
                 # Recover an exit after restoration but before its checkpoint.
-                journal.pop("package", None)
+                restore_package_identity()
         # The public backup may already be gone while its exact retirement
         # record still needs cleanup after an interrupted exchange.
         _remove_exact_codex_swap_backup(
@@ -2626,6 +2732,9 @@ def _materialize_codex_marketplace(
             install_journal,
             swap_key=swap_key,
         )
+        restored = install_journal.get("package" if swap_key == "swap" else "recovery_package")
+        if restored is not None:
+            package_identities = (*package_identities, restored)
     with ExitStack() as pins:
         parent_fd = os.open(parent, _directory_open_flags())
         pins.callback(os.close, parent_fd)
@@ -2639,9 +2748,10 @@ def _materialize_codex_marketplace(
             pins.callback(os.close, original_fd)
             metadata = os.fstat(original_fd)
             backup_identity = (metadata.st_dev, metadata.st_ino)
-            if _codex_package_identity(
+            prior_package = _codex_package_identity(
                 target_root, directory_fd=original_fd
-            ) not in package_identities:
+            )
+            if prior_package not in package_identities:
                 raise InstallError(f"managed Codex package lost its receipt identity: {target_root}")
             if not _codex_swap_marker_is_owned(
                 target_root, target_root, repository_root, directory_fd=original_fd
@@ -2659,6 +2769,7 @@ def _materialize_codex_marketplace(
                     "backup": str(backup),
                     "backup_dev": backup_identity[0],
                     "backup_ino": backup_identity[1],
+                    "prior_package": prior_package,
                     "phase": "prepared",
                 }
                 _write_codex_install_journal(install_journal_path, install_journal)
@@ -2671,6 +2782,9 @@ def _materialize_codex_marketplace(
             _build_codex_marketplace(repository_root, candidate_root)
             _write_codex_managed_marker(candidate_root, repository_root, target_root)
             _fsync_codex_marketplace(candidate_root)
+            candidate_fd = os.open(candidate_root.name, _directory_open_flags(), dir_fd=candidate_parent_fd)
+            pins.callback(os.close, candidate_fd)
+            candidate_identity = _codex_package_identity(candidate_root, directory_fd=candidate_fd)
             _verify_codex_transaction()
             if backup is not None:
                 metadata = os.lstat(target_root)
@@ -2691,11 +2805,17 @@ def _materialize_codex_marketplace(
                 # Freeze publication identity before the candidate can be
                 # substituted at its public name or the process can exit.
                 identity_key = "package" if swap_key == "swap" else "recovery_package"
-                install_journal[identity_key] = _codex_package_identity(candidate_root)
+                install_journal[identity_key] = candidate_identity
                 _write_codex_install_journal(install_journal_path, install_journal)
             _renameat_noreplace(candidate_parent_fd, candidate_root.name, parent_fd, target_root.name)
             os.fsync(candidate_parent_fd)
             _fsync_directory(parent)
+            published_fd = os.open(target_root.name, _directory_open_flags(), dir_fd=parent_fd)
+            try:
+                if _codex_package_identity(target_root, directory_fd=published_fd) != candidate_identity:
+                    raise InstallError(f"published Codex package changed identity: {target_root}")
+            finally:
+                os.close(published_fd)
             if backup is not None and install_journal_path is not None and install_journal is not None:
                 install_journal[swap_key]["phase"] = "published"
                 _write_codex_install_journal(install_journal_path, install_journal)
@@ -2705,8 +2825,9 @@ def _materialize_codex_marketplace(
                 if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == backup_identity:
                     _renameat_noreplace(parent_fd, backup.name, parent_fd, target_root.name)
                     _fsync_directory(parent)
-                    if swap_key == "swap" and install_journal is not None:
-                        install_journal.pop("package", None)
+                    if install_journal is not None:
+                        identity_key = "package" if swap_key == "swap" else "recovery_package"
+                        install_journal[identity_key] = prior_package
                         _write_codex_install_journal(install_journal_path, install_journal)
             raise InstallError(f"Codex package could not be materialized: {error}") from error
         finally:
@@ -3089,7 +3210,7 @@ def _codex_install_journal_path(state_home: Path) -> Path:
 def _write_codex_install_journal(
     journal_path: Path, payload: Mapping[str, object]
 ) -> None:
-    """Atomically checkpoint a general Codex install transaction."""
+    """Durably checkpoint a Codex install under its retained transaction lock."""
 
     _verify_codex_transaction()
     journal_directory = journal_path.parent
@@ -7761,12 +7882,7 @@ def _validate_codex_migration_journal(
         raise InstallError(f"migration journal recovery root mismatch: {journal_path}")
     identity_keys = {"recovery_dev", "recovery_ino", "cleanup_pending"}
     if not identity_keys.intersection(payload):
-        # Upgrade old marker-only journals once, before removing registrations.
-        if recovery_root.is_symlink() or not _codex_managed_root_is_owned(recovery_root, repository_root):
-            raise InstallError(f"migration recovery marketplace is not owned: {recovery_root}")
-        metadata = recovery_root.stat()
-        payload.update(recovery_dev=metadata.st_dev, recovery_ino=metadata.st_ino, cleanup_pending=False)
-        _write_codex_migration_journal(journal_path, payload)
+        raise InstallError(f"migration recovery journal lacks frozen identity: {journal_path}")
     if (
         any(type(payload.get(key)) is not int or payload[key] <= 0 for key in ("recovery_dev", "recovery_ino"))
         or type(payload.get("cleanup_pending")) is not bool

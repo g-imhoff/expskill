@@ -86,14 +86,18 @@ or teardown. Install retries finish pending package retirement before publishing
 a replacement. A failed install retains the generated package's recorded identity
 when clearing its install journal, even if no links or CLI registrations remain.
 Upgrades freeze old receipt ownership before package construction, so a failed
-upgrade retains its CLI ownership flags and profile evidence. Final receipt and
-journal cleanup is bound to the files read or published by the transaction;
+upgrade retains its CLI ownership flags and profile evidence. A restored package
+keeps its complete prior identity across rollback and process exit. Receipt and
+journal publication and cleanup are bound to the files read or published by the transaction;
 replacement files are preserved and reported for reconciliation before retry.
-Package staging cleanup uses the directory opened at creation, preserving any
-replacement at its former pathname.
+Interrupted record publication recovers before state files are read. Package
+publication and staging cleanup use the directory opened at creation, preserving
+any replacement at its former pathname.
 If a failed legacy migration restores CLI registrations to a recovery package,
 its migration journal retains that package's frozen identity. Retry verifies
 and reuses the recovery package; a copied marker cannot authorize a replacement.
+Older recovery journals without a frozen directory identity fail closed and
+retain the recovery package and journal for manual reconciliation.
 
 ## Source layout
 
