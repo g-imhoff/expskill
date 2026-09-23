@@ -908,9 +908,9 @@ class InstallerTests(unittest.TestCase):
             reviewer = repo / "plugins" / "expskill" / "assets" / "agents" / "expskill-review.toml"
             reviewer.write_text(
                 reviewer.read_text(encoding="utf-8").replace(
-                    'model = "gpt-6-terra"', 'model = "gpt-6-luna"'
+                    'model = "gpt-6-sol"', 'model = "gpt-6-luna"'
                 ).replace(
-                    'model_reasoning_effort = "medium"', 'model_reasoning_effort = "max"'
+                    'model_reasoning_effort = "xhigh"', 'model_reasoning_effort = "max"'
                 ).replace(
                     'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'
                 ),
