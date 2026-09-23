@@ -265,7 +265,10 @@ def test_darwin_recovery_directory_cleanup(tmp_path, darwin_api, fault):
     cases.test_recovery_package_cleanup_retains_exact_authority(tmp_path, "uninstall", fault)
 
 
-@pytest.mark.parametrize("boundary", ["content", "marker", "exchange", "sentinel", "removed"])
+@pytest.mark.parametrize("boundary", [
+    "content", "marker", "exchange", "sentinel", "before-checkpoint",
+    "after-checkpoint", "retired-object", "removed",
+])
 def test_darwin_swap_backup_cleanup_process_exit(tmp_path, darwin_api, boundary):
     from tests import test_install as cases
     cases.test_swap_backup_cleanup_process_exit(tmp_path, boundary)
@@ -282,3 +285,21 @@ def test_darwin_swap_backup_replacement_after_validation(tmp_path, darwin_api, r
 def test_darwin_managed_rollback_retirement_recovers_before_install_conflicts(tmp_path, darwin_api, replacement):
     from tests import test_install as cases
     cases.test_managed_rollback_retirement_recovers_before_install_conflicts(tmp_path, replacement)
+
+
+@pytest.mark.parametrize("interrupted", [False, True, "build"])
+def test_darwin_package_replacement_during_build(tmp_path, darwin_api, interrupted):
+    from tests import test_install as cases
+    cases.test_package_replacement_during_build_preserves_original_authority(tmp_path, interrupted)
+
+
+@pytest.mark.parametrize("boundary", ["retired-object", "journal-clear"])
+def test_darwin_swap_backup_inode_reuse(darwin_api, boundary):
+    from tests import test_install as cases
+    cases.test_swap_backup_inode_reuse_after_removal_preserves_replacement(boundary)
+
+
+@pytest.mark.parametrize("replacement", [None, "public-file", "public-link", "private"])
+def test_darwin_receipt_retirement_recovers_before_install_conflicts(tmp_path, darwin_api, replacement):
+    from tests import test_install as cases
+    cases.test_receipt_retirement_recovers_before_install_conflicts(tmp_path, replacement)

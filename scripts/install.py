@@ -2273,6 +2273,8 @@ def _remove_exact_codex_swap_backup(
     expected: tuple[int, int],
     target_root: Path,
     repository_root: Path,
+    *,
+    before_remove: Callable[[str], None] | None = None,
 ) -> None:
     _verify_codex_transaction()
     parent_fd = os.open(backup.parent, _directory_open_flags())
@@ -2321,6 +2323,7 @@ def _remove_exact_codex_swap_backup(
         _remove_exact_via_exchange(
             parent_fd, backup.name, expected, f"Codex swap backup {backup}",
             directory=True, preserve_replacements=True,
+            before_remove=before_remove,
         )
         try:
             os.stat(backup.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -2356,14 +2359,14 @@ def _resume_codex_marketplace_swap(
     }
     if (
         not isinstance(swap, dict)
-        or set(swap) != expected_keys
+        or set(swap) != expected_keys | ({"retirement"} if swap.get("phase") == "retired" else set())
         or swap.get("target") != str(target_root)
         or not isinstance(swap.get("backup"), str)
         or not isinstance(swap.get("backup_dev"), int)
         or not isinstance(swap.get("backup_ino"), int)
         or swap.get("backup_dev", 0) <= 0
         or swap.get("backup_ino", 0) <= 0
-        or swap.get("phase") not in {"prepared", "backup-created", "published"}
+        or swap.get("phase") not in {"prepared", "backup-created", "published", "retired"}
     ):
         raise InstallError(f"install journal swap is malformed: {journal_path}")
     expected = (swap["backup_dev"], swap["backup_ino"])
@@ -2372,7 +2375,43 @@ def _resume_codex_marketplace_swap(
         raise InstallError(f"install journal swap backup is invalid: {journal_path}")
     backup_exists = _lexists(backup)
     target_exists = _lexists(target_root)
-    if backup_exists and not target_exists:
+    if swap["phase"] == "retired":
+        # This checkpoint precedes freeing the old inode. Its former public
+        # name has no authority even if a replacement recycles that inode.
+        retirement = swap["retirement"]
+        record = (
+            _retirement_record_descriptor(retirement, directory=True)
+            if isinstance(retirement, str) and Path(retirement).name == retirement
+            else None
+        )
+        if record is None or record[:2] != (backup.name, expected):
+            raise InstallError(f"install journal swap retirement is invalid: {journal_path}")
+        if backup_exists:
+            raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
+        parent_fd = os.open(backup.parent, _directory_open_flags())
+        try:
+            try:
+                metadata = os.stat(retirement, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
+                    raise InstallError(f"Codex swap retirement lost its exact ownership: {backup}")
+                # Contents were durably removed before the retirement checkpoint.
+                # Never recursively delete here, including on inode reuse.
+                os.rmdir(retirement, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except OSError as error:
+            raise InstallError(f"cannot finish Codex swap retirement: {backup}: {error}") from error
+        finally:
+            os.close(parent_fd)
+    elif not backup_exists and swap["phase"] == "prepared":
+        # Preparation freezes the live identity before building. A retry must
+        # not re-authorize a substituted directory from its copied marker.
+        metadata = target_root.lstat() if target_exists else None
+        if metadata is None or not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != expected:
+            raise InstallError(f"managed Codex package changed before swap: {target_root}")
+    elif backup_exists and not target_exists:
         metadata = os.lstat(backup)
         if (
             not stat.S_ISDIR(metadata.st_mode)
@@ -2382,7 +2421,8 @@ def _resume_codex_marketplace_swap(
             raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
         if not _lexists(backup / CODEX_MANAGED_MARKER):
             _remove_exact_codex_swap_backup(
-                backup, expected, target_root, repository_root
+                backup, expected, target_root, repository_root,
+                before_remove=_codex_swap_retirement_checkpoint(journal_path, journal, swap_key),
             )
             journal[swap_key] = None
             _write_codex_install_journal(journal_path, journal)
@@ -2402,7 +2442,8 @@ def _resume_codex_marketplace_swap(
         # The public backup may already be gone while its exact retirement
         # record still needs cleanup after an interrupted exchange.
         _remove_exact_codex_swap_backup(
-            backup, expected, target_root, repository_root
+            backup, expected, target_root, repository_root,
+            before_remove=_codex_swap_retirement_checkpoint(journal_path, journal, swap_key),
         )
     elif not target_exists:
         raise InstallError(
@@ -2410,6 +2451,17 @@ def _resume_codex_marketplace_swap(
         )
     journal[swap_key] = None
     _write_codex_install_journal(journal_path, journal)
+
+
+def _codex_swap_retirement_checkpoint(
+    journal_path: Path, journal: dict[str, object], swap_key: str,
+) -> Callable[[str], None]:
+    def checkpoint(retirement: str) -> None:
+        journal[swap_key]["phase"] = "retired"
+        journal[swap_key]["retirement"] = retirement
+        _write_codex_install_journal(journal_path, journal)
+
+    return checkpoint
 
 
 def _materialize_codex_marketplace(
@@ -2433,37 +2485,29 @@ def _materialize_codex_marketplace(
             install_journal,
             swap_key=swap_key,
         )
-    if target_root.is_symlink() or (target_root.exists() and not target_root.is_dir()):
-        raise InstallError(f"managed Codex package is not a regular directory: {target_root}")
-    if target_root.exists() and not _codex_managed_root_is_owned(
-        target_root, repository_root
-    ):
-        raise InstallError(f"refusing unowned managed Codex package: {target_root}")
-    temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-package-", dir=parent))
-    candidate_root = temporary_parent / "marketplace"
-    backup: Path | None = None
-    backup_identity: tuple[int, int] | None = None
-    try:
-        _build_codex_marketplace(repository_root, candidate_root)
-        _write_codex_managed_marker(candidate_root, repository_root, target_root)
-        _fsync_codex_marketplace(candidate_root)
-        _verify_codex_transaction()
-    except (CodexBuildError, InstallError, OSError, RuntimeError) as error:
-        _verify_codex_transaction()
-        shutil.rmtree(temporary_parent, ignore_errors=True)
-        _fsync_directory(parent)
-        raise InstallError(f"Codex package could not be materialized: {error}") from error
-    try:
-        if target_root.exists():
-            metadata = os.lstat(target_root)
-            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                raise InstallError(
-                    f"managed Codex package is not a regular directory: {target_root}"
-                )
+    with ExitStack() as pins:
+        parent_fd = os.open(parent, _directory_open_flags())
+        pins.callback(os.close, parent_fd)
+        backup: Path | None = None
+        backup_identity: tuple[int, int] | None = None
+        if _lexists(target_root):
+            try:
+                original_fd = os.open(target_root, _directory_open_flags())
+            except OSError as error:
+                raise InstallError(f"managed Codex package is not a regular directory: {target_root}") from error
+            pins.callback(os.close, original_fd)
+            metadata = os.fstat(original_fd)
             backup_identity = (metadata.st_dev, metadata.st_ino)
+            if not _codex_swap_marker_is_owned(
+                target_root, target_root, repository_root, directory_fd=original_fd
+            ):
+                raise InstallError(f"refusing unowned managed Codex package: {target_root}")
             backup = _codex_swap_backup_path(target_root, backup_identity)
             if _lexists(backup):
                 raise InstallError(f"Codex swap backup is occupied: {backup}")
+            # Persist the pre-build identity, and keep its inode pinned until
+            # publication. Neither a later marker nor a recycled inode can
+            # grant this invocation authority over a replacement directory.
             if install_journal_path is not None and install_journal is not None:
                 install_journal[swap_key] = {
                     "target": str(target_root),
@@ -2472,44 +2516,57 @@ def _materialize_codex_marketplace(
                     "backup_ino": backup_identity[1],
                     "phase": "prepared",
                 }
-                _write_codex_install_journal(
-                    install_journal_path, install_journal
-                )
-            target_root.rename(backup)
+                _write_codex_install_journal(install_journal_path, install_journal)
+        temporary_parent = Path(tempfile.mkdtemp(prefix=".codex-package-", dir=parent))
+        candidate_root = temporary_parent / "marketplace"
+        try:
+            _build_codex_marketplace(repository_root, candidate_root)
+            _write_codex_managed_marker(candidate_root, repository_root, target_root)
+            _fsync_codex_marketplace(candidate_root)
+            _verify_codex_transaction()
+            if backup is not None:
+                metadata = os.lstat(target_root)
+                if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != backup_identity:
+                    raise InstallError(f"managed Codex package changed before swap: {target_root}")
+                _renameat_noreplace(parent_fd, target_root.name, parent_fd, backup.name)
+                _fsync_directory(parent)
+                metadata = os.lstat(backup)
+                if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != backup_identity:
+                    raise InstallError(f"Codex swap backup lost its exact ownership: {backup}")
+                if install_journal_path is not None and install_journal is not None:
+                    install_journal[swap_key]["phase"] = "backup-created"
+                    _write_codex_install_journal(install_journal_path, install_journal)
+            _verify_codex_transaction()
+            candidate_parent_fd = os.open(temporary_parent, _directory_open_flags())
+            try:
+                _renameat_noreplace(candidate_parent_fd, candidate_root.name, parent_fd, target_root.name)
+            finally:
+                os.close(candidate_parent_fd)
+            _fsync_directory(temporary_parent)
             _fsync_directory(parent)
-            if install_journal_path is not None and install_journal is not None:
-                install_journal[swap_key]["phase"] = "backup-created"
-                _write_codex_install_journal(
-                    install_journal_path, install_journal
-                )
-        _verify_codex_transaction()
-        candidate_root.rename(target_root)
-        _fsync_directory(temporary_parent)
-        _fsync_directory(parent)
-        if (
-            backup is not None
-            and install_journal_path is not None
-            and install_journal is not None
-        ):
-            install_journal[swap_key]["phase"] = "published"
-            _write_codex_install_journal(install_journal_path, install_journal)
-    except OSError as error:
-        if backup is not None and not target_root.exists() and backup.exists():
-            backup.rename(target_root)
+            if backup is not None and install_journal_path is not None and install_journal is not None:
+                install_journal[swap_key]["phase"] = "published"
+                _write_codex_install_journal(install_journal_path, install_journal)
+        except (CodexBuildError, OSError, RuntimeError) as error:
+            if isinstance(error, OSError) and backup is not None and not _lexists(target_root) and _lexists(backup):
+                metadata = os.lstat(backup)
+                if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == backup_identity:
+                    _renameat_noreplace(parent_fd, backup.name, parent_fd, target_root.name)
+                    _fsync_directory(parent)
+            raise InstallError(f"Codex package could not be materialized: {error}") from error
+        finally:
+            _verify_codex_transaction()
+            shutil.rmtree(temporary_parent, ignore_errors=True)
             _fsync_directory(parent)
-        raise InstallError(f"Codex package could not be materialized: {error}") from error
-    finally:
-        _verify_codex_transaction()
-        shutil.rmtree(temporary_parent, ignore_errors=True)
-        _fsync_directory(parent)
     if backup is not None:
         if backup_identity is None:
             raise InstallError("Codex package swap identity is missing")
         _remove_exact_codex_swap_backup(
-            backup,
-            backup_identity,
-            target_root,
-            repository_root,
+            backup, backup_identity, target_root, repository_root,
+            before_remove=(
+                _codex_swap_retirement_checkpoint(install_journal_path, install_journal, swap_key)
+                if install_journal_path is not None and install_journal is not None else None
+            ),
         )
         if install_journal_path is not None and install_journal is not None:
             install_journal[swap_key] = None
@@ -3779,6 +3836,7 @@ def _remove_exact_via_exchange(
     *,
     directory: bool,
     preserve_replacements: bool = False,
+    before_remove: Callable[[str], None] | None = None,
 ) -> bool:
     """Retire an exact inode using a durable, identity-bearing private name.
 
@@ -3789,6 +3847,9 @@ def _remove_exact_via_exchange(
     mismatch is preserved and reported so the caller cannot retire its receipt
     authority.  The final path operation is still pathname based and is never
     represented as stronger than that kernel primitive.
+
+    ``before_remove`` lets a caller durably retire public-name authority before
+    the original inode is freed. At that point only the private object remains.
     """
 
     kind_suffix = "-dir" if directory else ""
@@ -3983,6 +4044,8 @@ def _remove_exact_via_exchange(
         if retired is None or identity(retired) != expected:
             raise InstallError(f"{label} retirement pathname changed before removal")
         require_kind(retired, "retired object")
+        if before_remove is not None:
+            before_remove(retirement)
         if directory:
             os.rmdir(retirement, dir_fd=parent_fd)
         else:
@@ -7094,6 +7157,29 @@ def _recover_codex_link_retirements(journal: Mapping[str, object]) -> None:
             os.close(parent_fd)
 
 
+def _recover_codex_receipt_retirements(receipt: _Receipt | None) -> None:
+    """Finish receipt-proven uninstall exchanges before install preflight."""
+
+    if receipt is None:
+        return
+    for link in receipt.links:
+        if not _valid_codex_link_anchor_path(link) or not link.destination.parent.exists():
+            continue
+        parent_fd = os.open(link.destination.parent, _directory_open_flags())
+        try:
+            expected = (link.destination_dev, link.destination_ino)
+            if any(
+                _retirement_record_exists(parent_fd, path.name, expected, directory=False)
+                for path in (link.destination, link.link_anchor)
+            ):
+                # The receipt's validated anchor and retirement identities are
+                # the same authority used by uninstall. No pathname-only
+                # adoption is allowed during this early recovery.
+                _remove_codex_recorded_link(link)
+        finally:
+            os.close(parent_fd)
+
+
 def _restore_legacy_codex_links(
     links: Sequence[ProfileLink],
     journal_path: Path,
@@ -7741,6 +7827,7 @@ def _install_codex_bound(
         frozen_only=True,
     )
     _check_frozen_codex_legacy_links(frozen_receipt)
+    _recover_codex_receipt_retirements(frozen_receipt)
     current_destinations = {link.destination for link in planned_links}
     for link in (() if frozen_receipt is None else frozen_receipt.links):
         if (
