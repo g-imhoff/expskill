@@ -1025,7 +1025,9 @@ def _discard_preflight_artifact(probe_fd: int, temporary: Path, expected: tuple[
 
     A pathname swap after creation is preserved and reported, never reclaimed.
     Only an empty-only removal may touch the public name, so even a swap in
-    the final gap cannot delete user data.
+    the final gap cannot delete user data.  Raising (rather than best-effort
+    cleanup like the build staging reclaimers) is intentional: preflight
+    validates before any mutation, so interference must abort the operation.
     """
 
     try:
@@ -1038,13 +1040,19 @@ def _discard_preflight_artifact(probe_fd: int, temporary: Path, expected: tuple[
     ):
         raise InstallError(f"preflight artifact changed; preserved: {temporary}")
     for name in os.listdir(probe_fd):
-        metadata = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
+        try:
+            metadata = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
         if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
             shutil.rmtree(name, dir_fd=probe_fd)
         else:
             os.unlink(name, dir_fd=probe_fd)
     os.fsync(probe_fd)
-    current = os.lstat(temporary)
+    try:
+        current = os.lstat(temporary)
+    except FileNotFoundError:
+        return
     if (current.st_dev, current.st_ino) != expected:
         raise InstallError(f"preflight artifact changed; preserved: {temporary}")
     os.rmdir(temporary)
@@ -1055,7 +1063,9 @@ def _retire_capability_probe(probe_fd: int, temporary: Path, expected: tuple[int
 
     A pathname swap after creation is preserved and reported, never reclaimed.
     Only an empty-only removal may touch the public name, so even a swap in
-    the final gap cannot delete user data.
+    the final gap cannot delete user data.  Raising (rather than best-effort
+    cleanup like the build staging reclaimers) is intentional: an interfered
+    probe cannot vouch for the filesystem.
     """
 
     try:
@@ -1114,10 +1124,16 @@ def _preflight_codex_capabilities(codex_home: Path, state_home: Path) -> None:
             continue
         checked.add(parent)
         probe_fd: int | None = None
+        expected: tuple[int, int] | None = None
         try:
             temporary = Path(tempfile.mkdtemp(prefix=".expskill-capability-", dir=parent))
             probe_fd = os.open(temporary, _directory_open_flags())
-            owned = os.fstat(probe_fd)
+            try:
+                owned = os.fstat(probe_fd)
+            except OSError:
+                os.close(probe_fd)
+                probe_fd = None
+                raise
             expected = (owned.st_dev, owned.st_ino)
             try:
                 root = temporary
@@ -1153,6 +1169,7 @@ def _preflight_codex_capabilities(codex_home: Path, state_home: Path) -> None:
                     os.close(fd)
             finally:
                 if probe_fd is not None:
+                    assert expected is not None
                     try:
                         _retire_capability_probe(probe_fd, temporary, expected)
                     finally:
@@ -12844,7 +12861,12 @@ def preflight_opencode_links(
         # identity, so a pathname swap preserves the replacement.
         temporary_path = Path(tempfile.mkdtemp(prefix="expskill-opencode-preflight-"))
         temporary_fd = os.open(temporary_path, _directory_open_flags())
-        owned = os.fstat(temporary_fd)
+        try:
+            owned = os.fstat(temporary_fd)
+        except OSError:
+            os.close(temporary_fd)
+            temporary_fd = None
+            raise
         temporary_identity = (owned.st_dev, owned.st_ino)
         artifact_root = temporary_path / "artifact"
         try:
@@ -12854,6 +12876,8 @@ def preflight_opencode_links(
             assert held_fd is not None
             try:
                 _discard_preflight_artifact(held_fd, temporary_path, temporary_identity)
+            except InstallError as discard_error:
+                raise discard_error from error
             finally:
                 os.close(held_fd)
             raise InstallError(f"cannot build OpenCode artifact: {error}") from error

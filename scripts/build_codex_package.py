@@ -142,7 +142,8 @@ def _discard_owned_staging(
     """Reclaim only the staging tree still holding its creation identity.
 
     A pathname swap after creation is preserved, never reclaimed.  Cleanup is
-    best effort and never masks the build fault that caused it.
+    best effort and never masks the build fault that caused it (unlike the
+    probe/preflight reclaimers, which must abort the operation on mismatch).
     """
 
     try:
@@ -268,10 +269,12 @@ def build_codex_package(
     for path in required:
         _reject_symlink_components(path, "Codex package input")
     staging = Path(tempfile.mkdtemp(prefix=".codex-build-", dir=output.parent))
-    staging_fd = os.open(
-        staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    )
+    staging_fd: int | None = None
+    staging_identity: tuple[int, int] | None = None
     try:
+        staging_fd = os.open(
+            staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
         owned = os.fstat(staging_fd)
         staging_identity = (owned.st_dev, owned.st_ino)
         sources: list[tuple[str, Path]] = []
@@ -333,13 +336,16 @@ def build_codex_package(
         _require_staging_identity(staging_fd, staging, staging_identity)
         staging.rename(output)
     except RenderError as error:
-        _discard_owned_staging(staging_fd, staging, staging_identity)
+        if staging_fd is not None and staging_identity is not None:
+            _discard_owned_staging(staging_fd, staging, staging_identity)
         raise BuildError(str(error)) from error
     except BaseException:
-        _discard_owned_staging(staging_fd, staging, staging_identity)
+        if staging_fd is not None and staging_identity is not None:
+            _discard_owned_staging(staging_fd, staging, staging_identity)
         raise
     finally:
-        os.close(staging_fd)
+        if staging_fd is not None:
+            os.close(staging_fd)
     return output
 
 

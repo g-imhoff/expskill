@@ -8503,6 +8503,34 @@ def test_correction_codex_package_build_failure_preserves_replacement_staging(tm
     assert not output.exists()
 
 
+def test_correction_codex_package_publish_guards_replacement_staging(tmp_path):
+    """A staging swap that survives to publication must fail closed without
+    publishing, preserving the replacement."""
+
+    from scripts import build_codex_package as package
+
+    repo = seed_repository(tmp_path / "repo")
+    output = tmp_path / "package-output"
+    injected: dict[str, Path] = {}
+    real_normalize = package._normalize
+
+    def raced_normalize(staging_root):
+        staging = Path(staging_root)
+        real_normalize(staging)
+        staging.rename(tmp_path / "original-staging")
+        staging.mkdir()
+        (staging / "user-data").write_text("user replacement\n")
+        injected["staging"] = staging
+        # No error: publication proceeds so the identity gate must stop it.
+
+    with mock.patch.object(package, "_normalize", raced_normalize):
+        with pytest.raises(package.BuildError, match="staging candidate changed"):
+            package.build_codex_package(repo, output)
+    staging = injected["staging"]
+    assert (staging / "user-data").read_text() == "user replacement\n"
+    assert not output.exists()
+
+
 def test_correction_capability_probe_preserves_replacement_directory(tmp_path):
     """A path swap under the filesystem capability probe must fail closed,
     preserving the replacement instead of recursively deleting it."""
