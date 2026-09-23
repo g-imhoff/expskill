@@ -39,13 +39,13 @@ PUBLIC_SKILL_ROOTS = {
     "skill-builder": SKILL_BUILDER_ROOT,
 }
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-review": ("gpt-6-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-6-sol", "xhigh", "read-only"),
 }
 EXPECTED_SKILLS = {
     "use-expskill",
@@ -885,7 +885,7 @@ class ContractTests(unittest.TestCase):
                 (
                     'name = "expskill-surprise"',
                     'description = "Unexpected profile"',
-                    'model = "gpt-5.6-luna"',
+                    'model = "gpt-6-luna"',
                     'model_reasoning_effort = "max"',
                     'sandbox_mode = "read-only"',
                     'developer_instructions = "Read-only evidence gathering."',
@@ -915,7 +915,7 @@ class ContractTests(unittest.TestCase):
         path.write_text(
             path.read_text(encoding="utf-8").replace(
                 f'model = "{EXPECTED_AGENTS["expskill-explorer"][0]}"',
-                'model = "gpt-5.6-not-allowed"',
+                'model = "gpt-6-not-allowed"',
             ),
             encoding="utf-8",
         )
