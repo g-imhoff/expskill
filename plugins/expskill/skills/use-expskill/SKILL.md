@@ -141,7 +141,8 @@ Use `$grill-me` when every condition below is true:
   matter.
 - Only the user can decide them.
 
-Explain the blocker briefly, then resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
+Explain the blocker briefly, then offer `$grill-me` for the decision frontier and proceed only with
+explicit consent. Never automatically invoke `$grill-me`. Resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
 shared understanding, return the confirmed decision delta and resume the owning
 skill. The owning skill remains responsible for its state and for invalidating
 any dependent work.
