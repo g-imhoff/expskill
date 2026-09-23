@@ -6968,6 +6968,14 @@ def _migrate_legacy_codex_links(
                 raise InstallError(
                     f"legacy agent link changed identity: {link.destination}"
                 )
+            if expected != (record["preexisting_dev"], record["preexisting_ino"]):
+                # Path-only receipt migration can authorize a replacement made
+                # after journal creation. Freeze that receipt-selected identity
+                # before exchange so recovery and rollback use the same inode.
+                record["preexisting_dev"], record["preexisting_ino"] = expected
+                _write_codex_install_journal(
+                    _codex_install_journal_path(state_home), journal
+                )
             parent_fd = os.open(link.destination.parent, _directory_open_flags())
             try:
                 removed = _remove_exact_via_exchange(

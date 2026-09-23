@@ -4370,6 +4370,140 @@ def _seed_receipted_checkout_profile(repo: Path, codex_home: Path, state_home: P
     return destination
 
 
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("pending_receipt", [False, True])
+@pytest.mark.parametrize("replacement", [None, "regular", "same-target", "other-target"])
+def test_legacy_migration_retires_identity_selected_after_journal_creation(
+    tmp_path: Path, retry: str, pending_receipt: bool, replacement: str | None,
+) -> None:
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    destination = _seed_receipted_checkout_profile(repo, home, state)
+    target = os.readlink(destination)
+    original = destination.lstat()
+    journal_path = module._codex_install_journal_path(state)
+    pid = os.fork()
+    if pid == 0:
+        write_journal = module._write_codex_install_journal
+        write_receipt = module._write_codex_receipt
+        exchange = module._renameat_exchange
+        replaced = False
+
+        def checkpoint(path, payload):
+            nonlocal replaced
+            write_journal(path, payload)
+            if not replaced:
+                replaced = True
+                entry = next(item for item in payload["links"] if item["destination"] == str(destination))
+                assert entry["preexisting_ino"] == original.st_ino
+                assert "codex_link_identity" not in load_receipt(state)
+                # Keep the old inode alive so the replacement is distinct even
+                # on filesystems that eagerly reuse unlinked symlink inodes.
+                destination.rename(tmp_path / "original-link")
+                destination.symlink_to(target)
+                assert destination.lstat().st_ino != original.st_ino
+
+        def receipt_checkpoint(path, receipt, **kwargs):
+            if pending_receipt:
+                kwargs["pending_link_migration"] = True
+            write_receipt(path, receipt, **kwargs)
+
+        def exchanged(source_fd, source, target_fd, private):
+            if source == destination.name:
+                durable = json.loads(journal_path.read_text())
+                entry = next(item for item in durable["links"] if item["destination"] == str(destination))
+                frozen, = load_receipt(state)["links"]
+                assert (entry["preexisting_dev"], entry["preexisting_ino"]) == (
+                    frozen["destination_dev"], frozen["destination_ino"],
+                )
+            exchange(source_fd, source, target_fd, private)
+            if source == destination.name:
+                os._exit(73)
+
+        with mock.patch.object(module, "_write_codex_install_journal", checkpoint), mock.patch.object(module, "_write_codex_receipt", receipt_checkpoint), mock.patch.object(module, "_renameat_exchange", exchanged):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    assert destination.is_file() and not destination.is_symlink()
+    retired, = destination.parent.glob("*.retire")
+    frozen, = load_receipt(state)["links"]
+    assert retired.lstat().st_ino == frozen["destination_ino"] != original.st_ino
+    assert os.readlink(retired) == target
+    assert load_receipt(state).get("pending_link_migration", False) is pending_receipt
+
+    if replacement is not None:
+        destination.rename(tmp_path / "public-placeholder")
+        if replacement == "regular":
+            destination.write_text("user replacement")
+        else:
+            destination.symlink_to(target if replacement == "same-target" else tmp_path / "unrelated")
+        preserved = destination.lstat()
+        for _ in range(2):
+            if retry == "install" or replacement == "same-target":
+                with pytest.raises(InstallError, match="identity|conflicting|ownership changed|depends"):
+                    (install if retry == "install" else uninstall)(
+                        repo, home, state, FakeRunner([]), agents_only=True,
+                    )
+                assert load_receipt(state)["links"] == [frozen]
+            else:
+                uninstall(repo, home, state, FakeRunner([]), agents_only=True)
+                assert not receipt_path(state).exists()
+                assert not journal_path.exists()
+                assert list(destination.parent.iterdir()) == [destination]
+            assert (destination.lstat().st_dev, destination.lstat().st_ino) == (
+                preserved.st_dev, preserved.st_ino,
+            )
+            if replacement == "regular":
+                assert destination.read_text() == "user replacement"
+            else:
+                assert os.readlink(destination) == (
+                    target if replacement == "same-target" else str(tmp_path / "unrelated")
+                )
+        destination.unlink()
+
+    receipts = []
+    failures = []
+    for _ in range(2):
+        try:
+            (install if retry == "install" else uninstall)(
+                repo, home, state, FakeRunner([]), agents_only=True,
+            )
+        except InstallError as error:
+            failures.append(str(error))
+            continue
+        assert not journal_path.exists()
+        assert not os.path.lexists(retired)
+        if retry == "install":
+            receipt = load_receipt(state)
+            assert receipt["marketplace_added"] is False
+            assert receipt["plugin_installed"] is False
+            assert receipt["codex_link_identity"] == 1
+            assert not receipt.get("pending_link_migration", False)
+            assert {entry["destination"] for entry in receipt["links"]} == {
+                str(path) for path in destination_paths(home).values()
+            }
+            for entry in receipt["links"]:
+                public, anchor = Path(entry["destination"]), Path(entry["link_anchor"])
+                source = managed_repository(repo) / "plugins/expskill/agents" / public.name
+                assert entry["source"] == os.readlink(public) == str(source)
+                assert source.is_file()
+                assert (public.lstat().st_dev, public.lstat().st_ino) == (
+                    entry["destination_dev"], entry["destination_ino"],
+                ) == (anchor.lstat().st_dev, anchor.lstat().st_ino)
+            receipts.append(receipt)
+        else:
+            assert not receipt_path(state).exists()
+            assert list(destination.parent.iterdir()) == []
+    assert failures == []
+    if retry == "install":
+        assert receipts[0] == receipts[1]
+        uninstall(repo, home, state, FakeRunner([]), agents_only=True)
+        assert not receipt_path(state).exists()
+        assert list(destination.parent.iterdir()) == []
+
+
 @pytest.mark.parametrize("agents_only", [True, False], ids=["agents", "full"])
 @pytest.mark.parametrize("existing_receipt", [False, True], ids=["first", "existing"])
 @pytest.mark.parametrize("resume", [False, True], ids=["direct-uninstall", "resume-install"])
