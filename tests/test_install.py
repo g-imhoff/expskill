@@ -34,6 +34,155 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+@pytest.mark.parametrize("contents", ["marker", "valid-package"])
+def test_builder_handoff_preserves_replacement(tmp_path, kind, contents):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    if kind == "refresh":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    target = (module._codex_recovery_root(repo, state) if kind == "recovery"
+              else module._codex_managed_root(repo, state))
+    build = module._build_codex_marketplace
+    replacements = []
+
+    def substitute(source, candidate):
+        result = build(source, candidate)
+        if candidate.parent.parent == target.parent:
+            saved = tmp_path / "original-candidate"
+            candidate.rename(saved)
+            if contents == "valid-package":
+                shutil.copytree(saved, candidate)
+            else:
+                candidate.mkdir()
+                (candidate / module.CODEX_MANAGED_MARKER).write_text("unrelated marker\n")
+            (candidate / "user-data").write_text("preserve me\n")
+            replacements.append((candidate, candidate.stat().st_ino))
+        return result
+
+    runner = RecoveryCliRunner(repo, tmp_path / "cli.json") if kind == "recovery" else FakeRunner([])
+    with mock.patch.object(module, "_build_codex_marketplace", substitute):
+        try:
+            install(repo, home, state, runner, agents_only=kind != "recovery")
+        except InstallError:
+            pass
+    candidate, inode = replacements[0]
+    for operation in (None, install, uninstall):
+        if operation is not None:
+            try:
+                operation(repo, home, state, runner if kind == "recovery" else FakeRunner(
+                    [] if operation is install else [plugin_list_response(), marketplace_list_response()]
+                ), agents_only=operation is install and kind != "recovery")
+            except InstallError:
+                pass
+        assert candidate.exists(), "replacement candidate was adopted or deleted"
+        assert candidate.stat().st_ino == inode
+        assert (candidate / "user-data").read_text() == "preserve me\n"
+        if contents == "marker":
+            assert (candidate / module.CODEX_MANAGED_MARKER).read_text() == "unrelated marker\n"
+        else:
+            assert not (candidate / module.CODEX_MANAGED_MARKER).exists()
+
+
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_identity_free_stage_requires_reconciliation(tmp_path, retry, replacement):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    pid = os.fork()
+    if pid == 0:
+        symlink = Path.symlink_to
+
+        def created(path, target, *args, **kwargs):
+            symlink(path, target, *args, **kwargs)
+            if path.name.startswith(module.CODEX_LINK_STAGE_PREFIX):
+                os._exit(73)
+
+        with mock.patch.object(Path, "symlink_to", created):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    journal_path = module._codex_install_journal_path(state)
+    journal = json.loads(journal_path.read_text())
+    record = next(item for item in journal["links"] if item["phase"] == "staging")
+    assert record["destination_ino"] is None
+    stage = Path(record["staged_destination"])
+    if replacement:
+        saved = tmp_path / "original-stage"
+        stage.rename(saved)
+        stage.symlink_to(os.readlink(saved))
+        assert stage.lstat().st_ino != saved.lstat().st_ino
+    inode, target = stage.lstat().st_ino, os.readlink(stage)
+    for _ in range(2):
+        with pytest.raises(InstallError, match="unproven"):
+            getattr(module, retry)(repo, home, state, FakeRunner([]), agents_only=True)
+        assert stage.lstat().st_ino == inode
+        assert os.readlink(stage) == target
+        assert not os.path.lexists(record["destination"])
+        retained = json.loads(journal_path.read_text())
+        entry = next(item for item in retained["links"] if item["destination"] == record["destination"])
+        assert entry["destination_ino"] is None
+    # Explicit reconciliation of the unproven stage permits normal retry.
+    stage.unlink()
+    getattr(module, retry)(repo, home, state, FakeRunner([]), agents_only=True)
+
+
+@pytest.mark.parametrize("update", [False, True])
+@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+def test_record_cleanup_preserves_copied_public_replacement(tmp_path, update, crash, retry):
+    from scripts import install as module
+
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "home", tmp_path / "state"
+    record = module._codex_install_journal_path(state)
+    evidence = tmp_path / "replacement-inode"
+
+    def attempt():
+        unlink = os.unlink
+
+        def replaced(path, *args, **kwargs):
+            name = str(path)
+            selected = (name.startswith("." + record.name + ".")
+                        and name.endswith(".publish.previous")
+                        and name.startswith("." + record.name + ".0-0.") != update
+                        and not evidence.exists())
+            if selected:
+                saved = tmp_path / "original-record"
+                record.rename(saved)
+                record.write_bytes(saved.read_bytes())
+                evidence.write_text(str(record.stat().st_ino))
+            result = unlink(path, *args, **kwargs)
+            if selected and crash:
+                os._exit(73)
+            return result
+
+        with mock.patch.object(module.os, "unlink", replaced):
+            try:
+                install(repo, home, state, FakeRunner([]), agents_only=True)
+            except InstallError:
+                pass
+
+    if crash:
+        pid = os.fork()
+        if pid == 0:
+            attempt()
+            os._exit(74)
+        wait_for_crashed_child(pid)
+    else:
+        attempt()
+    inode = int(evidence.read_text())
+    for _ in range(2):
+        with pytest.raises(InstallError, match="record changed"):
+            getattr(module, retry)(repo, home, state, FakeRunner([]), agents_only=True)
+        assert record.stat().st_ino == inode
+        assert record.read_bytes() == (tmp_path / "original-record").read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
 @pytest.mark.parametrize("symlink", [False, True])
 def test_marker_creation_preserves_replaced_staging_parent(tmp_path, kind, symlink):
     from scripts import install as module
@@ -83,6 +232,105 @@ def test_marker_creation_preserves_replaced_staging_parent(tmp_path, kind, symli
         assert marker.is_symlink() == symlink
         assert marker.read_text() == ("unrelated external file\n" if symlink else "unrelated marker\n")
         assert (candidate / "user-data").read_text() == "unrelated candidate\n"
+
+
+@pytest.mark.parametrize("update,boundary", [
+    (False, "linked"), (False, "synced"), (True, "linked"),
+    (True, "synced"), (True, "prior-removed"),
+])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_record_witness_handoff_recovers_process_exit(tmp_path, update, boundary, replacement):
+    from scripts import install as module
+
+    state = tmp_path / "state"
+    record = module._codex_install_journal_path(state)
+    if update:
+        with module._codex_transaction(state, create=True):
+            module._write_codex_install_journal(record, {"phase": "old"})
+    pid = os.fork()
+    if pid == 0:
+        link, fsync, unlink = os.link, os.fsync, os.unlink
+        linked_witness = False
+
+        def linked(source, target, *args, **kwargs):
+            nonlocal linked_witness
+            result = link(source, target, *args, **kwargs)
+            if str(target).endswith(".committed"):
+                linked_witness = True
+                if boundary == "linked":
+                    os._exit(73)
+            return result
+
+        def synced(fd):
+            fsync(fd)
+            if linked_witness and boundary == "synced":
+                os._exit(73)
+
+        def unlinked(path, *args, **kwargs):
+            result = unlink(path, *args, **kwargs)
+            if boundary == "prior-removed" and str(path).endswith(".committed"):
+                os._exit(73)
+            return result
+
+        with module._codex_transaction(state, create=True):
+            if update:
+                module._read_codex_record(record)
+            with mock.patch.object(module.os, "link", linked), mock.patch.object(
+                module.os, "fsync", synced
+            ), mock.patch.object(module.os, "unlink", unlinked):
+                module._write_codex_install_journal(record, {"phase": "new"})
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    if replacement:
+        contents = record.read_bytes()
+        # Removing the public name must not free the witnessed original inode.
+        original = record.stat().st_ino
+        record.unlink()
+        record.write_bytes(contents)
+        inode = record.stat().st_ino
+        assert inode != original
+        for _ in range(2):
+            with pytest.raises(InstallError, match="record changed"):
+                with module._codex_transaction(state, create=False):
+                    pytest.fail("replacement was accepted")
+            assert record.stat().st_ino == inode
+            assert record.read_bytes() == contents
+    else:
+        with module._codex_transaction(state, create=False):
+            assert json.loads(module._read_codex_record(record)) == {"phase": "new"}
+            module._write_codex_install_journal(record, {"phase": "retry"})
+            witnesses = list(record.parent.glob("*.committed"))
+            assert len(witnesses) == 1
+            assert witnesses[0].stat().st_ino == record.stat().st_ino
+            module._clear_codex_record(record)
+        assert list(record.parent.iterdir()) == []
+
+
+def test_record_witness_rejects_replacement_at_read_open(tmp_path):
+    from scripts import install as module
+
+    state = tmp_path / "state"
+    record = module._codex_install_journal_path(state)
+    with module._codex_transaction(state, create=True):
+        module._write_codex_install_journal(record, {"phase": "original"})
+    opening = os.open
+    saved = tmp_path / "original-record"
+
+    def replaced(path, *args, **kwargs):
+        if path == record.name and not saved.exists():
+            record.rename(saved)
+            record.write_bytes(saved.read_bytes())
+        return opening(path, *args, **kwargs)
+
+    with module._codex_transaction(state, create=False):
+        with mock.patch.object(module.os, "open", replaced), pytest.raises(InstallError, match="record changed before reading"):
+            module._read_codex_record(record)
+    inode = record.stat().st_ino
+    assert inode != saved.stat().st_ino
+    with pytest.raises(InstallError, match="record changed"):
+        with module._codex_transaction(state, create=False):
+            pytest.fail("replacement was accepted")
+    assert record.stat().st_ino == inode
 
 
 @pytest.mark.parametrize("kind", ["receipt", "install", "migration"])
@@ -628,7 +876,12 @@ def test_record_checkpoint_retries_failed_preparation_in_same_transaction(tmp_pa
             module._write_codex_install_journal(record, {"phase": "compensated"})
     if compensation == "checkpoint":
         assert json.loads(record.read_text()) == {"phase": "compensated"}
-    assert list(record.parent.iterdir()) == ([record] if compensation == "checkpoint" else [])
+    if compensation == "checkpoint":
+        witness, = record.parent.glob("*.committed")
+        assert witness.stat().st_ino == record.stat().st_ino
+        assert set(record.parent.iterdir()) == {record, witness}
+    else:
+        assert list(record.parent.iterdir()) == []
     with module._codex_transaction(state, create=False):
         pass  # Compensation must leave no ambiguous publication for the retry.
 
@@ -1096,7 +1349,7 @@ class InstallerTests(unittest.TestCase):
                             os._exit(73)
                     def anchor(*args: object, **kwargs: object) -> None:
                         link(*args, **kwargs)
-                        if boundary == "anchor":
+                        if boundary == "anchor" and str(args[1]).endswith(".anchor"):
                             os._exit(73)
                     with mock.patch("scripts.install._write_codex_receipt", checkpoint), mock.patch("scripts.install.os.link", anchor):
                         uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
@@ -1273,6 +1526,15 @@ class InstallerTests(unittest.TestCase):
                         raise SystemExit(73)
                 with mock.patch.object(Path, "symlink_to", create), mock.patch("scripts.install._write_codex_install_journal", checkpoint), self.assertRaises(SystemExit):
                     install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                if initial_phase == "staging":
+                    stage, = (codex_home / "agents").glob("*.link")
+                    inode = stage.lstat().st_ino
+                    with self.assertRaisesRegex(InstallError, "unproven"):
+                        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    self.assertEqual(stage.lstat().st_ino, inode)
+                    stage.unlink()  # Explicit reconciliation; no deletion authority survived.
+                    uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    continue
                 pid = os.fork()
                 if pid == 0:
                     exchange = module._renameat_exchange
@@ -2620,7 +2882,7 @@ class InstallerTests(unittest.TestCase):
                 )
             )
 
-    def test_install_recovers_crash_immediately_after_stage_symlink_creation(self) -> None:
+    def test_install_preserves_unproven_stage_after_symlink_creation_exit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = seed_repository(root / "repo")
@@ -2646,13 +2908,12 @@ class InstallerTests(unittest.TestCase):
             journal = state_home / "expskill" / "codex-install.json"
             interrupted = json.loads(journal.read_text(encoding="utf-8"))
             self.assertIn("staging", {entry["phase"] for entry in interrupted["links"]})
-            self.assertTrue(
-                any(
-                    path.name.startswith(".expskill-codex-link-stage-")
-                    for path in (codex_home / "agents").iterdir()
-                )
-            )
-
+            stage, = (codex_home / "agents").glob(".expskill-codex-link-stage-*")
+            inode = stage.lstat().st_ino
+            with self.assertRaisesRegex(InstallError, "unproven"):
+                install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+            self.assertEqual(stage.lstat().st_ino, inode)
+            stage.unlink()  # User reconciliation permits a new creation attempt.
             install(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
 
             self.assertFalse(journal.exists())

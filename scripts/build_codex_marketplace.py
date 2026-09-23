@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -52,14 +53,31 @@ def build_codex_marketplace(
     repo_root: Path | str | None = None,
     output_dir: Path | str | None = None,
 ) -> Path:
+    output, descriptor = build_codex_marketplace_pinned(repo_root, output_dir)
+    os.close(descriptor)
+    return output
+
+
+def build_codex_marketplace_pinned(
+    repo_root: Path | str | None = None,
+    output_dir: Path | str | None = None,
+) -> tuple[Path, int]:
+    """Return the output and its retained directory descriptor (caller closes).
+
+    Pin the constructed staging directory before publishing its pathname, so
+    the caller never has to acquire ownership from a later path observation.
+    """
+
     if output_dir is None:
         raise BuildError("an explicit output directory is required")
     root = _root(repo_root)
     output = _output(output_dir)
     container = Path(tempfile.mkdtemp(prefix=".codex-marketplace-build-", dir=output.parent))
     staging = container / "marketplace"
+    descriptor = None
     try:
         (staging / "plugins").mkdir(parents=True)
+        descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         build_codex_package(root, staging / "plugins" / PLUGIN_NAME)
         manifest_path = staging / ".agents" / "plugins" / "marketplace.json"
         manifest_path.parent.mkdir(parents=True)
@@ -69,11 +87,14 @@ def build_codex_marketplace(
         )
         _normalize(staging)
         staging.rename(output)
+        shutil.rmtree(container, ignore_errors=True)
     except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
         shutil.rmtree(container, ignore_errors=True)
         raise
-    shutil.rmtree(container, ignore_errors=True)
-    return output
+    assert descriptor is not None
+    return output, descriptor
 
 
 def main(argv: list[str] | None = None) -> int:

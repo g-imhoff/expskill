@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.build_codex_package import build_codex_package
 from scripts.build_opencode_package import build_opencode_package
@@ -20,6 +21,40 @@ PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 
 
 class CodexSourceCorrectionTests(unittest.TestCase):
+    def test_marketplace_builder_retains_constructed_directory_before_publication(self) -> None:
+        from scripts.build_codex_marketplace import (
+            build_codex_marketplace, build_codex_marketplace_pinned,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "marketplace"
+            rename = Path.rename
+            original_identity = None
+
+            def replaced(path, destination):
+                nonlocal original_identity
+                if destination == output:
+                    original_identity = path.stat().st_ino
+                    rename(path, root / "original")
+                    path.mkdir()
+                    (path / "user-data").write_text("preserve replacement")
+                return rename(path, destination)
+
+            with mock.patch.object(Path, "rename", replaced):
+                path, descriptor = build_codex_marketplace_pinned(ROOT, output)
+            try:
+                self.assertEqual(path, output)
+                self.assertEqual(os.fstat(descriptor).st_ino, original_identity)
+                self.assertNotEqual(os.fstat(descriptor).st_ino, output.stat().st_ino)
+                self.assertIn("plugins", os.listdir(descriptor))
+            finally:
+                os.close(descriptor)
+            self.assertEqual((output / "user-data").read_text(), "preserve replacement")
+            plain = root / "plain"
+            self.assertEqual(build_codex_marketplace(ROOT, plain), plain)
+            self.assertTrue((plain / "plugins/expskill/skills").is_dir())
+
     def test_agent_prose_has_one_neutral_source(self) -> None:
         content_path = PLUGIN_ROOT / "content" / "agents.json"
         content = json.loads(content_path.read_text(encoding="utf-8"))

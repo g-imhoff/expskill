@@ -91,11 +91,16 @@ keeps its complete prior identity across rollback and process exit. Receipt and
 journal publication and cleanup are bound to the files read or published by the transaction;
 replacement files are preserved and reported for reconciliation before retry.
 Interrupted record publication recovers before state files are read. Receipt and
-journal records retain durable identity evidence across an interrupted first
-publication, so retry rejects a copied replacement. Marker creation and syncing
-use the retained candidate directory. Failed publication cleanup checks the
-exact temporary file and candidate directory identities, preserving and reporting
-replacement entries for reconciliation.
+journal records retain a hard-link identity witness until retirement, including
+through publication cleanup, so retry rejects a copied replacement. Marker
+creation and syncing use the directory descriptor retained by the builder before
+publication. Failed publication cleanup checks the exact temporary file and
+candidate directory identities, preserving and reporting replacement entries
+for reconciliation.
+If a process exits after creating a staged profile symlink but before recording
+its inode identity, install and uninstall preserve that unproven stage and stop.
+Reconcile the reported staging path manually before retrying; a matching target
+alone cannot prove that the symlink belongs to the interrupted install.
 If a failed legacy migration restores CLI registrations to a recovery package,
 its migration journal retains that package's frozen identity. Retry verifies
 and reuses the recovery package; a copied marker cannot authorize a replacement.

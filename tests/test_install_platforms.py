@@ -42,10 +42,47 @@ def darwin_api():
 
 
 @pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
+@pytest.mark.parametrize("contents", ["marker", "valid-package"])
+def test_darwin_builder_handoff_preserves_replacement(tmp_path, darwin_api, kind, contents):
+    from tests import test_install as cases
+    cases.test_builder_handoff_preserves_replacement(tmp_path, kind, contents)
+
+
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_darwin_identity_free_stage_requires_reconciliation(tmp_path, darwin_api, retry, replacement):
+    from tests import test_install as cases
+    cases.test_identity_free_stage_requires_reconciliation(tmp_path, retry, replacement)
+
+
+@pytest.mark.parametrize("update", [False, True])
+@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize("retry", ["install", "uninstall"])
+def test_darwin_record_cleanup_preserves_copied_public_replacement(tmp_path, darwin_api, update, crash, retry):
+    from tests import test_install as cases
+    cases.test_record_cleanup_preserves_copied_public_replacement(tmp_path, update, crash, retry)
+
+
+@pytest.mark.parametrize("kind", ["managed", "refresh", "recovery"])
 @pytest.mark.parametrize("symlink", [False, True])
 def test_darwin_marker_creation_preserves_replaced_staging_parent(tmp_path, darwin_api, kind, symlink):
     from tests import test_install as cases
     cases.test_marker_creation_preserves_replaced_staging_parent(tmp_path, kind, symlink)
+
+
+@pytest.mark.parametrize("update,boundary", [
+    (False, "linked"), (False, "synced"), (True, "linked"),
+    (True, "synced"), (True, "prior-removed"),
+])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_darwin_record_witness_handoff_recovers_process_exit(tmp_path, darwin_api, update, boundary, replacement):
+    from tests import test_install as cases
+    cases.test_record_witness_handoff_recovers_process_exit(tmp_path, update, boundary, replacement)
+
+
+def test_darwin_record_witness_rejects_replacement_at_read_open(tmp_path, darwin_api):
+    from tests import test_install as cases
+    cases.test_record_witness_rejects_replacement_at_read_open(tmp_path)
 
 
 @pytest.mark.parametrize("kind", ["receipt", "install", "migration"])

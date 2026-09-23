@@ -29,7 +29,7 @@ sys.dont_write_bytecode = True
 try:
     from scripts.build_codex_marketplace import BuildError as CodexBuildError
     from scripts.build_codex_marketplace import (
-        build_codex_marketplace as _build_codex_marketplace,
+        build_codex_marketplace_pinned as _build_codex_marketplace,
     )
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
     from scripts.build_opencode_package import (
@@ -58,7 +58,7 @@ try:
 except ModuleNotFoundError:
     from build_codex_marketplace import BuildError as CodexBuildError
     from build_codex_marketplace import (
-        build_codex_marketplace as _build_codex_marketplace,
+        build_codex_marketplace_pinned as _build_codex_marketplace,
     )
     from build_opencode_package import BuildError as OpencodeBuildError
     from build_opencode_package import (
@@ -1203,6 +1203,7 @@ def _codex_transaction(
     try:
         _recover_codex_record_publications(binding.directory_fd)
         _recover_codex_record_retirements(binding)
+        _recover_codex_record_witnesses(binding.directory_fd)
         yield True
     finally:
         if lease.depth != 1:
@@ -1261,13 +1262,22 @@ def _check_codex_record(path: Path) -> None:
 def _read_codex_record(path: Path) -> str:
     _check_codex_record(path)
     lease = _codex_record_lease(path)
+    expected = None
+    if lease is not None:
+        _recover_codex_record_witnesses(lease.binding.directory_fd)
+        expected = next((identity for _, name, identity in
+                         _codex_record_witnesses(lease.binding.directory_fd)
+                         if name == path.name), None)
     descriptor = os.open(
         path if lease is None else path.name,
         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
         dir_fd=None if lease is None else lease.binding.directory_fd,
     )
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        metadata = os.fstat(stream.fileno())
+        if expected is not None and (metadata.st_dev, metadata.st_ino) != expected:
+            raise InstallError(f"Codex state record changed before reading: {path}")
+        if not stat.S_ISREG(metadata.st_mode):
             raise InstallError(f"Codex state record is not a regular file: {path}")
         # Pin the inode supplying the bytes, not a later pathname observation.
         contents = stream.read()
@@ -1289,6 +1299,7 @@ def _publish_codex_record(temporary: Path, path: Path, descriptor: int) -> None:
         # this same transaction. Retire its pending candidate before preparing
         # another checkpoint, without replacing the retained read authority.
         _recover_codex_record_publications(parent_fd)
+        _recover_codex_record_witnesses(parent_fd)
         _check_codex_record(path)
         pinned = None if lease is None else lease.record_pins.get(path.name)
         new = os.fstat(descriptor)
@@ -1327,8 +1338,73 @@ def _publish_codex_record(temporary: Path, path: Path, descriptor: int) -> None:
         _check_codex_record(path)
         os.fsync(parent_fd)
         _recover_codex_record_publications(parent_fd)
+        _recover_codex_record_witnesses(parent_fd)
     finally:
         os.close(parent_fd)
+
+
+def _codex_record_witness_name(name: str, identity: tuple[int, int]) -> str:
+    return f".{name}.{identity[0]:x}-{identity[1]:x}.committed"
+
+
+def _codex_record_witnesses(parent_fd: int) -> Iterator[tuple[str, str, tuple[int, int]]]:
+    names = {RECEIPT_FILENAME, CODEX_INSTALL_JOURNAL_FILENAME, CODEX_MIGRATION_JOURNAL_FILENAME}
+    for witness in sorted(os.listdir(parent_fd)):
+        if not witness.endswith(".committed"):
+            continue
+        try:
+            base, encoded = witness.removesuffix(".committed").rsplit(".", 1)
+            name = base.removeprefix(".")
+            if name not in names:
+                continue
+            identity = tuple(int(value, 16) for value in encoded.split("-"))
+            if len(identity) != 2 or min(identity) <= 0:
+                raise ValueError("invalid identity")
+            metadata = os.stat(witness, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != identity:
+                raise ValueError("changed identity")
+        except ValueError as error:
+            raise InstallError(f"Codex state record changed at witness: {witness}") from error
+        yield witness, name, identity
+
+
+def _commit_codex_record_witness(parent_fd: int, name: str, old: tuple[int, int], new: tuple[int, int]) -> None:
+    """Keep the published inode alive before retiring publication evidence.
+
+    The old witness may be removed only while the publication still durably
+    records the transition. The successor witness then survives all cleanup,
+    including an exit immediately after unlinking .publish.previous.
+    """
+
+    witnesses = list(_codex_record_witnesses(parent_fd))
+    if any(record == name and identity not in {old, new} for _, record, identity in witnesses):
+        raise InstallError(f"Codex state record changed during publication: {name}")
+    witness = _codex_record_witness_name(name, new)
+    if not any(candidate == witness for candidate, _, _ in witnesses):
+        os.link(name, witness, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+        os.fsync(parent_fd)
+    # Validate the created link before it can grant authority on retry.
+    list(_codex_record_witnesses(parent_fd))
+    for candidate, record, identity in witnesses:
+        if record == name and identity == old:
+            os.unlink(candidate, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+
+
+def _recover_codex_record_witnesses(parent_fd: int) -> None:
+    """Validate committed identities after publication/retirement recovery."""
+
+    for witness, name, expected in _codex_record_witnesses(parent_fd):
+        try:
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            # Final record retirement completed. This private hard link grants
+            # no authority over any future object at the now-absent public name.
+            os.unlink(witness, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            continue
+        if (current.st_dev, current.st_ino) != expected:
+            raise InstallError(f"Codex state record changed after publication: {name}")
 
 
 def _recover_codex_record_publications(parent_fd: int) -> None:
@@ -1375,6 +1451,8 @@ def _recover_codex_record_publications(parent_fd: int) -> None:
                 raise InstallError(f"Codex state record changed during publication: {name}")
             if current is None and staged is None:
                 raise InstallError(f"Codex state record changed during publication: {name}")
+            if current == new:
+                _commit_codex_record_witness(parent_fd, name, old, new)
             if captured is not None:
                 os.unlink(previous, dir_fd=parent_fd)
                 os.fsync(parent_fd)
@@ -1391,6 +1469,7 @@ def _recover_codex_record_publications(parent_fd: int) -> None:
         if captured is not None:
             if captured != old or current != new or staged is not None:
                 raise InstallError(f"Codex state record changed during publication: {name}")
+            _commit_codex_record_witness(parent_fd, name, old, new)
             os.unlink(previous, dir_fd=parent_fd)
             os.fsync(parent_fd)
         if current not in {old, new}:
@@ -1406,6 +1485,7 @@ def _clear_codex_record(path: Path) -> None:
     if lease is None or path.name not in lease.record_pins:
         raise InstallError(f"Codex state record has no pinned authority: {path}")
     _recover_codex_record_publications(lease.binding.directory_fd)
+    _recover_codex_record_witnesses(lease.binding.directory_fd)
     _check_codex_record(path)
     metadata = os.fstat(lease.record_pins[path.name])
     _remove_exact_via_exchange(
@@ -1414,6 +1494,7 @@ def _clear_codex_record(path: Path) -> None:
     )
     if _lexists(path):
         raise InstallError(f"Codex state record changed during retirement: {path}")
+    _recover_codex_record_witnesses(lease.binding.directory_fd)
     os.close(lease.record_pins.pop(path.name))
 
 
@@ -2851,9 +2932,12 @@ def _materialize_codex_marketplace(
         candidate_root = temporary_parent / "marketplace"
         candidate_fd = None
         try:
-            _build_codex_marketplace(repository_root, candidate_root)
-            candidate_fd = os.open(candidate_root.name, _directory_open_flags(), dir_fd=candidate_parent_fd)
+            _, candidate_fd = _build_codex_marketplace(repository_root, candidate_root)
             pins.callback(os.close, candidate_fd)
+            constructed = os.fstat(candidate_fd)
+            current = os.stat(candidate_root.name, dir_fd=candidate_parent_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (constructed.st_dev, constructed.st_ino):
+                raise InstallError(f"Codex package staging candidate changed: {candidate_root}")
             _write_codex_managed_marker(candidate_root, repository_root, target_root, directory_fd=candidate_fd)
             _fsync_codex_marketplace(candidate_root, directory_fd=candidate_fd)
             candidate_identity = _codex_package_identity(candidate_root, directory_fd=candidate_fd)
@@ -6977,19 +7061,10 @@ def _recover_codex_transaction_link(
             _clear_codex_transaction_link(record)
             _write_codex_install_journal(journal_path, journal)
             return None
-        if not _codex_staged_link_is_exact(link, staged):
-            raise InstallError(f"Codex link staging path is occupied: {staged}")
-        metadata = os.lstat(staged)
-        anchor = _codex_link_anchor_path(
-            link.destination, metadata.st_dev, metadata.st_ino
-        )
-        record["phase"] = "anchoring"
-        record["destination_dev"] = metadata.st_dev
-        record["destination_ino"] = metadata.st_ino
-        record["link_anchor"] = str(anchor)
-        _fsync_directory(staged.parent)
-        _write_codex_install_journal(journal_path, journal)
-        phase = "anchoring"
+        # A durable intent authenticates a name, not the symlink subsequently
+        # found there. An exit before the identity checkpoint loses authority
+        # even when the original link happens to remain at that name.
+        raise InstallError(f"Codex link staging identity is unproven; reconcile: {staged}")
     if phase == "anchoring":
         recorded = _codex_transaction_link(record, link, journal)
         if (
@@ -7346,23 +7421,9 @@ def _rollback_codex_transaction_links(
                         f"Codex link staging path lacks transaction authority: {staged}"
                     )
                 if _lexists(staged):
-                    if not _codex_staged_link_is_exact(link, staged):
-                        raise InstallError(
-                            f"Codex link staging path is occupied: {staged}"
-                        )
-                    metadata = os.lstat(staged)
-                    record.update(
-                        phase="anchoring",
-                        destination_dev=metadata.st_dev,
-                        destination_ino=metadata.st_ino,
-                        link_anchor=str(_codex_link_anchor_path(
-                            link.destination, metadata.st_dev, metadata.st_ino
-                        )),
+                    raise InstallError(
+                        f"Codex link staging identity is unproven; reconcile: {staged}"
                     )
-                    # Teardown also needs an identity checkpoint before its
-                    # first exchange, even if installation never made an anchor.
-                    _write_codex_install_journal(journal_path, journal)
-                    phase = "anchoring"
             if phase in {"anchoring", "staged", "published"}:
                 recorded = _codex_transaction_link(record, link, journal)
                 if recorded is None:
