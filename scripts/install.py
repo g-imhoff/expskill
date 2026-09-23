@@ -17,7 +17,7 @@ import tempfile
 import threading
 import tomllib
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
@@ -5884,54 +5884,66 @@ def _migrate_codex_receipt_links(
 ) -> _Receipt:
     """Convert old receipt authority once; never re-observe a frozen identity."""
 
-    if freeze:
-        links: list[ProfileLink] = []
-        for link in receipt.links:
-            try:
-                metadata = os.lstat(link.destination)
-            except FileNotFoundError:
+    with ExitStack() as pins:
+        if freeze:
+            links: list[ProfileLink] = []
+            for link in receipt.links:
+                if not _codex_staged_link_is_exact(link, link.destination):
+                    links.append(link)
+                    continue
+                # Hold the symlink itself through checkpoint publication and
+                # anchoring. Even an unlinked inode cannot be reused while open.
+                flag = getattr(os, "O_SYMLINK" if sys.platform == "darwin" else "O_PATH", 0)
+                if not flag:
+                    raise InstallError("Codex receipt migration requires symlink descriptor support")
+                try:
+                    descriptor = os.open(link.destination, flag | os.O_NOFOLLOW | os.O_NONBLOCK)
+                except FileNotFoundError:
+                    links.append(link)
+                    continue
+                except OSError as error:
+                    raise InstallError(f"cannot pin legacy Codex receipt: {link.destination}: {error}") from error
+                pins.callback(os.close, descriptor)
+                metadata = os.fstat(descriptor)
+                if stat.S_ISLNK(metadata.st_mode) and _codex_staged_link_is_exact(
+                    link, link.destination, (metadata.st_dev, metadata.st_ino)
+                ):
+                    link = replace(
+                        link,
+                        destination_dev=metadata.st_dev,
+                        destination_ino=metadata.st_ino,
+                        link_anchor=_codex_link_anchor_path(
+                            link.destination, metadata.st_dev, metadata.st_ino
+                        ),
+                        link_anchor_dev=metadata.st_dev,
+                        link_anchor_ino=metadata.st_ino,
+                    )
                 links.append(link)
+            receipt = replace(receipt, links=tuple(links))
+            _write_codex_receipt(receipt_path, receipt, pending_link_migration=True)
+        for link in receipt.links:
+            if not _valid_codex_link_anchor_path(link):
                 continue
-            if _codex_staged_link_is_exact(
-                link, link.destination, (metadata.st_dev, metadata.st_ino)
+            if _codex_anchor_is_live(link):
+                _fsync_directory(link.destination.parent)
+                continue
+            if _lexists(link.link_anchor):
+                raise InstallError(f"Codex receipt migration anchor is occupied: {link.link_anchor}")
+            # A frozen checkpoint without an anchor is unproven, including
+            # older checkpoints. Dev/inode + target cannot survive inode reuse.
+            # Only this invocation's still-open pins authorize initial anchoring.
+            if not freeze or not _codex_staged_link_is_exact(
+                link, link.destination, (link.destination_dev, link.destination_ino)
             ):
-                link = replace(
-                    link,
-                    destination_dev=metadata.st_dev,
-                    destination_ino=metadata.st_ino,
-                    link_anchor=_codex_link_anchor_path(
-                        link.destination, metadata.st_dev, metadata.st_ino
-                    ),
-                    link_anchor_dev=metadata.st_dev,
-                    link_anchor_ino=metadata.st_ino,
-                )
-            links.append(link)
-        receipt = replace(receipt, links=tuple(links))
-        # Persist every observed identity before creating any private anchor.
-        # Historic same-target replacements are indistinguishable in the old
-        # path-only format; after this checkpoint, target equality cannot adopt
-        # another inode, including on an interrupted migration retry.
-        _write_codex_receipt(receipt_path, receipt, pending_link_migration=True)
-    for link in receipt.links:
-        if not _valid_codex_link_anchor_path(link):
-            continue
-        if _codex_anchor_is_live(link):
-            _fsync_directory(link.destination.parent)
-            continue
-        if _lexists(link.link_anchor):
-            raise InstallError(f"Codex receipt migration anchor is occupied: {link.link_anchor}")
-        if not _codex_staged_link_is_exact(
-            link, link.destination, (link.destination_dev, link.destination_ino)
-        ):
-            continue
-        try:
-            os.link(link.destination, link.link_anchor, follow_symlinks=False)
-            if not _codex_anchor_is_live(link):
-                raise InstallError(f"Codex receipt migration identity changed: {link.destination}")
-            _fsync_directory(link.destination.parent)
-        except OSError as error:
-            raise InstallError(f"cannot anchor legacy Codex receipt: {link.destination}: {error}") from error
-    _write_codex_receipt(receipt_path, receipt)
+                continue
+            try:
+                os.link(link.destination, link.link_anchor, follow_symlinks=False)
+                if not _codex_anchor_is_live(link):
+                    raise InstallError(f"Codex receipt migration identity changed: {link.destination}")
+                _fsync_directory(link.destination.parent)
+            except OSError as error:
+                raise InstallError(f"cannot anchor legacy Codex receipt: {link.destination}: {error}") from error
+        _write_codex_receipt(receipt_path, receipt)
     return receipt
 
 
@@ -5942,9 +5954,7 @@ def _check_frozen_codex_legacy_links(receipt: _Receipt | None) -> None:
     for link in receipt.links:
         if link.source not in legacy or not _same_recorded_link(link.destination, link.source):
             continue
-        if not _valid_codex_link_anchor_path(link) or not _codex_staged_link_is_exact(
-            link, link.destination, (link.destination_dev, link.destination_ino)
-        ):
+        if not _codex_link_path_is_live(link):
             raise InstallError(f"legacy agent link changed frozen receipt identity: {link.destination}")
 
 
@@ -6799,8 +6809,8 @@ def _rollback_codex_transaction_links(
                     )
                 if recorded.staged_destination is not None:
                     _retire_codex_transaction_stage(recorded)
-                removed = _remove_codex_recorded_link(recorded)
-                if not removed and _lexists(recorded.destination) and (
+                _remove_codex_recorded_link(recorded)
+                if _lexists(recorded.destination) and (
                     not uninstalling
                     or _same_recorded_link(recorded.destination, recorded.source)
                 ):
@@ -8000,7 +8010,7 @@ def _remove_owned_links(
         except InstallError as error:
             failures.append(f"link {link.destination}: {error}")
             continue
-        if not removed_owned and _same_recorded_link(link.destination, link.source):
+        if _same_recorded_link(link.destination, link.source):
             # Keep the original entry as dependency evidence, without adopting
             # the replacement inode.  Retry can finish once the user removes it.
             failures.append(

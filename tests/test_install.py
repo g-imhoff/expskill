@@ -454,6 +454,20 @@ class InstallerTests(unittest.TestCase):
                         self.assertEqual(anchor.read_text(), "private replacement")
                     anchor.unlink()
                     saved.rename(anchor)
+                if boundary != "committed":
+                    unproven = [
+                        Path(entry["destination"])
+                        for entry in load_receipt(state_home)["links"]
+                        if entry.get("link_anchor")
+                        and not os.path.lexists(entry["link_anchor"])
+                    ]
+                    self.assertTrue(unproven)
+                    with self.assertRaisesRegex(InstallError, "unproven.*depends"):
+                        uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
+                    self.assertTrue(receipt_path(state_home).exists())
+                    self.assertTrue(all(path.is_symlink() for path in unproven))
+                    for path in unproven:
+                        path.unlink()
                 uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                 self.assertEqual(list((codex_home / "agents").iterdir()), [])
 
@@ -501,13 +515,17 @@ class InstallerTests(unittest.TestCase):
                 selected.rename(root / "original-inode")
                 selected.symlink_to(old_target)
                 replacement_inode = selected.lstat().st_ino
-                # Same-target replacements stay as dependency evidence, while
-                # all independently owned links and anchors are cleaned up.
+                # A missing anchor cannot prove ownership after a crash. Keep
+                # both replacements and original-looking links as dependencies.
                 with self.assertRaisesRegex(InstallError, "unproven.*depends"):
                     uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                 self.assertEqual(selected.lstat().st_ino, replacement_inode)
-                self.assertEqual(set((codex_home / "agents").iterdir()), {selected, *destinations[:2]})
+                self.assertEqual(set((codex_home / "agents").iterdir()), set(destinations))
+                self.assertTrue(receipt_path(state_home).exists())
                 selected.unlink()
+                for destination in destinations[2:]:
+                    if destination.is_symlink():
+                        destination.unlink()
                 uninstall(repo, codex_home, state_home, FakeRunner([]), agents_only=True)
                 self.assertEqual(destinations[0].read_text(), "regular replacement")
                 self.assertEqual(os.readlink(destinations[1]), str(root / "unrelated"))
@@ -4934,6 +4952,126 @@ def test_frozen_checkout_receipt_survives_operation_switch(
     destination.unlink()
     uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
     assert not receipt_path(state).exists()
+
+
+@pytest.mark.parametrize("boundary", ["exchange", "private-removed"])
+@pytest.mark.parametrize("origin", ["receipt", "pending", "failed"])
+@pytest.mark.parametrize("retry", ["uninstall", "install"])
+def test_retirement_recovery_retains_public_replacement_dependency(
+    tmp_path: Path, boundary: str, origin: str, retry: str,
+) -> None:
+    from scripts import install as module
+    repo = seed_repository(tmp_path / "repo")
+    home, state = tmp_path / "codex", tmp_path / "state"
+    if origin == "receipt":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+    elif origin == "pending":
+        with mock.patch.object(module, "_write_codex_receipt", side_effect=SystemExit(73)), pytest.raises(SystemExit):
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+    pid = os.fork()
+    if pid == 0:
+        exchange, unlink = module._renameat_exchange, os.unlink
+        def exchanged(source_fd, source, target_fd, target):
+            exchange(source_fd, source, target_fd, target)
+            if boundary == "exchange" and source in {f"{name}.toml" for name in PROFILE_NAMES}:
+                os._exit(73)
+        def unlinked(path, *args, **kwargs):
+            unlink(path, *args, **kwargs)
+            if boundary == "private-removed" and str(path).endswith(".retire") and str(path).startswith(".expskill-"):
+                os._exit(73)
+        with mock.patch.object(module, "_renameat_exchange", exchanged), mock.patch.object(module.os, "unlink", unlinked):
+            if origin == "failed":
+                with mock.patch.object(module, "_write_codex_receipt", side_effect=InstallError("receipt failed")):
+                    install(repo, home, state, FakeRunner([]), agents_only=True)
+            else:
+                uninstall(repo, home, state, FakeRunner([]), agents_only=True)
+        os._exit(74)
+    wait_for_crashed_child(pid)
+    journal_path = module._codex_install_journal_path(state)
+    evidence_path = receipt_path(state) if origin == "receipt" else journal_path
+    entries = json.loads(evidence_path.read_text())["links"]
+    entry = next(item for item in entries if not Path(item["destination"]).is_symlink())
+    destination, source = Path(entry["destination"]), Path(entry["source"])
+    if os.path.lexists(destination):
+        destination.unlink()
+    destination.symlink_to(source)
+    replacement = destination.lstat()
+    assert replacement.st_ino != entry["destination_ino"]
+    if retry == "install":
+        install(repo, home, state, FakeRunner([]), agents_only=True)
+        evidence_path = receipt_path(state)
+    for _ in range(2):
+        with pytest.raises(InstallError, match="depends|ownership changed"):
+            uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        assert destination.lstat().st_ino == replacement.st_ino
+        assert os.readlink(destination) == str(source)
+        assert source.is_file()
+        retained = next(item for item in json.loads(evidence_path.read_text())["links"] if item["destination"] == str(destination))
+        for key in ("source", "destination", "destination_dev", "destination_ino", "link_anchor"):
+            assert retained[key] == entry[key]
+    destination.unlink()
+    uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+    assert not receipt_path(state).exists()
+    assert not journal_path.exists()
+    assert not managed_repository(repo).exists()
+    assert list(destination.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("retry", ["uninstall", "install"])
+@pytest.mark.parametrize("reuse", [False, True])
+def test_frozen_migration_missing_anchor_never_reconstructs_ownership(retry: str, reuse: bool) -> None:
+    from scripts import install as module
+    # The deterministic case needs no replacement: even a matching public inode
+    # cannot prove a missing anchor. The disk case actually frees and reuses it.
+    with tempfile.TemporaryDirectory(prefix="expskill-migration-", dir="/var/tmp" if reuse else None) as temporary:
+        root = Path(temporary)
+        repo = seed_repository(root / "repo")
+        home, state = root / "codex", root / "state"
+        InstallerTests()._install_base_receipt(repo, home, state)
+        pid = os.fork()
+        if pid == 0:
+            write = module._write_codex_receipt
+            def checkpoint(path, receipt, **kwargs):
+                write(path, receipt, **kwargs)
+                if kwargs.get("pending_link_migration"):
+                    os._exit(73)
+            with mock.patch.object(module, "_write_codex_receipt", checkpoint):
+                uninstall(repo, home, state, FakeRunner([]), agents_only=True)
+            os._exit(74)
+        wait_for_crashed_child(pid)
+        frozen = load_receipt(state)["links"]
+        entry = frozen[0]
+        destination, source = Path(entry["destination"]), Path(entry["source"])
+        original = destination.lstat()
+        assert original.st_nlink == 1
+        assert not os.path.lexists(entry["link_anchor"])
+        if reuse:
+            destination.unlink()
+            for _ in range(10000):
+                destination.symlink_to(source)
+                if destination.lstat().st_ino == original.st_ino:
+                    break
+                destination.unlink()
+            else:
+                pytest.skip("disk filesystem did not reuse the freed symlink inode")
+            assert destination.lstat().st_ctime_ns != original.st_ctime_ns
+        replacement = destination.lstat()
+        if retry == "install":
+            install(repo, home, state, FakeRunner([]), agents_only=True)
+            assert load_receipt(state)["links"] == frozen
+        for _ in range(2):
+            with pytest.raises(InstallError, match="unproven.*depends"):
+                uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+            assert destination.lstat().st_ino == replacement.st_ino
+            assert os.readlink(destination) == str(source)
+            assert source.is_file()
+            assert load_receipt(state)["links"] == frozen
+            assert all(not os.path.lexists(item["link_anchor"]) for item in frozen)
+        for item in frozen:
+            Path(item["destination"]).unlink()
+        uninstall(repo, home, state, FakeRunner([plugin_list_response(), marketplace_list_response()]))
+        assert not receipt_path(state).exists()
+        assert not managed_repository(repo).exists()
 
 
 if __name__ == "__main__":
