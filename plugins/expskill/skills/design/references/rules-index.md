@@ -1,14 +1,14 @@
 # UI rules index
 
-Read this index before choosing references. Use the loading strategy below, then revisit it after the first isolated render because new behavior or states may reveal another category.
+Read this index before choosing references. Revisit it after the first isolated render, because new behavior or states may reveal another category.
 
 ## Loading strategy
 
-- **Narrow component:** when the work has one bounded responsibility and a small concern set, selectively load the category references that materially apply. Load another category as soon as the render exposes its trigger.
-- **Complex composite:** when the work combines interacting regions, multiple behavior modes, state families, dense or structured data, breakpoint composition, or several dependent components, load the complete category catalog. Cross-category failures are easy to miss when the UI is judged one concern at a time.
-- **Uncertain boundary:** load the broader relevant set. Reading a rule does not activate it. Its applicability still depends on the project, platform, confirmed intent, and stated trigger.
+- **Narrow component:** one bounded responsibility and a small concern set. Selectively load the category references that materially apply, load another category as soon as the render exposes its trigger.
+- **Complex composite:** interacting regions, multiple behavior modes, state families, dense or structured data, breakpoint composition, or several dependent components. Load the complete category catalog, cross-category failures are easy to miss one concern at a time.
+- **Uncertain boundary:** load the broader relevant set. Reading a rule does not activate it, applicability still depends on the project, platform, confirmed intent, and stated trigger.
 
-This strategy changes evidence coverage, not authority. Existing project convention wins over a heuristic, and activated normative obligations cannot be silently discarded.
+This strategy changes evidence coverage, not authority. Project convention wins over a heuristic, and activated normative obligations cannot be silently discarded.
 
 ## Precedence
 
@@ -45,11 +45,11 @@ Never import a public system's exact values merely because its guidance is reput
 
 ## Source labels used by the drafts
 
-- **Activated norm:** a normative requirement only when its documented platform, conformance level, trigger, and exceptions apply.
+- **Activated norm:** binding only when platform, level, trigger, and exceptions hold.
 - **Project convention:** evidence from the current repository or an explicitly adopted design system.
-- **Platform convention:** official guidance for the named platform. Never silently translated between CSS px, pt, dp, or another unit.
-- **Conditional constraint:** a relationship that becomes binding only when its prerequisites hold.
-- **Heuristic:** a useful default that project evidence or rendered evidence may reject.
+- **Platform convention:** official guidance for the named platform. Never silently translate units.
+- **Conditional constraint:** binding only when its prerequisites hold.
+- **Heuristic:** a useful default that project or rendered evidence may reject.
 
 ## Rule loading is not a receipt
 
