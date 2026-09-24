@@ -349,10 +349,10 @@ class BrainstormContractTests(unittest.TestCase):
             "use immediate capacity-limited waves when fewer slots are available",
             "do no synthesis, technique work, or unrelated work between capacity-limited waves",
             "never expose one lane's prompt or findings to another lane",
-            "a lane fails after a tool error or timeout",
-            "a lane fails when it finds no relevant credible evidence",
-            "a lane fails when it omits direct source links",
-            "a lane fails when it remains outside its bounded question after one corrective prompt",
+            "a lane fails on a tool error or timeout",
+            "on no relevant credible evidence",
+            "on missing direct source links",
+            "on staying outside its bounded question after one corrective prompt",
             "retry a failed lane once",
             "after a second failure, stop and ask the user to choose",
             "retry differently",
@@ -368,7 +368,6 @@ class BrainstormContractTests(unittest.TestCase):
         boundaries = _markdown_section(self.contents, "## Boundaries and recovery").lower()
         for clause in (
             "never ask the user for information the agent can safely discover",
-            "ask one focused question per turn only for user-owned information",
         ):
             self.assertIn(clause, understanding)
         for clause in (
@@ -382,10 +381,11 @@ class BrainstormContractTests(unittest.TestCase):
     def test_entrypoint_is_read_only_standalone_and_not_a_router(self) -> None:
         section = _markdown_section(self.contents, "## Boundaries and recovery").lower()
         for clause in (
-            "this skill is permanently read-only: never create, edit, or delete files",
+            "this skill is read-only except for one permitted write",
+            "never create, edit, or delete any other file",
             "never open or invoke another product skill",
             "never select or recommend a downstream skill",
-            "the concept brief remains in the conversation",
+            "the concept brief is the canonical decision record",
         ):
             self.assertIn(clause, section)
         for token in FORBIDDEN_ROUTING_TOKENS:
