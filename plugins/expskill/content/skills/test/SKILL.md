@@ -77,7 +77,7 @@ file-change action whose target is a product or application path.
 
 Ground the run before deciding its scope or outcome. Bind the canonical repository, current branch, exact head,
 accepted change boundary, relevant source and callers, state and effects, interfaces and consumers, dependencies,
-project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence.
+project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence. Consume available lifecycle artifacts, but never require ancestry for direct use.
 
 Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. It creates exactly one private run root and reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. It must run `git branch --show-current` inside the root bootstrap, never infer or assume the branch. It must print the complete sorted first-party inventory before file contents and print every bounded first-party text file when the repository fits the bootstrap output, it prints the contents, not merely their names or search matches. Use its returned root path byte-for-byte. Every immediate `.test-evidence` child must come from one successful bootstrap, never create a sibling or manually chmod the sealed parent.
 Exclude only the already-loaded `.agents/skills/test/**` support package from printed contents, never use a directory-name allowlist for product files. If the bounded contents are skipped, follow direct first-party client, caller, command, and harness references, do not select files only by feature-name matches. Never guess a command or path: execute only a literal command discovered in repository evidence.
@@ -89,9 +89,11 @@ from revision and reachability evidence. Reserve at most one discovered read-onl
 as the terminal recorder action, it may attest surface identity but cannot become behavioral evidence. If exemption is
 not proven, load the complete quality catalog as the fourth grounding call, then make no further grounding call.
 
-The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
+The bootstrap and recorder safely remove group/other permissions from owned real evidence directories if creation defaults were broader than private. Between allocations the bootstrap seals the evidence parent `0500` while leaving the allocated root `0700`, only the bootstrap may temporarily reopen that parent for another legitimate root.
 
-Discover repository-local facts autonomously and ask only for an unavailable credential, consequential authority, destructive effect, or genuinely subjective oracle that accepted behavior and product evidence cannot answer. Never ask a discoverable question.
+Discover repository-local facts autonomously. Ask only for an unavailable credential,
+consequential authority, destructive effect, or genuinely subjective oracle that accepted
+behavior and product evidence cannot answer. Never ask a discoverable question.
 
 After grounding, Test alone decides `EXEMPT`. Exact-revision evidence must prove the change
 cannot affect runtime behavior, interfaces, configuration, dependencies, schemas, data,
@@ -157,15 +159,20 @@ or equivalent public surface.
 Declare a compact charter containing the exact target and head, accepted and
 negative behavior, active rules, environment and data, permitted effects,
 checks and journeys, exploratory mission, oracle, evidence, teardown, and stop
-conditions. Use an isolated, resettable, non-production environment and the minimum synthetic data, never use customer or production data.
+conditions. Use an isolated, resettable, non-production environment and the
+minimum synthetic data, never use customer or production data.
 
 ## Execute and explore
 
+Run focused integration or end-to-end checks and repository-required suites.
 After a prerequisite failure, stop dependent checks to avoid cascade noise, but continue independent safe checks when they can add useful evidence.
 A charter-predeclared reversible local prerequisite recovery is a closed transition: when its probe returns the exact expected unavailable outcome, treat it as a planned branch, not an anomaly or stop, the next tool call is exactly the frozen literal recovery command.
 Allow no commentary, recording, reread, replanning, or deadline deliberation between the probe and recovery. This ordered prerequisite segment of the first dependency wave does not add a third wave, after recovery returns, resume batching and record both actions together.
 Give every material product or suite command its own literal direct command tool call, never hide several commands inside one shell script. The tool-call command string is exactly the discovered product argv: no shell prefix or suffix, pipeline, redirection, `tee`, or output-capture wrapper. Copy its returned stdout and stderr into artifacts only in the following file-change batch.
-Before any artifact or ledger-batch write, enforce the authoring contract's `capture_repair` map below: unusable output is reobserved by exact literal replay, never reconstructed from expectation, and a second unusable observation forces `BLOCKED`.
+Before any artifact or ledger-batch write, apply an observation-capture gate to every returned direct command. A zero exit code never substitutes for the output required by its oracle. Empty, missing, truncated, or unparseable output supplies no product outcome. Never reconstruct output from source, scenario data, expected text, a sibling call, or a later command. Capture repair is mandatory for `PASS`, `FAIL`, and blocker proof alike. When replay is safe and semantically valid, the next command action repeats the exact literal argv once, no commentary, file change, or other command may intervene. After all already-started siblings return from a parallel wave, the next tool action is one repair-only parallel batch containing one literal replay for every unusable sibling and no usable sibling. Never append a ledger batch or enter terminal preparation while any required output remains unusable.
+Immediately before every file-change action, rescan every required raw tool result. If even one has zero returned bytes or is otherwise unusable, the file-change action is forbidden, its exact replay is the sole legal next command action, or the repair-only replay batch is the sole legal next action after parallel siblings. Exit code zero does not change this transition. Never fill an artifact or ledger `actual` with what the command normally prints.
+Capture repair precedes any revision or HEAD-drift check, as well as commentary and file changes.
+Each capture replay is a physical transport replay of the same selected semantic action: it does not add a ledger entry or consume another semantic-action slot. Bind only bytes actually returned by that command. If replay is unsafe or a second observation is still unusable, record `BLOCKED`, do not claim or predeclare `PASS`.
 Every selected check and journey, including bounded exploration, must appear at least once as its own literal direct command. Use at most two dependency waves, issue all independent charter-selected ordinary calls, changed, neighbour, canary, exploration, and required-suite calls, together before any ledger write or artifact write. Do not serialize a wave by recording one result before launching the next independent call.
 Before the first observation or ledger file write, require one completed direct command result for every ordinary ledger candidate. Maintain a one-to-one in-memory mapping from action ID to exact argv and returned bytes. Repository source or an expected scenario cannot stand in for execution. If any candidate lacks its direct result, the file-change action is forbidden, execute the missing literal command first.
 After all return, preserve separate outputs and append all completed ledger entries in one file-change action to private `ledger-batch.json` with schema `test-ledger-batch.v1`, then invoke `append_ledger.py` with the run root. Never edit `ledger.json` directly. The helper validates every complete entry before publication, derives every entry HEAD from the frozen charter, appends atomically, and consumes the batch. A rejected batch leaves the ledger byte-for-byte unchanged, correct only the non-authoritative batch and retry.
@@ -178,8 +185,9 @@ variation through real product paths and independent state probes. Observe the
 relevant navigation, rendering, messages, console, network, persistence, and
 recovery. Do not trust a success message or screenshot alone.
 
-Give exploration a compact mission chosen from discovered risk, evidence budget, teardown, and stop
-condition within the selected rings. Promote an anomaly to a finding only after safe reproduction and an explicit
+Give exploration a compact mission, evidence budget, teardown, and stop
+condition within the selected rings. Choose the variation from discovered risk.
+Promote an anomaly to a finding only after safe reproduction and an explicit
 expected-versus-actual oracle.
 
 ## Findings and ownership
@@ -227,7 +235,9 @@ hide the diagnostic rerun inside the terminal handoff.
 
 Recover ordinary local environment problems autonomously. Environmental
 evidence may supersede a proven environment failure only after the environment
-is corrected and the complete affected scope passes on the same head. Missing authority, credentials, dependencies, a reliable oracle, or an unavailable external system produces `BLOCKED`, never weaken the scope.
+is corrected and the complete affected scope passes on the same head. Missing
+authority, credentials, dependencies, a reliable oracle, or an unavailable
+external system produces `BLOCKED`, never weaken the scope.
 
 Relevant head drift invalidates affected evidence. Rebind the scope and
 environment, rerun every invalidated check and journey, and retain only evidence
@@ -291,10 +301,17 @@ identity field. If freezing fails, correct only the preparation before product e
 python3 .agents/skills/test/scripts/freeze_charter.py --root .test-evidence/<run-id>
 ```
 
-Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes without stealing evidence time. Reserve at least 180 seconds of response margin, at least 600 seconds
-total.
+Before execution, reserve 360 seconds for conditional candidate preparation, the closed
+60-second terminal sprint, and at least 180 seconds of response margin, at least 600 seconds
+total. If no deadline is exposed, assume a 780-second usable budget from initial root
+allocation. Capture `draft.started_at` during initial root allocation with its absolute cutoff.
+Enter candidate preparation as soon as 600 seconds remain or immediately after the ordinary action waves,
+whichever happens first, start no optional work then. Finish the candidate with 240 seconds left, and do not
+invoke terminal handoff with fewer than 240 seconds remaining. Recheck that reserve before handoff.
+Use available no-write/no-cache modes for probes and the smallest scope, never steal evidence time.
 
 Author from this complete contract, do not inspect the helper source to rediscover it.
+Paths use `[]` for array items. All named objects are closed.
 
 ```json
 {
@@ -345,7 +362,7 @@ Immediately after each sequential action or parallel batch completes, append all
 python3 .agents/skills/test/scripts/append_ledger.py --root .test-evidence/<run-id>
 ```
 
-Each candidate entry carries the contract's `ledger_appender` caller fields, omit `head`. The appender validates before publication, derives `head` from the frozen charter, and consumes the batch. Never edit `ledger.json` directly. Never rewrite or remove a completed entry after appender publication. The conditionally predeclared final entry below likewise reaches the ledger only through the appender, but remains non-authoritative until its predicate matches. Use `test-action-ledger.v2`, it does not contain `charter_digest`. Head and charter binding are derived mechanically from the frozen charter, never calculate or copy identity.
+Each candidate entry has stable ID, role, ring, action/path, expected/actual, status, oracle IDs, and artifact IDs, omit `head`. The appender rejects incomplete entries before publication, derives `head` from the frozen charter, atomically appends, and consumes the batch. Never edit `ledger.json` directly. Never rewrite or remove a completed entry after appender publication. The conditionally predeclared final entry below likewise reaches the ledger only through the appender, but remains non-authoritative until its predicate matches. Use `test-action-ledger.v2`, it does not contain `charter_digest`. Head and charter binding are derived mechanically from the frozen charter, never calculate or copy identity.
 
 Finish evidence authoring before the final product action. Choose an exact observable
 proof predicate with a closed outcome, then make the final action one self-recording
@@ -367,6 +384,8 @@ Put one complete, marker-free conditional candidate in `draft_candidate`, omit o
 then declare disposition, active conditions, and grouped assessments covering every active rule with retained ledger IDs. `always` is implicit, if redundantly listed, the composer treats it as a no-op. For `exempt`, both rule arrays are empty. The composer expands catalog order.
 Write `draft-final-delta.json` as exactly `{"schema_version":"test-draft-final-delta.v2","resolutions":[]}`.
 Do not invent marker IDs or split known values across files. Both inputs are private, never evidence.
+Prefer `path: []` for a `check`, a non-empty check path is only an ignored source
+anchor. Every `journey` still requires a non-empty consumer path.
 
 After the last ordinary action, emit no update. In one file-change action write its artifacts, the conditional final `ledger-batch.json`, preparation, delta, and closed `test-final-action.v2` `final-action.json`, declare its observation and metadata artifacts but no branch or HEAD. Invoke the appender, then compose immediately. Run no standalone time, status, integrity, or artifact-listing probe, the recorder derives branch/HEAD and captures integrity and teardown.
 
@@ -471,8 +490,9 @@ recommend another product skill.
 - `EXEMPT`: exact-revision evidence proves the change is behaviorally
   negligible under the strict exemption boundary.
 
-Report the exercised behavior, product path, expected and observed outcome,
-limitations, artifacts, and receipt-bound identity.
+Report the implemented behavior exercised, product path, expected and observed
+outcome, unresolved limitations, retained artifacts, and receipt-bound identity.
 Keep the authored summary revision-neutral, never transcribe a HEAD or branch into it.
 If response evidence names the exact revision, copy `payload.receipt.head` byte-for-byte.
-Do not claim broader conformance than the selected scope proves.
+Do not claim broad accessibility, security, visual, or product conformance from
+a narrower selected scope.
