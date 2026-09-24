@@ -130,6 +130,12 @@ permission overlays, package metadata, and JavaScript plugins. The renderers
 and builders combine each adapter with `content/` into a complete host
 package. Generated packages stay outside the checkout.
 
+`plugins/expskill/hermes` contains Hermes-only mechanics: the Agent Plugins
+v1 `plugin.json` manifest and the role/sandbox/model-policy overlay in
+`agents.json`. The Hermes renderer and builder combine them with `content/`
+into a package installable with `hermes plugins install`. There is no
+`install.py` target for Hermes.
+
 ## Skills
 
 Invoke a skill directly when you know what you want:
@@ -247,6 +253,7 @@ python3 scripts/validate.py
 python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
 python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_install.py tests/test_opencode_runtime.py
+python3 -m pytest -q tests/test_hermes_contract.py tests/test_hermes_package.py
 ```
 
 The networked integration suite obtains pinned Codex `0.153.4` and opencode
@@ -306,6 +313,31 @@ npm pack --dry-run --json "$artifact_root"
 ```
 
 See `plugins/expskill/content/docs/opencode.md` for the source, renderer, builder,
+and plugin details.
+
+## Hermes package
+
+The Hermes source lives under `plugins/expskill`:
+shared skills, agent profiles, and package assets are there, while the native
+Agent Plugins v1 manifest and agent overlay are under
+`plugins/expskill/hermes`. The pure renderer in
+`scripts/render_hermes.py` derives agent Markdown from the canonical bodies.
+The explicit-output builder in
+`scripts/build_hermes_package.py` materializes a self-contained plugin
+artifact with regular files and sorted SHA-256 provenance.
+
+Build into a new directory, then validate that artifact:
+
+```bash
+artifact_root="$(mktemp -d)/hermes-expskill"
+python3 scripts/build_hermes_package.py "$artifact_root"
+hermes plugins validate "$artifact_root"
+```
+
+Install it with the Hermes CLI (`hermes plugins install <path-or-git-url>`).
+There is no `install.py` target for Hermes.
+
+See `plugins/expskill/content/docs/hermes.md` for the source, renderer, builder,
 and plugin details.
 
 The focused contract and runtime suites cover the currently implemented skill,

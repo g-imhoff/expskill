@@ -53,10 +53,10 @@ step, and user assertions waive none. No other project-facing action is permitte
    ```zsh
    set -e
    for instruction_file in \
-     '<exact-root>/AGENTS.md' \
-     '<exact-root>/PROJECT.md' \
-     '<exact-applicable-direct-ancestor>/AGENTS.md' \
-     '<exact-applicable-direct-ancestor>/PROJECT.md'
+     '[exact-root]/AGENTS.md' \
+     '[exact-root]/PROJECT.md' \
+     '[exact-applicable-direct-ancestor]/AGENTS.md' \
+     '[exact-applicable-direct-ancestor]/PROJECT.md'
    do
      if [[ -e "$instruction_file" || -L "$instruction_file" ]]
      then
