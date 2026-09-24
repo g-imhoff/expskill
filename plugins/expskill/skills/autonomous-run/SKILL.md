@@ -15,7 +15,7 @@ Run only on explicit `$autonomous-run` invocation with one idea and one reposito
 
 Launch one initial provider-CLI conversation in the target repository, using the CLI already in use. Give it the idea, scope, constraints, and draft-PR destination. Ask it to follow [the `$use-expskill` workflow](../use-expskill/SKILL.md).
 
-Choose the starter for the CLI already in use and replace the placeholders. Run it from the target repository. Single quotes preserve the literal `$use-expskill` name.
+Choose the starter for the CLI already in use and replace the placeholders. Single quotes preserve the literal `$use-expskill` name.
 
 - `codex exec 'Use $use-expskill to develop <idea> into a review-ready draft PR. Scope and constraints: <scope and constraints>. PR destination: <destination>.'`
 - `claude -p 'Use $use-expskill to develop <idea> into a review-ready draft PR. Scope and constraints: <scope and constraints>. PR destination: <destination>.'`
@@ -35,7 +35,7 @@ Evaluate the results against the human's intent and request revisions when they 
 
 ## Deliver the draft PR
 
-The requested result is a review-ready draft PR. Communicate that destination when starting the workflow and follow its requirements through delivery. Authorize pushing only the non-protected feature branch and opening the PR as a draft. Never push the protected branch. Never approve, merge, enable auto-merge, or enter a merge queue. The human reviews and merges.
+The requested result is a review-ready draft PR. Follow its requirements through delivery. Authorize pushing only the non-protected feature branch and opening the PR as a draft. Never push the protected branch. Never approve, merge, enable auto-merge, or enter a merge queue. The human reviews and merges.
 
 Ask for a PR description that explains the goal, delegated AI decisions, rejected alternatives and their evidence, checks with results, retained risks, and anything still unproven. Include links to supporting records and the head SHA so the human can retrace the run.
 
