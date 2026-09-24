@@ -21,6 +21,8 @@ sys.dont_write_bytecode = True
 try:
     from scripts.build_codex_marketplace import BuildError as CodexBuildError
     from scripts.build_codex_marketplace import build_codex_marketplace
+    from scripts.build_hermes_package import BuildError as HermesBuildError
+    from scripts.build_hermes_package import build_hermes_package
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
     from scripts.build_opencode_package import build_opencode_package
     from scripts.artifact_contract import (
@@ -31,6 +33,8 @@ try:
         COPY_FILES,
         COPY_LICENSES,
         COPY_TREES,
+        HERMES_PLATFORM_FILES,
+        HERMES_PROVENANCE_SCHEMA_VERSION,
         OPENCODE_README_SOURCE,
         PLATFORM_FILES,
         PLATFORM_PLUGIN_DIRECTORY,
@@ -39,7 +43,11 @@ try:
         PROVENANCE_SCHEMA_VERSION,
         artifact_output_relative,
         canonical_provenance,
+        hermes_provenance,
     )
+    from scripts.render_hermes import RenderError as HermesRenderError
+    from scripts.render_hermes import render_agents as render_hermes_agents
+    from scripts.render_hermes import render_all as render_hermes_all
     from scripts.render_opencode import RenderError as AgentSyncError
     from scripts.render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -51,6 +59,8 @@ try:
 except ModuleNotFoundError:
     from build_codex_marketplace import BuildError as CodexBuildError
     from build_codex_marketplace import build_codex_marketplace
+    from build_hermes_package import BuildError as HermesBuildError
+    from build_hermes_package import build_hermes_package
     from build_opencode_package import BuildError as OpencodeBuildError
     from build_opencode_package import build_opencode_package
     from artifact_contract import (
@@ -61,6 +71,8 @@ except ModuleNotFoundError:
         COPY_FILES,
         COPY_LICENSES,
         COPY_TREES,
+        HERMES_PLATFORM_FILES,
+        HERMES_PROVENANCE_SCHEMA_VERSION,
         OPENCODE_README_SOURCE,
         PLATFORM_FILES,
         PLATFORM_PLUGIN_DIRECTORY,
@@ -69,7 +81,11 @@ except ModuleNotFoundError:
         PROVENANCE_SCHEMA_VERSION,
         artifact_output_relative,
         canonical_provenance,
+        hermes_provenance,
     )
+    from render_hermes import RenderError as HermesRenderError
+    from render_hermes import render_agents as render_hermes_agents
+    from render_hermes import render_all as render_hermes_all
     from render_opencode import RenderError as AgentSyncError
     from render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -1034,7 +1050,11 @@ def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_resu
 
 
 def validate_repository(
-    root: Path, *, include_opencode: bool = True, include_main: bool = True
+    root: Path,
+    *,
+    include_opencode: bool = True,
+    include_main: bool = True,
+    include_hermes: bool = True,
 ) -> tuple[str, ...]:
     repository_root = Path(root).expanduser()
     try:
@@ -1075,6 +1095,8 @@ def validate_repository(
         _validate_no_legacy_project_identity(repository_root, errors)
     if include_opencode:
         _validate_opencode_package(repository_root, errors)
+    if include_hermes:
+        _validate_hermes_package(repository_root, errors)
     return tuple(errors)
 
 
@@ -4149,6 +4171,463 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
                 errors.append(f"opencode execution-policy plugin is missing required marker {marker!r}")
 
 
+
+HERMES_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+HERMES_EXPECTED_AGENTS = (
+    "expskill-designer",
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-planner",
+    "expskill-review",
+    "expskill-spec",
+    "expskill-test-engineer",
+)
+HERMES_AGENT_FACETS = {
+    "expskill-designer": ("designer", "workspace-write"),
+    "expskill-explorer": ("explorer", "read-only"),
+    "expskill-implementer": ("implementer", "workspace-write"),
+    "expskill-planner": ("planner", "workspace-write"),
+    "expskill-review": ("review", "read-only"),
+    "expskill-spec": ("spec", "read-only"),
+    "expskill-test-engineer": ("test-engineer", "read-only"),
+}
+HERMES_MODEL_POLICY = "active-hermes-provider"
+
+
+def _validate_hermes_root(package_root: Path, errors: list[str]) -> bool:
+    if package_root.is_symlink():
+        errors.append(f"hermes package root must not be a symlink: {package_root}")
+        return False
+    metadata = _lstat(package_root)
+    if metadata is None:
+        errors.append(f"hermes package directory is missing: {package_root}")
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"hermes package root must be a directory: {package_root}")
+        return False
+    try:
+        resolved = package_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        errors.append(f"hermes package root cannot be resolved: {package_root}: {error}")
+        return False
+    if resolved != package_root:
+        errors.append(f"hermes package root resolves outside its lexical path: {package_root}")
+        return False
+    return True
+
+
+def _validate_hermes_platform_source(package_root: Path, errors: list[str]) -> None:
+    """Reject any checked-in platform entry outside the exact source roster."""
+
+    expected = set(HERMES_PLATFORM_FILES)
+    try:
+        entries = {path.name: path for path in package_root.iterdir()}
+    except OSError as error:
+        errors.append(f"hermes platform source could not be listed: {error}")
+        return
+    unexpected = sorted(set(entries) - expected)
+    missing = sorted(expected - set(entries))
+    if unexpected:
+        errors.append(f"hermes platform source has unexpected entries: {unexpected!r}")
+    if missing:
+        errors.append(f"hermes platform source is missing entries: {missing!r}")
+    for name in HERMES_PLATFORM_FILES:
+        path = package_root / name
+        metadata = _lstat(path)
+        if metadata is None or not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            errors.append(f"hermes platform source file is not regular: {path}")
+
+
+def _validate_hermes_manifest(package_root: Path, errors: list[str]) -> None:
+    manifest_path = package_root / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        errors.append(f"hermes package manifest could not be read: {error}")
+        return
+    except json.JSONDecodeError as error:
+        errors.append(f"hermes package manifest is not valid JSON: {error.msg}")
+        return
+    if not isinstance(manifest, dict):
+        errors.append("hermes package manifest must contain a JSON object")
+        return
+    _reject_placeholders(manifest, "hermes plugin.json", errors)
+    if manifest.get("$schema") != HERMES_PLUGIN_SCHEMA:
+        errors.append("hermes package manifest declares an unsupported Agent Plugins schema")
+    if manifest.get("name") != PLUGIN_NAME:
+        errors.append(
+            f"hermes package name must be {PLUGIN_NAME!r}, got {manifest.get('name')!r}"
+        )
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        errors.append("hermes package version must be a non-empty string")
+    elif version != PLUGIN_VERSION:
+        errors.append(
+            "hermes package version must match the Codex base version "
+            f"{PLUGIN_VERSION!r}, got {version!r}"
+        )
+    description = manifest.get("description")
+    if not isinstance(description, str) or not description.strip():
+        errors.append("hermes package description must be a non-empty string")
+    if manifest.get("license") != "MIT":
+        errors.append("hermes package manifest license must be 'MIT'")
+
+
+def _validate_hermes_agent_spec(package_root: Path, errors: list[str]) -> None:
+    spec_path = package_root / "agents.json"
+    spec = _load_json_object(spec_path, "hermes agent spec", errors)
+    if spec is None:
+        return
+    if spec.get("schema_version") != "hermes-agents.v1":
+        errors.append("hermes agent spec schema_version must be 'hermes-agents.v1'")
+    if set(spec) != {
+        "_comment",
+        "schema_version",
+        "model_policy",
+        "runtime_paragraph",
+        "agents",
+    }:
+        errors.append("hermes agent spec must contain exactly the overlay keys")
+        return
+    if spec.get("model_policy") != HERMES_MODEL_POLICY:
+        errors.append(f"hermes agent spec model_policy must be {HERMES_MODEL_POLICY!r}")
+    runtime = spec.get("runtime_paragraph")
+    if not isinstance(runtime, str) or not runtime.strip():
+        errors.append("hermes agent spec must declare a non-empty runtime_paragraph")
+    agents = spec.get("agents")
+    if not isinstance(agents, dict) or set(agents) != set(HERMES_EXPECTED_AGENTS):
+        errors.append("hermes agent spec must contain exactly the seven Hermes agents")
+        return
+    for name in HERMES_EXPECTED_AGENTS:
+        entry = agents.get(name)
+        expected_role, expected_sandbox = HERMES_AGENT_FACETS[name]
+        if not isinstance(entry, dict) or set(entry) != {"role", "sandbox"}:
+            errors.append(f"hermes agent overlay entry {name!r} must contain role and sandbox")
+            continue
+        if entry.get("role") != expected_role:
+            errors.append(f"hermes agent {name!r} role must be {expected_role!r}")
+        if entry.get("sandbox") != expected_sandbox:
+            errors.append(f"hermes agent {name!r} sandbox must be {expected_sandbox!r}")
+
+
+def _hermes_source_inventory(root: Path) -> list[tuple[str, Path]]:
+    """Walk the Hermes contract roster independently of the package builder."""
+
+    package_root = root / "plugins" / "expskill"
+    paths: list[tuple[str, Path]] = []
+
+    def add(path: Path) -> None:
+        relative = path.relative_to(root).as_posix()
+        metadata = os.lstat(path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"source is not a regular file: {path}")
+        paths.append((relative, path))
+
+    def walk(directory: Path) -> None:
+        metadata = os.lstat(directory)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise OSError(f"source directory is not regular: {directory}")
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            child_metadata = os.lstat(child)
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise OSError(f"source entry must not be a symlink: {child}")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                walk(child)
+            elif stat.S_ISREG(child_metadata.st_mode):
+                relative = child.relative_to(directory)
+                if "__pycache__" not in relative.parts and child.suffix not in {".pyc", ".pyo"}:
+                    add(child)
+            else:
+                raise OSError(f"source entry is not regular: {child}")
+
+    for tree in COPY_TREES:
+        walk(package_root / tree)
+    for relative in COPY_FILES:
+        add(package_root / relative)
+    walk(package_root / COPY_LICENSES)
+    walk(package_root / "content" / "agents")
+    add(package_root / "content" / "agents.json")
+    platform_root = package_root / "hermes"
+    for name in HERMES_PLATFORM_FILES:
+        add(platform_root / name)
+    add(root / "scripts/artifact_contract.py")
+    add(root / "scripts/build_hermes_package.py")
+    add(root / "scripts/render_hermes.py")
+    return sorted(paths, key=lambda item: item[0])
+
+
+def _hermes_artifact_inventory(
+    artifact: Path,
+) -> tuple[dict[str, os.stat_result], list[str]]:
+    """Enumerate every Hermes artifact entry without following symlinks."""
+
+    entries: dict[str, os.stat_result] = {}
+    errors: list[str] = []
+    try:
+        root_metadata = os.lstat(artifact)
+    except OSError as error:
+        return {}, [f"hermes artifact root cannot be inspected: {error}"]
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        return {}, [f"hermes artifact root must be a regular directory: {artifact}"]
+    pending = [artifact]
+    while pending:
+        current = pending.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError as error:
+            errors.append(f"hermes artifact directory cannot be listed: {current}: {error}")
+            continue
+        for child in children:
+            relative = child.relative_to(artifact).as_posix()
+            try:
+                metadata = os.lstat(child)
+            except OSError as error:
+                errors.append(f"hermes artifact entry cannot be inspected: {child}: {error}")
+                continue
+            entries[relative] = metadata
+            if stat.S_ISLNK(metadata.st_mode):
+                errors.append(f"hermes artifact entry must not be a symlink: {child}")
+            elif stat.S_ISDIR(metadata.st_mode):
+                pending.append(child)
+            elif not stat.S_ISREG(metadata.st_mode):
+                errors.append(f"hermes artifact entry must be regular: {child}")
+    return entries, errors
+
+
+def _validate_built_hermes_artifact(
+    repository_root: Path,
+    artifact: Path,
+    rendered: dict[str, str],
+    errors: list[str],
+) -> None:
+    """Validate the exact built Hermes bytes, provenance, inventory, and metadata."""
+
+    expected_files: dict[str, bytes] = {}
+    package_root = repository_root / "plugins" / "expskill"
+    platform_root = package_root / "hermes"
+    try:
+        for name in HERMES_PLATFORM_FILES:
+            expected_files[name] = (platform_root / name).read_bytes()
+        for relative, source in _hermes_source_inventory(repository_root):
+            output_relative = artifact_output_relative(relative)
+            if output_relative is not None:
+                expected_files[output_relative] = source.read_bytes()
+        expected_files.update(
+            {relative: contents.encode("utf-8") for relative, contents in rendered.items()}
+        )
+        expected_inputs = [
+            {"path": relative, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+            for relative, source in _hermes_source_inventory(repository_root)
+        ]
+    except (OSError, HermesBuildError, RuntimeError) as error:
+        errors.append(f"hermes artifact inputs could not be inventoried: {error}")
+        return
+
+    provenance_path = artifact / "provenance.json"
+    provenance: object | None = None
+    expected_files["provenance.json"] = hermes_provenance(expected_inputs)
+    try:
+        provenance = json.loads(provenance_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(f"hermes artifact provenance is invalid: {error}")
+    if not isinstance(provenance, dict):
+        errors.append("hermes artifact provenance must be a JSON object")
+    else:
+        if set(provenance) != {"schema_version", "inputs"}:
+            errors.append("hermes artifact provenance must contain exactly schema_version and inputs")
+        if provenance.get("schema_version") != HERMES_PROVENANCE_SCHEMA_VERSION:
+            errors.append(
+                "hermes artifact provenance schema_version must be "
+                f"{HERMES_PROVENANCE_SCHEMA_VERSION!r}"
+            )
+        inputs = provenance.get("inputs")
+        if not isinstance(inputs, list):
+            errors.append("hermes artifact provenance inputs must be a list")
+        else:
+            normalized_inputs: list[dict[str, str]] = []
+            for index, entry in enumerate(inputs):
+                if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                    errors.append(f"hermes artifact provenance input {index} is malformed")
+                    continue
+                path = entry.get("path")
+                digest = entry.get("sha256")
+                if not isinstance(path, str) or not isinstance(digest, str):
+                    errors.append(f"hermes artifact provenance input {index} has invalid fields")
+                    continue
+                normalized_inputs.append({"path": path, "sha256": digest})
+            if [item["path"] for item in normalized_inputs] != sorted(
+                item["path"] for item in normalized_inputs
+            ):
+                errors.append("hermes artifact provenance paths must be sorted")
+            if len({item["path"] for item in normalized_inputs}) != len(normalized_inputs):
+                errors.append("hermes artifact provenance paths must be unique")
+            if normalized_inputs != expected_inputs:
+                errors.append("hermes artifact provenance digests do not match every expected input")
+    expected_paths: set[str] = set(expected_files)
+    expected_paths.add("provenance.json")
+    expected_entries = set(expected_paths)
+    for relative in expected_paths:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_entries.add(parent.as_posix())
+            parent = parent.parent
+    actual_entries, inventory_errors = _hermes_artifact_inventory(artifact)
+    errors.extend(inventory_errors)
+    try:
+        artifact_metadata = os.lstat(artifact)
+    except OSError as error:
+        artifact_metadata = None
+        errors.append(f"hermes artifact root cannot be read for metadata: {error}")
+    if artifact_metadata is not None:
+        if stat.S_IMODE(artifact_metadata.st_mode) != ARTIFACT_DIRECTORY_MODE:
+            errors.append("hermes artifact root has non-normalized mode")
+        if artifact_metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append("hermes artifact root has non-normalized mtime")
+    actual_paths = set(actual_entries)
+    for relative in sorted(actual_paths - expected_entries):
+        errors.append(f"hermes artifact contains unexpected entry: {relative}")
+    for relative in sorted(expected_entries - actual_paths):
+        errors.append(f"hermes artifact is missing entry: {relative}")
+    for relative, metadata in actual_entries.items():
+        if stat.S_ISDIR(metadata.st_mode):
+            expected_mode = ARTIFACT_DIRECTORY_MODE
+        elif stat.S_ISREG(metadata.st_mode):
+            expected_mode = ARTIFACT_FILE_MODE
+        else:
+            continue
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            errors.append(f"hermes artifact entry {relative} has non-normalized mode")
+        if metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append(f"hermes artifact entry {relative} has non-normalized mtime")
+    for relative, expected in expected_files.items():
+        path = artifact / relative
+        try:
+            actual = path.read_bytes()
+        except OSError as error:
+            errors.append(f"hermes artifact file {relative} could not be read: {error}")
+            continue
+        if actual != expected:
+            errors.append(f"hermes artifact file {relative} does not match its accepted bytes")
+
+
+def _validate_hermes_shared_skills(
+    canonical_root: Path,
+    artifact: Path,
+    errors: list[str],
+    skill_names: tuple[str, ...],
+) -> None:
+    skills_entry = artifact / "skills"
+    if not skills_entry.is_dir() or skills_entry.is_symlink():
+        errors.append(f"hermes shared skills entry is missing: {skills_entry}")
+        return
+    for name in skill_names:
+        label = f"hermes shared skill {name!r}"
+        canonical_skill = canonical_root / "content" / "skills" / name
+        if not canonical_skill.is_dir() or canonical_skill.is_symlink():
+            errors.append(f"{label} canonical skill is missing: {canonical_skill}")
+            continue
+        for source in sorted(canonical_skill.rglob("*")):
+            if source.is_dir():
+                continue
+            if "__pycache__" in source.parts or source.suffix in {".pyc", ".pyo"}:
+                continue
+            relative = source.relative_to(canonical_skill)
+            exposed = skills_entry / name / relative
+            try:
+                shared = source.read_bytes()
+            except OSError as error:
+                errors.append(f"{label} canonical file could not be read: {error}")
+                continue
+            try:
+                mirrored = exposed.read_bytes()
+            except OSError:
+                errors.append(f"{label} is missing: {exposed}")
+                continue
+            if mirrored != shared:
+                errors.append(f"{label} file {relative.as_posix()} is not the exact shared base")
+
+
+def _validate_hermes_agents(
+    repository_root: Path,
+    artifact: Path,
+    errors: list[str],
+) -> None:
+    agents_root = artifact / "agents"
+    if not agents_root.is_dir() or agents_root.is_symlink():
+        errors.append(f"hermes agents directory is missing: {agents_root}")
+        return
+    actual = {
+        path.name
+        for path in agents_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    expected = {f"{name}.md" for name in HERMES_EXPECTED_AGENTS}
+    for name in sorted(expected - actual):
+        errors.append(f"hermes agent {name!r} is missing")
+    for name in sorted(actual - expected):
+        errors.append(f"hermes unexpected agent entry {name!r}")
+    try:
+        rendered = render_hermes_agents(repository_root)
+    except HermesRenderError as error:
+        errors.append(f"hermes agents cannot be rendered from shared sources: {error}")
+        return
+    for name in HERMES_EXPECTED_AGENTS:
+        path = agents_root / f"{name}.md"
+        contents = _read_overlay_text(path, f"hermes agent {name!r}", errors)
+        if contents is None:
+            continue
+        if contents != rendered[name]:
+            errors.append(f"hermes agent {name!r} does not match the pure renderer")
+            continue
+        parsed = _parse_overlay_frontmatter(contents, f"hermes agent {name!r}", errors)
+        if parsed is None:
+            continue
+        scalars, _mappings, _block = parsed
+        if set(scalars) != {"name", "role", "sandbox", "model_policy"}:
+            errors.append(f"hermes agent {name!r} frontmatter keys must be exactly agent facets")
+            continue
+        expected_role, expected_sandbox = HERMES_AGENT_FACETS[name]
+        if scalars.get("name") != name:
+            errors.append(f"hermes agent {name!r} frontmatter name must match its file")
+        if scalars.get("role") != expected_role:
+            errors.append(f"hermes agent {name!r} frontmatter role must be {expected_role!r}")
+        if scalars.get("sandbox") != expected_sandbox:
+            errors.append(f"hermes agent {name!r} frontmatter sandbox must be {expected_sandbox!r}")
+        if scalars.get("model_policy") != HERMES_MODEL_POLICY:
+            errors.append(f"hermes agent {name!r} frontmatter model_policy must be {HERMES_MODEL_POLICY!r}")
+
+
+def _validate_hermes_package(repository_root: Path, errors: list[str]) -> None:
+    package_root = repository_root / "plugins" / "expskill" / "hermes"
+    if not _validate_hermes_root(package_root, errors):
+        return
+    _validate_hermes_platform_source(package_root, errors)
+    try:
+        skill_names = skill_inventory(repository_root)
+        rendered = render_hermes_all(repository_root)
+    except HermesRenderError as error:
+        errors.append(f"hermes sources cannot be rendered: {error}")
+        return
+
+    # Platform-owned files are checked in, while agents and shared trees are
+    # deliberately validated from a fresh temporary artifact.  Validation
+    # therefore exercises the same pure renderer and builder used by releases
+    # without mutating this checkout.
+    _validate_hermes_manifest(package_root, errors)
+    _validate_hermes_agent_spec(package_root, errors)
+    with tempfile.TemporaryDirectory(prefix="expskill-hermes-validate-") as temporary:
+        artifact = Path(temporary) / "artifact"
+        try:
+            build_hermes_package(repository_root, artifact)
+        except (HermesBuildError, OSError) as error:
+            errors.append(f"hermes artifact could not be built: {error}")
+            return
+        _validate_built_hermes_artifact(repository_root, artifact, rendered, errors)
+        _validate_hermes_shared_skills(
+            repository_root / "plugins" / "expskill", artifact, errors, skill_names
+        )
+        _validate_hermes_agents(repository_root, artifact, errors)
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the expskill repository contract.")
     parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])
@@ -4164,11 +4643,18 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help="validate the OpenCode package surface (default: enabled)",
     )
+    parser.add_argument(
+        "--include-hermes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the Hermes package surface (default: enabled)",
+    )
     args = parser.parse_args(argv)
     errors = validate_repository(
         args.root,
         include_main=args.include_main,
         include_opencode=args.include_opencode,
+        include_hermes=args.include_hermes,
     )
     if errors:
         for error in errors:
