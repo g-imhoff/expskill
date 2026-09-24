@@ -32,6 +32,20 @@ def hermes_cli() -> Path | None:
     return None
 
 
+def hermes_agent_runtime() -> tuple[Path, Path] | None:
+    """Return the Hermes venv python and agent tree used for loader tests."""
+
+    agent_dir = Path(os.environ.get("HERMES_AGENT_DIR", Path.home() / ".hermes" / "hermes-agent"))
+    python = agent_dir / "venv" / "bin" / "python"
+    loader = agent_dir / "hermes_cli" / "agent_plugins.py"
+    try:
+        if python.is_file() and os.access(python, os.X_OK) and loader.is_file():
+            return python, agent_dir
+    except OSError:
+        pass
+    return None
+
+
 class HermesPackageTests(unittest.TestCase):
     def build_artifact(self, root: Path) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temporary = tempfile.TemporaryDirectory()
@@ -137,6 +151,43 @@ class HermesPackageTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Validation passed", result.stdout + result.stderr)
+
+    def test_built_package_loads_through_hermes_install_time_loader(self) -> None:
+        runtime = hermes_agent_runtime()
+        if runtime is None:
+            self.skipTest("hermes agent runtime is not installed")
+        python, agent_dir = runtime
+        _temporary, artifact = self.build_artifact(ROOT)
+        with tempfile.TemporaryDirectory(prefix="expskill-hermes-loader-") as data_root:
+            script = (
+                "import json, sys; "
+                f"sys.path.insert(0, {str(agent_dir)!r}); "
+                "from pathlib import Path; "
+                "from hermes_cli.agent_plugins import load_agent_plugin; "
+                f"package = load_agent_plugin(Path({str(artifact)!r}), Path({data_root!r})); "
+                "print(json.dumps({"
+                '"name": package.name, '
+                '"version": package.version, '
+                '"skills": sorted(skill.name for skill in package.skills), '
+                '"diagnostics": ['
+                '{"scope": item.scope, "message": item.message} '
+                "for item in package.diagnostics], "
+                '"servers": sorted(package.server_declarations)'
+                "}))"
+            )
+            result = subprocess.run(
+                [str(python), "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(payload["name"], "expskill")
+        self.assertEqual(payload["version"], "0.1.0")
+        self.assertEqual(payload["skills"], list(skill_inventory(ROOT)))
+        self.assertEqual(payload["diagnostics"], [])
+        self.assertEqual(payload["servers"], [])
 
 
 if __name__ == "__main__":
