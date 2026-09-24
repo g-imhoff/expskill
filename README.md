@@ -61,6 +61,25 @@ rm -rf "$codex_marketplace"
 The `~/.codex/agents` directory itself is left in place; only the
 `expskill-*.toml` copies are removed.
 
+To update, rebuild and reinstall (the CLI has no per-plugin upgrade; the
+`marketplace upgrade` command only refreshes Git marketplaces, and this one
+is a local directory):
+
+```bash
+codex_marketplace="$(mktemp -d)/expskill-marketplace"
+python3 scripts/build_codex_marketplace.py "$codex_marketplace"
+codex plugin remove expskill@expskill
+codex plugin marketplace remove expskill
+codex plugin marketplace add "$codex_marketplace"
+codex plugin add expskill@expskill
+rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
+  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
+  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
+  ~/.codex/agents/expskill-test-engineer.toml
+cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
+rm -rf "$codex_marketplace"
+```
+
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.
@@ -98,6 +117,13 @@ To remove:
 ```bash
 opencode plugin remove opencode-expskill
 rm -rf "$artifact_root" "$pack_dir"
+```
+
+To update:
+
+```bash
+opencode plugin check
+opencode plugin update opencode-expskill
 ```
 
 ## Source layout
@@ -327,6 +353,18 @@ built artifact to the `hermes-dist` branch; resolve its exact SHA first):
 ```bash
 sha="$(git ls-remote https://github.com/g-imhoff/expskill.git hermes-dist | cut -f1 | sort -u)"
 hermes plugins install https://github.com/g-imhoff/expskill.git --ref "$sha"
+```
+
+To update to the latest published release:
+
+```bash
+hermes plugins update expskill
+```
+
+To remove:
+
+```bash
+hermes plugins remove expskill
 ```
 
 There is no `install.py` target for Hermes.
