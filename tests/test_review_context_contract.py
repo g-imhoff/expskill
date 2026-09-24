@@ -415,8 +415,8 @@ class ReviewContextContractTests(unittest.TestCase):
                     "plugins/expskill/skills/skill-builder/"
                     "references/evaluation-rubric.md"
                 ),
-                "outputs, consumers, handoffs",
-                "outputs, consumers, transitions",
+                "consumers, handoffs",
+                "consumers, transitions",
             ),
         )
         for relative_path, old, new in mutations:
