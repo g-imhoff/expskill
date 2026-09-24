@@ -17,12 +17,14 @@ HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "inject_unslop.py"
 LOCK_PATH = PLUGIN_ROOT / "third-party" / "upstream-lock.json"
 
 EXPECTED_PUBLIC_SKILLS = {
+    "autonomous-run",
     "brainstorm",
     "design",
     "grill-me",
     "implement",
     "correct",
     "review",
+    "review-loop",
     "plan",
     "setup-ui-testing",
     "skill-builder",
