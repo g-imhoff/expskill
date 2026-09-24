@@ -1,114 +1,73 @@
 # Interaction rules
 
-
 ### INT-01: Reuse project or native behavior before rebuilding it
-- Authority/scope: project convention and conditional heuristic.
-- Applies: buttons, links, inputs, dialogs, menus, tabs, disclosure, selection, and other standard patterns.
+- Scope: buttons, links, inputs, dialogs, menus, tabs, disclosure, selection, standard patterns. A genuine requirement the existing/native control cannot meet excepted. Custom choice may vary, active name/role/state/value and operability may not.
 - Rule: prefer an established project component or native host-language feature that supplies the required behavior. Custom UI must preserve the active semantic and interaction contract.
-- Exceptions: a genuine requirement the existing/native control cannot meet.
-- Project override: yes for choosing a custom control. No for active name/role/state/value and operability requirements.
-- Isolated check: compare keyboard, pointer, accessibility tree, focus, and state behavior with the established/native equivalent.
-- Sources: [WAI-ARIA 1.2](https://www.w3.org/TR/wai-aria/), [informative APG status](https://www.w3.org/WAI/ARIA/apg/about/introduction/), [APG Read Me First](https://www.w3.org/WAI/ARIA/apg/practices/read-me-first/).
+- Check: compare keyboard, pointer, accessibility tree, focus, state behavior with the established/native equivalent.
+- Sources: [WAI-ARIA 1.2](https://www.w3.org/TR/wai-aria/).
 
 ### INT-02: Keep functionality keyboard-operable
-- Authority/scope: activated WCAG 2.2 Level A norm.
-- Applies: web functionality that does not inherently require a movement path.
+- Scope: web functionality not inherently requiring a movement path, genuine path-dependent functions excepted.
 - Rule: every function must be operable through a keyboard interface without timing-specific keystrokes.
-- Exceptions: the underlying function genuinely depends on the path of movement, not merely its implementation.
-- Project override: no when active.
-- Isolated check: complete open, select, edit, cancel, submit, recover, and close using only the keyboard.
+- Check: complete open, select, edit, cancel, submit, recover, close using only the keyboard.
 - Sources: [WCAG Keyboard](https://www.w3.org/TR/WCAG22/#keyboard).
 
 ### INT-03: Preserve focus escape and meaningful order
-- Authority/scope: activated WCAG Level A norms.
-- Applies: dialogs, composites, editors, custom widgets, sequential navigation, responsive reordering.
+- Scope: dialogs, composites, editors, custom widgets, sequential navigation, responsive reordering. Nonstandard exits only when communicated, irrelevant ordering unconstrained. Verify within page navigation and overlays later.
 - Rule: users can leave any entered component by keyboard. Where order affects meaning/operation, the sequential focus order preserves it.
-- Exceptions: nonstandard exit methods may be used only when communicated. Irrelevant ordering is not constrained.
-- Project override: no when active.
-- Isolated check: record Tab, Shift+Tab, arrows, Escape, and documented exits in every state.
-- Later proof: verify within page navigation and overlays.
-- Sources: [No Keyboard Trap](https://www.w3.org/TR/WCAG22/#no-keyboard-trap), [Focus Order](https://www.w3.org/TR/WCAG22/#focus-order).
+- Check: record Tab, Shift+Tab, arrows, Escape, documented exits in every state.
+- Sources: [No Keyboard Trap](https://www.w3.org/TR/WCAG22/#no-keyboard-trap).
 
 ### INT-04: Keep focus visible and unobscured
-- Authority/scope: activated WCAG 2.2 AA norms. Stronger appearance metrics are AAA.
-- Applies: keyboard-operable web UI, sticky regions, overlays, drawers, and nested clipping.
+- Scope: keyboard-operable web UI, sticky regions, overlays, drawers, nested clipping, exact standard exceptions and reveal mechanisms apply. Tokens may define style, visibility outcomes may not be removed. Surrounding host overlays need later proof.
 - Rule: provide a visible focus mode and do not let author-created content entirely hide the focused component.
-- Exceptions: the standards' exact exceptions and reveal mechanisms.
-- Project override: focus tokens may define style. Active visibility outcomes may not be removed.
-- Isolated check: keyboard traversal in light, dark, high-contrast, forced-colors, zoomed, clipped, and overlay states.
-- Later proof: surrounding sticky content and host overlays.
-- Sources: [Focus Visible](https://www.w3.org/TR/WCAG22/#focus-visible), [Focus Not Obscured](https://www.w3.org/TR/WCAG22/#focus-not-obscured-minimum), [Focus Appearance AAA](https://www.w3.org/TR/WCAG22/#focus-appearance).
+- Check: keyboard traversal in light, dark, high-contrast, forced-colors, zoomed, clipped, overlay states.
+- Sources: [Focus Visible](https://www.w3.org/TR/WCAG22/#focus-visible).
 
 ### INT-05: Expose name, role, state, and value
-- Authority/scope: activated WCAG Level A norm and applicable ARIA requirements.
-- Applies: custom web controls and visible labeled controls.
+- Scope: custom web controls and visible labeled controls, exact criterion scope and host-language semantics excepted. Wording/implementation may vary, active semantic outcomes may not.
 - Rule: make name and role programmatically determinable. Expose settable states/properties/values and their changes. Ensure a visible label is contained in the accessible name.
-- Exceptions: only the exact criterion scope and host-language semantics.
-- Project override: wording and implementation may vary. Active semantic outcomes may not.
-- Isolated check: accessibility-tree snapshots, state changes, localized visible labels, and voice activation using the visible phrase.
-- Sources: [Name, Role, Value](https://www.w3.org/TR/WCAG22/#name-role-value), [Label in Name](https://www.w3.org/TR/WCAG22/#label-in-name), [WAI-ARIA 1.2](https://www.w3.org/TR/wai-aria/).
+- Check: accessibility-tree snapshots, state changes, localized labels, voice activation using the visible phrase.
+- Sources: [Name, Role, Value](https://www.w3.org/TR/WCAG22/#name-role-value).
 
 ### INT-06: Provide non-gesture and non-drag alternatives
-- Authority/scope: activated WCAG 2.2 A/AA norms depending on the behavior.
-- Applies: multipoint/path gestures, drag-and-drop, sort, resize, sliders, canvases.
+- Scope: multipoint/path gestures, drag-and-drop, sort, resize, sliders, canvases. Genuinely essential or user-agent-determined behavior excepted as specified.
 - Rule: provide a single-pointer, non-path alternative for path/multipoint gestures and a single-pointer non-drag alternative for dragging.
-- Exceptions: behavior that is genuinely essential or user-agent determined as specified by the criterion.
-- Project override: no when active.
-- Isolated check: operate the same outcome with tap/click/buttons/keyboard without path movement or dragging.
-- Sources: [Pointer Gestures](https://www.w3.org/TR/WCAG22/#pointer-gestures), [Dragging Movements](https://www.w3.org/TR/WCAG22/#dragging-movements).
+- Check: operate the same outcome with tap/click/buttons/keyboard without path movement or dragging.
+- Sources: [Pointer Gestures](https://www.w3.org/TR/WCAG22/#pointer-gestures).
 
 ### INT-07: Allow pointer cancellation
-- Authority/scope: activated WCAG Level A norm.
-- Applies: author-interpreted single-pointer actions.
+- Scope: author-interpreted single-pointer actions, essential cases excepted.
 - Rule: avoid irreversible down-event activation. Complete on up with abort/undo, reverse on up, or document a genuinely essential down-event.
-- Exceptions: the criterion's essential cases.
-- Project override: no when active.
-- Isolated check: press, move outside, release, cancel, and undo for destructive and ordinary actions.
+- Check: press, move outside, release, cancel, undo for destructive and ordinary actions.
 - Sources: [Pointer Cancellation](https://www.w3.org/TR/WCAG22/#pointer-cancellation).
 
 ### INT-08: Bind target size to the active standard and unit
-- Authority/scope: activated WCAG or named platform convention.
-- Applies: pointer/touch targets.
+- Scope: pointer/touch targets, only documented active criterion/platform exceptions apply. Larger project targets are fine, smaller ones need a valid exception. Never translate CSS px, pt, dp as interchangeable.
 - Rule: use 24 by 24 CSS px plus its exceptions for WCAG 2.2 AA, 44 CSS px for WCAG AAA, Apple point guidance on Apple platforms, and Android dp guidance on Android. Never translate these as interchangeable universal numbers.
-- Exceptions: only those documented by the active criterion/platform.
-- Project override: larger project targets are fine. Smaller targets need a valid active exception or platform rationale.
-- Isolated check: measure actual hit bounds and adjacent-target spacing with each supported input.
-- Sources: [WCAG Target Size Minimum](https://www.w3.org/TR/WCAG22/#target-size-minimum), [WCAG Target Size Enhanced](https://www.w3.org/TR/WCAG22/#target-size-enhanced), [Apple accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility), [Android accessibility](https://developer.android.com/design/ui/mobile/guides/foundations/accessibility).
+- Check: measure actual hit bounds and adjacent-target spacing with each supported input.
+- Sources: [WCAG Target Size Minimum](https://www.w3.org/TR/WCAG22/#target-size-minimum).
 
 ### INT-09: Make hover/focus disclosure controllable
-- Authority/scope: activated WCAG 2.2 AA norm.
-- Applies: authored tooltips, submenus, and nonmodal popups appearing on hover or focus.
+- Scope: authored tooltips, submenus, nonmodal popups on hover/focus, input errors, non-obscuring content, user-agent presentation excepted as defined.
 - Rule: additional content is dismissible, hoverable when pointer-triggered, and persistent until trigger removal, dismissal, or invalidation.
-- Exceptions: input errors, content that obscures nothing meaningful, and user-agent-controlled presentation as defined by the criterion.
-- Project override: no when active.
-- Isolated check: trigger by focus and hover, move into content, dismiss without moving focus/pointer, and wait for persistence.
+- Check: trigger by focus and hover, move into content, dismiss without moving focus/pointer, wait for persistence.
 - Sources: [Content on Hover or Focus](https://www.w3.org/TR/WCAG22/#content-on-hover-or-focus).
 
 ### INT-10: Do not change context unexpectedly
-- Authority/scope: activated WCAG Level A norms.
-- Applies: focus, select, input, routing, window opening, and auto-submit.
+- Scope: focus, select, input, routing, window opening, auto-submit. Explicit activation and disclosed behavior excepted within the standards' definitions. Actual routing needs later proof.
 - Rule: focus alone does not change context. Changing a setting does not change context unless the user was advised beforehand.
-- Exceptions: explicit activation and disclosed behavior within the standards' definitions.
-- Project override: no when active.
-- Isolated check: focus and change each control while recording navigation, window changes, focus relocation, and major context changes.
-- Later proof: actual routing and page context.
-- Sources: [On Focus](https://www.w3.org/TR/WCAG22/#on-focus), [On Input](https://www.w3.org/TR/WCAG22/#on-input).
+- Check: focus and change each control while recording navigation, window changes, focus relocation, major context changes.
+- Sources: [On Input](https://www.w3.org/TR/WCAG22/#on-input).
 
 ### INT-11: Expose qualifying status messages without stealing focus
-- Authority/scope: activated WCAG 2.2 AA norm.
-- Applies: async success, progress, filtering, loading, and error messages that meet the status-message definition.
+- Scope: async success, progress, filtering, loading, error messages meeting the status-message definition, other visual changes excluded. Mechanism may vary, the outcome may not. Host assistive-technology behavior needs later proof.
 - Rule: expose the status programmatically so assistive technology can present it without moving focus. No single ARIA role is universally mandated.
-- Exceptions: visual changes that are not status messages under the criterion.
-- Project override: exact semantic mechanism may vary. The active outcome may not.
-- Isolated check: delayed update with accessibility-tree and announcement inspection. Focus remains expected.
-- Later proof: browser/assistive-technology behavior in host context.
-- Sources: [WCAG Status Messages](https://www.w3.org/TR/WCAG22/#status-messages), [WAI-ARIA status](https://www.w3.org/TR/wai-aria/#status).
+- Check: delayed update with accessibility-tree and announcement inspection, focus remains expected.
+- Sources: [WCAG Status Messages](https://www.w3.org/TR/WCAG22/#status-messages).
 
 ### INT-12: Distinguish native disabled, aria-disabled, and read-only
-- Authority/scope: host-language/ARIA constraint plus project convention.
-- Applies: unavailable or noneditable controls.
+- Scope: unavailable or noneditable controls, host-language support and composite conventions apply. Focusability may vary with discoverability, native semantics may not be redefined.
 - Rule: native disabled behavior follows the host language. Aria-disabled only exposes state and requires authors to suppress activation. Custom disabled items may remain focusable for discoverability. Read-only data remains readable and reviewable.
-- Exceptions: host-language-specific support and composite-widget conventions.
-- Project override: custom focusability may vary with discoverability. Native semantics may not be redefined.
-- Isolated check: tab order, pointer/keyboard suppression, accessible state, contrast, discoverability, and readable value.
-- Sources: [HTML disabled elements](https://html.spec.whatwg.org/multipage/semantics-other.html#disabled-elements), [WAI-ARIA aria-disabled](https://www.w3.org/TR/wai-aria/#aria-disabled), [APG disabled focusability](https://www.w3.org/WAI/ARIA/apg/practices/keyboard-interface/#focusability-of-disabled-controls).
+- Check: tab order, pointer/keyboard suppression, accessible state, contrast, discoverability, readable value.
+- Sources: [WAI-ARIA aria-disabled](https://www.w3.org/TR/wai-aria/#aria-disabled).

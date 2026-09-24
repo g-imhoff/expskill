@@ -6,7 +6,7 @@ description: Use only for code or executable-configuration requests needing life
 # Use ExpSkill
 
 Choose and coordinate the smallest appropriate product skill for a development
-request. Do not reproduce another skill's work inside the router. A routed UI
+request without reproducing another skill's work inside the router. A routed UI
 request may use the bounded Plan and Design conversation pair defined below.
 
 ## Stay inactive
@@ -33,7 +33,7 @@ for non-code work. Let that direct request proceed.
   9 of 10.
 
 Except for the bounded Plan and Design conversation pair, open only the selected
-skill for the current transition. Explain the choice in plain language. A
+skill for the current transition and explain the choice in plain language. A
 direct skill remains independently usable and never needs to return through
 this router.
 
@@ -47,20 +47,19 @@ user. Never turn that stop into an automatic Brainstorm or Plan transition.
 Before routing production UI work, run the packaged
 `../setup-ui-testing/scripts/inspect_setup.py` against the current project root.
 Do not apply this setup gate to an eligible `$correct` repair that restores
-accepted UI behavior without redesign.
-Treat its exact `ready` result as reusable setup. If it returns `absent`,
-`invalid`, malformed output, or an error, select only `$setup-ui-testing` in
+accepted UI behavior without redesign, and treat its exact `ready` result as
+reusable setup. If it returns `absent`, `invalid`, malformed output, or an error, select only `$setup-ui-testing` in
 routed mode. Do not start Plan, Design, or feature implementation in that
 transition. Direct `$setup-ui-testing` remains independently usable.
 
 When setup is ready and only one of technical planning or production UI
 approval is unresolved, select its normal standalone skill. When both are
 unresolved, use the `parallel-plan-design` execution-policy route. The user talks
-to Plan and Design directly, in two CLI conversations the user opens. The
-router never opens them. It never spawns subagents or background runs from
-inside this conversation. Ask the user to start both before waiting for either
-result. Both work from the same exact repository baseline and saved Concept
-Brief. The Plan conversation reads the unchanged target checkout and is the
+to Plan and Design directly in two CLI conversations the user opens. The
+router never opens them and never spawns subagents or background runs here.
+Ask the user to start both before waiting for either result. Both work from the
+same exact repository baseline and saved Concept Brief. The Plan conversation
+reads the unchanged target checkout and is the
 only Plan Graph writer. The Design conversation receives one isolated worktree
 created by `../../scripts/worktrees.py`, then populated by its
 `seed-ui-harness` operation. Never copy `.ui-harness/evidence` from the target
@@ -83,30 +82,30 @@ same baseline and Concept Brief.
 - `claude -p "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 - `opencode run "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 
-The router owns user interaction while the two conversations run. Each
+The router owns user interaction while the two conversations run, and each
 conversation returns questions instead of asking the user. Present at most one
 current question at a time, apply its answer to the owning conversation, and
 then request the next current question. Do not infer approval. Relay questions
 only after the user has started both conversations.
-Relay Design's clickable Yodea preview link with each visual approval request
-and preview progress update. Carry the hosted note and represented candidate
-revision or digest through subsequent handoffs and completion summaries. The
-coordinator authorized to create or update a PR must include the current preview
-link in its description and both the PR and preview links in the final user
-response. Preserve the hosted preview through PR review even after the local
-Design worktree is cleaned up.
 
-After user approval, Design creates one coherent local candidate commit and
-delivers its route-neutral manifest and candidate-bearing Design receipt. Pass
-that unchanged receipt and commit identity to the same Plan session. Plan
-records the typed Design join only while the isolated branch still points to
-that candidate and cannot become ready before validation. A blocked conversation,
+Relay Design's clickable Yodea preview link with each visual approval request
+and progress update, and carry the hosted note plus represented candidate
+revision or digest through handoffs and summaries. The coordinator authorized
+to create or update a PR includes the current preview link in its description
+and both links in the final user response. The hosted preview survives PR
+review after the local Design worktree is cleaned up.
+
+After user approval, Design creates one coherent local candidate commit with
+its route-neutral manifest and candidate-bearing Design receipt. Pass that
+unchanged receipt and commit identity to the same Plan session. Plan records
+the typed Design join only while the isolated branch still points to that
+candidate and cannot become ready before validation. A blocked conversation,
 stale baseline, moved branch, malformed receipt, invalid setup, or failed
 Design gate stops the join. Keep the isolated worktree for `$implement`, which
 alone may later integrate and clean it. Once the exact candidate is an ancestor
-of the target HEAD, the Plan Graph validates that integrated ancestry and no
-longer requires the temporary Design branch to exist. The router never edits
-tracked source, commits, integrates, pushes, or merges.
+of the target HEAD, the Plan Graph validates that integrated ancestry and the
+temporary Design branch may go. The router never edits tracked source, commits,
+integrates, pushes, or merges.
 
 ## Coordinate the lifecycle
 
@@ -142,7 +141,8 @@ Use `$grill-me` when every condition below is true:
   matter.
 - Only the user can decide them.
 
-Explain the blocker briefly, then resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
+Explain the blocker briefly, then offer `$grill-me` for the decision frontier and proceed only with
+explicit consent. Never automatically invoke `$grill-me`. Resolve the tree with `$grill-me`, a frontier-by-round interview with a recommended answer per question that ends in confirmed shared understanding. Keep the owning skill paused while Grill Me resolves the decision tree. When the user confirms
 shared understanding, return the confirmed decision delta and resume the owning
 skill. The owning skill remains responsible for its state and for invalidating
 any dependent work.

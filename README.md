@@ -313,5 +313,4 @@ installation, security, concurrency, recovery, and lifecycle boundaries.
 
 The live certification and release chain is still being hardened. The phase
 surface and installer are available on the integration branch, but the plugin
-must not be called release-certified until every gate in
-[`docs/release-policy.md`](docs/release-policy.md) passes.
+must not be called release-certified until every gate passes.
