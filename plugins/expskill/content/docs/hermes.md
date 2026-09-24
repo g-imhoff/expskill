@@ -42,16 +42,17 @@ hermes plugins validate "$artifact_root"
 The output directory must be explicit and must not already exist. A successful
 build contains `plugin.json`, `provenance.json`, generated `agents/`, the
 `skills/` mirror, shared `scripts/`, `assets/`, and third-party licenses.
-The output is the directory passed to `hermes plugins install`. The
-checked-in source directory is not the generated artifact.
+The checked-in source directory is not the generated artifact.
 
 ## Hermes plugin
 
-Install the built package with the Hermes CLI:
+Validate a locally built package, then install a published release (each
+release publishes the built artifact to the `hermes-dist` branch):
 
 ```bash
-hermes plugins install <path-or-git-url>
-hermes plugins validate <path>
+hermes plugins validate "$artifact_root"
+sha="$(git ls-remote https://github.com/g-imhoff/expskill.git hermes-dist | cut -f1 | sort -u)"
+hermes plugins install https://github.com/g-imhoff/expskill.git --ref "$sha"
 ```
 
 Hermes runs each role on the active provider and model. Pick it with

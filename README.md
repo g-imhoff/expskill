@@ -321,7 +321,14 @@ python3 scripts/build_hermes_package.py "$artifact_root"
 hermes plugins validate "$artifact_root"
 ```
 
-Install it with the Hermes CLI (`hermes plugins install <path-or-git-url>`).
+Install a published release with the Hermes CLI (each release publishes the
+built artifact to the `hermes-dist` branch; resolve its exact SHA first):
+
+```bash
+sha="$(git ls-remote https://github.com/g-imhoff/expskill.git hermes-dist | cut -f1 | sort -u)"
+hermes plugins install https://github.com/g-imhoff/expskill.git --ref "$sha"
+```
+
 There is no `install.py` target for Hermes.
 
 See `plugins/expskill/content/docs/hermes.md` for the source, renderer, builder,
