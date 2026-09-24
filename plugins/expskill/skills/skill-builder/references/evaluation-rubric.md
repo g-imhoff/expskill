@@ -4,20 +4,7 @@ This reference defines builder-run conformance, target scoring, tie-breaking, re
 
 ## Freeze the target scoring basis
 
-Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze:
-
-- canonical target identity and allowed package shape
-- invocation policy, triggers, non-triggers, aliases, and ambiguity behavior
-- purpose, success signal, scope, non-goals, and neighbouring responsibilities
-- inputs, preconditions, ordered behavior, decisions, actions, and stopping conditions
-- collaboration and user-decision boundaries
-- tools, permissions, authority, writes, delegation, and forbidden effects
-- outputs, consumers, handoffs, failures, recovery, and changed-goal behavior
-- host integration rules, context budget, resource policy, and validation requirements
-
-Bind every parameter to its contract clause or host rule. Resolve conflicts before freezing. The candidate is scored against these frozen target parameters, never against the builder's own identity, invocation policy, package layout, or workflow.
-
-If a dimension does not apply to the target, require an explicit contract statement and a case proving the candidate does not invent that behavior. An unsupported `not applicable` label earns no point.
+Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze the canonical target identity and allowed package shape, invocation policy with triggers, non-triggers, aliases, and ambiguity behavior, purpose with success signal, scope, non-goals, and neighbouring responsibilities, inputs with preconditions, ordered behavior, decisions, actions, and stopping conditions, collaboration and user-decision boundaries, tools with permissions, authority, writes, delegation, and forbidden effects, outputs with consumers, handoffs, failures, recovery, and changed-goal behavior, and host integration rules with context budget, resource policy, and validation requirements. Bind every parameter to its contract clause or host rule and resolve conflicts before freezing. The candidate is scored against these frozen target parameters, never against the builder's own identity, invocation policy, package layout, or workflow. A dimension that does not apply needs an explicit contract statement plus a case proving the candidate does not invent that behavior. An unsupported `not applicable` label earns no point.
 
 ## Builder-run conformance gates
 
@@ -36,40 +23,15 @@ Evaluate builder-run conformance separately from target quality. Each gate is pa
 | BR9 | Every completed state transition, invalidation, recovery, finalization, and evidence-retention action followed the helper contract. |
 | BR10 | No delivery or cleanup exceeded explicit authority. When cleanup occurred, a durable tombstone preceded owned-run deletion. |
 
-A failed builder-run gate blocks release. It does not alter a target category score by itself. When the failure also makes target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only when their evidence bindings remain valid.
+A failed builder-run gate blocks release without altering a target category score by itself. When the failure also leaves target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only while their evidence bindings remain valid.
 
 ## Target scoring method
 
-For each target category, create an assertion matrix from the frozen parameters. Each row names the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point for each numbered criterion only when fresh evidence proves it for the exact candidate revision. Sum the ten binary criteria to produce an integer score from 0 to 10.
-
-Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass, the current independent target review is valid, and no High or Medium finding mapped to that category remains. Never average categories, waive a criterion, round a score, borrow evidence from another category, or substitute confidence for evidence.
-
-Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. A prose conclusion without those bindings is not scoring evidence. All ten categories must independently earn 10 before finalization.
+For each target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point for each numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass, the current independent target review is valid, and no High or Medium finding mapped to that category remains. Never average categories, waive a criterion, round a score, borrow evidence from another category, or substitute confidence for evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. A prose conclusion without those bindings is not scoring evidence. All ten categories must independently earn 10 before finalization.
 
 ## Reviewer evidence contract
 
-Use an independent target reviewer who did not research, design, implement, or
-score the candidate. Keep the reviewer read-only to tracked source. Apply the
-final Review context contract to every review dispatch and follow-up. Reference
-the confirmed target contract, host rules, evaluation pack, original raw trial
-evidence, preserved regressions, artifact manifest, and this rubric by path and
-digest. Do not restate them. Require the reviewer to self-inspect the pinned
-candidate with repository tools and open the referenced evidence needed for the
-review. Do not give a desired verdict.
-
-A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be used for scoring.
-
-A valid review record identifies all input digests and contains, for each finding, severity, evidence, impact, correction, and affected target criteria. It ends with exactly `ready` or `not ready`.
-
-Use these severities:
-
-- High: wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure that defeats the target's confirmed purpose.
-- Medium: missing target-contract behavior, bypassable target gate, unreliable result, recurring incorrect behavior, or a material host-integration failure.
-- Low: localized clarity, efficiency, or maintenance issue that does not bypass a target gate or change a material result.
-
-Treat a valid `not ready` review or a valid review with High or Medium findings as negative scoring evidence. Map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the ordinary lowest-category repair loop. No material finding may coexist with a score of 10.
-
-Apply the same rule to the final target review. An invalid final review blocks advancement without changing scores. A valid negative final review lowers affected categories and returns the candidate to repair.
+Use an independent target reviewer who did not research, design, implement, or score the candidate. Keep the reviewer read-only to tracked source. Apply the final Review context contract to every review dispatch and follow-up. Reference the confirmed target contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and this rubric by path and digest without restating them. Require the reviewer to self-inspect the pinned candidate with repository tools and open the referenced evidence needed for the review. Do not give a desired verdict. A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be used for scoring. A valid review record identifies all input digests and holds severity, evidence, impact, correction, and affected target criteria for each finding, ending with exactly `ready` or `not ready`. Use High for a wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure defeating the target's confirmed purpose. Use Medium for missing target-contract behavior, a bypassable target gate, an unreliable result, recurring incorrect behavior, or a material host-integration failure. Use Low for a localized clarity, efficiency, or maintenance issue that bypasses no target gate and changes no material result. Treat a valid `not ready` review or a valid review with High or Medium findings as negative scoring evidence: map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the ordinary lowest-category repair loop. No material finding may coexist with a score of 10. Apply the same rule to the final target review. An invalid final review blocks advancement without changing scores. A valid negative final review lowers affected categories and returns the candidate to repair.
 
 ## 1. Triggering
 
@@ -223,17 +185,11 @@ Apply the same rule to the final target review. An invalid final review blocks a
 
 ## Lowest-score repair and tie-breaking
 
-Select the lowest numeric target category score. For equal scores, select greater safety or correctness impact first, then greater dependency impact, then the category that appears earlier in this document. Record the tie evidence and selected category.
-
-Repair one target category at a time with one bounded brief. Add or strengthen the case that exposes the gap, change only the isolated candidate, rerun affected cases and preserved regressions, obtain a new valid independent target review, and recompute every affected criterion from current evidence. After that category reaches 10, select the new lowest score.
+Select the lowest numeric target category score, breaking ties by greater safety or correctness impact first, then greater dependency impact, then earlier position in this document, and record the tie evidence with the selected category. Repair one target category at a time with one bounded brief: add or strengthen the case that exposes the gap, change only the isolated candidate, rerun affected cases and preserved regressions, obtain a new valid independent target review, and recompute every affected criterion from current evidence. After that category reaches 10, select the new lowest score.
 
 ## Failure conditions
 
-Do not finalize when a builder-run conformance gate fails, any target category is below 10, any valid High or Medium target finding remains, the current target review is `not ready`, a required artifact or review is invalid, the target or candidate revision changed, a binding mismatches, hidden material leaked, a required trial lacks raw evidence, verification failed, or user authority is missing.
-
-Invalidate a case and all results derived from it when its oracle was exposed, its isolation failed, its retained evidence is incomplete, or it can pass through an unrelated failure. Repair and refreeze the pack before candidate work resumes when the defect changes acceptance meaning.
-
-Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only when the frozen target contract or host rules require them. They never replace behavioral trials, valid independent review, target scoring, or same-revision verification.
+Do not finalize while a builder-run conformance gate fails, any target category is below 10, any valid High or Medium target finding remains, the current target review is `not ready`, a required artifact or review is invalid, the target or candidate revision changed, a binding mismatches, hidden material leaked, a required trial lacks raw evidence, verification failed, or user authority is missing. Invalidate a case and all results derived from it when its oracle was exposed, its isolation failed, its retained evidence is incomplete, or it can pass through an unrelated failure. Repair and refreeze the pack before candidate work resumes when the defect changes acceptance meaning. Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only when the frozen target contract or host rules require them. They never replace behavioral trials, valid independent review, target scoring, or same-revision verification.
 
 ## Review context contract
 
