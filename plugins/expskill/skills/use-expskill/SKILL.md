@@ -44,14 +44,18 @@ user. Never turn that stop into an automatic Brainstorm or Plan transition.
 
 ## Prepare routed UI work
 
-Before routing production UI work, run the packaged
-`../setup-ui-testing/scripts/inspect_setup.py` against the current project root.
-Do not apply this setup gate to an eligible `$correct` repair that restores
-accepted UI behavior without redesign.
-Treat its exact `ready` result as reusable setup. If it returns `absent`,
-`invalid`, malformed output, or an error, select only `$setup-ui-testing` in
-routed mode. Do not start Plan, Design, or feature implementation in that
-transition. Direct `$setup-ui-testing` remains independently usable.
+There is no setup gate. Neither `$setup-design` nor `$setup-test` is
+auto-loaded or router-selected merely because a setup record is absent or
+invalid, and no inspector script runs before routing. If the user explicitly
+asks for design-sketch or test-method setup, select only that setup skill. If
+UI work arrives with no setup record and no explicit setup intent, report
+"not configured, run `$setup-design` / `$setup-test`" and stop before
+Plan, Design, or feature implementation in that transition. A ready
+`.expskill/setup-design.md` or `.expskill/setup-test.md` record, when present,
+is read by its owning skill only and never acts as a routing precondition.
+Do not apply any setup requirement to an eligible `$correct` repair that
+restores accepted UI behavior without redesign. Direct `$setup-design` and
+`$setup-test` remain independently usable.
 
 When setup is ready and only one of technical planning or production UI
 approval is unresolved, select its normal standalone skill. When both are
@@ -62,9 +66,11 @@ inside this conversation. Ask the user to start both before waiting for either
 result. Both work from the same exact repository baseline and saved Concept
 Brief. The Plan conversation reads the unchanged target checkout and is the
 only Plan Graph writer. The Design conversation receives one isolated worktree
-created by `../../scripts/worktrees.py`, then populated by its
-`seed-ui-harness` operation. Never copy `.ui-harness/evidence` from the target
-checkout. Initialize the Design helper with `invocation_mode` set to `routed`.
+created by `../../scripts/worktrees.py`. The worktree carries no copied setup
+support: Design works from the project's own tracked files and may consult a
+ready `.expskill/setup-design.md` record when one exists, but that record is
+never a prerequisite. Keep new specimens and temporary evidence inside that
+worktree. Initialize the Design helper with `invocation_mode` set to `routed`.
 Direct Design uses the default `direct` mode, which cannot checkpoint a
 candidate.
 
@@ -76,7 +82,7 @@ conversation from the target checkout.
 - `claude -p "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
 - `opencode run "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
 
-Run the Design conversation from the isolated worktree after seeding, with the
+Run the Design conversation from the isolated worktree, with the
 same baseline and Concept Brief.
 
 - `codex exec "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`

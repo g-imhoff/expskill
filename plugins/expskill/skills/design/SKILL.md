@@ -37,11 +37,12 @@ When evidence implies one structure, build it directly. If consequential structu
 
 Create production-intended components, interfaces, variants, states, styles, component-owned accessibility behavior, and relevant component tests within the scope ledger. Reuse active primitives/tokens. Record justified local values. Shared token or scope change requires explicit confirmation. Keep `specimen/scenario -> production component -> project primitives`: production code never imports gallery, fixture, mock, or scenario modules. Use deterministic synthetic schema-shaped content. The specimen must have no external network, customer data, credentials, external assets, backend, application state, navigation, or live side effects. No silent installs or external side effects beyond the required Yodea preview workflow below. A smallest temporary specimen adapter may be used when project capabilities permit. If no specimen can render, stop blocked.
 
-In routed mode, use only the copied `.ui-harness/README.md` and
-`.ui-harness/agent` support. Keep new specimens and evidence inside that
+In routed mode, work only from the isolated worktree and the project's own
+tracked files. A ready `.expskill/setup-design.md` record may be consulted
+for the established sketch method, but it is never a prerequisite and its
+absence never blocks routed Design. Keep new specimens and evidence inside that
 worktree. Return questions to the router and do not ask the user directly. The
-router serializes Plan and Design questions. A stale baseline or invalid copied
-setup blocks the session.
+router serializes Plan and Design questions. A stale baseline blocks the session.
 
 ## Review
 

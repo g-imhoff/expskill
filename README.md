@@ -1,6 +1,6 @@
 # ExpSkill
 
-ExpSkill is a private Codex plugin with thirteen independent skills and one
+ExpSkill is a private Codex plugin with fourteen independent skills and one
 optional lifecycle router.
 
 ## Install and validate
@@ -28,8 +28,11 @@ Invoke a skill directly when you know what you want:
 - `$brainstorm` explores uncertainty without writing production code.
 - `$plan` produces an ordered, reviewable implementation-and-proof design with observable criteria, behavior, planned tests, and verification intent.
 - `$design` creates grounded production-intended UI components and publishes a Yodea preview for responsive, stateful review after blocking quality gates pass. Preview links accompany approval requests, handoffs, and PR descriptions and stay available through PR review.
-- `$setup-ui-testing` establishes or records one reusable, project-native
-  isolated UI inspection method without redesigning production UI.
+- `$setup-design` establishes or records one reusable, project-native
+  isolated design-sketch method without approving feature sketches.
+- `$setup-test` establishes or records the project's test-method matrix
+  (test types to commands, canary versus full suite, human versus agent
+  execution, routine post-setup path) without running routine tests.
 - `$implement` coordinates isolated TDD workers, independent review and spec
   gates, corrections, local integration, and final whole-branch gates.
 - `$correct` repairs concrete bugs within the existing design and asks for a
@@ -61,11 +64,14 @@ canonical Plan Graph when one exists, validates revision-bound receipts, and
 preserves the implementation gates. It is the only skill that may activate
 implicitly.
 
-Before routing UI work, the router inspects the constant project-local
-`.ui-harness/README.md` capability record. An absent or invalid record routes
-only to `$setup-ui-testing`. A ready record can be copied with agent-only
-support into the isolated Design worktree. Those temporary copies and their
-evidence disappear when the accepted worktree is integrated and cleaned up.
+There is no setup gate. Neither `$setup-design` nor `$setup-test` is
+auto-loaded or router-selected merely because a setup record is absent or
+invalid. If UI or test work arrives with no setup record and no explicit
+setup intent, the router reports "not configured, run `$setup-design` /
+`$setup-test`" and stops before Plan, Design, or feature implementation.
+A ready `.expskill/setup-design.md` or `.expskill/setup-test.md` record is
+read by its owning skill only and is never a routing precondition. Those
+tracked records and their methods persist across worktrees and runs.
 
 When a routed phase is blocked by several connected, consequential decisions
 that only the user can make, `$use-expskill` may offer `$grill-me`. It waits for
@@ -76,7 +82,7 @@ Direct skill invocation never loads the entire pipeline. For example:
 ```text
 Use $brainstorm to compare storage approaches for this feature.
 Use $plan to turn the accepted API decision into bounded tasks.
-Use $setup-ui-testing to establish this project's reusable isolated UI inspection method.
+Use $setup-design to establish this project's reusable isolated design-sketch method.
 Use $implement to execute this accepted implementation work.
 Use $correct to repair this bounded regression before the branch is merged.
 Use $review to inspect the changes between this branch and main and save a report.
@@ -102,11 +108,12 @@ Design works on one isolated candidate commit. The graph cannot become ready
 until Plan validates and records the approved Design receipt from that same
 baseline.
 
-`$brainstorm`, `$setup-ui-testing`, `$correct`, `$review`, `$review-loop`, and
+`$brainstorm`, `$setup-design`, `$setup-test`, `$correct`, `$review`, `$review-loop`, and
 `$test` remain
 independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
-Setup UI Testing records the reusable project-specific inspection method, and
+Setup Design records the reusable project-specific sketch method, Setup Test
+records the project test-method matrix, and
 Test returns evidence for the implemented behavior it exercised. `$use-expskill`
 owns optional transition selection; the individual skills do not silently open
 the whole pipeline.

@@ -70,21 +70,21 @@ PUBLIC_SKILL_TOKENS = {
     "$use-expskill",
     "$design",
     "$grill-me",
-    "$setup-ui-testing",
+    "$setup-design",
+    "$setup-test",
     "$skill-builder",
     "$unslop",
     "$autonomous-run",
     "$review-loop",
 }
-PUBLIC_SKILL_COUNT_TEXT = "thirteen independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "fourteen independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
     "references/evaluation-rubric.md",
 )
-SETUP_UI_TESTING_REQUIRED_RESOURCES = (
-    "references/capability-contract.md",
-    "scripts/inspect_setup.py",
+SETUP_SKILLS_REQUIRED_RESOURCES = (
+    "references/record-format.md",
 )
 SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
     sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
@@ -127,16 +127,17 @@ EXPECTED_SKILLS = {
     "review",
     "test",
     "grill-me",
-    "setup-ui-testing",
+    "setup-design",
+    "setup-test",
     "skill-builder",
     "unslop",
     "autonomous-run",
     "review-loop",
 }
-RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change"}
+RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change", "setup-ui-testing"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
-SETUP_UI_TESTING_ALLOWED_FULL_CONTEXTS = re.compile(
-    r"\bfull(?:\s+closed|\s+three-size|-page)\b",
+SETUP_ALLOWED_FULL_CONTEXTS = re.compile(
+    r"\bfull(?:\s+closed|\s+three-size|-page|\s+rules?|\s+rule|-suite|\s+matrix|\s+sample)\b",
     re.IGNORECASE,
 )
 # Keep only Test's safety-critical Boundary section closed. Later accepted
@@ -1232,7 +1233,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise thirteen independent skills and one optional "
+                "plugin description must advertise fourteen independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
@@ -1355,8 +1356,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 *SKILL_BUILDER_REQUIRED_REFERENCES,
                 "scripts/run_state.py",
             })
-        if skill_root.name == "setup-ui-testing":
-            expected_files.update(SETUP_UI_TESTING_REQUIRED_RESOURCES)
+        if skill_root.name in {"setup-design", "setup-test"}:
+            expected_files.update(SETUP_SKILLS_REQUIRED_RESOURCES)
         if skill_root.name == "test":
             expected_files.update({
                 "references/quality-rules.json",
@@ -1374,8 +1375,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             expected_directories.add("references")
         if skill_root.name == "skill-builder":
             expected_directories.update({"references", "scripts"})
-        if skill_root.name == "setup-ui-testing":
-            expected_directories.update({"references", "scripts"})
+        if skill_root.name in {"setup-design", "setup-test"}:
+            expected_directories.update({"references"})
         if skill_root.name == "test":
             expected_directories.add("references")
             expected_directories.add("scripts")
@@ -1404,12 +1405,12 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                     f"skill 'skill-builder' required reference {relative!r}",
                     errors,
                 )
-        if skill_root.name == "setup-ui-testing":
-            for relative in SETUP_UI_TESTING_REQUIRED_RESOURCES:
+        if skill_root.name in {"setup-design", "setup-test"}:
+            for relative in SETUP_SKILLS_REQUIRED_RESOURCES:
                 _required_nonempty_package_file(
                     plugin_root,
                     f"{relative_skill}/{relative}",
-                    f"skill 'setup-ui-testing' required resource {relative!r}",
+                    f"skill {skill_root.name!r} required resource {relative!r}",
                     errors,
                 )
         skill_path = _required_package_path(
@@ -1450,7 +1451,7 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         if not isinstance(description, str) or not description.strip():
             errors.append(f"skill {skill_root.name!r} has no frontmatter description")
         else:
-            maximum_description_length = 400 if skill_root.name == "setup-ui-testing" else 300
+            maximum_description_length = 300
             if not 20 <= len(description) <= maximum_description_length:
                 errors.append(
                     f"skill {skill_root.name!r} description must be "
@@ -1464,8 +1465,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
         if any(retired in normalized_contents for retired in RETIRED_SKILLS):
             errors.append(f"skill {skill_root.name!r} references a retired skill")
         policy_contents = contents
-        if skill_root.name == "setup-ui-testing":
-            policy_contents = SETUP_UI_TESTING_ALLOWED_FULL_CONTEXTS.sub("", contents)
+        if skill_root.name in {"setup-design", "setup-test"}:
+            policy_contents = SETUP_ALLOWED_FULL_CONTEXTS.sub("", contents)
         if PUBLIC_SKILL_JARGON.search(policy_contents):
             errors.append(f"skill {skill_root.name!r} contains private policy vocabulary")
         _validate_skill_metadata(skill_root, errors)
@@ -2101,7 +2102,7 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
     normalized = " ".join(readme.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "README must describe thirteen independent skills and one optional lifecycle router"
+            "README must describe fourteen independent skills and one optional lifecycle router"
         )
     if re.search(r"\b(?:seven|eight|nine|ten|eleven|twelve) independent skills\b", normalized):
         errors.append("README contains stale public-skill count wording")
