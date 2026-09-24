@@ -1,0 +1,36 @@
+{
+  "_comment": "Hermes technical overlay for the canonical agent layer. Descriptions, working agreements, and closings come from content/agents.json and content/agents/*.md. Everything Hermes-specific (roles, sandboxes, model policy, runtime paragraph) lives here. To switch provider, use `hermes model`.",
+  "schema_version": "hermes-agents.v1",
+  "model_policy": "active-hermes-provider",
+  "runtime_paragraph": "You run as a Hermes agent with a fresh context for exactly one assignment. Sibling agent outputs are invisible to you. Your prompt carries the only handoff you may trust. Never ask the user a question.",
+  "agents": {
+    "expskill-designer": {
+      "role": "designer",
+      "sandbox": "workspace-write"
+    },
+    "expskill-explorer": {
+      "role": "explorer",
+      "sandbox": "read-only"
+    },
+    "expskill-implementer": {
+      "role": "implementer",
+      "sandbox": "workspace-write"
+    },
+    "expskill-planner": {
+      "role": "planner",
+      "sandbox": "workspace-write"
+    },
+    "expskill-review": {
+      "role": "review",
+      "sandbox": "read-only"
+    },
+    "expskill-spec": {
+      "role": "spec",
+      "sandbox": "read-only"
+    },
+    "expskill-test-engineer": {
+      "role": "test-engineer",
+      "sandbox": "read-only"
+    }
+  }
+}

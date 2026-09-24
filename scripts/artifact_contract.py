@@ -15,10 +15,12 @@ from typing import Mapping, Sequence
 
 PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v2"
 CODEX_PROVENANCE_SCHEMA_VERSION = "codex-provenance.v1"
+HERMES_PROVENANCE_SCHEMA_VERSION = "hermes-provenance.v1"
 PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
 PLATFORM_SOURCE_FILES = ("agents.json", "package.json", "LICENSE", "index.js")
 PLATFORM_PLUGIN_DIRECTORY = "plugins"
 PLATFORM_PLUGIN_FILES = ("execution-policy.js", "unslop.js")
+HERMES_PLATFORM_FILES = ("plugin.json", "agents.json")
 OPENCODE_README_SOURCE = Path("content/docs/opencode.md")
 # These are canonical source paths.  The target-relative paths are deliberately
 # separate: host packages may render a conventional top-level runtime layout
@@ -98,6 +100,12 @@ def artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | N
         and within.parts[1] in PLATFORM_FILES
     ):
         return within.parts[1]
+    if (
+        len(within.parts) == 2
+        and within.parts[0] == "hermes"
+        and within.parts[1] in HERMES_PLATFORM_FILES
+    ):
+        return within.parts[1]
     return None
 
 
@@ -107,6 +115,17 @@ def canonical_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
     import json
 
     payload = {"schema_version": PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def hermes_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
+    """Return the exact UTF-8 bytes required for the Hermes ``provenance.json``."""
+
+    import json
+
+    payload = {"schema_version": HERMES_PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
     return (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
