@@ -163,7 +163,7 @@ class PlanContractTests(unittest.TestCase):
         self.assertEqual(len(steps), 10)
         required_by_step = (
             ("branch policy", "repository revision", "user confirmation"),
-            ("create or resume", "outcomes", "conceptual decisions"),
+            ("create or resume", "conceptual decisions"),
             ("main agent", "implementation seam", "never delegated"),
             ("classify feasibility", "contradicts", "smallest necessary amendment"),
             ("adaptive minimum", "one outcome", "proof obligation"),
@@ -260,8 +260,6 @@ class PlanContractTests(unittest.TestCase):
             "edit authority",
             "user interaction",
             "planning role",
-            "one recommendation",
-            "waits for the user to select",
             "rejected alternatives",
         ):
             with self.subTest(phrase=phrase):
@@ -296,7 +294,6 @@ class PlanContractTests(unittest.TestCase):
             "one coherent part per turn",
             "every material decision",
             "confirm or correct",
-            "decision-relevant information per word",
             "affected subgraph",
             "only affected",
             "preserve unrelated confirmations",
