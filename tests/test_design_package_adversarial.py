@@ -7,22 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import install
 from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
 HELPER = PLUGIN / "content" / "scripts" / "design_state.py"
-
-
-class _NeverCalledRunner:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(self, command: list[str]) -> object:
-        self.calls.append(command)
-        raise AssertionError(f"installer reached external command before preflight failed: {command}")
 
 
 class DesignPackageAdversarialTests(unittest.TestCase):
@@ -504,20 +494,6 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     any("design state helper" in error.lower() for error in errors),
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
                 )
-
-    def test_installer_does_not_mutate_on_design_helper_preflight_failure(self) -> None:
-        """Regression: invalid Design package state must fail before links, receipts, or external commands change."""
-        root = self._copy_repository()
-        helper = root / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
-        helper.unlink()
-        codex_home = root / "codex-home"
-        state_home = root / "state-home"
-        runner = _NeverCalledRunner()
-        with self.assertRaises(install.InstallError):
-            install.install(root, codex_home, state_home, runner)
-        self.assertEqual(runner.calls, [])
-        self.assertFalse(codex_home.exists())
-        self.assertFalse(state_home.exists())
 
 
 if __name__ == "__main__":

@@ -45,12 +45,6 @@ build contains `catalog.json`, `provenance.json`, generated `agents/` and
 The output is the directory passed to `npm pack`. The checked-in source
 directory is not the generated artifact.
 
-For a repository checkout, `python3 scripts/install.py --target opencode`
-builds the same artifact into receipt-owned state outside the repository and
-links its complete dynamic skill, command, agent, and plugin inventory into the
-OpenCode config directory. Use `--dry-run` to inspect the links and
-`--uninstall` to remove only receipt-owned links and state.
-
 ## OpenCode plugin
 
 Install the published package in an OpenCode project:
@@ -60,6 +54,21 @@ Install the published package in an OpenCode project:
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-expskill"]
 }
+```
+
+```bash
+opencode plugin add opencode-expskill
+```
+
+Publish a locally built artifact, then install it:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+pack_dir="$(mktemp -d)"
+npm pack "$artifact_root" --pack-destination "$pack_dir"
+npm publish "$pack_dir"/opencode-expskill-*.tgz
+rm -rf "$artifact_root" "$pack_dir"
 ```
 
 The package root defaults to the native OpenCode v1 `ExpSkillPlugin`, which

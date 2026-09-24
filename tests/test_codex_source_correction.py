@@ -12,7 +12,6 @@ from unittest import mock
 
 from scripts.build_codex_package import build_codex_package
 from scripts.build_opencode_package import build_opencode_package
-from scripts.install import install, preflight_links
 from scripts.render_codex import render_agents as render_codex_agents
 from scripts.render_opencode import render_agents as render_opencode_agents
 
@@ -149,16 +148,19 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             self.assertEqual((codex / "assets" / "unslop-runtime.json").read_bytes(), expected)
             self.assertEqual((opencode / "assets" / "unslop-runtime.json").read_bytes(), expected)
 
-    def test_codex_sources_are_managed_outside_the_checkout(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            codex_home = Path(temporary) / "codex"
-            state_home = Path(temporary) / "state"
-            links = preflight_links(ROOT, codex_home, state_home)
+    def test_codex_agent_profiles_ship_inside_the_built_marketplace(self) -> None:
+        from scripts.build_codex_marketplace import build_codex_marketplace
 
-            self.assertEqual(len(links), 7)
-            for link in links:
-                self.assertNotIn(PLUGIN_ROOT / "codex" / "runtime", link.source.parents)
-                self.assertFalse(link.source.is_relative_to(PLUGIN_ROOT))
+        with tempfile.TemporaryDirectory() as temporary:
+            marketplace = build_codex_marketplace(ROOT, Path(temporary) / "marketplace")
+            profiles = sorted(
+                (marketplace / "plugins" / "expskill" / "agents").glob("*.toml")
+            )
+
+            self.assertEqual(len(profiles), 7)
+            for profile in profiles:
+                self.assertTrue(profile.is_file() and not profile.is_symlink())
+                self.assertIn("developer_instructions", profile.read_text(encoding="utf-8"))
 
     def test_codex_package_is_regular_and_provenanced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -209,49 +211,6 @@ class CodexSourceCorrectionTests(unittest.TestCase):
                 "additionalContext",
                 payload["hookSpecificOutput"],
             )
-
-    def test_legacy_assets_agent_links_are_migrated(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            codex_home = root / "codex"
-            state_home = root / "state"
-            destination = codex_home / "agents" / "expskill-review.toml"
-            legacy_source = (
-                ROOT
-                / "plugins"
-                / "expskill"
-                / "assets"
-                / "agents"
-                / "expskill-review.toml"
-            )
-            destination.parent.mkdir(parents=True)
-            destination.symlink_to(legacy_source)
-            receipt_path = state_home / "expskill" / "install.json"
-            receipt_path.parent.mkdir(parents=True)
-            receipt_path.write_text(
-                json.dumps(
-                    {
-                        "links": [
-                            {
-                                "destination": str(destination),
-                                "source": str(legacy_source),
-                            }
-                        ],
-                        "marketplace_added": False,
-                        "plugin_installed": False,
-                        "repository_root": str(ROOT.resolve()),
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            install(ROOT, codex_home, state_home, lambda _command: None, agents_only=True)
-
-            self.assertTrue(destination.is_symlink())
-            self.assertNotEqual(destination.resolve(strict=False), legacy_source)
-            migrated = json.loads(receipt_path.read_text(encoding="utf-8"))
-            self.assertNotIn("plugins/expskill/assets/agents", migrated["links"][0]["source"])
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,25 +28,12 @@ from scripts.build_opencode_package import build_opencode_package
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALL_SCRIPT = ROOT / "scripts" / "install.py"
 BIN_DIR = ROOT / ".testbin"
 
 CODEX_VERSION = "0.153.4"
 CODEX_TAG = "rust-v0.153.4"
 OPENCODE_VERSION = "1.18.29"
 
-SKILLS = (
-    "brainstorm",
-    "design",
-    "grill-me",
-    "implement",
-    "plan",
-    "setup-ui-testing",
-    "skill-builder",
-    "test",
-    "unslop",
-    "use-expskill",
-)
 AGENTS = (
     "expskill-explorer",
     "expskill-planner",
@@ -148,7 +134,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
         cls.codex_bin = _ensure_binary("codex")
         cls.opencode_bin = _ensure_binary("opencode")
 
-    def test_codex_cli_installs_plugin_and_agents_only_links_profiles(self) -> None:
+    def test_codex_cli_installs_plugin_and_copies_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             codex_home = root / "codex-home"
@@ -178,17 +164,20 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 14,
             )
 
-            installer = _run(
-                [sys.executable, str(INSTALL_SCRIPT), "--agents-only"], env
-            )
-            self.assertEqual(installer.returncode, 0, installer.stderr)
-
+            # Codex plugins do not register agent profiles: copy the seven
+            # TOML profiles shipped inside the installed plugin into the
+            # Codex agents directory, exactly as the README documents.
             agents_root = codex_home / "agents"
+            agents_root.mkdir(parents=True, exist_ok=True)
+            packaged_agents = sorted(installed_path.glob("agents/*.toml"))
+            self.assertEqual(len(packaged_agents), len(AGENTS))
+            for profile in packaged_agents:
+                shutil.copy2(profile, agents_root / profile.name)
             for name in AGENTS:
                 with self.subTest(agent=name):
                     link = agents_root / f"{name}.toml"
-                    self.assertTrue(link.is_symlink(), f"missing agent link: {link}")
-                    self.assertIn(state_home.resolve(), link.resolve().parents)
+                    self.assertTrue(link.is_file(), f"missing agent profile: {link}")
+                    self.assertFalse(link.is_symlink(), f"agent profile must be a copy: {link}")
 
             listed = _run_json(codex + ["plugin", "list", "--json"], env)
             assert isinstance(listed, dict)
@@ -203,7 +192,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
             self.assertTrue(matches[0].get("enabled"))
 
             uninstaller = _run(
-                [sys.executable, str(INSTALL_SCRIPT), "--agents-only", "--uninstall"], env
+                ["rm", *(str(agents_root / f"{name}.toml") for name in AGENTS)], env
             )
             self.assertEqual(uninstaller.returncode, 0, uninstaller.stderr)
             remaining = (
@@ -231,110 +220,6 @@ class CliInstallIntegrationTests(unittest.TestCase):
                     for entry in relisted_entries
                 )
             )
-
-    def test_opencode_cli_detects_installed_skills_commands_agents_and_plugins(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            project_dir = root / "project"
-            config_dir = root / "opencode-config"
-            test_home = root / "opencode-test-home"
-            xdg_config_home = root / "xdg-config"
-            xdg_data_home = root / "xdg-data"
-            state_home = root / "state-home"
-            cache_home = root / "cache-home"
-            project_dir.mkdir()
-            env = {key: value for key, value in os.environ.items() if key != "EXPSKILL_HOME"}
-            env.update({
-                "OPENCODE_TEST_HOME": str(test_home),
-                "OPENCODE_CONFIG_DIR": str(config_dir),
-                "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
-                "XDG_CONFIG_HOME": str(xdg_config_home),
-                "XDG_DATA_HOME": str(xdg_data_home),
-                "XDG_STATE_HOME": str(state_home),
-                "XDG_CACHE_HOME": str(cache_home),
-            })
-            opencode = [str(self.opencode_bin)]
-
-            installer = _run(
-                [sys.executable, str(INSTALL_SCRIPT), "--target", "opencode"],
-                env,
-                cwd=project_dir,
-                unset_env=("EXPSKILL_HOME",),
-            )
-            self.assertEqual(installer.returncode, 0, installer.stderr)
-
-            for name in SKILLS:
-                with self.subTest(skill=name):
-                    skill = config_dir / "skills" / name
-                    self.assertTrue(skill.is_symlink(), f"missing skill link: {skill}")
-                    self.assertTrue((skill / "SKILL.md").is_file())
-                    self.assertTrue((config_dir / "commands" / f"{name}.md").is_symlink())
-            for name in AGENTS:
-                with self.subTest(agent=name):
-                    self.assertTrue((config_dir / "agents" / f"{name}.md").is_symlink())
-            for name in ("unslop.js", "execution-policy.js"):
-                with self.subTest(plugin=name):
-                    self.assertTrue((config_dir / "plugins" / name).is_symlink())
-
-            # OpenCode reports plugin startup failures only in logs and still exits 0.
-            startup = _run(
-                opencode + ["debug", "config", "--print-logs", "--log-level", "DEBUG"],
-                env,
-                cwd=project_dir,
-                unset_env=("EXPSKILL_HOME",),
-            )
-            self.assertEqual(
-                startup.returncode,
-                0,
-                f"OpenCode startup failed:\nstdout:\n{startup.stdout}\nstderr:\n{startup.stderr}",
-            )
-            self.assertNotIn("failed to load plugin", startup.stderr.lower())
-            try:
-                startup_config = json.loads(startup.stdout)
-            except json.JSONDecodeError as error:
-                self.fail(
-                    f"OpenCode startup returned invalid config JSON: {error}\n"
-                    f"stdout:\n{startup.stdout}\nstderr:\n{startup.stderr}"
-                )
-            assert isinstance(startup_config, dict)
-            startup_plugins = startup_config.get("plugin", [])
-            assert isinstance(startup_plugins, list)
-            startup_specs = " ".join(str(entry) for entry in startup_plugins)
-            for name in ("unslop.js", "execution-policy.js"):
-                with self.subTest(loaded_plugin=name):
-                    self.assertIn(name, startup_specs)
-
-            agents_stdout = _await_agent_list(
-                opencode,
-                env,
-                AGENTS,
-                cwd=project_dir,
-                unset_env=("EXPSKILL_HOME",),
-            )
-            for name in AGENTS:
-                with self.subTest(agent=name):
-                    self.assertIn(name, agents_stdout)
-
-            commands = startup_config.get("command", {})
-            assert isinstance(commands, dict)
-            for name in SKILLS:
-                with self.subTest(command=name):
-                    self.assertIn(name, commands)
-
-            uninstaller = _run(
-                [sys.executable, str(INSTALL_SCRIPT), "--target", "opencode", "--uninstall"],
-                env,
-                cwd=project_dir,
-                unset_env=("EXPSKILL_HOME",),
-            )
-            self.assertEqual(uninstaller.returncode, 0, uninstaller.stderr)
-            leftovers = [
-                path
-                for subdir in ("skills", "commands", "agents", "plugins")
-                for path in (config_dir / subdir).rglob("*")
-                if path.is_symlink()
-            ]
-            self.assertEqual(leftovers, [])
 
     @needs_npm
     def test_opencode_cli_discovers_packed_native_plugin(self) -> None:

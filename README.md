@@ -10,27 +10,7 @@ From the repository root:
 
 ```bash
 python3 scripts/validate.py
-python3 scripts/install.py
-python3 scripts/install.py --target opencode
 ```
-
-Start a new Codex session after installation so the skills and linked agent
-profiles are rediscovered. Use `python3 scripts/install.py --dry-run` to inspect
-the planned changes and `python3 scripts/install.py --uninstall` to remove only
-repository-owned installation state. The Codex and opencode installers keep
-separate receipts and separate destinations, so both targets can be installed
-at once.
-
-The OpenCode target builds generated agents, commands, the catalog, and copied
-assets into receipt-owned state under the configured state home, then links
-those regular files into the OpenCode config directory. It does not require or
-create generated mirrors in the repository. Inspect that plan with
-`python3 scripts/install.py --target opencode --dry-run`; remove it with
-`python3 scripts/install.py --target opencode --uninstall`.
-
-The plugin includes a `SessionStart` hook that applies Unslop to prose in root
-conversations. Codex will not run a new or changed plugin hook until you review
-and trust it. Inspect it through `/hooks`, then start a new conversation.
 
 ## Install through the Codex plugin CLI
 
@@ -50,70 +30,75 @@ plugin tree and does not merge a separate adapter tree into it.
 
 That CLI flow installs the skills, their Codex UI metadata, and the hook. The
 seven agent profiles cannot ride along because Codex loads custom profiles
-only from the agents directory. Link them with the installer in agents-only
-mode:
+only from the agents directory. Copy them from the built marketplace package:
 
 ```bash
-python3 scripts/install.py --agents-only
-python3 scripts/install.py --agents-only --uninstall
+mkdir -p ~/.codex/agents
+rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
+  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
+  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
+  ~/.codex/agents/expskill-test-engineer.toml
+cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
 ```
 
-Agents-only mode never calls the plugin CLI. It only creates the profile
-links and records them in its own receipt, and a later full
-`python3 scripts/install.py` run keeps those links while claiming the CLI
-ownership it performed.
-Agents-only uninstall retains the generated package and its identity in the
-receipt, so reinstall and later full uninstall can still verify ownership.
+Removing the seven paths first matters: the retired installer left symlinks
+there, and copying over a symlink writes through it instead of replacing it.
+The `rm -f` list names exactly the seven installed profiles, so unrelated
+files are untouched — but back up any custom content under those same names
+first. Start a new Codex session after installation so the skills and agent
+profiles are rediscovered. To remove:
 
-Codex receipts from the older path-only format are migrated on install or
-uninstall: a valid receipt authorizes only its recorded source/destination
-pairs, and migration freezes the observed symlink identities before creating
-private anchors. Regular files and links to other targets are preserved.
-The old format cannot distinguish a same-target replacement made before that
-identity checkpoint from the original link; it retains its historical
-path-based ownership contract for that one migration. Newly written receipts
-use explicit identity metadata and do not grant ownership to unproven entries.
-A later same-target replacement is preserved, along with receipt evidence
-and its package dependency until that replacement is removed.
-Matching profile symlinks that already exist at installation are also recorded
-as dependencies, without granting permission to delete them. Full uninstall
-retains their package and receipt until those links are removed or redirected.
-This includes links spelled through directory aliases. New installations also
-record the generated package's identity before publication. Refresh and full
-uninstall retain a package whose receipt has no package identity, including
-older marker-only packages; move that package aside before retrying installation
-or teardown. Install retries finish pending package retirement before publishing
-a replacement. A failed install retains the generated package's recorded identity
-when clearing its install journal, even if no links or CLI registrations remain.
-Upgrades freeze old receipt ownership before package construction, so a failed
-upgrade retains its CLI ownership flags and profile evidence. A restored package
-keeps its complete prior identity across rollback and process exit. Receipt and
-journal publication and cleanup are bound to the files read or published by the transaction;
-replacement files are preserved and reported for reconciliation before retry.
-Interrupted record publication recovers before state files are read. Receipt and
-journal records retain a hard-link identity witness until retirement, including
-through rollback to older records and publication cleanup, so retry rejects a
-copied replacement. Marker creation and syncing use the directory descriptor
-retained by the builder before publication. Failed publication cleanup checks
-the exact temporary file and candidate directory identities, preserving and
-reporting replacement entries for reconciliation.
-The marketplace builder removes only empty temporary containers. A failed build
-can leave a nonempty `.codex-marketplace-build-*` directory for manual inspection;
-cleanup never recursively deletes a replacement at that pathname.
-Fresh profile symlinks are constructed in a private creation directory and
-hard-linked into staging with their identity already known. The installer lock
-covers private creation and retirement names; arbitrary concurrent writes inside
-those private directories are outside that boundary.
-If a process exits after creating a staged profile symlink but before recording
-its inode identity, install and uninstall preserve that unproven stage and stop.
-This also applies to legacy restoration. Reconcile the reported staging path and
-any adjacent `.create` directory manually before retrying; a matching target
-alone cannot prove that the symlink belongs to the interrupted install.
-If a failed legacy migration restores CLI registrations to a recovery package,
-its migration journal retains that package's frozen identity. Retry verifies
-and reuses the recovery package; a copied marker cannot authorize a replacement.
-Older recovery journals without a frozen directory identity fail closed and
-retain the recovery package and journal for manual reconciliation.
+```bash
+codex plugin remove expskill@expskill
+codex plugin marketplace remove expskill
+rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
+  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
+  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
+  ~/.codex/agents/expskill-test-engineer.toml
+rm -rf "$codex_marketplace"
+```
+
+The `~/.codex/agents` directory itself is left in place; only the
+`expskill-*.toml` copies are removed.
+
+The plugin includes a `SessionStart` hook that applies Unslop to prose in root
+conversations. Codex will not run a new or changed plugin hook until you review
+and trust it. Inspect it through `/hooks`, then start a new conversation.
+
+State left by the retired installer (`$XDG_STATE_HOME/expskill` receipts and
+journals, `codex-marketplace` and recovery packages) is inert without it;
+remove those directories by hand if they exist. The retired Codex agent
+symlinks are not inert either: besides the seven current profiles, the
+installer may have left `expskill-critical-reviewer.toml`,
+`expskill-implementer-high.toml`, `expskill-reviewer.toml`,
+`expskill-verifier.toml`, and `expskill-verifier-low.toml` in
+`~/.codex/agents` pointing at removed state — delete those five as well.
+The retired opencode links are not inert: entries the installer created
+under `$OPENCODE_CONFIG_DIR` (`skills/`, `commands/`, `agents/`, `plugins/`)
+and the state-home `expskill/opencode-artifact` directory keep pointing at
+removed state, so delete those expskill entries and the artifact directory
+by hand as well.
+
+## Install through the opencode plugin CLI
+
+Build the native npm artifact outside the checkout, publish it, then install
+it with the opencode CLI:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+pack_dir="$(mktemp -d)"
+npm pack "$artifact_root" --pack-destination "$pack_dir"
+npm publish "$pack_dir"/opencode-expskill-*.tgz
+opencode plugin add opencode-expskill
+```
+
+To remove:
+
+```bash
+opencode plugin remove opencode-expskill
+rm -rf "$artifact_root" "$pack_dir"
+```
 
 ## Source layout
 
@@ -244,16 +229,18 @@ inconsistent evidence.
 
 ```bash
 python3 scripts/validate.py
-python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
+python3 -m pytest -q tests/test_codex_source_correction.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
-python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_install.py tests/test_opencode_runtime.py
+python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_package.py tests/test_opencode_runtime.py
 ```
 
 The networked integration suite obtains pinned Codex `0.153.4` and opencode
 `1.18.29` executables into the repository-local `.testbin` directory, verifies
 the official release archive SHA-256, retains or reacquires that verified
 archive, checks the expected executable member before reusing cached bytes,
-installs both targets through the real CLIs, and verifies detection. Run it in
+exercises Codex through the real Codex CLI marketplace and plugin commands
+and exercises OpenCode through npm pack/install plus file-URI config wiring,
+and verifies detection. Run it in
 the required, fail-closed mode:
 
 ```bash
@@ -312,5 +299,6 @@ The focused contract and runtime suites cover the currently implemented skill,
 installation, security, concurrency, recovery, and lifecycle boundaries.
 
 The live certification and release chain is still being hardened. The phase
-surface and installer are available on the integration branch, but the plugin
-must not be called release-certified until every gate passes.
+surface is available on the integration branch (the retired installer is
+gone; install only through the Codex or opencode plugin CLIs), but the
+plugin must not be called release-certified until every gate passes.
