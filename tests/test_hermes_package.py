@@ -123,7 +123,7 @@ class HermesPackageTests(unittest.TestCase):
         self.assertEqual(
             sorted(path.name for path in (artifact / "skills").iterdir()), list(names)
         )
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 15)
 
     def test_agents_match_pure_renderer(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)

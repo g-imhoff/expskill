@@ -24,7 +24,8 @@ PHASE_ROOTS = {
         "brainstorm",
         "design",
         "grill-me",
-        "setup-ui-testing",
+        "setup-design",
+        "setup-test",
         "plan",
         "implement",
         "correct",
@@ -54,7 +55,8 @@ EXPECTED_SKILLS = {
     "brainstorm",
     "design",
     "grill-me",
-    "setup-ui-testing",
+    "setup-design",
+    "setup-test",
     "plan",
     "implement",
     "correct",
@@ -443,7 +445,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("thirteen", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("fourteen", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -558,7 +560,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bthirteen independent skills and one optional lifecycle router\b"
+            r"\bfourteen independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "README.md",
@@ -627,10 +629,10 @@ class ContractTests(unittest.TestCase):
             ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8"),
         )
 
-    def test_setup_ui_testing_is_a_bounded_independent_setup_skill(self) -> None:
-        """Regression: one-time UI setup stays reusable and independently callable."""
+    def test_setup_design_is_a_bounded_independent_setup_skill(self) -> None:
+        """Regression: design-sketch setup stays reusable and independently callable."""
 
-        root = PHASE_ROOTS["setup-ui-testing"]
+        root = PHASE_ROOTS["setup-design"]
         files = {
             path.relative_to(root).as_posix()
             for path in root.rglob("*")
@@ -640,27 +642,69 @@ class ContractTests(unittest.TestCase):
             files,
             {
                 "SKILL.md",
-                "references/capability-contract.md",
-                "scripts/inspect_setup.py",
+                "references/record-format.md",
             },
         )
+        adapter = (
+            PLUGIN_ROOT / "codex" / "skill-adapters" / root.name / "agents" / "openai.yaml"
+        )
+        self.assertTrue(adapter.is_file(), adapter)
+        self.assertIn("allow_implicit_invocation: false", adapter.read_text(encoding="utf-8"))
         skill = root.joinpath("SKILL.md").read_text(encoding="utf-8")
-        capability = root.joinpath("references/capability-contract.md").read_text(
+        record_format = root.joinpath("references/record-format.md").read_text(
             encoding="utf-8"
         )
         router = ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8")
         for phrase in (
-            ".ui-harness/README.md",
+            ".expskill/setup-design.md",
             "ordinary invocation",
-            "compact",
-            "intermediate",
-            "wide",
+            "explicit confirmation",
         ):
             self.assertIn(phrase, skill)
-        self.assertIn("<!-- expskill:setup-ui-testing:v1 -->", capability)
-        self.assertIn("Non-interactive components", capability)
-        self.assertIn("$setup-ui-testing", router)
-        self.assertIn("inspect_setup.py", router)
+        self.assertIn("expskill.setup-design.v1", record_format)
+        self.assertIn("$setup-design", router)
+        self.assertIn("There is no setup gate.", router)
+        self.assertNotIn("inspect_setup.py", router)
+        self.assertNotIn("$setup-ui-testing", router)
+        self.assertIn("parallel-plan-design", router)
+
+    def test_setup_test_is_a_bounded_independent_setup_skill(self) -> None:
+        """Regression: test-method setup stays reusable and independently callable."""
+
+        root = PHASE_ROOTS["setup-test"]
+        files = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(
+            files,
+            {
+                "SKILL.md",
+                "references/record-format.md",
+            },
+        )
+        adapter = (
+            PLUGIN_ROOT / "codex" / "skill-adapters" / root.name / "agents" / "openai.yaml"
+        )
+        self.assertTrue(adapter.is_file(), adapter)
+        self.assertIn("allow_implicit_invocation: false", adapter.read_text(encoding="utf-8"))
+        skill = root.joinpath("SKILL.md").read_text(encoding="utf-8")
+        record_format = root.joinpath("references/record-format.md").read_text(
+            encoding="utf-8"
+        )
+        router = ROUTER_ROOT.joinpath("SKILL.md").read_text(encoding="utf-8")
+        for phrase in (
+            ".expskill/setup-test.md",
+            "ordinary invocation",
+            "explicit confirmation",
+        ):
+            self.assertIn(phrase, skill)
+        self.assertIn("expskill.setup-test.v1", record_format)
+        self.assertIn("$setup-test", router)
+        self.assertIn("There is no setup gate.", router)
+        self.assertNotIn("inspect_setup.py", router)
+        self.assertNotIn("$setup-ui-testing", router)
         self.assertIn("parallel-plan-design", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
@@ -1030,7 +1074,8 @@ class ContractTests(unittest.TestCase):
                 if name not in {
                     "brainstorm",
                     "design",
-                    "setup-ui-testing",
+                    "setup-design",
+                    "setup-test",
                     "skill-builder",
                     "test",
                 }:
