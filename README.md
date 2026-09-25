@@ -1,7 +1,8 @@
 # ExpSkill
 
 ExpSkill is a private Codex plugin with fourteen independent skills and one
-optional lifecycle router.
+optional lifecycle router. The same skill base also ships as the
+`opencode-expskill` npm package for opencode.
 
 ## Install and validate
 
@@ -9,17 +10,142 @@ From the repository root:
 
 ```bash
 python3 scripts/validate.py
-python3 scripts/install.py
 ```
 
-Start a new Codex session after installation so the skills and linked agent
-profiles are rediscovered. Use `python3 scripts/install.py --dry-run` to inspect
-the planned changes and `python3 scripts/install.py --uninstall` to remove only
-repository-owned installation state.
+## Install through the Codex plugin CLI
+
+Build the Codex marketplace outside the checkout, then pass that generated
+directory to the Codex CLI:
+
+```bash
+codex_marketplace="$(mktemp -d)/expskill-marketplace"
+python3 scripts/build_codex_marketplace.py "$codex_marketplace"
+codex plugin marketplace add "$codex_marketplace"
+codex plugin add expskill@expskill
+```
+
+The build combines the canonical content with the Codex adapters as regular
+files. The authored checkout is not a marketplace because Codex copies one
+plugin tree and does not merge a separate adapter tree into it.
+
+That CLI flow installs the skills, their Codex UI metadata, and the hook. The
+seven agent profiles cannot ride along because Codex loads custom profiles
+only from the agents directory. Copy them from the built marketplace package:
+
+```bash
+mkdir -p ~/.codex/agents
+rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
+  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
+  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
+  ~/.codex/agents/expskill-test-engineer.toml
+cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
+```
+
+Removing the seven paths first matters: the retired installer left symlinks
+there, and copying over a symlink writes through it instead of replacing it.
+The `rm -f` list names exactly the seven installed profiles, so unrelated
+files are untouched — but back up any custom content under those same names
+first. Start a new Codex session after installation so the skills and agent
+profiles are rediscovered. To remove:
+
+```bash
+codex plugin remove expskill@expskill
+codex plugin marketplace remove expskill
+rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
+  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
+  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
+  ~/.codex/agents/expskill-test-engineer.toml
+rm -rf "$codex_marketplace"
+```
+
+The `~/.codex/agents` directory itself is left in place; only the
+`expskill-*.toml` copies are removed.
+
+To update, rebuild and reinstall (the CLI has no per-plugin upgrade; the
+`marketplace upgrade` command only refreshes Git marketplaces, and this one
+is a local directory):
+
+```bash
+codex_marketplace="$(mktemp -d)/expskill-marketplace"
+python3 scripts/build_codex_marketplace.py "$codex_marketplace"
+codex plugin remove expskill@expskill
+codex plugin marketplace remove expskill
+codex plugin marketplace add "$codex_marketplace"
+codex plugin add expskill@expskill
+rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
+  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
+  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
+  ~/.codex/agents/expskill-test-engineer.toml
+cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
+rm -rf "$codex_marketplace"
+```
 
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.
+
+State left by the retired installer (`$XDG_STATE_HOME/expskill` receipts and
+journals, `codex-marketplace` and recovery packages) is inert without it;
+remove those directories by hand if they exist. The retired Codex agent
+symlinks are not inert either: besides the seven current profiles, the
+installer may have left `expskill-critical-reviewer.toml`,
+`expskill-implementer-high.toml`, `expskill-reviewer.toml`,
+`expskill-verifier.toml`, and `expskill-verifier-low.toml` in
+`~/.codex/agents` pointing at removed state — delete those five as well.
+The retired opencode links are not inert: entries the installer created
+under `$OPENCODE_CONFIG_DIR` (`skills/`, `commands/`, `agents/`, `plugins/`)
+and the state-home `expskill/opencode-artifact` directory keep pointing at
+removed state, so delete those expskill entries and the artifact directory
+by hand as well.
+
+## Install through the opencode plugin CLI
+
+Build the native npm artifact outside the checkout, publish it, then install
+it with the opencode CLI:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+pack_dir="$(mktemp -d)"
+npm pack "$artifact_root" --pack-destination "$pack_dir"
+npm publish "$pack_dir"/opencode-expskill-*.tgz
+opencode plugin add opencode-expskill
+```
+
+To remove:
+
+```bash
+opencode plugin remove opencode-expskill
+rm -rf "$artifact_root" "$pack_dir"
+```
+
+To update:
+
+```bash
+opencode plugin check
+opencode plugin update opencode-expskill
+```
+
+## Source layout
+
+`plugins/expskill/content` is the only authored source for shared skill and
+agent Markdown. It also owns shared runtime prose and policies.
+
+`plugins/expskill/codex` contains Codex-only mechanics. Its
+`skill-adapters/` tree holds `openai.yaml` UI metadata, while `hooks/` and
+`agents.json` define Codex behavior. It contains no copy of a skill or agent
+Markdown file.
+
+`plugins/expskill/opencode` contains OpenCode-only mechanics such as model and
+permission overlays, package metadata, and JavaScript plugins. The renderers
+and builders combine each adapter with `content/` into a complete host
+package. Generated packages stay outside the checkout.
+
+`plugins/expskill/hermes` contains Hermes-only mechanics: the Agent Plugins
+v1 `plugin.json` manifest and the role/sandbox/model-policy overlay in
+`agents.json`. The Hermes renderer and builder combine them with `content/`
+into a package installable with `hermes plugins install`. There is no
+`install.py` target for Hermes.
 
 ## Skills
 
@@ -57,8 +183,8 @@ Invoke a skill directly when you know what you want:
   conversation before handing the result to you for review and merge.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
-skill. It normally opens one skill per transition. For unresolved UI work with
-a ready project UI testing setup, it may launch one Plan session and one Design
+skill. It normally opens one skill per transition. For unresolved UI work, it
+may launch one Plan session and one Design
 session concurrently from the same baseline. It coordinates against the
 canonical Plan Graph when one exists, validates revision-bound receipts, and
 preserves the implementation gates. It is the only skill that may activate
@@ -142,14 +268,121 @@ inconsistent evidence.
 
 ```bash
 python3 scripts/validate.py
-python3 -m pytest -q tests/test_contracts.py tests/test_install.py tests/test_worktrees.py
+python3 -m pytest -q tests/test_codex_source_correction.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
+python3 -m pytest -q tests/test_opencode_contract.py tests/test_opencode_package.py tests/test_opencode_runtime.py
+python3 -m pytest -q tests/test_hermes_contract.py tests/test_hermes_package.py
 ```
+
+The networked integration suite obtains pinned Codex `0.153.4` and opencode
+`1.18.29` executables into the repository-local `.testbin` directory, verifies
+the official release archive SHA-256, retains or reacquires that verified
+archive, checks the expected executable member before reusing cached bytes,
+exercises Codex through the real Codex CLI marketplace and plugin commands
+and exercises OpenCode through npm pack/install plus file-URI config wiring,
+and verifies detection. Run it in
+the required, fail-closed mode:
+
+```bash
+EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+```
+
+The checked-in manifest records the archive digests and their authoritative
+release metadata URLs from the Codex and opencode GitHub release APIs. A
+missing binary, unsupported platform, download failure, corrupt archive or
+cache, unexpected archive layout, and any digest mismatch fails this command;
+none can become a skip. The suite runs only install/list/remove and
+config-startup smoke commands, never a model call.
+
+An explicit executable override is permitted only with an independently
+verified companion digest. Do not compute a digest from an untrusted file and
+use it as proof. Relative overrides are resolved to a stable absolute path
+before verification; a bare executable name is resolved through `PATH` at that
+time:
+
+```bash
+export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
+export EXPSKILL_TEST_CODEX_BIN_SHA256="independently-verified-sha256"
+export EXPSKILL_TEST_OPENCODE_BIN="/path/to/opencode"
+export EXPSKILL_TEST_OPENCODE_BIN_SHA256="independently-verified-sha256"
+export EXPSKILL_CLI_MODE=required
+python3 -m pytest -q tests/test_cli_install_integration.py
+```
+
+For a deliberately local/offline check, opt in explicitly with
+`EXPSKILL_CLI_MODE=optional`; only unavailable acquisition is skippable there.
+It must not be used as a substitute for required verification.
+
+## OpenCode package
+
+The OpenCode source lives under `plugins/expskill`:
+shared skills, agent profiles, and package assets are there, while native
+OpenCode metadata, documentation, and plugins are under
+`plugins/expskill/opencode`. The pure renderer in
+`scripts/render_opencode.py` derives agent Markdown, command Markdown, and the
+native runtime catalog. The explicit-output builder in
+`scripts/build_opencode_package.py` materializes a self-contained npm artifact
+with regular files and sorted SHA-256 provenance.
+
+Build into a new directory, then pack that artifact:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+npm pack --dry-run --json "$artifact_root"
+```
+
+See `plugins/expskill/content/docs/opencode.md` for the source, renderer, builder,
+and plugin details.
+
+## Hermes package
+
+The Hermes source lives under `plugins/expskill`:
+shared skills, agent profiles, and package assets are there, while the native
+Agent Plugins v1 manifest and agent overlay are under
+`plugins/expskill/hermes`. The pure renderer in
+`scripts/render_hermes.py` derives agent Markdown from the canonical bodies.
+The explicit-output builder in
+`scripts/build_hermes_package.py` materializes a self-contained plugin
+artifact with regular files and sorted SHA-256 provenance.
+
+Build into a new directory, then validate that artifact:
+
+```bash
+artifact_root="$(mktemp -d)/hermes-expskill"
+python3 scripts/build_hermes_package.py "$artifact_root"
+hermes plugins validate "$artifact_root"
+```
+
+Install a published release with the Hermes CLI (each release publishes the
+built artifact to the `hermes-dist` branch; resolve its exact SHA first):
+
+```bash
+sha="$(git ls-remote https://github.com/g-imhoff/expskill.git hermes-dist | cut -f1 | sort -u)"
+hermes plugins install https://github.com/g-imhoff/expskill.git --ref "$sha"
+```
+
+To update to the latest published release:
+
+```bash
+hermes plugins update expskill
+```
+
+To remove:
+
+```bash
+hermes plugins remove expskill
+```
+
+There is no `install.py` target for Hermes.
+
+See `plugins/expskill/content/docs/hermes.md` for the source, renderer, builder,
+and plugin details.
 
 The focused contract and runtime suites cover the currently implemented skill,
 installation, security, concurrency, recovery, and lifecycle boundaries.
 
 The live certification and release chain is still being hardened. The phase
-surface and installer are available on the integration branch, but the plugin
-must not be called release-certified until every gate in
-[`docs/release-policy.md`](docs/release-policy.md) passes.
+surface is available on the integration branch (the retired installer is
+gone; install only through the Codex or opencode plugin CLIs), but the
+plugin must not be called release-certified until every gate passes.

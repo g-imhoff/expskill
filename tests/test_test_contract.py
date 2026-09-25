@@ -16,7 +16,17 @@ from tests import test_test_evidence_finalizer as finalizer_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_SKILL = ROOT / "plugins" / "expskill" / "skills" / "test"
+TEST_SKILL = ROOT / "plugins" / "expskill" / "content" / "skills" / "test"
+CODEX_TEST_METADATA = (
+    ROOT
+    / "plugins"
+    / "expskill"
+    / "codex"
+    / "skill-adapters"
+    / "test"
+    / "agents"
+    / "openai.yaml"
+)
 QUALITY_CATALOG = TEST_SKILL / "references" / "quality-rules.json"
 EVIDENCE_CONTRACT = TEST_SKILL / "references" / "evidence-contract.json"
 FINALIZER = TEST_SKILL / "scripts" / "finalize_evidence.py"
@@ -835,12 +845,12 @@ def _assert_terminal_evidence_transaction(contents: str) -> None:
     normalized = _normalized(transaction)
     required = (
         "canonical private, uncommitted, worktree-bound `.test-evidence/<run-id>/` root",
-        "360 seconds for conditional candidate preparation",
-        "closed 60-second terminal sprint",
+        "honor the contract's `deadline_reserve_seconds`",
         "at least 180 seconds of response margin",
         "at least 600 seconds total",
-        "enter candidate preparation as soon as 600 seconds remain or immediately after the ordinary action waves",
-        "do not invoke terminal handoff with fewer than 240 seconds remaining",
+        "checkpoints",
+        "780-second usable budget",
+        "recheck that reserve before handoff",
         "do not inspect the helper source to rediscover it",
         "write the initial `draft-preparation.json`",
         "exact observable proof predicate",
@@ -928,7 +938,7 @@ class TestSkillContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        for name in (".agents", "plugins", "scripts"):
+        for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
@@ -960,6 +970,7 @@ class TestSkillContractTests(unittest.TestCase):
             root
             / "plugins"
             / "expskill"
+            / "content"
             / "skills"
             / "test"
             / "references"
@@ -984,6 +995,7 @@ class TestSkillContractTests(unittest.TestCase):
             root
             / "plugins"
             / "expskill"
+            / "content"
             / "skills"
             / "test"
             / "references"
@@ -1009,7 +1021,7 @@ class TestSkillContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = self.write_catalog(root, copy.deepcopy(VALID_CATALOG))
         self.write_evidence_contract(root, copy.deepcopy(VALID_EVIDENCE_CONTRACT))
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
         return root, path
 
     def copy_with_valid_evidence_contract(self) -> tuple[Path, Path]:
@@ -1017,11 +1029,11 @@ class TestSkillContractTests(unittest.TestCase):
         path = self.write_evidence_contract(
             root, copy.deepcopy(VALID_EVIDENCE_CONTRACT)
         )
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
         return root, path
 
     def assert_catalog_rejected(self, root: Path, marker: str) -> None:
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         matching = [
             error
             for error in errors
@@ -1030,7 +1042,7 @@ class TestSkillContractTests(unittest.TestCase):
         self.assertTrue(matching, f"missing {marker!r} catalog error in {errors!r}")
 
     def assert_evidence_contract_rejected(self, root: Path, marker: str) -> None:
-        errors = validate_repository(root)
+        errors = validate_repository(root, include_opencode=False)
         matching = [
             error
             for error in errors
@@ -1048,13 +1060,12 @@ class TestSkillContractTests(unittest.TestCase):
         observed = {
             path.relative_to(TEST_SKILL).as_posix()
             for path in TEST_SKILL.rglob("*")
-            if path.is_file()
+            if path.is_file() and "__pycache__" not in path.relative_to(TEST_SKILL).parts
         }
         self.assertEqual(
             observed,
             {
                 "SKILL.md",
-                "agents/openai.yaml",
                 "references/quality-rules.json",
                 "references/evidence-contract.json",
                 "scripts/append_ledger.py",
@@ -1064,7 +1075,7 @@ class TestSkillContractTests(unittest.TestCase):
                 "scripts/record_final_action.py",
             },
         )
-        metadata_path = TEST_SKILL / "agents" / "openai.yaml"
+        metadata_path = CODEX_TEST_METADATA
         self.assertTrue(metadata_path.is_file(), metadata_path)
         self.assertEqual(metadata_path.read_text(encoding="utf-8"), EXPECTED_METADATA)
 
@@ -2681,17 +2692,13 @@ class TestSkillContractTests(unittest.TestCase):
             _markdown_section(contents, "## Terminal evidence transaction")
         )
         for marker in (
-            "360 seconds for conditional candidate preparation",
-            "closed 60-second terminal sprint",
-            "at least 180 seconds of response margin",
-            "at least 600 seconds total",
+            "honor the contract's `deadline_reserve_seconds`",
+            "checkpoints",
+            "780-second usable budget",
             "before execution",
             "recheck that reserve before handoff",
-            "assume a 780-second usable budget from initial root allocation",
-            "enter candidate preparation as soon as 600 seconds remain or immediately after the ordinary action waves",
-            "do not invoke terminal handoff with fewer than 240 seconds remaining",
-            "capture `draft.started_at` during initial root allocation",
-            "use available no-write/no-cache modes for probes",
+            "no-write/no-cache probe modes",
+            "without stealing evidence time",
             "composes and semantically preflights `draft.json` before the final product/runtime action",
             "compose → record → finalize",
             "validates the recorder",
@@ -3555,30 +3562,28 @@ class TestSkillContractTests(unittest.TestCase):
         contents = (TEST_SKILL / "SKILL.md").read_text(encoding="utf-8")
         execution = _normalized(_markdown_section(contents, "## Execute and explore"))
         for marker in (
-            "observation-capture gate",
             "before any artifact or ledger-batch write",
-            "zero exit code never substitutes for the output required by its oracle",
-            "empty, missing, truncated, or unparseable output supplies no product outcome",
-            "never reconstruct output from source, scenario data, expected text, a sibling call, or a later command",
-            "mandatory for `pass`, `fail`, and blocker proof alike",
-            "next command action repeats the exact literal argv once",
-            "no commentary, file change, or other command may intervene",
-            "after all already-started siblings return",
-            "one repair-only parallel batch",
-            "one literal replay for every unusable sibling",
-            "immediately before every file-change action",
-            "zero returned bytes",
-            "file-change action is forbidden",
-            "what the command normally prints",
-            "capture repair precedes any revision or head-drift check",
-            "never append a ledger batch or enter terminal preparation while any required output remains unusable",
-            "transport replay of the same selected semantic action",
-            "does not add a ledger entry or consume another semantic-action slot",
-            "bind only bytes actually returned by that command",
-            "second observation is still unusable, record `blocked`",
+            "enforce the authoring contract's `capture_repair` map",
+            "reobserved by exact literal replay",
+            "never reconstructed from expectation",
+            "second unusable observation forces `blocked`",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, execution)
+        contract = _input_authoring_contract(contents)
+        self.assertEqual(
+            set(contract["capture_repair"]),
+            {
+                "trigger",
+                "safe_replay",
+                "parallel_replay",
+                "file_change_gate",
+                "empty_zero_exit",
+                "precedence",
+                "accounting",
+                "failure",
+            },
+        )
 
     def test_terminal_handoff_has_one_copied_root_and_no_manual_charter_digest(self) -> None:
         """Regression: repeated path/digest transcription caused two frozen timeouts."""
@@ -3865,7 +3870,7 @@ class TestSkillContractTests(unittest.TestCase):
         """Regression: preserved words must not hide a directive to repair and reroute."""
 
         root = self.copy_repository()
-        skill_path = root / "plugins" / "expskill" / "skills" / "test" / "SKILL.md"
+        skill_path = root / "plugins" / "expskill" / "content" / "skills" / "test" / "SKILL.md"
         original = skill_path.read_text(encoding="utf-8")
         mutated = original.replace(
             "Do not edit production code.",
@@ -3880,7 +3885,7 @@ class TestSkillContractTests(unittest.TestCase):
 
         self.assertIn(
             "skill 'test' protected Boundary contract drift",
-            validate_repository(root),
+            validate_repository(root, include_opencode=False),
         )
 
 

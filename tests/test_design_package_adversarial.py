@@ -7,29 +7,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import install
 from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-HELPER = PLUGIN / "scripts" / "design_state.py"
-
-
-class _NeverCalledRunner:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(self, command: list[str]) -> object:
-        self.calls.append(command)
-        raise AssertionError(f"installer reached external command before preflight failed: {command}")
+HELPER = PLUGIN / "content" / "scripts" / "design_state.py"
 
 
 class DesignPackageAdversarialTests(unittest.TestCase):
     def _copy_repository(self) -> Path:
         temporary = Path(tempfile.mkdtemp(prefix="design-package-adversarial-"))
         self.addCleanup(shutil.rmtree, temporary, ignore_errors=True)
-        for name in (".agents", "plugins", "scripts"):
+        for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
         return temporary
@@ -67,7 +57,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         """Regression: the joined state helper is allowed without becoming required in this lane."""
 
         root = self._copy_repository()
-        scripts = root / "plugins" / "expskill" / "skills" / "skill-builder" / "scripts"
+        scripts = root / "plugins" / "expskill" / "content" / "skills" / "skill-builder" / "scripts"
         scripts.mkdir(exist_ok=True)
         state_helper = scripts / "run_state.py"
         if not state_helper.exists():
@@ -75,7 +65,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 "from __future__ import annotations\n",
                 encoding="utf-8",
             )
-        self.assertEqual(validate_repository(root), ())
+        self.assertEqual(validate_repository(root, include_opencode=False), ())
 
     def test_validator_rejects_skill_builder_integration_mutations(self) -> None:
         """Regression: public visibility, isolation, package bounds, and duplicate removal fail closed."""
@@ -102,7 +92,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 root = self._copy_repository()
                 plugin = root / "plugins" / "expskill"
-                builder = plugin / "skills" / "skill-builder"
+                builder = plugin / "content" / "skills" / "skill-builder"
                 if mutation == "missing-builder":
                     shutil.rmtree(builder)
                 elif mutation == "unexpected-file":
@@ -110,7 +100,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 elif mutation == "unexpected-directory":
                     (builder / "scratch").mkdir()
                 elif mutation == "implicit-invocation":
-                    metadata = builder / "agents" / "openai.yaml"
+                    metadata = root / "plugins" / "expskill" / "codex" / "skill-adapters" / "skill-builder" / "agents" / "openai.yaml"
                     metadata.write_text(
                         metadata.read_text(encoding="utf-8").replace(
                             "allow_implicit_invocation: false",
@@ -156,7 +146,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                 elif mutation == "router-coupling":
-                    router = plugin / "skills" / "use-expskill" / "SKILL.md"
+                    router = plugin / "content" / "skills" / "use-expskill" / "SKILL.md"
                     router.write_text(
                         router.read_text(encoding="utf-8")
                         + "\nRoute to $skill-builder after implementation.\n",
@@ -173,7 +163,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         "Removed duplicate.\n",
                         encoding="utf-8",
                     )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(all(fragment in error for fragment in fragments) for error in errors),
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
@@ -199,6 +189,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     root
                     / "plugins"
                     / "expskill"
+                    / "content"
                     / "skills"
                     / "skill-builder"
                     / "SKILL.md"
@@ -207,7 +198,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     contract.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "skill-builder" in error
@@ -234,6 +225,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     root
                     / "plugins"
                     / "expskill"
+                    / "content"
                     / "skills"
                     / "use-expskill"
                     / "SKILL.md"
@@ -242,7 +234,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     router.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "use-expskill" in error and "must not name skill-builder" in error
@@ -278,6 +270,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     root
                     / "plugins"
                     / "expskill"
+                    / "content"
                     / "skills"
                     / "skill-builder"
                     / "SKILL.md"
@@ -288,7 +281,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 else:
                     contents += replacement
                 contract.write_text(contents, encoding="utf-8")
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "skill-builder" in error
@@ -327,7 +320,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     json.dumps(manifest, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "longdescription" in error
@@ -355,7 +348,8 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     root
                     / "plugins"
                     / "expskill"
-                    / "skills"
+                    / "codex"
+                    / "skill-adapters"
                     / skill
                     / "agents"
                     / "openai.yaml"
@@ -366,7 +360,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         f"skill '{skill}'" in error
@@ -401,7 +395,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     json.dumps(manifest, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "defaultprompt" in error and "invoke $use-expskill" in error
@@ -432,7 +426,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "readme" in error
@@ -458,7 +452,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     readme_path.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
-                errors = tuple(error.lower() for error in validate_repository(root))
+                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
                         "readme" in error
@@ -480,11 +474,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 root = self._copy_repository()
-                helper = root / "plugins" / "expskill" / "scripts" / "design_state.py"
+                helper = root / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
                 if mutation == "missing":
                     helper.unlink()
                 elif mutation == "duplicate":
                     shadow = root / "plugins" / "expskill" / "assets" / "design_state.py"
+                    shadow.parent.mkdir(parents=True, exist_ok=True)
                     shadow.write_bytes(helper.read_bytes())
                 elif mutation == "empty":
                     helper.write_bytes(b"")
@@ -496,25 +491,11 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     outside.write_text("outside\n", encoding="utf-8")
                     helper.unlink()
                     helper.symlink_to(outside)
-                errors = validate_repository(root)
+                errors = validate_repository(root, include_opencode=False)
                 self.assertTrue(
                     any("design state helper" in error.lower() for error in errors),
                     f"mutation {mutation} was accepted or failed for an unrelated reason: {errors}",
                 )
-
-    def test_installer_does_not_mutate_on_design_helper_preflight_failure(self) -> None:
-        """Regression: invalid Design package state must fail before links, receipts, or external commands change."""
-        root = self._copy_repository()
-        helper = root / "plugins" / "expskill" / "scripts" / "design_state.py"
-        helper.unlink()
-        codex_home = root / "codex-home"
-        state_home = root / "state-home"
-        runner = _NeverCalledRunner()
-        with self.assertRaises(install.InstallError):
-            install.install(root, codex_home, state_home, runner)
-        self.assertEqual(runner.calls, [])
-        self.assertFalse(codex_home.exists())
-        self.assertFalse(state_home.exists())
 
 
 if __name__ == "__main__":
