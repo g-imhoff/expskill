@@ -161,7 +161,7 @@ class CliInstallIntegrationTests(unittest.TestCase):
             installed_path = Path(str(plugin.get("installedPath")))
             self.assertEqual(
                 len(tuple(installed_path.glob("skills/*/agents/openai.yaml"))),
-                14,
+                15,
             )
 
             # Codex plugins do not register agent profiles: copy the seven
@@ -328,7 +328,8 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 "implement",
                 "plan",
                 "review",
-                "setup-ui-testing",
+                "setup-design",
+                "setup-test",
                 "skill-builder",
                 "test",
                 "unslop",
