@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,17 @@ export { UnslopPlugin } from "./plugins/unslop.js";
 
 import { ExecutionPolicyPlugin } from "./plugins/execution-policy.js";
 import { UnslopPlugin } from "./plugins/unslop.js";
+import {
+  buildBlock as buildUnslopBlock,
+  readFirst as readFirstUnslop,
+} from "./plugins/unslop.js";
+import {
+  TASK_TOOLS as POLICY_TASK_TOOLS,
+  createBudgetTracker as createPolicyTracker,
+  isExpSkillAgent as isPolicyAgent,
+  loadPolicy as loadExecutionPolicy,
+  requestedAgent as requestedPolicyAgent,
+} from "./plugins/execution-policy.js";
 
 const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_PATH = path.join(PACKAGE_ROOT, "catalog.json");
@@ -463,7 +474,362 @@ export const ExpSkillPlugin = async (input, options) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// OpenCode V2 setup (opencode 2.x).
+//
+// V1 plugin functions return a `server()` hook map with a `config` hook that
+// mutates `config.command` / `config.agent` / `config.skills.paths`. V2
+// removed that hook: plugins export `setup(ctx)` and register through domain
+// transforms and hooks instead. This section is additive; the V1 `server`
+// export above is unchanged.
+// ---------------------------------------------------------------------------
+
+const V2_SKILL_POLICY_CANDIDATES = () => [
+  path.join(PACKAGE_ROOT, "assets", "skill-policies.json"),
+  path.join(PACKAGE_ROOT, "..", "content", "policies", "skills.json"),
+];
+
+const V2_ACTION_ALIASES = new Map([
+  ["bash", "shell"],
+  ["task", "subagent"],
+  ["write", "edit"],
+  ["patch", "edit"],
+]);
+
+function v2MapAction(action) {
+  return V2_ACTION_ALIASES.get(action) ?? action;
+}
+
+function v2ParseSkillFrontmatter(contents, skillID) {
+  const lines = contents.split("\n");
+  if (lines.length === 0 || lines[0].trim() !== "---") {
+    throw new Error(`skill ${skillID} is missing frontmatter`);
+  }
+  const end = lines.indexOf("---", 1);
+  if (end < 0) {
+    throw new Error(`skill ${skillID} frontmatter is not closed`);
+  }
+  let name = null;
+  let description = null;
+  for (const line of lines.slice(1, end)) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const separator = line.indexOf(":");
+    if (separator < 0) continue;
+    const key = line.slice(0, separator).trim();
+    let value = line.slice(separator + 1).trim();
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+      value = JSON.parse(value);
+    } else if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+      value = value.slice(1, -1);
+    }
+    if (key === "name") name = value;
+    if (key === "description") description = value;
+  }
+  if (!name || !description) {
+    throw new Error(`skill ${skillID} has no name or description`);
+  }
+  return { name, description, body: lines.slice(end + 1).join("\n").trim() };
+}
+
+async function v2ReadSkillPolicy() {
+  for (const candidate of V2_SKILL_POLICY_CANDIDATES()) {
+    try {
+      const payload = JSON.parse(await readFile(candidate, "utf8"));
+      if (payload && typeof payload.allow_implicit_invocation === "object") {
+        return payload.allow_implicit_invocation;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+async function v2LoadSkills() {
+  const policy = await v2ReadSkillPolicy();
+  const entries = await readdir(SKILLS_PATH, { withFileTypes: true });
+  const skills = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillID = entry.name;
+    const skillFile = path.join(SKILLS_PATH, skillID, "SKILL.md");
+    let contents;
+    try {
+      contents = await readFile(skillFile, "utf8");
+    } catch {
+      continue;
+    }
+    const frontmatter = v2ParseSkillFrontmatter(contents, skillID);
+    const skill = {
+      id: skillID,
+      name: frontmatter.name,
+      description: frontmatter.description,
+      path: skillFile,
+      content: frontmatter.body,
+    };
+    const implicit = policy ? policy[skillID] : skillID === "use-expskill";
+    if (implicit !== true) {
+      skill.autoinvoke = false;
+    }
+    skills.push(skill);
+  }
+  skills.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  return skills;
+}
+
+function v2FlattenPermissions(permission) {
+  const rules = [];
+  if (!permission || typeof permission !== "object") return rules;
+  for (const [action, value] of Object.entries(permission)) {
+    if (typeof value === "string") {
+      rules.push({ action: v2MapAction(action), resource: "*", effect: value });
+    } else if (value && typeof value === "object") {
+      for (const [resource, effect] of Object.entries(value)) {
+        rules.push({ action: "shell", resource, effect });
+      }
+    }
+  }
+  return rules;
+}
+
+function v2ParseModelRef(model) {
+  if (typeof model !== "string") return null;
+  const [providerID, rest] = model.split("/", 2);
+  if (!providerID || !rest) return null;
+  const [id, variant] = rest.split("#", 2);
+  if (!id) return null;
+  const ref = { providerID, id };
+  if (variant) ref.variant = variant;
+  return ref;
+}
+
+async function v2SetupSkills(ctx) {
+  const skills = await v2LoadSkills();
+  if (skills.length === 0) return;
+  await ctx.skill.transform((editor) => {
+    for (const skill of skills) {
+      try {
+        if (editor.get(skill.id)) continue;
+      } catch {
+        continue;
+      }
+      editor.add(skill);
+    }
+  });
+}
+
+async function v2SetupCommands(ctx) {
+  let catalog;
+  try {
+    catalog = await readCatalog();
+  } catch {
+    return;
+  }
+  const entries = catalog.commands.map(([name, descriptor]) => [name, descriptor.value]);
+  if (entries.length === 0) return;
+  await ctx.command.transform((editor) => {
+    for (const [name, definition] of entries) {
+      const template = definition.template;
+      const description = definition.description;
+      editor.add({
+        name,
+        description,
+        execute: async ({ sessionID, prompt, delivery }) => {
+          const args = prompt?.text ?? "";
+          const text = template.split("$ARGUMENTS").join(args);
+          await ctx.session.prompt({ sessionID, text, delivery });
+        },
+      });
+    }
+  });
+}
+
+async function v2SetupAgents(ctx) {
+  let catalog;
+  try {
+    catalog = await readCatalog();
+  } catch {
+    return;
+  }
+  await ctx.agent.transform((editor) => {
+    for (const [name, descriptor] of catalog.agents) {
+      const source = descriptor.value;
+      let existing;
+      try {
+        existing = editor.get(name);
+      } catch {
+        continue;
+      }
+      if (!existing) continue;
+      editor.update(name, (agent) => {
+        agent.description = source.description;
+        agent.mode = "subagent";
+        const ref = v2ParseModelRef(source.model);
+        if (ref) agent.model = ref;
+        agent.system = source.prompt;
+        agent.permissions = v2FlattenPermissions(source.permission);
+        const body = {};
+        if (typeof source.reasoningEffort === "string") {
+          body.reasoningEffort = source.reasoningEffort;
+        }
+        if (typeof source.temperature === "number") {
+          body.temperature = source.temperature;
+        }
+        agent.request = agent.request ?? { settings: {}, headers: {}, body: {} };
+        agent.request.body = { ...(agent.request.body ?? {}), ...body };
+      });
+    }
+  });
+}
+
+function v2UnslopSources() {
+  const home = process.env?.EXPSKILL_HOME;
+  if (typeof home === "string" && home.length > 0) {
+    return {
+      skill: [path.resolve(home, "plugins", "expskill", "content", "skills", "unslop", "SKILL.md")],
+      policy: [path.resolve(home, "plugins", "expskill", "content", "policies", "unslop-runtime.json")],
+    };
+  }
+  return {
+    skill: [
+      path.join(PACKAGE_ROOT, "skills", "unslop", "SKILL.md"),
+      path.join(PACKAGE_ROOT, "..", "content", "skills", "unslop", "SKILL.md"),
+    ],
+    policy: [
+      path.join(PACKAGE_ROOT, "assets", "unslop-runtime.json"),
+      path.join(PACKAGE_ROOT, "..", "content", "policies", "unslop-runtime.json"),
+    ],
+  };
+}
+
+function v2SystemText(entry) {
+  if (typeof entry === "string") return entry;
+  if (entry && typeof entry === "object" && typeof entry.text === "string") return entry.text;
+  return null;
+}
+
+async function v2SetupUnslop(ctx) {
+  const sources = v2UnslopSources();
+  await ctx.session.hook("context", async (event) => {
+    const system = event?.system;
+    if (!Array.isArray(system)) return;
+    const marker = "<unslop-scope>";
+    if (system.some((entry) => (v2SystemText(entry) ?? "").includes(marker))) return;
+    let block;
+    try {
+      const [skill, policy] = await Promise.all([
+        readFirstUnslop(sources.skill),
+        readFirstUnslop(sources.policy),
+      ]);
+      block = buildUnslopBlock(skill, policy).block;
+    } catch {
+      return;
+    }
+    system.push({ type: "text", text: block });
+  });
+  await ctx.session.hook("compaction", async (event) => {
+    let reminder;
+    try {
+      reminder = buildUnslopBlock(
+        await readFirstUnslop(sources.skill),
+        await readFirstUnslop(sources.policy),
+      ).compactionReminder;
+    } catch {
+      return;
+    }
+    if (Array.isArray(event?.system)) {
+      event.system.push({ type: "text", text: reminder });
+    }
+  });
+}
+
+function v2PolicyCallKey(sessionID, callID) {
+  return `${sessionID}\u0000${callID}`;
+}
+
+async function v2SetupExecutionPolicy(ctx) {
+  const home = process.env?.EXPSKILL_HOME;
+  const candidates =
+    typeof home === "string" && home.length > 0
+      ? [path.resolve(home, "plugins", "expskill", "content", "policies", "execution-policy.json")]
+      : [
+          path.join(PACKAGE_ROOT, "assets", "execution-policy.json"),
+          path.join(PACKAGE_ROOT, "..", "content", "policies", "execution-policy.json"),
+        ];
+  let policy = null;
+  let policyPath = candidates[0];
+  let loadDetail = null;
+  for (const candidate of candidates) {
+    try {
+      policy = loadExecutionPolicy(JSON.parse(await readFile(candidate, "utf8")));
+      policyPath = candidate;
+      break;
+    } catch (error) {
+      loadDetail = error instanceof Error ? error.message : String(error);
+      continue;
+    }
+  }
+  if (!policy) {
+    const loadError = new Error(`execution-policy failed to load ${policyPath}: ${loadDetail}`);
+    const deny = async (event) => {
+      if (!POLICY_TASK_TOOLS.has(event?.tool)) return;
+      if (isPolicyAgent(requestedPolicyAgent(event?.input))) throw loadError;
+    };
+    await ctx.tool.hook("execute.before", deny);
+    await ctx.tool.hook("execute.after", async () => {});
+    return;
+  }
+  const trackers = new Map();
+  const activeCalls = new Map();
+  const trackerFor = (entry) => {
+    if (!trackers.has(entry.route)) {
+      trackers.set(entry.route, createPolicyTracker(entry.budget));
+    }
+    return trackers.get(entry.route);
+  };
+  await ctx.tool.hook("execute.before", async (event) => {
+    if (!POLICY_TASK_TOOLS.has(event?.tool)) return;
+    const agent = requestedPolicyAgent(event?.input);
+    if (!isPolicyAgent(agent)) return;
+    if (!policy.profiles.has(agent)) {
+      throw new Error(`execution-policy denies undeclared agent: ${agent}`);
+    }
+    const entry = policy.routeProfiles.get(agent);
+    if (!entry) return;
+    const sessionID = event?.sessionID;
+    const callID = event?.id ?? event?.messageID;
+    if (typeof sessionID !== "string" || typeof callID !== "string" || callID.length === 0) {
+      throw new Error("execution-policy requires tool hook sessionID and call ID");
+    }
+    const key = v2PolicyCallKey(sessionID, callID);
+    if (activeCalls.has(key)) {
+      throw new Error(`execution-policy received duplicate active call ID: ${callID}`);
+    }
+    trackerFor(entry).beforeCall(sessionID, agent);
+    activeCalls.set(key, { sessionID, tracker: trackerFor(entry) });
+  });
+  await ctx.tool.hook("execute.after", async (event) => {
+    if (!POLICY_TASK_TOOLS.has(event?.tool)) return;
+    const sessionID = event?.sessionID;
+    const callID = event?.id ?? event?.messageID;
+    if (typeof sessionID !== "string" || typeof callID !== "string") return;
+    const active = activeCalls.get(v2PolicyCallKey(sessionID, callID));
+    if (!active) return;
+    activeCalls.delete(v2PolicyCallKey(sessionID, callID));
+    active.tracker.afterCall(active.sessionID);
+  });
+}
+
+export const ExpSkillSetup = async (ctx) => {
+  await v2SetupSkills(ctx);
+  await v2SetupCommands(ctx);
+  await v2SetupAgents(ctx);
+  await v2SetupUnslop(ctx);
+  await v2SetupExecutionPolicy(ctx);
+};
+
 export default {
   id: "opencode-expskill",
+  setup: ExpSkillSetup,
   server: ExpSkillPlugin,
 };

@@ -52,7 +52,7 @@ Install the published package in an OpenCode project:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-expskill"]
+  "plugins": ["opencode-expskill"]
 }
 ```
 
@@ -71,12 +71,37 @@ npm publish "$pack_dir"/opencode-expskill-*.tgz
 rm -rf "$artifact_root" "$pack_dir"
 ```
 
-The package root defaults to the native OpenCode v1 `ExpSkillPlugin`, which
-composes `UnslopPlugin` and `ExecutionPolicyPlugin` and registers the bundled
-commands, agents, and skills through its config hook. The two component hooks
-remain available as named exports. All plugins resolve their bundled assets
-relative to the installed package, so a published artifact does not depend on
-this repository.
+The package root exports both runtimes from one default object. OpenCode 1
+calls `server()` (`ExpSkillPlugin`), which composes `UnslopPlugin` and
+`ExecutionPolicyPlugin` and registers the bundled commands, agents, and
+skills through its config hook. OpenCode 2 calls `setup()` (`ExpSkillSetup`),
+which registers the same 14 skills through `ctx.skill.transform`, the 14
+commands through `ctx.command.transform`, the Unslop block through
+`ctx.session.hook("context")` and `ctx.session.hook("compaction")`, and the
+execution budgets through `ctx.tool.hook("execute.before")` and
+`ctx.tool.hook("execute.after")`. The two component hooks remain available
+as named exports. All plugins resolve their bundled assets relative to the
+installed package, so a published artifact does not depend on this
+repository.
+
+## OpenCode 2 agents
+
+The V2 agent transform API can update agents but cannot add new ones, so the
+seven `expskill-*` subagent profiles are file-based on V2. After installing
+the package, copy the artifact `agents/*.md` files into global or project
+agent discovery. From a local build:
+
+```bash
+artifact_root="$(mktemp -d)/opencode-expskill"
+python3 scripts/build_opencode_package.py "$artifact_root"
+mkdir -p ~/.config/opencode/agents
+cp "$artifact_root/agents/"*.md ~/.config/opencode/agents/
+```
+
+or copy into `<project>/.opencode/agents/` instead for project-local use.
+On startup the V2 `setup()` refreshes any installed profile (description,
+model, system prompt, permissions, reasoning effort, temperature) without
+overwriting unrelated agents.
 
 ## License
 
