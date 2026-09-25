@@ -75,6 +75,8 @@ function runtimePolicy(contents) {
   return payload;
 }
 
+export { skillBody, compactSkill, runtimePolicy, buildBlock, resolveSources, readFirst };
+
 function buildBlock(skillContents, policyContents) {
   const policy = runtimePolicy(policyContents);
   const payload = policy.scope + compactSkill(skillContents);

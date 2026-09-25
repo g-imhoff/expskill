@@ -23,7 +23,7 @@ import(%s).then(async (module) => {
   };
   assert(
     'exact-module-export-keys',
-    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['UnslopPlugin', 'default']) &&
+    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['UnslopPlugin', 'buildBlock', 'compactSkill', 'default', 'readFirst', 'resolveSources', 'runtimePolicy', 'skillBody']) &&
       typeof module.UnslopPlugin === 'function' &&
       typeof module.default === 'object' &&
       typeof module.default?.id === 'string' &&
@@ -113,7 +113,7 @@ import(%s).then(async (module) => {
   const policy = JSON.parse(await fs.readFile(path.join(artifactRoot, 'assets', 'execution-policy.json'), 'utf8'));
   assert(
     'exact-module-export-keys',
-    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin', 'default']) &&
+    JSON.stringify(Object.keys(module).sort()) === JSON.stringify(['ExecutionPolicyPlugin', 'TASK_TOOLS', 'createBudgetTracker', 'default', 'isExpSkillAgent', 'loadPolicy', 'requestedAgent', 'resolvePolicyPath']) &&
       typeof module.ExecutionPolicyPlugin === 'function' &&
       typeof module.default === 'object' &&
       typeof module.default?.id === 'string' &&
@@ -523,13 +523,15 @@ import(%s).then(async (module) => {
   assert(
     'root-export-shape',
     JSON.stringify(Object.keys(module).sort()) ===
-      JSON.stringify(['ExecutionPolicyPlugin', 'ExpSkillPlugin', 'UnslopPlugin', 'default']) &&
+      JSON.stringify(['ExecutionPolicyPlugin', 'ExpSkillPlugin', 'ExpSkillSetup', 'UnslopPlugin', 'default']) &&
       typeof module.ExpSkillPlugin === 'function' &&
+      typeof module.ExpSkillSetup === 'function' &&
       typeof module.ExecutionPolicyPlugin === 'function' &&
       typeof module.UnslopPlugin === 'function' &&
       typeof module.default === 'object' &&
       module.default.id === 'opencode-expskill' &&
-      module.default.server === module.ExpSkillPlugin,
+      module.default.server === module.ExpSkillPlugin &&
+      module.default.setup === module.ExpSkillSetup,
   );
 
   const hooks = await module.default.server({});

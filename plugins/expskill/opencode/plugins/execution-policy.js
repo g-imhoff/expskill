@@ -315,6 +315,15 @@ function loadFailureHooks(loadError) {
   };
 }
 
+export {
+  TASK_TOOLS,
+  isExpSkillAgent,
+  requestedAgent,
+  resolvePolicyPath,
+  loadPolicy,
+  createBudgetTracker,
+};
+
 export const ExecutionPolicyPlugin = async (_ctx) => {
   const policyPath = resolvePolicyPath(process.env, import.meta.url);
   let policy;
