@@ -6,7 +6,8 @@
   "author": {
     "name": "g-imhoff"
   },
-  "skills": "./skills/",
+  "skills": "./content/skills/",
+  "hooks": "./codex/hooks/hooks.json",
   "interface": {
     "displayName": "ExpSkill",
     "shortDescription": "Standalone development skills with optional routing",

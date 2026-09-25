@@ -19,7 +19,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_SKILL = ROOT / "plugins" / "expskill" / "skills" / "test"
+TEST_SKILL = ROOT / "plugins" / "expskill" / "content" / "skills" / "test"
 FINALIZER = TEST_SKILL / "scripts" / "finalize_evidence.py"
 QUALITY_CATALOG = TEST_SKILL / "references" / "quality-rules.json"
 EVIDENCE_CONTRACT = TEST_SKILL / "references" / "evidence-contract.json"

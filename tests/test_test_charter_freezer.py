@@ -14,6 +14,7 @@ FREEZER = (
     ROOT
     / "plugins"
     / "expskill"
+    / "content"
     / "skills"
     / "test"
     / "scripts"
