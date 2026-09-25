@@ -167,11 +167,11 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             output = build_codex_package(ROOT, Path(temporary) / "package")
             self.assertEqual(
                 len(tuple(output.glob("skills/*/SKILL.md"))),
-                14,
+                15,
             )
             self.assertEqual(
                 len(tuple(output.glob("skills/*/agents/openai.yaml"))),
-                14,
+                15,
             )
             self.assertFalse(
                 any(
