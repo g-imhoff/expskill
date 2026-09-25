@@ -25,10 +25,62 @@ jobs:
       - name: Host contract tests
         run: >-
           python3 -m pytest -q
+          tests/test_codex_source_correction.py
+          tests/test_content_host_layout.py
           tests/test_hermes_contract.py
           tests/test_hermes_package.py
           tests/test_opencode_contract.py
           tests/test_opencode_package.py
+
+  publish-codex-dist:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build codex marketplace
+        run: |
+          artifact_root="$(mktemp -d)/codex-marketplace"
+          python3 scripts/build_codex_marketplace.py "$artifact_root"
+          echo "ARTIFACT_ROOT=$artifact_root" >> "$GITHUB_ENV"
+      - name: Publish codex-dist branch and tag
+        # The Codex CLI installs a marketplace from git, so the built
+        # marketplace is published as the root of the orphan codex-dist branch.
+        # Install a release with its exact SHA (sort -u: ls-remote matches
+        # the branch and the tag, which point at the same commit):
+        #   sha="$(git ls-remote <url> codex-dist | cut -f1 | sort -u)"
+        #   codex plugin marketplace add <url> --ref "$sha"
+        #   codex plugin add expskill@expskill
+        run: |
+          set -e
+          work="$(mktemp -d)/dist"
+          git init -q "$work"
+          cp -r "$ARTIFACT_ROOT"/. "$work"/
+          git -C "$work" add -A
+          git -C "$work" -c user.email="ci@expskill" -c user.name="expskill-ci" \
+            commit -qm "codex dist ${{ github.ref_name }}"
+          sha="$(git -C "$work" rev-parse HEAD)"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$work" remote add origin "$remote"
+          git -C "$work" push --force origin "HEAD:refs/heads/codex-dist"
+          git -C "$work" push --force origin "HEAD:refs/tags/codex-dist"
+          {
+            echo "## Codex dist published"
+            echo ""
+            echo "Install with the Codex CLI:"
+            echo '```'
+            echo "sha=\"\$(git ls-remote https://github.com/${{ github.repository }}.git codex-dist | cut -f1 | sort -u)\""
+            echo "codex plugin marketplace add https://github.com/${{ github.repository }}.git --ref \"\$sha\""
+            echo "codex plugin add expskill@expskill"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-npm:
     needs: validate

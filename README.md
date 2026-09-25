@@ -80,6 +80,15 @@ cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
 rm -rf "$codex_marketplace"
 ```
 
+Install a published release with the Codex CLI (each tag publishes the
+built marketplace to the `codex-dist` branch; resolve its exact SHA first):
+
+```bash
+sha="$(git ls-remote https://github.com/g-imhoff/expskill.git codex-dist | cut -f1 | sort -u)"
+codex plugin marketplace add https://github.com/g-imhoff/expskill.git --ref "$sha"
+codex plugin add expskill@expskill
+```
+
 The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.
