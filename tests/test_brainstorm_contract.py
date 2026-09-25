@@ -14,9 +14,18 @@ from scripts.validate import validate_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "plugins" / "expskill" / "skills" / "brainstorm"
+SKILL_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills" / "brainstorm"
 ENTRYPOINT = SKILL_ROOT / "SKILL.md"
-METADATA = SKILL_ROOT / "agents" / "openai.yaml"
+METADATA = (
+    ROOT
+    / "plugins"
+    / "expskill"
+    / "codex"
+    / "skill-adapters"
+    / "brainstorm"
+    / "agents"
+    / "openai.yaml"
+)
 CATALOG = SKILL_ROOT / "references" / "brainstorm-techniques.csv"
 
 BMAD_REVISION = "890fcda760bade4d6080f5fa09aa8f658bc4a4a5"
@@ -186,7 +195,7 @@ class BrainstormContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        for relative in (".agents", "plugins", "scripts"):
+        for relative in ("plugins", "scripts"):
             shutil.copytree(ROOT / relative, temporary / relative)
         return temporary
 
@@ -200,7 +209,6 @@ class BrainstormContractTests(unittest.TestCase):
             actual_files,
             {
                 "SKILL.md",
-                "agents/openai.yaml",
                 "references/brainstorm-techniques.csv",
             },
         )
@@ -232,6 +240,7 @@ class BrainstormContractTests(unittest.TestCase):
             missing_root
             / "plugins"
             / "expskill"
+            / "content"
             / "skills"
             / "brainstorm"
             / "references"
@@ -239,7 +248,10 @@ class BrainstormContractTests(unittest.TestCase):
         )
         missing_catalog.unlink()
         self.assertTrue(
-            any("brainstorm" in error and "catalog" in error for error in validate_repository(missing_root))
+            any(
+                "brainstorm" in error and "catalog" in error
+                for error in validate_repository(missing_root, include_opencode=False)
+            )
         )
 
         mutations = tuple(
@@ -254,6 +266,7 @@ class BrainstormContractTests(unittest.TestCase):
                     changed_root
                     / "plugins"
                     / "expskill"
+                    / "content"
                     / "skills"
                     / "brainstorm"
                     / "references"
@@ -267,7 +280,7 @@ class BrainstormContractTests(unittest.TestCase):
                 self.assertTrue(
                     any(
                         "brainstorm" in error and "catalog" in error
-                        for error in validate_repository(changed_root)
+                        for error in validate_repository(changed_root, include_opencode=False)
                     )
                 )
 
