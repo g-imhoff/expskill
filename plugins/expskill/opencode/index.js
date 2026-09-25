@@ -464,7 +464,254 @@ export const ExpSkillPlugin = async (input, options) => {
   };
 };
 
+const V2_TASK_TOOLS = new Set(["task", "subagent"]);
+const V2_UNSLPO_LIMIT = 5000;
+const V2_UNSLPO_OPEN = "<unslop-scope>";
+const V2_UNSLPO_CLOSE = "</unslop-scope>";
+
+async function v2ReadFirst(paths) {
+  for (const candidate of paths) {
+    try {
+      return await readFile(candidate, "utf8");
+    } catch {
+      continue;
+    }
+  }
+  throw new Error("expskill content unavailable");
+}
+
+function v2PackagePaths() {
+  const skillCandidates = [
+    path.join(PACKAGE_ROOT, "skills", "unslop", "SKILL.md"),
+    path.join(PACKAGE_ROOT, "..", "content", "skills", "unslop", "SKILL.md"),
+  ];
+  const policyCandidates = [
+    path.join(PACKAGE_ROOT, "assets", "unslop-runtime.json"),
+    path.join(PACKAGE_ROOT, "..", "content", "policies", "unslop-runtime.json"),
+  ];
+  const execPolicyCandidates = [
+    path.join(PACKAGE_ROOT, "assets", "execution-policy.json"),
+    path.join(PACKAGE_ROOT, "..", "content", "policies", "execution-policy.json"),
+  ];
+  return { skillCandidates, policyCandidates, execPolicyCandidates };
+}
+
+function v2CompactSkill(contents) {
+  const lines = contents.split("\n");
+  if (lines.length === 0 || lines[0] !== "---") throw new Error("unslop skill frontmatter missing");
+  const end = lines.indexOf("---", 1);
+  if (end < 0) throw new Error("unslop skill frontmatter unclosed");
+  const body = lines.slice(end + 1).join("\n").trim();
+  const soulMarker = "\n## Adding soul\n";
+  const patternsMarker = "\n## Patterns to detect and fix\n";
+  const soulStart = body.indexOf(soulMarker);
+  const patternsStart = body.indexOf(patternsMarker);
+  if (soulStart < 0 || patternsStart < soulStart) throw new Error("unslop skill sections missing");
+  const introduction = body.slice(0, soulStart).trim();
+  const soulSection = body.slice(soulStart + soulMarker.length, patternsStart);
+  const soulNames = [...soulSection.matchAll(/^- \*\*([^*]+)\*\*/gm)].map((m) => m[1]);
+  if (soulNames.length === 0) throw new Error("unslop skill has no voice rules");
+  const rules = [...body.matchAll(/^(\d+)\. \*\*([^*]+)\*\*\s*(.*)$/gm)].map((m) => {
+    const sentences = m[3].trim().split(/(?<=[.!?])\s+/u);
+    const selected = sentences.length <= 1 ? sentences : [sentences[0], sentences[sentences.length - 1]];
+    return `${m[1]}. **${m[2]}** ${selected.join(" ")}`;
+  });
+  if (rules.length === 0) throw new Error("unslop skill has no numbered rules");
+  return [introduction, `## Adding soul\n\n${soulNames.join(" ")}`, `## Patterns to detect and fix\n\n${rules.join("\n")}`].join("\n\n");
+}
+
+function v2RuntimePolicy(contents) {
+  const payload = JSON.parse(contents);
+  const keys = Object.keys(payload).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(["compaction_reminder", "schema_version", "scope"]) ||
+      payload.schema_version !== "unslop-runtime.v1" ||
+      typeof payload.scope !== "string" || payload.scope.trim().length === 0 ||
+      typeof payload.compaction_reminder !== "string" || payload.compaction_reminder.trim().length === 0) {
+    throw new Error("unslop runtime policy invalid");
+  }
+  return payload;
+}
+
+async function v2UnslopBlock() {
+  const { skillCandidates, policyCandidates } = v2PackagePaths();
+  const [skill, policyContents] = await Promise.all([
+    v2ReadFirst(skillCandidates),
+    v2ReadFirst(policyCandidates),
+  ]);
+  const policy = v2RuntimePolicy(policyContents);
+  const payload = policy.scope + v2CompactSkill(skill);
+  const block = `${V2_UNSLPO_OPEN}\n${payload}\n${V2_UNSLPO_CLOSE}`;
+  if (block.length > V2_UNSLPO_LIMIT) throw new Error("unslop block exceeds limit");
+  return { block, compactionReminder: policy.compaction_reminder };
+}
+
+function v2HasUnslop(systems) {
+  return systems.some((entry) => {
+    if (typeof entry === "string") return entry.includes(V2_UNSLPO_OPEN);
+    if (entry && typeof entry.text === "string") return entry.text.includes(V2_UNSLPO_OPEN);
+    return false;
+  });
+}
+
+function v2PushSystem(systems, block) {
+  if (systems.length > 0 && typeof systems[0] === "string") {
+    systems[0] += `\n\n${block}`;
+    return;
+  }
+  if (systems.length > 0 && systems[0] && typeof systems[0].text === "string") {
+    systems[0].text += `\n\n${block}`;
+    return;
+  }
+  systems.push({ type: "text", text: block });
+}
+
+function v2ExtractToolCall(event) {
+  const tool = event?.tool ?? event?.input?.tool ?? event?.name ?? null;
+  const args = event?.args ?? event?.input?.args ?? event?.output?.args ?? event?.payload?.args ?? {};
+  const sessionID = event?.sessionID ?? event?.input?.sessionID ?? event?.sessionId ?? null;
+  const callID = event?.callID ?? event?.input?.callID ?? event?.callId ?? null;
+  return { tool, args, sessionID, callID };
+}
+
+function v2RequestedAgent(args) {
+  if (args && typeof args === "object") {
+    return args.subagent_type ?? args.agent ?? args.subagentType ?? null;
+  }
+  return null;
+}
+
+function v2IsExpSkillAgent(value) {
+  return typeof value === "string" && value.startsWith("expskill-") && value.length > "expskill-".length;
+}
+
+const ExpSkillSetup = async (ctx) => {
+  try {
+    try {
+      const catalog = await readCatalog();
+      if (ctx?.command?.transform) {
+        const entries = Array.isArray(catalog?.commands) ? catalog.commands : [];
+        const defs = entries.map(([name, entry]) => [name, entry?.value ?? entry]).filter(([, d]) => d && typeof d.template === "string");
+        if (defs.length > 0) {
+          await ctx.command.transform((editor) => {
+            for (const [name, def] of defs) {
+              try {
+                editor.add({
+                  name,
+                  description: typeof def.description === "string" ? def.description.slice(0, 160) : name,
+                  execute: async (invocation) => {
+                    try {
+                      const promptText = invocation?.prompt?.text ?? invocation?.text ?? "";
+                      const text = def.template.split("$ARGUMENTS").join(promptText);
+                      await ctx.session.prompt({
+                        ...(invocation?.prompt ?? {}),
+                        sessionID: invocation?.sessionID,
+                        text,
+                        delivery: invocation?.delivery,
+                      });
+                    } catch {
+                      return;
+                    }
+                  },
+                });
+              } catch {
+                continue;
+              }
+            }
+          });
+        }
+      }
+    } catch {
+      // commands are additive; hooks below still register
+    }
+
+    try {
+      if (ctx?.session?.hook) {
+        await ctx.session.hook("context", async (event) => {
+          try {
+            const systems = event?.system;
+            if (!Array.isArray(systems) || v2HasUnslop(systems)) return;
+            const { block } = await v2UnslopBlock();
+            v2PushSystem(systems, block);
+          } catch {
+            return;
+          }
+        });
+        for (const kind of ["compaction", "generate"]) {
+          try {
+            await ctx.session.hook(kind, async (event) => {
+              try {
+                const systems = event?.system;
+                if (Array.isArray(systems)) {
+                  if (v2HasUnslop(systems)) return;
+                  const { block } = await v2UnslopBlock();
+                  v2PushSystem(systems, block);
+                  return;
+                }
+                const context = event?.context;
+                if (Array.isArray(context)) {
+                  const { compactionReminder } = await v2UnslopBlock();
+                  context.push(compactionReminder);
+                }
+              } catch {
+                return;
+              }
+            });
+          } catch {
+            continue;
+          }
+        }
+      }
+    } catch {
+      // session hooks are best-effort
+    }
+
+    try {
+      let policyHooks = null;
+      try {
+        policyHooks = await ExecutionPolicyPlugin({});
+      } catch {
+        policyHooks = null;
+      }
+      if (ctx?.tool?.hook && policyHooks) {
+        const before = policyHooks["tool.execute.before"];
+        const after = policyHooks["tool.execute.after"];
+        await ctx.tool.hook("execute.before", async (event) => {
+          try {
+            const { tool, args, sessionID, callID } = v2ExtractToolCall(event);
+            const agent = v2RequestedAgent(args);
+            const callsTask = tool === null || tool === undefined || V2_TASK_TOOLS.has(tool) || agent !== null;
+            if (!callsTask) return;
+            if (!v2IsExpSkillAgent(agent)) return;
+            if (typeof sessionID !== "string" || sessionID.length === 0 ||
+                typeof callID !== "string" || callID.length === 0) {
+              return;
+            }
+            await before({ tool: "task", sessionID, callID }, { args });
+          } catch (error) {
+            throw error;
+          }
+        });
+        await ctx.tool.hook("execute.after", async (event) => {
+          try {
+            const { tool, args, sessionID, callID } = v2ExtractToolCall(event);
+            if (!V2_TASK_TOOLS.has(tool) && tool !== null && tool !== undefined) return;
+            if (typeof sessionID !== "string" || typeof callID !== "string") return;
+            await after({ tool: tool ?? "task", sessionID, callID, args }, {});
+          } catch {
+            return;
+          }
+        });
+      }
+    } catch {
+      // tool hooks are best-effort
+    }
+  } catch {
+    return;
+  }
+};
+
 export default {
   id: "opencode-expskill",
   server: ExpSkillPlugin,
+  setup: ExpSkillSetup,
 };
