@@ -12,7 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
-REMOTE = "git@github.com:g-imhoff/expskill.git"
+REMOTE = "https://github.com/g-imhoff/expskill.git"
 SHA = "a1" * 20
 ROLES = ("designer", "explorer", "implementer", "planner", "review", "spec", "test-engineer")
 FAKE = r'''
@@ -25,7 +25,7 @@ step = name
 if name == "codex":
     step = "marketplace" if args[:2] == ["plugin", "marketplace"] else "plugin"
 if os.environ.get("FAIL_STEP") == step:
-    if name == "gh":
+    if name == "curl":
         print("echo partial-download-executed")
     print("simulated failure: " + step, file=sys.stderr)
     sys.exit(9)
@@ -33,7 +33,7 @@ if name == "git":
     print(os.environ.get("GIT_RESULT", os.environ["DIST_SHA"] + "\t" + args[-1]))
 elif name == "codex" and step == "plugin":
     print(os.environ.get("CODEX_RESULT", json.dumps({"installedPath": os.environ["PACKAGE"]})))
-elif name == "gh":
+elif name == "curl":
     print(pathlib.Path(os.environ["INSTALLER_SOURCE"]).read_text())
 '''
 
@@ -160,7 +160,7 @@ class InstallerTests(unittest.TestCase):
         self.codex_commands()
         self.commands("hermes", "opencode")
         for selection, step, remedy, count in (
-            ("1\n", "git", "SSH", 1),
+            ("1\n", "git", "network", 1),
             ("1\n", "marketplace", "marketplace remove expskill", 2),
             ("1\n", "plugin", "plugin remove expskill@expskill", 3),
             ("2\n", "opencode", "plugin remove opencode-expskill", 1),
@@ -221,19 +221,18 @@ class InstallerTests(unittest.TestCase):
         self.assertLessEqual(len(readme.splitlines()), 10)
         self.assertIn("docs/guide.md", readme)
         launcher = re.search(r"```bash\n(.*?)\n```", readme, re.S).group(1)
-        self.commands("gh", "opencode")
+        self.commands("curl", "opencode")
         (self.bin / "bash").symlink_to("/bin/bash")
         result = subprocess.run(["/bin/bash", "-c", launcher], input="2\n", text=True,
                                 capture_output=True, env=self.env, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [
-            ["gh", "api", "-H", "Accept: application/vnd.github.raw+json",
-             "repos/g-imhoff/expskill/contents/install.sh?ref=main"],
+            ["curl", "-fsSL", "https://raw.githubusercontent.com/g-imhoff/expskill/main/install.sh"],
             ["opencode", "plugin", "add", "opencode-expskill"],
         ])
         self.log.unlink()
         failed = subprocess.run(["/bin/bash", "-c", launcher], input="2\n", text=True,
-                                capture_output=True, env={**self.env, "FAIL_STEP": "gh"}, timeout=15)
+                                capture_output=True, env={**self.env, "FAIL_STEP": "curl"}, timeout=15)
         self.assertNotEqual(failed.returncode, 0)
         self.assertNotIn("partial-download-executed", failed.stdout)
         self.assertEqual(len(self.calls()), 1)

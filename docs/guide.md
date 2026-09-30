@@ -1,6 +1,6 @@
 # ExpSkill guide
 
-ExpSkill is a private Codex plugin with fourteen independent skills and one
+ExpSkill is a Codex plugin with fourteen independent skills and one
 optional lifecycle router. The same skill base also ships as the
 `opencode-expskill` npm package for OpenCode and as an Agent Plugins package for Hermes.
 
@@ -8,8 +8,8 @@ optional lifecycle router. The same skill base also ships as the
 
 Use the [launcher in the README](../README.md) from any directory, choose Codex,
 OpenCode, or Hermes, and let the selected CLI install its published package.
-The private GitHub download requires authenticated `gh` access. Codex and Hermes
-also require GitHub SSH access and Git. Codex requires Python 3 to read its CLI
+The GitHub download requires curl. Codex and Hermes also require Git.
+Codex requires Python 3 to read its CLI
 response and install the seven packaged agent profiles.
 
 Codex profiles go to `${CODEX_HOME:-$HOME/.codex}/agents`. Differing files and old

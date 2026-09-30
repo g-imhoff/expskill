@@ -2,14 +2,14 @@
 # Run with Bash 3.2+ on macOS or Linux. Only the selected host is installed.
 set -eu
 
-remote='git@github.com:g-imhoff/expskill.git'
+remote='https://github.com/g-imhoff/expskill.git'
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "Install $1 and put it on PATH, then run this installer again."; }
 
 resolve_release() {
     branch=$1
     resolved=$(git ls-remote "$remote" "refs/heads/$branch") ||
-        fail "Cannot read $branch. Check GitHub SSH access to $remote, then retry."
+        fail "Cannot read $branch. Check network access to $remote, then retry."
     sha=${resolved%%[[:space:]]*}
     if [[ ! $sha =~ ^[0-9a-fA-F]{40}$ ]] || [[ $resolved != "$sha"$'\t'"refs/heads/$branch" ]]; then
         fail "Expected one published commit on refs/heads/$branch. Check that the distribution branch exists, then retry."
@@ -100,7 +100,7 @@ PY
         require git
         resolve_release hermes-dist
         hermes plugins install "$remote" --ref "$sha" ||
-            fail 'Hermes installation failed. Check the error above and GitHub SSH access. For an existing installation, run `hermes plugins remove expskill`, then retry.'
+            fail 'Hermes installation failed. Check the error above and network access. For an existing installation, run `hermes plugins remove expskill`, then retry.'
         printf 'ExpSkill installed successfully for Hermes. Start a new Hermes session.\n'
         ;;
 esac
