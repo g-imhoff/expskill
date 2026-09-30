@@ -54,6 +54,29 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py`.
    implementation pass, run affected regressions, inspect the diff, and create
    one coherent local commit. An alternative proof needs a concrete technical
    reason. A missing file, broken command, or unrelated failure is not RED.
+   Before the worker adds any test, require four authoring answers; a missing
+   answer means do not add it yet: (1) what observable behavior, invariant, or
+   independent contract does it protect? (2) what credible regression makes it
+   fail? (3) why does existing coverage not already catch that failure — each
+   contract has one primary test owner at the strongest boundary, so prefer
+   extending a table-driven case or shared fixture over a near-duplicate test?
+   (4) does it need a production seam (export, flag, wrapper, injection hook)
+   that no production caller needs — if yes, move the test to the real
+   boundary instead? Then reject a new test matching a junk pattern unless it
+   independently guards a named contract: assertion-free coverage probes;
+   self-comparisons; copied fixtures, manifests, or export lists; exact
+   source, import, or string greps; private-predicate or call-shape tests
+   duplicated at a real boundary; duplicate invocations of the same contract;
+   mocks that implement the asserted behavior; expected values produced by the
+   code under test; tests whose only purpose is preserving test-only seams;
+   negative controls that pass for an unrelated reason. A test that would
+   break under behavior-preserving refactoring asserts implementation, not
+   behavior — rewrite it at the owning boundary before landing it. A bug
+   regression must fail on the pre-fix code for the intended reason and pass
+   after the owner-boundary repair; one regression at the owner boundary
+   covers the bug, do not replay it at every layer it crosses.
+   Whole-subsystem pruning campaigns are an explicit non-goal here; note one
+   as a follow-up instead of attempting it inline.
 5. Treat the worker result as a candidate, not approval. It must report the exact
    commit, changed paths, commands and results, RED evidence or justified
    alternative, remaining risks, and any scope or decision blocker.

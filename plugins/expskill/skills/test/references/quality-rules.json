@@ -124,10 +124,12 @@
       "applies_when": [
         "durable-test-added"
       ],
-      "requirement": "Add a durable test only for stable, valuable regression behavior, asserting public outcomes instead of implementation details or duplicate coverage.",
+      "requirement": "Add a durable test only for stable, valuable regression behavior, asserting public outcomes instead of implementation details or duplicate coverage. Reject a new durable test matching a junk pattern unless it independently guards a named contract: assertion-free coverage probes; self-comparisons; copied fixtures, manifests, or export lists; exact source, import, or string greps; private-predicate or call-shape tests duplicated at a real boundary; duplicate invocations of the same contract; mocks that implement the asserted behavior; expected values produced by the code under test; tests whose only purpose is preserving test-only seams (exports, flags, wrappers, injection hooks no production caller needs); negative controls that pass for an unrelated reason. A test that would break under behavior-preserving refactoring asserts implementation, not behavior. Answer before adding: what observable behavior, invariant, or independent contract it protects; what credible regression makes it fail; why existing coverage does not already catch that failure; whether it needs a test-only production seam.",
       "failure_prevented": "Brittle, redundant, or low-value durable tests.",
       "required_evidence": [
-        "Protected regression and why existing coverage did not already protect it."
+        "Protected regression and why existing coverage did not already protect it.",
+        "The four authoring answers: protected contract, credible failing regression, coverage gap versus the primary test owner, and test-only seam assessment.",
+        "Junk-pattern screening result for the new durable test."
       ],
       "allowed_exceptions": []
     },

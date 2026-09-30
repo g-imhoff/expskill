@@ -99,6 +99,24 @@ for every issue. Reject personal taste, invented future requirements, and
 unsupported scenarios. Deduplicate the same underlying issue. In diff reviews,
 distinguish introduced or worsened failures from pre-existing defects.
 
+When the scope adds or changes tests, screen for suspect tests: a test that
+would break under a behavior-preserving refactor of the covered code asserts
+implementation, not behavior (exact source, import, or string greps;
+private-predicate or call-shape assertions duplicated at a real boundary;
+mocks that implement the asserted behavior; expected values produced by the
+code under test); a test that duplicates a stronger proof of the same
+contract without its own distinct failure mode is redundant. Report a suspect
+test as a Testing gap or Structural risk with the exact location, what
+behavior-preserving change would break it or which stronger proof already
+covers the contract, and why the overlap is not a distinct risk — never as a
+Confirmed defect on its own. Apply the retention bar before recommending
+removal of any existing test: slowness or static-only grounds alone never
+justify deletion, and removal requires evidence — what failure the test can
+actually detect, the non-test callers of any seam it covers, and the stronger
+remaining owner-boundary proof, or why no proof is needed. When that evidence
+is missing, flag the gap for a separately requested task to decide; give no
+removal direction, patches, or repair prescriptions.
+
 Rank all issues `BLOCKING`, `HIGH`, `MEDIUM`, or `LOW`, in that order. Explain
 priority using the evidenced impact and likelihood. `BLOCKING` requires a
 proven current in-scope failure involving unauthorized access, data loss or
