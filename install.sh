@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run with Bash 3.2+ on macOS or Linux. Selected hosts install one after another.
+# Run with Bash 3.2+ on macOS or Linux. Selected hosts install or update in order.
 set -eu
 
 remote='https://github.com/g-imhoff/expskill.git'
@@ -59,10 +59,37 @@ for host in "${hosts[@]}"; do
     case "$host" in
     Codex)
         resolve_release codex-dist
+        marketplaces=$(codex plugin marketplace list --json) ||
+            fail 'Cannot inspect Codex marketplaces. Check the error above, then retry.'
+        registered=$(python3 - "$marketplaces" <<'PY'
+import json
+import sys
+
+try:
+    result = json.loads(sys.argv[1])
+    entries = result.get("marketplaces") if isinstance(result, dict) else None
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("name"), str)
+        for entry in entries
+    ):
+        raise ValueError("expected a marketplaces list with named entries")
+    print("true" if any(entry["name"] == "expskill" for entry in entries) else "false")
+except ValueError as error:
+    print("Cannot read Codex marketplace list: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+        ) || fail 'Cannot inspect Codex marketplaces. Update the Codex CLI, then retry.'
+        # Adding the same marketplace with a new --ref conflicts. Keep the
+        # installed plugin cache while replacing only its marketplace snapshot.
+        if "$registered"; then
+            printf 'Refreshing the ExpSkill marketplace for Codex...\n'
+            codex plugin marketplace remove expskill ||
+                fail 'Cannot refresh the Codex ExpSkill marketplace. Check the error above, then retry.'
+        fi
         codex plugin marketplace add "$remote" --ref "$sha" ||
-            fail 'Codex marketplace registration failed. Check the error above. For an existing installation, run `codex plugin remove expskill@expskill` and `codex plugin marketplace remove expskill`, then retry.'
+            fail 'Codex marketplace registration failed. Check the error above and network access, then retry this installer.'
         installed=$(codex plugin add expskill@expskill --json) ||
-            fail 'Codex plugin installation failed. Check the error above. For an existing installation, run `codex plugin remove expskill@expskill` and `codex plugin marketplace remove expskill`, then retry.'
+            fail 'Codex plugin installation failed. Check the error above, then retry this installer.'
         # Use the CLI-returned package path. Stage copies, preserve replaced paths,
         # and rename profiles into place so old symlinks are never followed.
         python3 - "$installed" "${CODEX_HOME:-$HOME/.codex}" <<'PY' ||
@@ -112,18 +139,35 @@ except (OSError, ValueError) as error:
     sys.exit(1)
 PY
             fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path or package error above, then copy its seven agents/expskill-*.toml profiles into your Codex agents directory (preserving existing files).'
-        printf 'ExpSkill installed successfully for Codex. Review and trust the plugin hook in /hooks, then start a new Codex session.\n'
+        printf 'ExpSkill installed or updated successfully for Codex. Review and trust the plugin hook in /hooks, then start a new Codex session.\n'
         ;;
     OpenCode)
-        opencode plugin add opencode-expskill ||
-            fail 'OpenCode installation failed. Check the error above and npm access. For an existing installation, run `opencode plugin remove opencode-expskill`, then retry.'
-        printf 'ExpSkill installed successfully for OpenCode. Start a new OpenCode session.\n'
+        plugins=$(opencode plugin list) ||
+            fail 'Cannot inspect OpenCode plugins. Check the error above, then retry.'
+        target=''
+        # OpenCode lists ID, VERSION, SOURCE. Retain a configured version spec
+        # as the update target and match the package name exactly.
+        while IFS=$' \t' read -r plugin_id version source rest; do
+            case "$source" in
+                opencode-expskill|opencode-expskill@*) target=$source; break ;;
+            esac
+        done <<< "$plugins"
+        if [ -n "$target" ]; then
+            opencode plugin update "$target" ||
+                fail 'OpenCode update failed. Check the error above and npm access, then retry.'
+        else
+            opencode plugin add opencode-expskill ||
+                fail 'OpenCode installation failed. Check the error above and npm access, then retry.'
+        fi
+        printf 'ExpSkill installed or updated successfully for OpenCode. Start a new OpenCode session.\n'
         ;;
     Hermes)
         resolve_release hermes-dist
-        hermes plugins install "$remote" --ref "$sha" ||
-            fail 'Hermes installation failed. Check the error above and network access. For an existing installation, run `hermes plugins remove expskill`, then retry.'
-        printf 'ExpSkill installed successfully for Hermes. Start a new Hermes session.\n'
+        # Hermes update refuses pinned installs. --force replaces an existing
+        # package with the latest release and also works for a first install.
+        hermes plugins install "$remote" --ref "$sha" --force ||
+            fail 'Hermes installation or update failed. Check the error above and network access, then retry.'
+        printf 'ExpSkill installed or updated successfully for Hermes. Start a new Hermes session.\n'
         ;;
     esac
 done

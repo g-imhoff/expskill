@@ -1,7 +1,7 @@
 # ExpSkill
 
 Skills and agents for Codex, OpenCode, and Hermes. Choose providers with `1 3`, `Codex,Hermes`, or `all`.
-Requires Bash, curl, and your chosen host CLIs.
+Installs or updates ExpSkill. Requires Bash, curl, and your chosen host CLIs.
 Codex and Hermes also need Git; Codex needs Python 3.
 ```bash
 installer="$(curl -fsSL https://raw.githubusercontent.com/g-imhoff/expskill/main/install.sh)" && bash -c "$installer"

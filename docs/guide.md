@@ -9,9 +9,9 @@ optional lifecycle router. The same skill base also ships as the
 Use the [launcher in the README](../README.md) from any directory. Choose one or
 more providers with numbers or names separated by spaces or commas, such as
 `1 3` or `Codex,Hermes`. Enter `all` to install Codex, OpenCode, and Hermes.
-Each provider installs once, in selection order. The installer checks all
-selected CLIs before starting and stops on the first installation failure.
-Providers that completed before a failure remain installed.
+Each provider installs or updates once, in selection order. The installer checks
+all selected CLIs before starting and stops on the first installation or update
+failure. Providers that completed before a failure remain installed.
 The GitHub download requires curl. Codex and Hermes also require Git.
 Codex requires Python 3 to read its CLI
 response and install the seven packaged agent profiles.
@@ -19,9 +19,16 @@ response and install the seven packaged agent profiles.
 Codex profiles go to `${CODEX_HOME:-$HOME/.codex}/agents`. Differing files and old
 symlinks are preserved in an `expskill-backup-*` directory there before replacement.
 Unrelated profiles are left in place. Review and trust the hook through `/hooks`,
-then start a new session. The installer stops on CLI conflicts and prints removal
-commands for a deliberate reinstall. It does not automatically update existing
-registrations. The manual commands below are for building from a source checkout.
+then start a new session. Rerun the launcher to update selected providers.
+For Codex, it replaces the ExpSkill marketplace snapshot with the latest
+`codex-dist` commit, reinstalls the plugin, and refreshes the seven profiles.
+The installed plugin cache remains available if marketplace registration fails;
+rerun the installer after resolving the error. For OpenCode, it updates the
+configured `opencode-expskill` package target or adds it if absent. For Hermes,
+it force-reinstalls the latest `hermes-dist` commit because ordinary updates
+refuse pinned installs. Hermes retains the selection of an active plugin and
+uses its normal enable prompt for a disabled or new plugin.
+The manual commands below are for building from a source checkout.
 
 ## Install and validate
 
