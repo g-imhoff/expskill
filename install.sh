@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Run with Bash 3.2+ on macOS or Linux. Only the selected host is installed.
+# Run with Bash 3.2+ on macOS or Linux. Selected hosts install one after another.
 set -eu
 
 remote='https://github.com/g-imhoff/expskill.git'
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "Install $1 and put it on PATH, then run this installer again."; }
+
+add_host() {
+    case " ${hosts[*]-} " in
+        *" $1 "*) ;;
+        *) hosts+=("$1") ;;
+    esac
+}
 
 resolve_release() {
     branch=$1
@@ -16,23 +23,41 @@ resolve_release() {
     fi
 }
 
-printf 'Install ExpSkill into:\n  1) Codex\n  2) OpenCode\n  3) Hermes\n'
+printf 'Install ExpSkill into:\n  1) Codex\n  2) OpenCode\n  3) Hermes\n  all) All providers\n'
 while :; do
-    printf 'Choose a host [1-3]: '
-    IFS= read -r selection || fail 'No host selection received. Run again and choose 1, 2, or 3.'
-    case "$selection" in
-        1|[Cc][Oo][Dd][Ee][Xx]) host=Codex; break ;;
-        2|[Oo][Pp][Ee][Nn][Cc][Oo][Dd][Ee]) host=OpenCode; break ;;
-        3|[Hh][Ee][Rr][Mm][Ee][Ss]) host=Hermes; break ;;
-        *) printf 'Enter 1, 2, or 3 (or the host name).\n' ;;
+    printf 'Choose providers (e.g. 1 3, or all): '
+    IFS= read -r selection || fail 'No provider selection received. Run again and choose 1, 2, 3, or all.'
+    hosts=()
+    valid=true
+    IFS=$' ,\t' read -r -a choices <<< "$selection"
+    for choice in "${choices[@]-}"; do
+        case "$choice" in
+            1|[Cc][Oo][Dd][Ee][Xx]) add_host Codex ;;
+            2|[Oo][Pp][Ee][Nn][Cc][Oo][Dd][Ee]) add_host OpenCode ;;
+            3|[Hh][Ee][Rr][Mm][Ee][Ss]) add_host Hermes ;;
+            [Aa][Ll][Ll]) add_host Codex; add_host OpenCode; add_host Hermes ;;
+            '') ;;
+            *) valid=false ;;
+        esac
+    done
+    if "$valid" && [ "${#hosts[@]}" -gt 0 ]; then
+        break
+    fi
+    printf 'Enter provider numbers or names separated by spaces or commas, or all.\n'
+done
+
+# Check every selected CLI before the first installation changes anything.
+for host in "${hosts[@]}"; do
+    case "$host" in
+        Codex) require codex; require git; require python3 ;;
+        OpenCode) require opencode ;;
+        Hermes) require hermes; require git ;;
     esac
 done
 
-case "$host" in
+for host in "${hosts[@]}"; do
+    case "$host" in
     Codex)
-        require codex
-        require git
-        require python3
         resolve_release codex-dist
         codex plugin marketplace add "$remote" --ref "$sha" ||
             fail 'Codex marketplace registration failed. Check the error above. For an existing installation, run `codex plugin remove expskill@expskill` and `codex plugin marketplace remove expskill`, then retry.'
@@ -90,17 +115,15 @@ PY
         printf 'ExpSkill installed successfully for Codex. Review and trust the plugin hook in /hooks, then start a new Codex session.\n'
         ;;
     OpenCode)
-        require opencode
         opencode plugin add opencode-expskill ||
             fail 'OpenCode installation failed. Check the error above and npm access. For an existing installation, run `opencode plugin remove opencode-expskill`, then retry.'
         printf 'ExpSkill installed successfully for OpenCode. Start a new OpenCode session.\n'
         ;;
     Hermes)
-        require hermes
-        require git
         resolve_release hermes-dist
         hermes plugins install "$remote" --ref "$sha" ||
             fail 'Hermes installation failed. Check the error above and network access. For an existing installation, run `hermes plugins remove expskill`, then retry.'
         printf 'ExpSkill installed successfully for Hermes. Start a new Hermes session.\n'
         ;;
-esac
+    esac
+done

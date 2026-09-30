@@ -6,8 +6,12 @@ optional lifecycle router. The same skill base also ships as the
 
 ## Quick install
 
-Use the [launcher in the README](../README.md) from any directory, choose Codex,
-OpenCode, or Hermes, and let the selected CLI install its published package.
+Use the [launcher in the README](../README.md) from any directory. Choose one or
+more providers with numbers or names separated by spaces or commas, such as
+`1 3` or `Codex,Hermes`. Enter `all` to install Codex, OpenCode, and Hermes.
+Each provider installs once, in selection order. The installer checks all
+selected CLIs before starting and stops on the first installation failure.
+Providers that completed before a failure remain installed.
 The GitHub download requires curl. Codex and Hermes also require Git.
 Codex requires Python 3 to read its CLI
 response and install the seven packaged agent profiles.

@@ -82,7 +82,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_opencode_needs_only_selected_cli_and_reprompts(self):
         self.commands("opencode")
-        result = self.run_installer("wrong\n2\n")
+        result = self.run_installer("wrong\n ,\t\n2\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Codex", result.stdout)
         self.assertIn("OpenCode", result.stdout)
@@ -98,6 +98,70 @@ class InstallerTests(unittest.TestCase):
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", SHA],
         ])
+
+    def test_multiple_hosts_install_in_selection_order(self):
+        self.commands("opencode", "git", "hermes")
+        result = self.run_installer("2 3\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [
+            ["opencode", "plugin", "add", "opencode-expskill"],
+            ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
+            ["hermes", "plugins", "install", REMOTE, "--ref", SHA],
+        ])
+
+    def test_multiple_names_and_commas_preserve_codex_profiles(self):
+        self.codex_commands()
+        self.commands("hermes")
+        result = self.run_installer("CoDeX, Hermes\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call[0] for call in self.calls()], ["git", "codex", "codex", "git", "hermes"])
+        self.assertEqual(len(list((self.home / ".codex" / "agents").glob("*.toml"))), 7)
+
+    def test_all_hosts_installs_each_provider_once(self):
+        self.codex_commands()
+        self.commands("opencode", "hermes")
+        result = self.run_installer("ALL\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call[0] for call in self.calls()], ["git", "codex", "codex", "opencode", "git", "hermes"])
+        for host in ("Codex", "OpenCode", "Hermes"):
+            self.assertIn("installed successfully for " + host, result.stdout)
+
+    def test_duplicate_hosts_are_not_reinstalled(self):
+        self.commands("opencode", "git", "hermes")
+        result = self.run_installer("2,OpenCode,2 3 Hermes 3\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call[0] for call in self.calls()], ["opencode", "git", "hermes"])
+
+    def test_invalid_combined_selection_never_installs_partial_choice(self):
+        self.commands("opencode", "git", "hermes")
+        result = self.run_installer("2 unknown\n3\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call[0] for call in self.calls()], ["git", "hermes"])
+
+    def test_wildcard_selection_is_rejected_without_expanding_filenames(self):
+        self.commands("opencode")
+        (self.root / "2").touch()
+        result = subprocess.run(["/bin/bash", str(INSTALLER)], input="*\n2\n", text=True,
+                                capture_output=True, env=self.env, cwd=self.root, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Enter", result.stdout)
+        self.assertEqual(self.calls(), [["opencode", "plugin", "add", "opencode-expskill"]])
+
+    def test_preflight_checks_every_selected_cli_before_installing(self):
+        self.commands("opencode", "git")
+        self.assert_failed(self.run_installer("2 3\n"), "hermes")
+        self.assertEqual(self.calls(), [])
+
+    def test_combined_install_stops_after_failure_and_reports_completed_host(self):
+        self.codex_commands()
+        self.commands("opencode", "hermes")
+        result = self.run_installer("2 3 1\n", FAIL_STEP="hermes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Hermes installation failed", result.stderr)
+        self.assertIn("installed successfully for OpenCode", result.stdout)
+        self.assertNotIn("installed successfully for Hermes", result.stdout)
+        self.assertEqual([call[0] for call in self.calls()], ["opencode", "git", "hermes"])
+        self.assertFalse((self.home / ".codex").exists())
 
     def test_codex_installs_profiles_in_custom_home_and_preserves_existing(self):
         self.codex_commands()
@@ -221,17 +285,19 @@ class InstallerTests(unittest.TestCase):
         self.assertLessEqual(len(readme.splitlines()), 10)
         self.assertIn("docs/guide.md", readme)
         launcher = re.search(r"```bash\n(.*?)\n```", readme, re.S).group(1)
-        self.commands("curl", "opencode")
+        self.commands("curl", "opencode", "git", "hermes")
         (self.bin / "bash").symlink_to("/bin/bash")
-        result = subprocess.run(["/bin/bash", "-c", launcher], input="2\n", text=True,
+        result = subprocess.run(["/bin/bash", "-c", launcher], input="2 3\n", text=True,
                                 capture_output=True, env=self.env, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [
             ["curl", "-fsSL", "https://raw.githubusercontent.com/g-imhoff/expskill/main/install.sh"],
             ["opencode", "plugin", "add", "opencode-expskill"],
+            ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
+            ["hermes", "plugins", "install", REMOTE, "--ref", SHA],
         ])
         self.log.unlink()
-        failed = subprocess.run(["/bin/bash", "-c", launcher], input="2\n", text=True,
+        failed = subprocess.run(["/bin/bash", "-c", launcher], input="2 3\n", text=True,
                                 capture_output=True, env={**self.env, "FAIL_STEP": "curl"}, timeout=15)
         self.assertNotEqual(failed.returncode, 0)
         self.assertNotIn("partial-download-executed", failed.stdout)
