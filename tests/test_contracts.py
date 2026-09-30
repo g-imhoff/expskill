@@ -127,6 +127,8 @@ class ContractTests(unittest.TestCase):
         shutil.copytree(ROOT / "plugins", temporary / "plugins")
         shutil.copytree(ROOT / "scripts", temporary / "scripts")
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
+        (temporary / "docs").mkdir()
+        shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
     def load_manifest(self, root: Path) -> dict[str, object]:
@@ -309,6 +311,7 @@ class ContractTests(unittest.TestCase):
 
         surface_roots = (
             ROOT / "README.md",
+            ROOT / "docs" / "guide.md",
             ROOT / ".agents" / "skills" / "improve-skill",
             ROOT / "docs" / "plans",
             ROOT / "docs" / "specs",
@@ -556,14 +559,14 @@ class ContractTests(unittest.TestCase):
         errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("interface" in error and "unexpected" in error for error in errors), errors)
 
-    def test_readme_and_manifest_count_standalone_skills(self) -> None:
+    def test_guide_and_manifest_count_standalone_skills(self) -> None:
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
             r"\bfourteen independent skills and one optional lifecycle router\b"
         )
         paths = (
-            ROOT / "README.md",
+            ROOT / "docs" / "guide.md",
             PLUGIN_ROOT / ".codex-plugin" / "plugin.json",
         )
         for path in paths:
@@ -608,10 +611,47 @@ class ContractTests(unittest.TestCase):
                     f"README mutation {mutation} escaped its required-file check: {errors}",
                 )
 
+    def test_public_guide_is_a_required_nonempty_regular_file(self) -> None:
+        """Regression: validation cannot silently skip the repository's public contract."""
+
+        expected_fragments = {
+            "missing": ("guide", "missing"),
+            "empty": ("guide", "non-empty regular file"),
+            "directory": ("guide", "regular file"),
+            "symlink": ("guide", "symlink"),
+            "invalid-utf8": ("guide", "utf-8 text"),
+        }
+        for mutation, fragments in expected_fragments.items():
+            with self.subTest(mutation=mutation):
+                root = self.copy_repository()
+                guide = root / "docs" / "guide.md"
+                if mutation == "missing":
+                    guide.unlink()
+                elif mutation == "empty":
+                    guide.write_bytes(b"")
+                elif mutation == "directory":
+                    guide.unlink()
+                    guide.mkdir()
+                elif mutation == "symlink":
+                    outside = root / "outside-guide.md"
+                    outside.write_text("outside\n", encoding="utf-8")
+                    guide.unlink()
+                    guide.symlink_to(outside)
+                else:
+                    guide.write_bytes(b"\xff\xfe")
+                try:
+                    errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
+                except UnicodeError as error:
+                    self.fail(f"Guide mutation {mutation} leaked a decode exception: {error}")
+                self.assertTrue(
+                    any(all(fragment in error for fragment in fragments) for error in errors),
+                    f"Guide mutation {mutation} escaped its required-file check: {errors}",
+                )
+
     def test_skill_builder_is_visible_as_an_independent_direct_skill(self) -> None:
         """Regression: the evidence-gated creator stays public without joining the lifecycle."""
 
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme = (ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
         manifest = self.load_manifest(ROOT)
         long_description = str(manifest["interface"]["longDescription"])
         self.assertIn("$skill-builder", long_description)
