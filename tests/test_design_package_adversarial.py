@@ -22,25 +22,27 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
+        (temporary / "docs").mkdir()
+        shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
-    def test_readme_and_manifest_expose_fourteen_skills_including_correct(self) -> None:
+    def test_guide_and_manifest_expose_fourteen_skills_including_correct(self) -> None:
         """Regression: stale phase language hides a direct skill or contradicts the public roster."""
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
         skill_wording = re.compile(r"\bfourteen independent skills and one optional lifecycle router\b", re.I)
-        self.assertRegex(" ".join(readme.split()), skill_wording)
-        self.assertIn("$design", readme)
-        self.assertIn("$test", readme)
-        self.assertIn("$skill-builder", readme)
-        self.assertIn("$setup-design", readme)
-        self.assertIn("$setup-test", readme)
-        self.assertIn("$review", readme)
-        self.assertIn("$review-loop", readme)
-        self.assertIn("$correct", readme)
-        self.assertIn("$autonomous-run", readme)
+        self.assertRegex(" ".join(guide.split()), skill_wording)
+        self.assertIn("$design", guide)
+        self.assertIn("$test", guide)
+        self.assertIn("$skill-builder", guide)
+        self.assertIn("$setup-design", guide)
+        self.assertIn("$setup-test", guide)
+        self.assertIn("$review", guide)
+        self.assertIn("$review-loop", guide)
+        self.assertIn("$correct", guide)
+        self.assertIn("$autonomous-run", guide)
         self.assertIn("$test", long_description)
         self.assertIn("$skill-builder", long_description)
         self.assertIn("$setup-design", long_description)
@@ -50,7 +52,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$correct", long_description)
         self.assertIn("$autonomous-run", long_description)
         self.assertRegex(description, skill_wording)
-        self.assertNotRegex(readme, re.compile(r"\b(?:six|seven|eight|nine) independent development phases\b", re.I))
+        self.assertNotRegex(guide, re.compile(r"\b(?:six|seven|eight|nine) independent development phases\b", re.I))
         self.assertNotRegex(description, re.compile(r"\b(?:six|seven|eight|nine) standalone development phases\b", re.I))
 
     def test_validator_accepts_skill_builder_maximum_package_shape(self) -> None:
@@ -76,7 +78,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-thirteen-skill-wording": ("readme", "fourteen independent skills"),
+            "stale-thirteen-skill-wording": ("guide", "fourteen independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
@@ -119,9 +121,9 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                 elif mutation == "stale-thirteen-skill-wording":
-                    readme = root / "README.md"
-                    readme.write_text(
-                        readme.read_text(encoding="utf-8").replace(
+                    guide = root / "docs" / "guide.md"
+                    guide.write_text(
+                        guide.read_text(encoding="utf-8").replace(
                             "fourteen independent skills",
                             "thirteen independent skills",
                             1,
@@ -404,7 +406,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     f"manifest collision {replacement!r} escaped validation: {errors}",
                 )
 
-    def test_readme_invocation_requires_the_exact_skill_builder_token(self) -> None:
+    def test_guide_invocation_requires_the_exact_skill_builder_token(self) -> None:
         """Regression: a collision or wrong-case example cannot invoke the public skill."""
 
         invocation = "Use $skill-builder to create or improve one exact agent skill"
@@ -416,11 +418,11 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         ):
             with self.subTest(replacement=replacement):
                 root = self._copy_repository()
-                readme_path = root / "README.md"
-                readme = readme_path.read_text(encoding="utf-8")
-                self.assertIn(invocation, readme)
-                readme_path.write_text(
-                    readme.replace(
+                guide_path = root / "docs" / "guide.md"
+                guide = guide_path.read_text(encoding="utf-8")
+                self.assertIn(invocation, guide)
+                guide_path.write_text(
+                    guide.replace(
                         invocation,
                         invocation.replace("$skill-builder", replacement),
                     ),
@@ -429,14 +431,14 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
-                        "readme" in error
+                        "guide" in error
                         and "direct $skill-builder invocation" in error
                         for error in errors
                     ),
-                    f"README token collision {replacement!r} escaped validation: {errors}",
+                    f"Guide token collision {replacement!r} escaped validation: {errors}",
                 )
 
-    def test_readme_allows_only_the_two_canonical_skill_builder_mentions(self) -> None:
+    def test_guide_allows_only_the_two_canonical_skill_builder_mentions(self) -> None:
         """Regression: unmarked Skill Builder prose is structural drift regardless of sentiment."""
 
         additions = (
@@ -447,19 +449,19 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for addition in additions:
             with self.subTest(addition=addition):
                 root = self._copy_repository()
-                readme_path = root / "README.md"
-                readme_path.write_text(
-                    readme_path.read_text(encoding="utf-8") + "\n" + addition + "\n",
+                guide_path = root / "docs" / "guide.md"
+                guide_path.write_text(
+                    guide_path.read_text(encoding="utf-8") + "\n" + addition + "\n",
                     encoding="utf-8",
                 )
                 errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
                 self.assertTrue(
                     any(
-                        "readme" in error
+                        "guide" in error
                         and "skill builder mentions must be exactly" in error
                         for error in errors
                     ),
-                    f"extra README mention escaped validation: {addition!r}: {errors}",
+                    f"extra Guide mention escaped validation: {addition!r}: {errors}",
                 )
 
     def test_validator_accepts_the_complete_design_package(self) -> None:
