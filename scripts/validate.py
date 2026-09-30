@@ -199,7 +199,7 @@ SKILL_BUILDER_BOUNDARY_SECTION = (
     "(references/evaluation-rubric.md) completely before freezing the evaluation pack "
     "and before every review or scoring pass."
 )
-SKILL_BUILDER_README_LINES = (
+SKILL_BUILDER_GUIDE_LINES = (
     "- `$skill-builder` creates or improves one exact agent skill through evidence-gated "
     "research, trials, review, and verification.",
     "Use $skill-builder to create or improve one exact agent skill with retained evidence.",
@@ -2232,44 +2232,59 @@ def _validate_public_third_party_derivations(
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
-    readme_path = _required_nonempty_package_file(
+    readme_path = _required_nonempty_package_file(repository_root, "README.md", "README", errors)
+    if readme_path is not None:
+        try:
+            readme = readme_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            errors.append(f"README could not be read: {error}")
+        else:
+            if len(readme.splitlines()) > 10:
+                errors.append("README must contain at most ten physical lines")
+            if "(docs/guide.md)" not in readme:
+                errors.append("README must link to docs/guide.md")
+    _validate_public_guide(repository_root, errors)
+
+
+def _validate_public_guide(repository_root: Path, errors: list[str]) -> None:
+    guide_path = _required_nonempty_package_file(
         repository_root,
-        "README.md",
-        "README",
+        "docs/guide.md",
+        "Guide",
         errors,
     )
-    if readme_path is None:
+    if guide_path is None:
         return
     try:
-        readme = readme_path.read_text(encoding="utf-8")
+        guide = guide_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
-        errors.append(f"README could not be read: {error}")
+        errors.append(f"Guide could not be read: {error}")
         return
-    normalized = " ".join(readme.lower().split())
+    normalized = " ".join(guide.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "README must describe fourteen independent skills and one optional lifecycle router"
+            "Guide must describe fourteen independent skills and one optional lifecycle router"
         )
     if re.search(r"\b(?:seven|eight|nine|ten|eleven|twelve) independent skills\b", normalized):
-        errors.append("README contains stale public-skill count wording")
-    if not _contains_exact_skill_token(readme, SKILL_BUILDER_TOKEN):
-        errors.append("README must advertise $skill-builder")
-    readme_lines = readme.splitlines()
+        errors.append("Guide contains stale public-skill count wording")
+    if not _contains_exact_skill_token(guide, SKILL_BUILDER_TOKEN):
+        errors.append("Guide must advertise $skill-builder")
+    guide_lines = guide.splitlines()
     builder_mentions = tuple(
-        line for line in readme_lines if SKILL_BUILDER_NAME_PATTERN.search(line)
+        line for line in guide_lines if SKILL_BUILDER_NAME_PATTERN.search(line)
     )
-    if builder_mentions != SKILL_BUILDER_README_LINES:
+    if builder_mentions != SKILL_BUILDER_GUIDE_LINES:
         errors.append(
-            "README Skill Builder mentions must be exactly the public-list and "
+            "Guide Skill Builder mentions must be exactly the public-list and "
             "direct-invocation lines"
         )
-    if SKILL_BUILDER_README_LINES[0] not in readme_lines:
+    if SKILL_BUILDER_GUIDE_LINES[0] not in guide_lines:
         errors.append(
-            "README must describe $skill-builder as the evidence-gated creator or improver "
+            "Guide must describe $skill-builder as the evidence-gated creator or improver "
             "of one exact agent skill"
         )
-    if SKILL_BUILDER_README_LINES[1] not in readme_lines:
-        errors.append("README must include a direct $skill-builder invocation example")
+    if SKILL_BUILDER_GUIDE_LINES[1] not in guide_lines:
+        errors.append("Guide must include a direct $skill-builder invocation example")
 
 
 def _validate_removed_repository_local_skill(

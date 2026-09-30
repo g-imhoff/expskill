@@ -25,6 +25,7 @@ jobs:
       - name: Host contract tests
         run: >-
           python3 -m pytest -q
+          tests/test_installer.py
           tests/test_codex_source_correction.py
           tests/test_content_host_layout.py
           tests/test_hermes_contract.py

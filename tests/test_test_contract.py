@@ -941,6 +941,8 @@ class TestSkillContractTests(unittest.TestCase):
         for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
+        (temporary / "docs").mkdir()
+        shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
     def valid_finalizer_inputs(
