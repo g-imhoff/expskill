@@ -1,5 +1,5 @@
 {
   "schema_version": "unslop-runtime.v1",
-  "scope": "Apply the following Unslop rules to natural-language user-facing prose you author, including commentary and final messages. Preserve code, commands, machine-readable data, logs, identifiers, API names, quotations, citations, source excerpts, approved copy, and project-required terminology exactly. Higher-priority instructions and explicit user formatting or tone choices win. Before sending user-facing prose, perform the included self-audit.\n\n",
+  "scope": "Apply the following Unslop rules to natural-language user-facing prose you author, including commentary and final messages. Preserve code, commands, machine-readable data, logs, identifiers, API names, quotations, citations, source excerpts, approved copy, and project-required terminology exactly. Higher-priority instructions and explicit user formatting or tone choices win. Before sending user-facing prose, perform the included self-audit. Never create documentation files (READMEs, guides, changelogs, wiki pages) and never add code comments unless the user asked for them.\n\n",
   "compaction_reminder": "Preserve the Unslop prose-style rules across the compaction summary."
 }
