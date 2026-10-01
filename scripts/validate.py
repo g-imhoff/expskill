@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -113,6 +114,9 @@ HELPER_PATH = "content/scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
 UNSLOP_HOOK_CONFIG_PATH = "codex/hooks/hooks.json"
 UNSLOP_HOOK_SCRIPT_PATH = "codex/hooks/inject_unslop.py"
+UNSLOP_HOOK_HELPER_PATH = "codex/hooks/unslop_body.py"
+HERMES_UNSLOP_HOOK_PATH = "content/scripts/hermes_unslop.py"
+OPENCODE_UNSLOP_V2_PLUGIN_PATH = "opencode/plugins/unslop-v2.ts"
 THIRD_PARTY_LOCK_PATH = "content/third-party/upstream-lock.json"
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
@@ -2006,6 +2010,51 @@ def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
         errors.append("brainstorm catalog payload does not match the pinned upstream digest")
 
 
+def _validate_unslop_python_asset(
+    plugin_root: Path,
+    relative: str,
+    label: str,
+    required_markers: tuple[str, ...],
+    required_defs: tuple[str, ...],
+    scope: str | None,
+    errors: list[str],
+) -> None:
+    """Validate a shared Unslop Python asset without allowing prose copies."""
+    asset_path = _required_package_path(plugin_root, relative, label, "file", errors)
+    if asset_path is None:
+        return
+    try:
+        text = asset_path.read_bytes().decode("utf-8")
+    except OSError as error:
+        errors.append(f"{label} could not be read: {error}")
+        return
+    except UnicodeDecodeError:
+        errors.append(f"{label} must be UTF-8 text")
+        return
+    if not text.strip():
+        errors.append(f"{label} must be non-empty")
+        return
+    try:
+        parsed = ast.parse(text, filename=str(asset_path))
+    except SyntaxError as error:
+        errors.append(f"{label} is not valid Python: {error.msg}")
+        return
+    defined = {
+        node.name for node in ast.walk(parsed) if isinstance(node, ast.FunctionDef)
+    }
+    for name in required_defs:
+        if name not in defined:
+            errors.append(f"{label} must define {name}()")
+    normalized = text.lower()
+    for marker in required_markers:
+        if marker not in normalized:
+            errors.append(f"{label} is missing required marker {marker!r}")
+    if scope and scope.strip() and scope.strip() in text:
+        errors.append(f"{label} duplicates the canonical runtime scope")
+    if "What makes this obviously AI generated?" in text:
+        errors.append(f"{label} duplicates the canonical skill body")
+
+
 def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     policy_path = _required_package_path(
         plugin_root,
@@ -2046,7 +2095,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     if hooks_root is None:
         return
 
-    expected_files = {"hooks.json", "inject_unslop.py"}
+    expected_files = {"hooks.json", "inject_unslop.py", "unslop_body.py"}
     actual_files = {
         path.relative_to(hooks_root).as_posix()
         for path in hooks_root.rglob("*")
@@ -2055,7 +2104,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     }
     if actual_files != expected_files:
         errors.append(
-            "Unslop hook files must be exactly hooks.json and inject_unslop.py"
+            "Unslop hook files must be exactly hooks.json, inject_unslop.py, and unslop_body.py"
         )
 
     config_path = _required_package_path(
@@ -2113,6 +2162,32 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
             errors.append(f"Unslop hook script is missing required marker {marker!r}")
     if scope and scope in script:
         errors.append("Unslop hook script duplicates the canonical runtime scope")
+
+    _validate_unslop_python_asset(
+        plugin_root,
+        UNSLOP_HOOK_HELPER_PATH,
+        "Unslop shared hook helper",
+        ("frontmatter", "unslop-runtime", "scope"),
+        ("skill_body", "runtime_scope", "load_unslop_text"),
+        scope,
+        errors,
+    )
+    _validate_unslop_python_asset(
+        plugin_root,
+        HERMES_UNSLOP_HOOK_PATH,
+        "Hermes Unslop hook module",
+        (
+            "register_hook",
+            "pre_llm_call",
+            "on_session_start",
+            "context",
+            "frontmatter",
+            "unslop-runtime",
+        ),
+        ("register", "pre_llm_call", "on_session_start", "load_unslop_text"),
+        scope,
+        errors,
+    )
 
 
 def _validate_third_party_sources(plugin_root: Path, errors: list[str]) -> None:
@@ -2938,6 +3013,7 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
         "manifest.json",
         "hooks/hooks.json",
         "hooks/inject_unslop.py",
+        "hooks/unslop_body.py",
         *(f"skill-adapters/{name}/agents/openai.yaml" for name in EXPECTED_SKILLS),
     }
     actual_files = {
@@ -3258,7 +3334,7 @@ OPENCODE_READ_ONLY_GIT_RULE_ORDER = (
     ("git *<*", "deny"),
 )
 OPENCODE_READ_ONLY_GIT_RULES = dict(OPENCODE_READ_ONLY_GIT_RULE_ORDER)
-OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
+OPENCODE_PLUGINS = ("unslop.js", "unslop-v2.ts", "execution-policy.js")
 OPENCODE_PACKAGE_EXPORTS = {".": "./index.js"}
 OPENCODE_PACKAGE_FILES = (
     "LICENSE",
@@ -4166,6 +4242,48 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
         scope = policy.get("scope") if isinstance(policy, dict) else None
         if isinstance(scope, str) and scope.strip() and scope.strip() in unslop:
             errors.append("opencode unslop plugin duplicates the canonical runtime scope")
+    unslop_v2 = _read_overlay_text(
+        plugins_root / "unslop-v2.ts", "opencode unslop v2 plugin", errors
+    )
+    if unslop_v2 is not None:
+        for marker in (
+            "Plugin.define",
+            "session.hook",
+            '"request"',
+            "system",
+            "SKILL.md",
+            "unslop-runtime.json",
+            "expskill-unslop",
+            "unslop-scope",
+        ):
+            if marker not in unslop_v2:
+                errors.append(f"opencode unslop v2 plugin is missing required marker {marker!r}")
+        for forbidden in ("const SCOPE", "const RULES", "const BODY", "const TEXT"):
+            if forbidden in unslop_v2:
+                errors.append(
+                    f"opencode unslop v2 plugin must derive authored prose from canonical content, found {forbidden!r}"
+                )
+        if isinstance(scope, str) and scope.strip() and scope.strip() in unslop_v2:
+            errors.append("opencode unslop v2 plugin duplicates the canonical runtime scope")
+        if "What makes this obviously AI generated?" in unslop_v2:
+            errors.append("opencode unslop v2 plugin duplicates the canonical skill body")
+        node = shutil.which("node")
+        if node is not None:
+            try:
+                probe = subprocess.run(
+                    [node, "--check", str(plugins_root / "unslop-v2.ts")],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                errors.append(f"opencode unslop v2 plugin could not be parsed: {error}")
+            else:
+                if probe.returncode != 0:
+                    errors.append(
+                        "opencode unslop v2 plugin is not valid TypeScript: "
+                        f"{probe.stderr.strip()[:200]}"
+                    )
     policy = _read_overlay_text(
         plugins_root / "execution-policy.js", "opencode execution-policy plugin", errors
     )
