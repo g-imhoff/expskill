@@ -119,6 +119,28 @@ The plugin includes a `SessionStart` hook that applies Unslop to prose in root
 conversations. Codex will not run a new or changed plugin hook until you review
 and trust it. Inspect it through `/hooks`, then start a new conversation.
 
+The same rule text auto-applies on the other hosts. Hermes loads
+`content/scripts/hermes_unslop.py` as a plugin hook: copy it into a Hermes
+plugin directory (for example `~/.hermes/plugins/expskill-unslop/`) and point
+it at these sources with `EXPSKILL_HOME` (a checkout root). It registers
+`pre_llm_call` (returns the shared text as `{"context": ...}`) and an
+observer-only `on_session_start` warmup, following
+https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
+(reviewed 2026-10-01). Gateway-only or shell-hook variants can reuse the same
+`load_unslop_text()` loader; see the Event Hooks guide for the `HOOK.yaml`
+and `hooks:` config shapes.
+
+OpenCode v2 ships `opencode/plugins/unslop-v2.ts`
+(`Plugin.define({ id: "expskill-unslop" })`, `ctx.session.hook("request", …)`
+pushing the shared text into `event.system`, per
+https://dev.opencode.ai/v2/docs/build/plugins/ "Runtime hooks", reviewed
+2026-10-01). OpenCode v1 keeps using `./unslop.js`. All three hosts read the
+canonical text at runtime (`content/skills/unslop/SKILL.md` plus the `scope`
+prefix from `content/policies/unslop-runtime.json`), except the v2 TS plugin,
+which regenerates its baked-in copy from those files; when either canonical
+file changes, update the v2 copy and the sentinel test in
+`tests/test_unslop_hooks.py`.
+
 State left by the retired installer (`$XDG_STATE_HOME/expskill` receipts and
 journals, `codex-marketplace` and recovery packages) is inert without it;
 remove those directories by hand if they exist. The retired Codex agent
