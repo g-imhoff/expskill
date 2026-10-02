@@ -259,6 +259,48 @@ import(%s).then(async (module) => {
   );
   assert('fresh-instance-has-fresh-budget', true);
 
+  const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'execution-run-budget-'));
+  try {
+    process.env.EXPSKILL_RUN_ID = 'audit-resume';
+    process.env.EXPSKILL_RUN_BUDGET_DIR = runRoot;
+    for (let index = 0; index < 30; index += 1) {
+      const runHooks = await module.ExecutionPolicyPlugin({});
+      const input = { tool: 'task', sessionID: `resume-${index}`, callID: `run-${index}` };
+      await runHooks['tool.execute.before'](input, { args: implementerArgs });
+      await runHooks['tool.execute.after']({ ...input, args: implementerArgs }, {});
+    }
+    let blocked = false;
+    const resumed = await module.ExecutionPolicyPlugin({});
+    try {
+      await resumed['tool.execute.before']({ tool: 'task', sessionID: 'last-resume', callID: 'run-31' }, { args: implementerArgs });
+    } catch (error) { blocked = String(error).includes('cumulative run budget exhausted'); }
+    assert('resumed-instances-share-thirty-call-budget', blocked);
+    const files = (await fs.readdir(runRoot)).filter((name) => name.endsWith('.json'));
+    const state = JSON.parse(await fs.readFile(path.join(runRoot, files[0]), 'utf8'));
+    assert('persisted-count-is-thirty', state.calls === 30);
+    const child = await import('node:child_process');
+    const childScript = `import { ExecutionPolicyPlugin } from ${JSON.stringify(url.pathToFileURL(path.join(artifactRoot, 'plugins', 'execution-policy.js')).href)}; const hooks = await ExecutionPolicyPlugin({}); try { await hooks['tool.execute.before']({tool:'task',sessionID:'process-restart',callID:'process-restart'},{args:{subagent_type:'expskill-implementer'}}); process.exit(1); } catch (error) { process.exit(String(error).includes('cumulative run budget exhausted') ? 0 : 2); }`;
+    const restart = child.spawnSync(process.execPath, ['--input-type=module', '-e', childScript], { env: process.env });
+    assert('process-restart-preserves-run-budget', restart.status === 0);
+    await fs.writeFile(path.join(runRoot, files[0]), '{}');
+    blocked = false;
+    try {
+      const corrupt = await module.ExecutionPolicyPlugin({});
+      await corrupt['tool.execute.before']({ tool: 'task', sessionID: 'corrupt', callID: 'corrupt' }, { args: implementerArgs });
+    } catch (error) { blocked = String(error).includes('run budget state is invalid'); }
+    assert('corrupt-run-budget-fails-closed', blocked);
+    process.env.EXPSKILL_RUN_ID = '../escape';
+    const unsafe = await module.ExecutionPolicyPlugin({});
+    blocked = false;
+    try { await unsafe['tool.execute.before']({ tool: 'task', sessionID: 'unsafe', callID: 'unsafe' }, { args: implementerArgs }); }
+    catch (error) { blocked = String(error).includes('safe EXPSKILL_RUN_ID'); }
+    assert('unsafe-run-identity-fails-closed', blocked);
+  } finally {
+    delete process.env.EXPSKILL_RUN_ID;
+    delete process.env.EXPSKILL_RUN_BUDGET_DIR;
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+
   const packedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'packed-opencode-plugin-'));
   try {
     const packedPlugins = path.join(packedRoot, 'plugins');
@@ -1099,6 +1141,11 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:after-hook-releases-concurrency",
             "ok:hook-blocks-elapsed-budget",
             "ok:fresh-instance-has-fresh-budget",
+            "ok:resumed-instances-share-thirty-call-budget",
+            "ok:persisted-count-is-thirty",
+            "ok:process-restart-preserves-run-budget",
+            "ok:corrupt-run-budget-fails-closed",
+            "ok:unsafe-run-identity-fails-closed",
             "ok:packed-policy-constructor",
             "ok:packed-policy-enforces-valid-agent",
             "ok:missing-policy-fails-closed",

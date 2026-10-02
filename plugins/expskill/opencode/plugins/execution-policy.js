@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -280,6 +282,75 @@ function createBudgetTracker(budget) {
   };
 }
 
+function persistentRunCounter(env) {
+  const runID = env.EXPSKILL_RUN_ID;
+  if (runID === undefined || runID === "") return null;
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(runID)) {
+    throw new Error("execution-policy requires a safe EXPSKILL_RUN_ID");
+  }
+  const directory = path.resolve(env.EXPSKILL_RUN_BUDGET_DIR || path.join(env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "expskill", "execution-budget"));
+  let ancestor = directory;
+  while (true) {
+    try {
+      if (fs.lstatSync(ancestor).isSymbolicLink()) throw new Error("execution-policy run budget path is a symlink");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const metadata = fs.lstatSync(directory);
+  if (!metadata.isDirectory() || (metadata.mode & 0o077) !== 0) {
+    throw new Error("execution-policy run budget directory must be private");
+  }
+  return (entry, now = Date.now()) => {
+    const filename = path.join(directory, `${runID}-${encodeURIComponent(entry.route)}.json`);
+    const lock = `${filename}.lock`;
+    const lockFD = fs.openSync(lock, "wx", 0o600);
+    const temporary = `${filename}.${process.pid}.tmp`;
+    try {
+      let state = { schema_version: "execution-run-budget.v1", run_id: runID, route: entry.route, calls: 0, started_at: now };
+      try {
+        const current = fs.lstatSync(filename);
+        if (!current.isFile() || current.isSymbolicLink() || current.size > 4096 || (current.mode & 0o077) !== 0) {
+          throw new Error("execution-policy run budget file is unsafe");
+        }
+        const serialized = fs.readFileSync(filename, "utf8").trim();
+        state = JSON.parse(serialized);
+        if (serialized !== JSON.stringify(state)) throw new Error("execution-policy run budget encoding is invalid");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      if (!isRecord(state) || Object.keys(state).sort().join(",") !== "calls,route,run_id,schema_version,started_at" || state.schema_version !== "execution-run-budget.v1" || state.run_id !== runID || state.route !== entry.route || !Number.isSafeInteger(state.calls) || state.calls < 0 || !Number.isSafeInteger(state.started_at) || state.started_at < 0 || now < state.started_at) {
+        throw new Error("execution-policy run budget state is invalid");
+      }
+      if (state.calls + 1 > entry.budget.maxAgentCalls) {
+        throw new Error("execution-policy cumulative run budget exhausted");
+      }
+      if (now - state.started_at > entry.budget.maxElapsedMs) {
+        throw new Error("execution-policy cumulative elapsed budget exhausted");
+      }
+      state.calls += 1;
+      const descriptor = fs.openSync(temporary, "wx", 0o600);
+      try {
+        fs.writeFileSync(descriptor, `${JSON.stringify(state)}\n`);
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      fs.renameSync(temporary, filename);
+      const parentFD = fs.openSync(directory, "r");
+      try { fs.fsyncSync(parentFD); } finally { fs.closeSync(parentFD); }
+    } finally {
+      fs.closeSync(lockFD);
+      fs.unlinkSync(lock);
+      try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  };
+}
+
 function requestedAgent(args) {
   if (typeof args === "object" && args !== null) {
     return args.subagent_type ?? args.agent ?? args.subagentType ?? null;
@@ -318,7 +389,9 @@ function loadFailureHooks(loadError) {
 export const ExecutionPolicyPlugin = async (_ctx) => {
   const policyPath = resolvePolicyPath(process.env, import.meta.url);
   let policy;
+  let reserveRunCall;
   try {
+    reserveRunCall = persistentRunCounter(process.env);
     policy = loadPolicy(JSON.parse(await readFile(policyPath, "utf8")));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -356,6 +429,12 @@ export const ExecutionPolicyPlugin = async (_ctx) => {
       }
       const tracker = trackerFor(entry);
       tracker.beforeCall(call.sessionID, agent);
+      try {
+        if (reserveRunCall) reserveRunCall(entry);
+      } catch (error) {
+        tracker.afterCall(call.sessionID);
+        throw error;
+      }
       activeCalls.set(call.key, { sessionID: call.sessionID, tracker });
     },
     "tool.execute.after": async (input, _output) => {

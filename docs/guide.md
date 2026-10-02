@@ -216,8 +216,10 @@ Invoke a skill directly when you know what you want:
   `$use-expskill` conversation and follows the workflow's instructions and
   conversation transitions to a review-ready draft PR.
   It answers questions and confirms decisions within your scope and constraints.
-  After the workflow delivers the PR, it runs `$review-loop` in its own
-  conversation before handing the result to you for review and merge.
+  After local implementation, the invoking agent owns the authorized feature
+  branch push and draft PR creation. It runs or reuses an unchanged, independently
+  reviewed `$review-loop` result before handing the PR to you. Calls and retries
+  share one run allowance across conversations.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work, it
