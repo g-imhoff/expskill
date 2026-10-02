@@ -75,7 +75,11 @@ class ScriptedOwners:
             thread = "offline-wrong-owner"
         if self.fault == "interruption" and name == "plan-initial":
             raise KeyboardInterrupt("offline dispatch interruption")
-        if name.startswith("plan-") and name != "plan-independent-audit":
+        if self.fault == "unavailable-interpreter" and name == "plan-initial":
+            payload = {"phase": "plan", "status": "blocked", "workflow_id": None, "revision": None,
+                "canonical_locator": None, "graph_path": None, "last_saved_workflow_revision": None,
+                "failure": {"operation": "Read public plan_graph.py helper usage", "exit_code": 127, "message": "zsh:1: command not found: python"}}
+        elif name.startswith("plan-") and name != "plan-independent-audit":
             if name == "plan-initial":
                 template = {
                     "outcomes": {"O1": {"kind": "outcome", "result": "Accessible responsive native preference control and preserved unrelated bytes"}},
@@ -197,6 +201,10 @@ class ScriptedOwners:
             source = output / "accepted-input.json"
             source.chmod(0o600)
             source.write_text("{}")
+        if self.fault == "runtime-evidence" and name == "plan-initial":
+            source = output / "python-runtime.json"
+            source.chmod(0o600)
+            source.write_text("{}")
         evidence_dir.mkdir(parents=True)
         events = [{"type": "thread.started", "thread_id": thread}, {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}]
         raw = evidence_dir / "events.jsonl"
@@ -230,6 +238,43 @@ def test_missing_durable_audit_protocol_blocks_before_actors(tmp_path, framework
     assert report["outcome"] == "probe-blocked"
     assert "durable Plan audit operations" in report["failure"]["reason"]
     assert owners.calls == []
+
+
+def test_interpreter_prerequisite_is_checked_before_first_actor(tmp_path, framework_source, monkeypatch):
+    repository, revision = framework_source
+    owners = ScriptedOwners()
+    monkeypatch.setattr(probe.sys, "executable", str(tmp_path / "missing-python3"))
+    report = probe.run_probe(output_root=tmp_path / "run", repository=repository, revision=revision, driver=owners, live=True, browser=sys.executable)
+    assert report["outcome"] == "probe-blocked"
+    assert "Python3 interpreter prerequisite" in report["failure"]["reason"]
+    assert owners.calls == []
+    assert report["budgets"]["spent_or_reserved_actor_calls"] == 0
+
+
+def test_unavailable_interpreter_blocked_json_preserves_cause_without_opening_null_graph(tmp_path, framework_source, monkeypatch):
+    repository, revision = framework_source
+    owners = ScriptedOwners("unavailable-interpreter")
+    def reject_canonical_pointer(*args):
+        raise AssertionError("Blocked return must not open a canonical pointer")
+    monkeypatch.setattr(probe, "private_file", reject_canonical_pointer)
+    report = probe.run_probe(output_root=tmp_path / "run", repository=repository, revision=revision, driver=owners, live=True, browser=sys.executable)
+    assert report["outcome"] == "probe-blocked"
+    assert len(owners.calls) == 1
+    assert report["failure"]["type"] == "ActorBlocked"
+    assert report["failure"]["reason"] == "zsh:1: command not found: python"
+    assert report["failure"]["actor_failure"]["exit_code"] == 127
+    assert report["failure"]["workflow_id"] is None
+    assert report["failure"]["revision"] is None
+    assert report["failure"]["last_saved_workflow_revision"] is None
+    assert report["failure"]["canonical_locator"] is None
+    assert report["failure"]["dispatch_id"] == "plan-initial"
+    assert report["relay"] == []
+    assert not (tmp_path / "run/state/expskill/plan-graphs").exists()
+    assert "host_integration" not in report["observations"]
+    actor = report["actors"]["plan-initial"]
+    assert json.loads(actor["final_text"])["failure"] == report["failure"]["actor_failure"]
+    assert Path(actor["attempts"][0]["raw_events"]).is_file()
+    assert report["budgets"]["spent_or_reserved_actor_calls"] == 1
 
 
 def test_private_artifact_locator_rejects_traversal_and_symlink(tmp_path):
@@ -291,6 +336,14 @@ def test_offline_real_helper_flow_retains_answers_delivery_join_and_current_plan
     assert report["observations"]["native_verification"]["passed"]
     assert report["observations"]["native_verification"]["kind"] == "offline-static-fixture-only"
     assert report["claims"]["human_visual_approval"] is False
+    runtime = report["python_runtime"]
+    assert runtime["executable"] == str(Path(sys.executable).absolute())
+    assert runtime["resolved_executable"] == str(Path(sys.executable).resolve())
+    assert runtime["sha256"] == probe.digest(Path(sys.executable).read_bytes())
+    assert runtime["check"]["exit_code"] == 0
+    runtime_artifact = Path(runtime["artifact"]["path"])
+    assert probe.digest(runtime_artifact.read_bytes()) == runtime["artifact"]["sha256"]
+    assert all(runtime["executable"] in prompt and "For every Python helper command" in prompt for _, prompt, _ in owners.calls)
     by_name = {name: configuration for name, _, configuration in owners.calls}
     for name in ("design-initial", "design-answer"):
         assert by_name[name]["sandbox"] == "danger-full-access"
@@ -337,7 +390,7 @@ def test_negative_transport_or_audit_never_integrates_or_claims_observation(tmp_
         assert retained["result"]["findings"][0]["disposition"] == "open"
 
 
-@pytest.mark.parametrize("fault", ["foreign-state", "target-write", "input-mutation"])
+@pytest.mark.parametrize("fault", ["foreign-state", "target-write", "input-mutation", "runtime-evidence"])
 def test_owner_and_accepted_scope_mutations_stop_before_answer_relay(tmp_path, framework_source, fault):
     repository, revision = framework_source
     owners = ScriptedOwners(fault)
