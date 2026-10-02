@@ -660,6 +660,7 @@ def retain_json(
     retain_review_source_components: bool = False,
     candidate_resulting_bytes: bytes | None = None,
     omitted_review_source_component: str | None = None,
+    producer: str | None = None,
 ) -> dict[str, object]:
     if artifact_type == "trial-pack":
         files = trial_files(
@@ -761,7 +762,9 @@ def retain_json(
         artifact_type=artifact_type,
         files=files,
         primary_path="record.json",
-        producer="main-agent",
+        producer=producer if producer is not None else str(
+            payload.get("reviewer_identity", payload.get("verifier_identity", "main-agent"))
+        ),
         input_bindings=input_bindings or [],
         limitations=[],
         state_root=state_root,
@@ -1805,6 +1808,7 @@ def build_candidate_stage(
     historical_candidate_v3: bool = False,
     retain_review_source_components: bool = False,
     omitted_review_source_component: str | None = None,
+    candidate_producer: str = "main-agent",
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
@@ -1942,6 +1946,7 @@ def build_candidate_stage(
         retain_review_source_components=retain_review_source_components,
         candidate_resulting_bytes=candidate_resulting_bytes,
         omitted_review_source_component=omitted_review_source_component,
+        producer=candidate_producer,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -1996,7 +2001,11 @@ def build_verified_stage(
     skip_final_review: bool = False,
     stop_after_scores: bool = False,
     stop_before_scores: bool = False,
+    stop_after_final_review: bool = False,
     final_review_overrides: dict[str, object] | None = None,
+    review_overrides: dict[str, object] | None = None,
+    verification_overrides: dict[str, object] | None = None,
+    scorecard_producer: str = "main-agent",
     review_fresh: bool = True,
     verification_fresh: bool = True,
     queued_targets: list[dict[str, str]] | None = None,
@@ -2095,7 +2104,7 @@ def build_verified_stage(
         sequence=sequence,
         artifact_id="final-review",
         artifact_type="review-record",
-        payload=review_payload(
+        payload={**review_payload(
             candidate["artifact_digest"],
             fresh=review_fresh,
             findings=review_findings,
@@ -2109,7 +2118,7 @@ def build_verified_stage(
                 if historical_review
                 else review_input_provenance(helper, state_root, workflow_id)
             ),
-        ),
+        ), **(review_overrides or {})},
         input_bindings=(
             current_bindings(helper, state_root, workflow_id)
             if historical_review
@@ -2166,6 +2175,7 @@ def build_verified_stage(
             trial_cases=trials_payload["cases"],
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
+        producer=scorecard_producer,
     )
     if stop_before_scores:
         return state_root, workflow_id, scorecard["sequence"], scorecard
@@ -2189,6 +2199,8 @@ def build_verified_stage(
                                          destination_stage="final-reviewed", artifact_ids=["post-score-review"], state_root=state_root)["sequence"]
     else:
         final_review = review
+    if stop_after_final_review:
+        return state_root, workflow_id, sequence, final_review
     verification = retain_json(
         helper,
         state_root=state_root,
@@ -2196,9 +2208,9 @@ def build_verified_stage(
         sequence=sequence,
         artifact_id="verification",
         artifact_type="verification-record",
-        payload=verification_payload(
+        payload={**verification_payload(
             candidate["artifact_digest"], fresh=verification_fresh
-        ),
+        ), **(verification_overrides or {})},
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
     sequence = helper.transition_run(
@@ -6956,6 +6968,142 @@ def test_scorecard_accepts_relevant_selective_criterion_evidence(tmp_path: Path)
     assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "verified"
 
 
+@pytest.mark.parametrize("phase", ("pre-score", "final"))
+def test_known_producer_cannot_self_review_with_independence_attestation(tmp_path: Path, phase: str) -> None:
+    helper = load_helper()
+    options = {"review_overrides" if phase == "pre-score" else "final_review_overrides": {
+        "reviewer_identity": "main-agent", "independent": True,
+    }}
+    with pytest.raises(helper.RunStateError, match="independent|producer|identity"):
+        build_verified_stage(helper, tmp_path, **options)
+
+
+def test_known_producer_cannot_self_verify_with_independence_attestation(tmp_path: Path) -> None:
+    helper = load_helper()
+    with pytest.raises(helper.RunStateError, match="independent|producer|identity"):
+        build_verified_stage(helper, tmp_path, verification_overrides={
+            "verifier_identity": "main-agent", "independent": True,
+        })
+
+
+@pytest.mark.parametrize("actor_kind", ("reviewer", "verifier"))
+def test_actor_identity_must_match_retained_envelope_producer(
+    tmp_path: Path, actor_kind: str
+) -> None:
+    helper = load_helper()
+    if actor_kind == "reviewer":
+        state_root, workflow_id, sequence, candidate = build_current_trials_stage(helper, tmp_path)
+        candidate_digest = candidate["artifact_digest"]
+        payload = review_payload(candidate_digest, input_artifacts=review_input_provenance(helper, state_root, workflow_id))
+        bindings = review_envelope_bindings(helper, state_root, workflow_id)
+        artifact_type, event, destination = "review-record", "accept-review", "reviewed"
+    else:
+        state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path, stop_after_final_review=True)
+        current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+        candidate_digest = current["artifact_index"]["candidate"]["digest"]
+        payload = verification_payload(candidate_digest)
+        bindings = current_bindings(helper, state_root, workflow_id)
+        artifact_type, event, destination = "verification-record", "accept-verification", "verified"
+    retained = retain_json(
+        helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence,
+        artifact_id="mismatched-actor", artifact_type=artifact_type, payload=payload,
+        producer="different-origin-actor", input_bindings=bindings,
+    )
+    with pytest.raises(helper.RunStateError, match="identity.*envelope producer"):
+        helper.transition_run(
+            workflow_id=workflow_id, expected_sequence=retained["sequence"],
+            event=event, destination_stage=destination,
+            artifact_ids=["mismatched-actor"], state_root=state_root,
+        )
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["head_sequence"] == retained["sequence"]
+
+
+@pytest.mark.parametrize("actor_kind", ("reviewer", "verifier"))
+def test_trial_session_cannot_relabel_itself_as_independent_actor(tmp_path: Path, actor_kind: str) -> None:
+    helper = load_helper()
+    option = "review_overrides" if actor_kind == "reviewer" else "verification_overrides"
+    with pytest.raises(helper.RunStateError, match="not independent.*contributor history"):
+        build_verified_stage(helper, tmp_path, **{option: {f"{actor_kind}_identity": "fresh-context-1"}})
+
+
+def test_current_scorecard_producer_cannot_author_final_review(tmp_path: Path) -> None:
+    helper = load_helper()
+    with pytest.raises(helper.RunStateError, match="not independent.*contributor history"):
+        build_verified_stage(
+            helper, tmp_path, scorecard_producer="target-scorer",
+            final_review_overrides={"reviewer_identity": "target-scorer"},
+        )
+
+
+def test_superseded_candidate_producer_remains_excluded_after_repair(tmp_path: Path) -> None:
+    helper = load_helper()
+    old_actor = "retired-implementer"
+    state_root, workflow_id, sequence, _ = build_candidate_stage(
+        helper, tmp_path, retain_review_source_components=True,
+        candidate_producer=old_actor,
+    )
+    run = state_root / "live" / workflow_id
+    invalidated = helper.invalidate_run(
+        workflow_id=workflow_id, expected_sequence=sequence,
+        change_kind="candidate", changed_artifact_id="candidate",
+        reason="replace the candidate under a different implementer", state_root=state_root,
+    )
+    replacement_payload = helper._artifact_payload_json(run, "candidate")
+    replacement_payload.update({"candidate_id": "replacement", "candidate_revision": "candidate-2"})
+    replacement = retain_json(
+        helper, state_root=state_root, workflow_id=workflow_id,
+        sequence=invalidated["sequence"], artifact_id="replacement", artifact_type="candidate-record",
+        payload=replacement_payload, producer="replacement-implementer",
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        retain_review_source_components=True,
+    )
+    sequence = helper.transition_run(
+        workflow_id=workflow_id, expected_sequence=replacement["sequence"],
+        event="accept-candidate", destination_stage="candidate", artifact_ids=["replacement"], state_root=state_root,
+    )["sequence"]
+    trials = retain_json(
+        helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence,
+        artifact_id="replacement-trials", artifact_type="trial-pack",
+        payload=trial_payload(replacement["artifact_digest"], revision="candidate-2"),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    sequence = helper.transition_run(
+        workflow_id=workflow_id, expected_sequence=trials["sequence"],
+        event="complete-trials", destination_stage="trials", artifact_ids=["replacement-trials"], state_root=state_root,
+    )["sequence"]
+    for actor, rejected in ((old_actor, True), ("new-independent-reviewer", False)):
+        payload = review_payload(
+            replacement["artifact_digest"], revision="candidate-2",
+            input_artifacts=review_input_provenance(helper, state_root, workflow_id),
+        )
+        payload["reviewer_identity"] = actor
+        review = retain_json(
+            helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence,
+            artifact_id=f"review-{actor}", artifact_type="review-record", payload=payload,
+            input_bindings=review_envelope_bindings(helper, state_root, workflow_id),
+        )
+        sequence = review["sequence"]
+        if rejected:
+            with pytest.raises(helper.RunStateError, match="not independent.*contributor history"):
+                helper.transition_run(
+                    workflow_id=workflow_id, expected_sequence=sequence, event="accept-review",
+                    destination_stage="reviewed", artifact_ids=[f"review-{actor}"], state_root=state_root,
+                )
+        else:
+            sequence = helper.transition_run(
+                workflow_id=workflow_id, expected_sequence=sequence, event="accept-review",
+                destination_stage="reviewed", artifact_ids=[f"review-{actor}"], state_root=state_root,
+            )["sequence"]
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert current["stage"] == "reviewed"
+    assert current["artifact_index"]["candidate"]["derived_status"] == "superseded"
+    assert current["artifact_index"]["replacement"]["derived_status"] == "accepted"
+    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "reviewed"
+    envelope, _ = helper._validate_envelope(run, f"review-{old_actor}")
+    with pytest.raises(helper.RunStateError, match="not independent.*contributor history"):
+        helper._require_independent_actor(run, current, envelope, old_actor, "verifier")
+
+
 def test_prescore_review_alone_cannot_authorize_verification(tmp_path: Path) -> None:
     helper = load_helper()
     with pytest.raises(helper.RunStateError, match="final.review|stage|transition"):
@@ -7566,7 +7714,7 @@ def test_terminal_claims_require_retained_raw_evidence(tmp_path: Path) -> None:
             artifact_type=artifact_type,
             files={"record.json": fixture_canonical_bytes(payload)},
             primary_path="record.json",
-            producer="main-agent",
+            producer=str(payload.get("reviewer_identity", payload.get("verifier_identity", "main-agent"))),
             input_bindings=(
                 review_envelope_bindings(helper, state_root, workflow_id)
                 if artifact_type == "review-record"

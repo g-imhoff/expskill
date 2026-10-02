@@ -115,7 +115,7 @@ Commit, install, push, publish, or otherwise deliver only with explicit user aut
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, and authority checks.
 - Exactly three research agents use web access and return evidence only. They never edit.
 - One candidate implementer writes only inside the isolated candidate. Trial agents write only inside disposable targets.
-- Reviewers and verifiers stay independent and read-only to tracked source.
+- Reviewers and verifiers stay independent and read-only to tracked source. Their payload identity must equal the envelope's producer identity. The helper rejects overlap with any retained research, design, candidate, trial, conformance, or scorecard producer and any recorded trial context, including superseded or invalidated contributors. Keep producer identities stable across repairs. These identities are host attestations, not authenticated sessions.
 - No delegated agent confirms product intent, broadens scope, reveals hidden material, delivers externally, or cleans state.
 
 ## Changed goals and gate failures

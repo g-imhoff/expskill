@@ -101,6 +101,10 @@ _ARTIFACT_TYPES = {
     "final-run-manifest",
     "invalidation-record",
 }
+_INDEPENDENCE_CONTRIBUTOR_TYPES = frozenset({
+    "research-pack", "design-record", "candidate-record", "trial-pack",
+    "builder-run-conformance-ledger", "target-scorecard",
+})
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 _STAGES = (
@@ -3544,6 +3548,32 @@ def _require_valid_review(review: dict[str, Any]) -> None:
         raise RunStateError("invalid review cannot advance or be scored")
 
 
+def _require_independent_actor(
+    run: Path,
+    current: dict[str, Any],
+    envelope: dict[str, Any],
+    identity: str,
+    label: str,
+) -> None:
+    if identity != envelope["producer"]:
+        raise RunStateError(f"{label} identity does not match its envelope producer")
+    known_contributors: set[str] = set()
+    for artifact_id, record in current["artifact_index"].items():
+        if record["type"] not in _INDEPENDENCE_CONTRIBUTOR_TYPES:
+            continue
+        contributor, _ = _validate_envelope(run, artifact_id)
+        if record["digest"] != contributor["envelope_digest"]:
+            raise RunStateError("independence contributor history is stale")
+        known_contributors.add(contributor["producer"].strip())
+        if record["type"] == "trial-pack":
+            trials = _artifact_payload_json(run, artifact_id)
+            known_contributors.update(
+                case["fresh_context_identity"].strip() for case in trials["cases"]
+            )
+    if identity.strip() in known_contributors:
+        raise RunStateError(f"{label} is not independent of known contributor history")
+
+
 def _validate_review_binding(
     run: Path,
     current: dict[str, Any],
@@ -3554,6 +3584,9 @@ def _validate_review_binding(
 ) -> None:
     review_envelope, _ = _validate_envelope(run, review_id)
     review = _artifact_payload_json(run, review_id)
+    _require_independent_actor(
+        run, current, review_envelope, review["reviewer_identity"], "reviewer"
+    )
     baseline_id, baseline_envelope = _event_artifact(
         run, "capture-baseline", "baseline-report", event_artifacts
     )
@@ -3941,6 +3974,10 @@ def _validate_verification_binding(
 ) -> None:
     verification_envelope, _ = _validate_envelope(run, verification_id)
     verification = _artifact_payload_json(run, verification_id)
+    _require_independent_actor(
+        run, current, verification_envelope, verification["verifier_identity"],
+        "verifier",
+    )
     candidate_id, candidate_envelope = _event_artifact(
         run, "accept-candidate", "candidate-record", event_artifacts
     )
