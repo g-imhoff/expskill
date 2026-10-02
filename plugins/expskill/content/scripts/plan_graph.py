@@ -1071,6 +1071,8 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
         "resolutions": [],
         "fresh": not required,
         "operation_receipt": None,
+        "dispatch_id": None,
+        "result_digest": None,
     }
     value.setdefault("design_join", _empty_design_join())
     return value
@@ -1488,6 +1490,7 @@ def issue_operation_receipt(
         "regenerate-projection",
         "reconfirm-projection",
         "clarify-projection",
+        "classify-audit",
         "refresh-audit",
         "resolve-finding",
         "record-design-join",
@@ -2207,7 +2210,7 @@ def _validate_graph_inner(
     audit = _mapping(value.get("audit"), "audit")
     _only(audit, {"classification", "breadth", "complexity", "high_consequence", "reason", "required", "graph_revision",
                   "record_version", "evidence", "independent", "constraints", "findings", "resolutions", "fresh",
-                  "operation_receipt"}, "audit")
+                  "operation_receipt", "dispatch_id", "result_digest"}, "audit")
     if audit.get("classification") not in {"tiny", "broad", "complex", "high-consequence"}:
         raise PlanGraphError("invalid audit classification")
     breadth = _boolean(audit.get("breadth"), "audit breadth")
@@ -2229,6 +2232,10 @@ def _validate_graph_inner(
         raise PlanGraphError("audit requirement does not match plan classification")
     _integer(audit.get("graph_revision"), "audit graph revision", minimum=1)
     audit_version = _integer(audit.get("record_version"), "audit record version", minimum=1)
+    if audit.get("dispatch_id") is not None:
+        _identifier(audit["dispatch_id"], "bound audit dispatch id")
+    if audit.get("result_digest") is not None and (not isinstance(audit["result_digest"], str) or not _HEX_KEY.fullmatch(audit["result_digest"])):
+        raise PlanGraphError("invalid bound audit result digest")
     audit_evidence = _id_list(audit.get("evidence"), "audit evidence")
     if not set(audit_evidence) <= set(evidence):
         raise PlanGraphError("audit references unknown evidence")
@@ -2238,7 +2245,9 @@ def _validate_graph_inner(
     finding_ids: set[str] = set()
     for finding in findings:
         item = _mapping(finding, "audit finding")
-        _only(item, {"id", "severity", "evidence", "disposition"}, "audit finding")
+        _only(item, {"id", "severity", "evidence", "disposition", "description"}, "audit finding")
+        if "description" in item:
+            _text(item["description"], "audit finding meaning", maximum=8192)
         fid = _identifier(item.get("id"), "audit finding id")
         if fid in finding_ids:
             raise PlanGraphError("duplicate audit finding")
@@ -2279,7 +2288,7 @@ def _validate_graph_inner(
         target=("audit",),
         record=audit,
         record_version=audit_version,
-        allowed_operations={"refresh-audit", "resolve-finding"},
+        allowed_operations={"classify-audit", "refresh-audit", "resolve-finding"},
     )
     if required and audit["fresh"]:
         if not independent or operation_receipt is None:
@@ -2319,7 +2328,7 @@ def _validate_graph(
         raise PlanGraphError("malformed Plan Graph") from error
 
 
-def _derive_validated(graph: dict[str, Any], *, require_projection_presentation: bool = True) -> str:
+def _derive_validated(graph: dict[str, Any], *, require_projection_presentation: bool = True, require_durable_audit: bool = True) -> str:
     if graph["lifecycle"]["state"] == "paused":
         return "paused"
     if graph["unresolved"]:
@@ -2332,7 +2341,7 @@ def _derive_validated(graph: dict[str, Any], *, require_projection_presentation:
     if design_join["required"] and (not design_join["fresh"] or design_join["receipt"] is None):
         return "not-ready"
     audit = graph["audit"]
-    if audit["required"] and (not audit["fresh"] or any(item.get("disposition") == "open" for item in audit["findings"])):
+    if audit["required"] and (not audit["fresh"] or (require_durable_audit and audit.get("dispatch_id") is None) or any(item.get("disposition") == "open" for item in audit["findings"])):
         return "stale"
     if any(not evidence["fresh"] for evidence in graph["evidence"].values()):
         return "stale"
@@ -2417,7 +2426,9 @@ def _read_current(transaction: _Transaction) -> dict[str, Any]:
     )
     derived = _derive_validated(graph)
     if graph["lifecycle"]["derived_state"] != derived:
-        if any(record.get("presentation") is None for record in graph["projections"].values()) and graph["lifecycle"]["derived_state"] == _derive_validated(graph, require_projection_presentation=False):
+        if graph["audit"]["required"] and graph["audit"]["fresh"] and "dispatch_id" not in graph["audit"]:
+            graph["lifecycle"]["derived_state"] = derived
+        elif any(record.get("presentation") is None for record in graph["projections"].values()) and graph["lifecycle"]["derived_state"] == _derive_validated(graph, require_projection_presentation=False):
             graph["lifecycle"]["derived_state"] = derived
         else:
             raise _CorruptGraph("stored derived lifecycle state is inconsistent")
@@ -2437,7 +2448,9 @@ def _read_previous(transaction: _Transaction) -> dict[str, Any]:
     )
     derived = _derive_validated(graph)
     if graph["lifecycle"]["derived_state"] != derived:
-        if any(record.get("presentation") is None for record in graph["projections"].values()) and graph["lifecycle"]["derived_state"] == _derive_validated(graph, require_projection_presentation=False):
+        if graph["audit"]["required"] and graph["audit"]["fresh"] and "dispatch_id" not in graph["audit"]:
+            graph["lifecycle"]["derived_state"] = derived
+        elif any(record.get("presentation") is None for record in graph["projections"].values()) and graph["lifecycle"]["derived_state"] == _derive_validated(graph, require_projection_presentation=False):
             graph["lifecycle"]["derived_state"] = derived
         else:
             raise _CorruptGraph("previous derived lifecycle state is inconsistent")
@@ -2660,9 +2673,543 @@ def load_acceptance_basis(path: Path, digest: str) -> dict[str, Any]:
     key = hashlib.sha256(f"{identity['git_common_dir']}\0{identity['target_branch']}".encode("utf-8")).hexdigest()
     if path.parent.name != key:
         raise PlanGraphError("accepted basis locator does not bind its repository and branch")
-    if _derive_validated(graph) != "ready" or graph["git"]["delivery"]["state"] != "planning":
+    if _derive_validated(graph, require_durable_audit="dispatch_id" in graph["audit"]) != "ready" or graph["git"]["delivery"]["state"] != "planning":
         raise PlanGraphError("accepted basis is not a frozen ready planning basis")
     return graph
+
+
+_PLAN_AUDIT_RESULT_FIELDS = {
+    "schema_version", "dispatch_id", "workflow_id", "graph_revision", "graph_digest",
+    "accepted_input_digest", "baseline_commit", "head_commit", "actor_session_id", "independent",
+    "elapsed_seconds", "output", "evidence", "constraints", "findings", "resolutions",
+}
+
+
+def _audit_meaning_digest(graph: dict[str, Any]) -> str:
+    return _canonical_digest({
+        "canonical": _projection_source_digest(graph, {
+            "covers": sorted(key for family in ("outcomes", "decisions", "work", "proof") for key in graph[family]),
+            "decision_versions": {key: item["version"] for key, item in graph["decisions"].items()},
+        }, digest_version=2),
+        "projections": {key: {"covers": item["covers"], "decision_versions": item["decision_versions"]}
+                        for key, item in graph["projections"].items()},
+        "boundaries": _audit_boundary_digest(graph),
+        "grounding": graph["baseline"].get("evidence_fingerprints", {}),
+        "topology": {key: graph["git"][key] for key in ("target", "lanes", "joins")},
+        "design": graph["design_join"]["receipt"],
+    })
+
+
+def _audit_boundary_digest(graph: dict[str, Any]) -> str:
+    return _canonical_digest({
+        "outcomes": sorted(graph["outcomes"]),
+        "owners": sorted({item["owner"] for item in graph["work"].values()}),
+        "branch": graph["identity"]["target_branch"],
+        "lanes": sorted(graph["git"]["lanes"]), "joins": sorted(graph["git"]["joins"]),
+        "design_required": graph["design_join"]["required"],
+        "signals": [graph["audit"][key] for key in ("breadth", "complexity", "high_consequence")],
+    })
+
+
+def _read_bound_audit_artifact(value: dict[str, Any], *, private: bool = False) -> bytes:
+    if not isinstance(value, dict) or set(value) != {"path", "digest"}:
+        raise PlanGraphError("audit artifact needs an exact locator and digest")
+    path = Path(_text(value["path"], "audit artifact path", maximum=4096))
+    if not path.is_absolute() or ".." in path.parts or not isinstance(value["digest"], str) or not _HEX_KEY.fullmatch(value["digest"]):
+        raise PlanGraphError("invalid audit artifact locator or digest")
+    try:
+        lexical = path.lstat()
+        if not stat.S_ISREG(lexical.st_mode) or lexical.st_uid != os.geteuid() or lexical.st_nlink != 1:
+            raise PlanGraphError("audit artifact is not an owned regular file")
+        if private and stat.S_IMODE(lexical.st_mode) != 0o600:
+            raise PlanGraphError("audit output must be private")
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            descriptor = os.fstat(fd)
+            if not _same_inode(lexical, descriptor):
+                raise PlanGraphError("audit artifact was substituted")
+            chunks, remaining = [], MAX_GRAPH_BYTES + 1
+            while remaining:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
+            if len(payload) > MAX_GRAPH_BYTES or not _same_inode(descriptor, path.lstat()):
+                raise PlanGraphError("audit artifact is oversized or changed while reading")
+        finally:
+            os.close(fd)
+    except OSError as error:
+        raise PlanGraphError("audit artifact is unavailable") from error
+    if hashlib.sha256(payload).hexdigest() != value["digest"]:
+        raise PlanGraphError("audit artifact bytes do not match their digest")
+    return payload
+
+
+@contextmanager
+def _plan_audit_store(transaction: _Transaction, graph: dict[str, Any], *, create: bool = False):
+    root_fd = key_fd = workflow_fd = None
+    try:
+        root_fd = _open_private_child(transaction.home_fd, "plan-audits", create=create)
+        key_fd = _open_private_child(root_fd, transaction.key, create=create)
+        workflow_fd = _open_private_child(key_fd, graph["workflow_id"], create=create)
+        locator = transaction.home_path / "plan-audits" / transaction.key / graph["workflow_id"] / "ledger.json"
+        yield workflow_fd, locator
+        _revalidate_directory(transaction.home_fd, "plan-audits", root_fd)
+        _revalidate_directory(root_fd, transaction.key, key_fd)
+        _revalidate_directory(key_fd, graph["workflow_id"], workflow_fd)
+    finally:
+        for fd in (workflow_fd, key_fd, root_fd):
+            if fd is not None:
+                os.close(fd)
+
+
+def _validate_plan_audit_ledger(state: dict[str, Any], graph: dict[str, Any]) -> None:
+    if set(state) != {"schema_version", "workflow_id", "identity", "revision", "run_id", "limit_source", "initial_limits", "limits", "extensions", "dispatches"} or state["schema_version"] != "plan-audit-ledger.v1":
+        raise PlanGraphError("invalid durable audit ledger schema")
+    if state["workflow_id"] != graph["workflow_id"] or state["identity"] != graph["identity"]:
+        raise PlanGraphError("audit ledger workflow identity mismatch")
+    _integer(state["revision"], "audit ledger revision", minimum=1)
+    _text(state["run_id"], "audit run identity")
+    _text(state["limit_source"], "audit limit source")
+    previous = state["initial_limits"]
+    for limits in (previous, state["limits"]):
+        if not isinstance(limits, dict) or set(limits) != {"calls", "seconds"}:
+            raise PlanGraphError("invalid audit limits")
+        if not 1 <= _integer(limits["calls"], "audit call limit", minimum=1) <= 8 or not 300 <= _integer(limits["seconds"], "audit seconds limit", minimum=1) <= 2400:
+            raise PlanGraphError("audit limits exceed bounded capacity")
+    if previous["calls"] > 3 or previous["seconds"] > 900:
+        raise PlanGraphError("initial audit capacity exceeds the default ceiling")
+    for extension in _sequence(state["extensions"], "audit extensions"):
+        if not isinstance(extension, dict) or set(extension) != {"id", "authorization_reference", "limits", "meaning_digest"}:
+            raise PlanGraphError("invalid named audit extension")
+        _identifier(extension["id"], "audit extension id")
+        _text(extension["authorization_reference"], "audit extension authorization")
+        following = extension["limits"]
+        if not isinstance(following, dict) or set(following) != {"calls", "seconds"} or any(type(following[key]) is not int or following[key] < previous[key] for key in previous) or following == previous or following["calls"] > 8 or following["seconds"] > 2400:
+            raise PlanGraphError("audit extension cannot reset allowance or exceed its ceiling")
+        if not isinstance(extension["meaning_digest"], str) or not _HEX_KEY.fullmatch(extension["meaning_digest"]):
+            raise PlanGraphError("audit extension lacks its authorized scope digest")
+        previous = following
+    if state["limits"] != previous:
+        raise PlanGraphError("audit capacity lacks its retained extension")
+    dispatches = _mapping(state["dispatches"], "audit dispatches")
+    if len(dispatches) > state["limits"]["calls"] or 300 * len(dispatches) > state["limits"]["seconds"]:
+        raise PlanGraphError("durable audit dispatches exceed their retained allowance")
+    actor_ids, ordinals = set(), set()
+    for dispatch_id, dispatch in dispatches.items():
+        _identifier(dispatch_id, "audit dispatch id")
+        if not isinstance(dispatch, dict) or set(dispatch) != {"schema_version", "dispatch_id", "workflow_id", "purpose", "reason", "created_at", "ordinal", "graph_revision", "graph_digest", "graph_snapshot", "accepted_input", "baseline_commit", "head_commit", "meaning_digest", "boundary_digest", "status", "actor_session_id", "result", "rejection_reason"}:
+            raise PlanGraphError("invalid durable audit dispatch schema")
+        if dispatch["schema_version"] != "plan-audit-dispatch.v1" or dispatch["dispatch_id"] != dispatch_id or dispatch["workflow_id"] != graph["workflow_id"] or dispatch["purpose"] not in {"initial", "correction"} or dispatch["status"] not in {"reserved", "accepted", "rejected", "interrupted", "failed"}:
+            raise PlanGraphError("invalid durable audit dispatch identity or status")
+        for key in ("reason", "created_at"):
+            _text(dispatch[key], f"audit dispatch {key}")
+        ordinal = _integer(dispatch["ordinal"], "audit dispatch ordinal", minimum=1)
+        if ordinal in ordinals or ordinal > len(dispatches):
+            raise PlanGraphError("invalid audit dispatch ordering")
+        ordinals.add(ordinal)
+        _integer(dispatch["graph_revision"], "frozen audit revision", minimum=1)
+        for key in ("graph_digest", "meaning_digest", "boundary_digest"):
+            if not isinstance(dispatch[key], str) or not _HEX_KEY.fullmatch(dispatch[key]):
+                raise PlanGraphError("invalid frozen audit digest")
+        for key in ("baseline_commit", "head_commit"):
+            if not isinstance(dispatch[key], str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", dispatch[key]) is None:
+                raise PlanGraphError("invalid frozen audit commit")
+        for key in ("graph_snapshot", "accepted_input"):
+            item = dispatch[key]
+            if not isinstance(item, dict) or set(item) != {"path", "digest"} or not isinstance(item["path"], str) or not Path(item["path"]).is_absolute() or not isinstance(item["digest"], str) or not _HEX_KEY.fullmatch(item["digest"]):
+                raise PlanGraphError("invalid frozen audit artifact binding")
+        actor = dispatch["actor_session_id"]
+        if actor is not None:
+            _identifier(actor, "audit actor/session identity")
+            if actor in actor_ids:
+                raise PlanGraphError("fresh audit checks cannot reuse an actor/session identity")
+            actor_ids.add(actor)
+        if dispatch["status"] == "reserved" and dispatch["result"] is not None:
+            raise PlanGraphError("outstanding audit cannot claim a result")
+        if dispatch["status"] == "accepted" and (not isinstance(dispatch["result"], dict) or set(dispatch["result"]) != _PLAN_AUDIT_RESULT_FIELDS or actor != dispatch["result"]["actor_session_id"]):
+            raise PlanGraphError("accepted audit result is incomplete")
+        if dispatch["status"] == "accepted":
+            _validate_retained_plan_audit_result(dispatch["result"], dispatch)
+        if dispatch["rejection_reason"] is not None:
+            _text(dispatch["rejection_reason"], "retained audit rejection reason")
+
+
+def _load_plan_audit_ledger(fd: int, graph: dict[str, Any]) -> dict[str, Any]:
+    state = _read_json_entry(fd, "ledger.json")
+    _validate_plan_audit_ledger(state, graph)
+    return state
+
+
+def _retained_plan_audit_findings(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    findings = {}
+    for dispatch in sorted(state["dispatches"].values(), key=lambda item: item["ordinal"]):
+        if dispatch["status"] == "accepted":
+            for finding in dispatch["result"]["findings"]:
+                prior = findings.get(finding["id"])
+                if prior is not None and prior["description"] != finding["description"]:
+                    raise PlanGraphError("durable audit history changes retained finding meaning")
+                findings[finding["id"]] = copy.deepcopy(finding)
+    return findings
+
+
+def _plan_audit_receipt(state: dict[str, Any], locator: Path) -> dict[str, Any]:
+    return {**copy.deepcopy(state), "locator": str(locator), "spent_calls": len(state["dispatches"]),
+        "reserved_seconds": 300 * len(state["dispatches"]),
+        "outstanding_dispatch_ids": sorted(key for key, value in state["dispatches"].items() if value["status"] == "reserved"),
+        "remaining": {"calls": state["limits"]["calls"] - len(state["dispatches"]),
+                      "seconds": state["limits"]["seconds"] - 300 * len(state["dispatches"])},
+        "retained_findings": list(_retained_plan_audit_findings(state).values()),
+        "trust": "coordinator-attestation"}
+
+
+def reserve_plan_audit(repo: Path, branch: str, workflow_id: str, expected_revision: int,
+    dispatch_id: str, accepted_input: dict[str, Any], purpose: str, reason: str,
+    state_home: Path | None = None, allowance: dict[str, Any] | None = None) -> dict[str, Any]:
+    _identifier(dispatch_id, "audit dispatch id")
+    _text(reason, "audit purpose reason")
+    if purpose not in {"initial", "correction"}:
+        raise PlanGraphError("audit purpose must be initial or correction")
+    _read_bound_audit_artifact(accepted_input)
+    if allowance is not None and (not isinstance(allowance, dict) or set(allowance) != {"run_id", "limit_source", "remaining_calls", "remaining_seconds"}):
+        raise PlanGraphError("invalid inherited audit allowance")
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _refresh_repository_state_locked(transaction)
+        if graph["workflow_id"] != workflow_id or graph["graph_revision"] != expected_revision:
+            raise RevisionConflict("audit reservation workflow or revision conflict")
+        with _plan_audit_store(transaction, graph, create=True) as (fd, locator):
+            try:
+                state = _load_plan_audit_ledger(fd, graph)
+            except _MissingState:
+                audit = graph["audit"]
+                if audit["independent"] or audit["findings"] or (audit.get("operation_receipt") is not None and audit["operation_receipt"].get("operation") != "classify-audit") or ("dispatch_id" not in audit and audit["record_version"] > 1):
+                    raise PlanGraphError("legacy audit consumption is unknown, retain existing evidence and stop rather than initialize another allowance")
+                state = {"schema_version": "plan-audit-ledger.v1", "workflow_id": workflow_id, "identity": copy.deepcopy(graph["identity"]),
+                    "revision": 1, "run_id": workflow_id, "limit_source": "standalone Plan default",
+                    "initial_limits": {"calls": 3, "seconds": 900}, "limits": {"calls": 3, "seconds": 900}, "extensions": [], "dispatches": {}}
+                if allowance is not None:
+                    if not isinstance(allowance, dict) or set(allowance) != {"run_id", "limit_source", "remaining_calls", "remaining_seconds"}:
+                        raise PlanGraphError("invalid inherited audit allowance")
+                    _text(allowance["run_id"], "inherited audit run")
+                    _text(allowance["limit_source"], "inherited audit limit source")
+                    calls = min(3, _integer(allowance["remaining_calls"], "inherited remaining calls", minimum=1))
+                    seconds = min(900, _integer(allowance["remaining_seconds"], "inherited remaining seconds", minimum=300))
+                    state.update(run_id=allowance["run_id"], limit_source=allowance["limit_source"], initial_limits={"calls": calls, "seconds": seconds}, limits={"calls": calls, "seconds": seconds})
+                _create_json_entry_exclusive(fd, "ledger.json", state)
+            if allowance is not None and (allowance.get("run_id") != state["run_id"] or allowance.get("limit_source") != state["limit_source"] or type(allowance.get("remaining_calls")) is not int or allowance["remaining_calls"] < 1 or type(allowance.get("remaining_seconds")) is not int or allowance["remaining_seconds"] < 300):
+                raise PlanGraphError("inherited audit allowance changed identity or cannot cover this dispatch")
+            if dispatch_id in state["dispatches"]:
+                existing = state["dispatches"][dispatch_id]
+                if existing["graph_digest"] == _canonical_digest(graph) and existing["accepted_input"] == accepted_input and existing["purpose"] == purpose and existing["reason"] == reason:
+                    return {"dispatch": copy.deepcopy(existing), "accounting": _plan_audit_receipt(state, locator)}
+                raise PlanGraphError("audit dispatch identity was already consumed")
+            receipt = _plan_audit_receipt(state, locator)
+            if receipt["outstanding_dispatch_ids"]:
+                raise PlanGraphError("an existing audit dispatch remains outstanding")
+            if receipt["remaining"]["calls"] < 1 or receipt["remaining"]["seconds"] < 300:
+                raise PlanGraphError("audit correction capacity is exhausted, retain consumption and obtain a named extension or stop")
+            prior = sorted(state["dispatches"].values(), key=lambda item: item["ordinal"])
+            if not prior and purpose != "initial" or prior and purpose != "correction":
+                raise PlanGraphError("audit dispatch cannot retry or replace the initial call")
+            if prior:
+                if prior[-1]["meaning_digest"] == _audit_meaning_digest(graph):
+                    raise PlanGraphError("correction audit requires an actually changed canonical graph")
+                if prior[-1]["boundary_digest"] != _audit_boundary_digest(graph) and not any(item["meaning_digest"] == _audit_meaning_digest(graph) for item in state["extensions"]):
+                    raise PlanGraphError("broader audit scope requires an explicitly named extension")
+                if accepted_input != prior[0]["accepted_input"]:
+                    raise PlanGraphError("audit correction must retain its original accepted input")
+            snapshot_name = f"{dispatch_id}.graph.json"
+            try:
+                _create_json_entry_exclusive(fd, snapshot_name, graph)
+            except PlanGraphError:
+                if _read_json_entry(fd, snapshot_name) != graph:
+                    raise
+            payload = _read_bytes_entry(fd, snapshot_name)
+            dispatch = {"schema_version": "plan-audit-dispatch.v1", "dispatch_id": dispatch_id, "workflow_id": workflow_id,
+                "purpose": purpose, "reason": reason, "created_at": _now(), "ordinal": len(prior) + 1, "graph_revision": expected_revision,
+                "graph_digest": _canonical_digest(graph), "graph_snapshot": {"path": str(locator.parent / snapshot_name), "digest": hashlib.sha256(payload).hexdigest()},
+                "accepted_input": copy.deepcopy(accepted_input), "baseline_commit": graph["baseline"]["repository_revision"],
+                "head_commit": transaction.context.head, "meaning_digest": _audit_meaning_digest(graph), "boundary_digest": _audit_boundary_digest(graph),
+                "status": "reserved", "actor_session_id": None, "result": None, "rejection_reason": None}
+            state["dispatches"][dispatch_id] = dispatch
+            state["revision"] += 1
+            _validate_plan_audit_ledger(state, graph)
+            _atomic_write_entry(fd, "ledger.json", state)
+            return {"dispatch": copy.deepcopy(dispatch), "accounting": _plan_audit_receipt(state, locator)}
+
+
+def bind_plan_audit_actor(repo: Path, branch: str, workflow_id: str, dispatch_id: str, actor_session_id: str, state_home: Path | None = None) -> dict[str, Any]:
+    _identifier(actor_session_id, "actual audit actor/session identity")
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _read_current(transaction)
+        if graph["workflow_id"] != workflow_id:
+            raise PlanGraphError("audit workflow mismatch")
+        with _plan_audit_store(transaction, graph) as (fd, locator):
+            state = _load_plan_audit_ledger(fd, graph)
+            dispatch = state["dispatches"].get(dispatch_id)
+            if dispatch is None or dispatch["status"] != "reserved" or dispatch["actor_session_id"] not in {None, actor_session_id}:
+                raise PlanGraphError("audit actor cannot replace a reserved session")
+            dispatch["actor_session_id"] = actor_session_id
+            state["revision"] += 1
+            _validate_plan_audit_ledger(state, graph)
+            _atomic_write_entry(fd, "ledger.json", state)
+            return _plan_audit_receipt(state, locator)
+
+
+def _validate_retained_plan_audit_result(result: dict[str, Any], dispatch: dict[str, Any]) -> None:
+    try:
+        payload = json.dumps(result, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise PlanGraphError("audit result is not strict JSON") from error
+    if len(payload) > MAX_GRAPH_BYTES // 16:
+        raise PlanGraphError("audit result exceeds its bounded retained capacity")
+    if not isinstance(result, dict) or set(result) != _PLAN_AUDIT_RESULT_FIELDS or result["schema_version"] != "plan-audit-result.v1":
+        raise PlanGraphError("audit result closed schema is incomplete")
+    for key in ("dispatch_id", "workflow_id", "graph_revision", "graph_digest", "baseline_commit", "head_commit"):
+        if result[key] != dispatch[key]:
+            raise PlanGraphError("audit result is bound to stale or different frozen pins")
+    if result["accepted_input_digest"] != dispatch["accepted_input"]["digest"]:
+        raise PlanGraphError("audit result accepted input digest mismatch")
+    if result["independent"] is not True:
+        raise PlanGraphError("audit result does not attest independent inspection")
+    _identifier(result["actor_session_id"], "audit result actual actor/session identity")
+    if dispatch["actor_session_id"] not in {None, result["actor_session_id"]}:
+        raise PlanGraphError("audit result actor differs from its retained dispatch")
+    if _integer(result["elapsed_seconds"], "audit elapsed seconds", minimum=0) > 300:
+        raise PlanGraphError("audit call exceeded its five-minute ceiling")
+    output = result["output"]
+    if not isinstance(output, dict) or set(output) != {"path", "digest"} or not isinstance(output["path"], str) or not Path(output["path"]).is_absolute() or not isinstance(output["digest"], str) or not _HEX_KEY.fullmatch(output["digest"]):
+        raise PlanGraphError("audit result lacks its raw output binding")
+    _id_list(result["evidence"], "audit result evidence", allow_empty=False)
+    _text_list(result["constraints"], "audit result constraints", allow_empty=False)
+    findings = {}
+    for finding in _sequence(result["findings"], "audit result findings"):
+        if not isinstance(finding, dict) or set(finding) != {"id", "severity", "description", "evidence", "disposition"}:
+            raise PlanGraphError("audit result finding meaning is incomplete")
+        fid = _identifier(finding["id"], "audit result finding id")
+        if fid in findings or finding["severity"] not in {"low", "medium", "high", "critical"} or finding["disposition"] not in {"open", "resolved"}:
+            raise PlanGraphError("invalid or duplicate audit result finding")
+        _text(finding["description"], "audit finding meaning", maximum=8192)
+        _id_list(finding["evidence"], "audit finding evidence", allow_empty=False)
+        findings[fid] = finding
+    resolved = set()
+    for resolution in _sequence(result["resolutions"], "audit result resolutions"):
+        if not isinstance(resolution, dict) or set(resolution) != {"finding_id", "disposition", "evidence"} or resolution["disposition"] != "resolved":
+            raise PlanGraphError("invalid audit result resolution")
+        fid = _identifier(resolution["finding_id"], "audit result resolution finding")
+        _id_list(resolution["evidence"], "audit resolution evidence", allow_empty=False)
+        if fid in resolved or fid not in findings or findings[fid]["disposition"] != "resolved":
+            raise PlanGraphError("audit result resolution lacks its retained finding")
+        resolved.add(fid)
+    if resolved != {key for key, item in findings.items() if item["disposition"] == "resolved"}:
+        raise PlanGraphError("audit result dispositions and resolutions disagree")
+
+
+def _validate_plan_audit_result(result: dict[str, Any], dispatch: dict[str, Any], graph: dict[str, Any], context: _RepoContext, retained: dict[str, dict[str, Any]]) -> None:
+    _validate_retained_plan_audit_result(result, dispatch)
+    _read_bound_audit_artifact(dispatch["accepted_input"])
+    frozen = _decode_json(_read_bound_audit_artifact(dispatch["graph_snapshot"], private=True), "frozen audit graph")
+    if _canonical_digest(frozen) != dispatch["graph_digest"]:
+        raise PlanGraphError("frozen audit graph digest mismatch")
+    _read_bound_audit_artifact(result["output"], private=True)
+    output_path = Path(result["output"]["path"]).resolve()
+    if output_path.is_relative_to(context.repository) or output_path.is_relative_to(context.git_common_dir):
+        raise PlanGraphError("audit output must remain outside product and Git state")
+    if graph["graph_revision"] != dispatch["graph_revision"] or _canonical_digest(graph) != dispatch["graph_digest"] or context.head != dispatch["head_commit"]:
+        raise PlanGraphError("audit result no longer inspects the current exact graph and head")
+    _id_list(result["evidence"], "audit result evidence", allow_empty=False)
+    _text_list(result["constraints"], "audit result constraints", allow_empty=False)
+    if not set(result["evidence"]) <= set(graph["evidence"]):
+        raise PlanGraphError("audit result references unknown evidence")
+    prior = {**{item["id"]: item for item in graph["audit"]["findings"]}, **retained}
+    findings = {}
+    for finding in _sequence(result["findings"], "audit result findings"):
+        if not isinstance(finding, dict) or set(finding) != {"id", "severity", "description", "evidence", "disposition"}:
+            raise PlanGraphError("audit result finding meaning is incomplete")
+        fid = _identifier(finding["id"], "audit result finding id")
+        if fid in findings or finding["severity"] not in {"low", "medium", "high", "critical"} or finding["disposition"] not in {"open", "resolved"}:
+            raise PlanGraphError("invalid or duplicate audit result finding")
+        _text(finding["description"], "audit finding meaning", maximum=8192)
+        if not set(_id_list(finding["evidence"], "audit finding evidence", allow_empty=False)) <= set(graph["evidence"]):
+            raise PlanGraphError("audit finding references unknown evidence")
+        if fid in prior and prior[fid].get("description", finding["description"]) != finding["description"]:
+            raise PlanGraphError("audit result cannot replace retained finding meaning")
+        findings[fid] = finding
+    if not set(prior) <= set(findings):
+        raise PlanGraphError("audit result cannot discard retained unresolved findings or history")
+    resolutions = {}
+    for resolution in _sequence(result["resolutions"], "audit result resolutions"):
+        if not isinstance(resolution, dict) or set(resolution) != {"finding_id", "disposition", "evidence"} or resolution["disposition"] != "resolved":
+            raise PlanGraphError("invalid audit result resolution")
+        fid = _identifier(resolution["finding_id"], "audit result resolution finding")
+        if fid in resolutions or fid not in findings or findings[fid]["disposition"] != "resolved" or not set(_id_list(resolution["evidence"], "audit resolution evidence", allow_empty=False)) <= set(graph["evidence"]):
+            raise PlanGraphError("audit result resolution lacks its retained finding and evidence")
+        resolutions[fid] = resolution
+    if set(resolutions) != {key for key, item in findings.items() if item["disposition"] == "resolved"}:
+        raise PlanGraphError("audit result dispositions and resolutions disagree")
+
+
+def record_plan_audit_result(repo: Path, branch: str, workflow_id: str, dispatch_id: str, result: dict[str, Any], state_home: Path | None = None) -> dict[str, Any]:
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _refresh_repository_state_locked(transaction)
+        if graph["workflow_id"] != workflow_id:
+            raise PlanGraphError("audit result workflow mismatch")
+        with _plan_audit_store(transaction, graph) as (fd, locator):
+            state = _load_plan_audit_ledger(fd, graph)
+            dispatch = state["dispatches"].get(dispatch_id)
+            if dispatch is None:
+                raise PlanGraphError("audit result has no retained dispatch")
+            if dispatch["status"] != "reserved":
+                if dispatch["status"] == "accepted" and dispatch["result"] == result:
+                    return _plan_audit_receipt(state, locator)
+                raise PlanGraphError("a retained audit result cannot be replaced")
+            try:
+                _validate_plan_audit_result(result, dispatch, graph, transaction.context, _retained_plan_audit_findings(state))
+                actor = result["actor_session_id"]
+                if any(item["actor_session_id"] == actor for key, item in state["dispatches"].items() if key != dispatch_id):
+                    raise PlanGraphError("fresh correction checks require a distinct actor/session")
+            except PlanGraphError as error:
+                actor = result.get("actor_session_id") if isinstance(result, dict) else None
+                if isinstance(actor, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", actor) and dispatch["actor_session_id"] is None and not any(item["actor_session_id"] == actor for key, item in state["dispatches"].items() if key != dispatch_id):
+                    dispatch["actor_session_id"] = actor
+                try:
+                    rejected = json.dumps(result, allow_nan=False).encode("utf-8")
+                except (TypeError, ValueError):
+                    rejected = b""
+                retained = copy.deepcopy(result) if rejected and len(rejected) <= MAX_GRAPH_BYTES // 16 else {
+                    "schema_version": "plan-audit-rejected.v1", "payload_omitted": True,
+                    "payload_digest": hashlib.sha256(rejected).hexdigest() if rejected else None,
+                    "output": copy.deepcopy(result.get("output")) if isinstance(result, dict) and isinstance(result.get("output"), dict) and len(json.dumps(result["output"], default=str)) <= 8192 else None,
+                    "actor_session_id": dispatch["actor_session_id"],
+                }
+                dispatch.update(status="rejected", result=retained, rejection_reason=str(error))
+                state["revision"] += 1
+                _atomic_write_entry(fd, "ledger.json", state)
+                raise
+            dispatch.update(status="accepted", actor_session_id=actor, result=copy.deepcopy(result))
+            state["revision"] += 1
+            _validate_plan_audit_ledger(state, graph)
+            _atomic_write_entry(fd, "ledger.json", state)
+            return _plan_audit_receipt(state, locator)
+
+
+def close_plan_audit_dispatch(repo: Path, branch: str, workflow_id: str, dispatch_id: str, status: str, reason: str, state_home: Path | None = None) -> dict[str, Any]:
+    if status not in {"interrupted", "failed"}:
+        raise PlanGraphError("audit closure cannot invent a quality result")
+    _text(reason, "audit interruption or failure reason")
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _read_current(transaction)
+        if graph["workflow_id"] != workflow_id:
+            raise PlanGraphError("audit closure workflow mismatch")
+        with _plan_audit_store(transaction, graph) as (fd, locator):
+            state = _load_plan_audit_ledger(fd, graph)
+            dispatch = state["dispatches"].get(dispatch_id)
+            if dispatch is None or dispatch["status"] != "reserved":
+                raise PlanGraphError("audit closure must settle its outstanding dispatch")
+            dispatch.update(status=status, rejection_reason=reason)
+            state["revision"] += 1
+            _atomic_write_entry(fd, "ledger.json", state)
+            return _plan_audit_receipt(state, locator)
+
+
+def extend_plan_audit_budget(repo: Path, branch: str, workflow_id: str, expected_revision: int, extension_id: str, authorization_reference: str, calls_limit: int, seconds_limit: int, state_home: Path | None = None) -> dict[str, Any]:
+    _identifier(extension_id, "audit extension id")
+    _text(authorization_reference, "named user-authorized audit extension")
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _refresh_repository_state_locked(transaction)
+        if graph["workflow_id"] != workflow_id or graph["graph_revision"] != expected_revision:
+            raise RevisionConflict("audit extension workflow or revision conflict")
+        with _plan_audit_store(transaction, graph) as (fd, locator):
+            state = _load_plan_audit_ledger(fd, graph)
+            if any(item["id"] == extension_id for item in state["extensions"]):
+                raise PlanGraphError("audit extension identity was already consumed")
+            extension = {"id": extension_id, "authorization_reference": authorization_reference,
+                "limits": {"calls": calls_limit, "seconds": seconds_limit}, "meaning_digest": _audit_meaning_digest(graph)}
+            state["extensions"].append(extension)
+            state["limits"] = extension["limits"]
+            state["revision"] += 1
+            _validate_plan_audit_ledger(state, graph)
+            _atomic_write_entry(fd, "ledger.json", state)
+            return _plan_audit_receipt(state, locator)
+
+
+def load_plan_audits(repo: Path, branch: str, workflow_id: str, state_home: Path | None = None) -> dict[str, Any]:
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _read_current(transaction)
+        if graph["workflow_id"] != workflow_id:
+            raise PlanGraphError("audit history workflow mismatch")
+        with _plan_audit_store(transaction, graph) as (fd, locator):
+            state = _load_plan_audit_ledger(fd, graph)
+            return _plan_audit_receipt(state, locator)
+
+
+def _bound_plan_audit_result(transaction: _Transaction, graph: dict[str, Any], audit: dict[str, Any], *, current_pin: bool) -> dict[str, Any]:
+    if audit.get("dispatch_id") is None or audit.get("result_digest") is None:
+        raise PlanGraphError("required audit needs its durable dispatch and result binding")
+    with _plan_audit_store(transaction, graph) as (fd, _):
+        state = _load_plan_audit_ledger(fd, graph)
+        dispatch = state["dispatches"].get(audit["dispatch_id"])
+        if dispatch is None or dispatch["status"] != "accepted" or _canonical_digest(dispatch["result"]) != audit["result_digest"]:
+            raise PlanGraphError("current audit lacks its retained accepted independent result")
+        result = dispatch["result"]
+        _read_bound_audit_artifact(dispatch["accepted_input"])
+        _read_bound_audit_artifact(dispatch["graph_snapshot"], private=True)
+        _read_bound_audit_artifact(result["output"], private=True)
+        if dispatch["meaning_digest"] != _audit_meaning_digest(graph):
+            raise PlanGraphError("retained audit does not inspect current graph meaning")
+        if audit["graph_revision"] != dispatch["graph_revision"]:
+            raise PlanGraphError("current audit revision differs from its frozen input")
+        if current_pin and transaction.context.head != dispatch["head_commit"]:
+            raise PlanGraphError("fresh audit result does not inspect the current head")
+        if current_pin and (dispatch["graph_revision"] != graph["graph_revision"] or dispatch["graph_digest"] != _canonical_digest(graph)):
+            raise PlanGraphError("fresh audit result is not bound to the exact current frozen graph")
+        for key in ("findings", "resolutions", "evidence", "constraints"):
+            if audit[key] != result[key]:
+                raise PlanGraphError("current audit differs from retained independent findings or evidence")
+        return copy.deepcopy(result)
+
+
+def classify_plan_audit(repo: Path, branch: str, workflow_id: str, expected_revision: int, breadth: bool, complexity: bool, high_consequence: bool, reason: str, state_home: Path | None = None) -> Receipt:
+    for value in (breadth, complexity, high_consequence):
+        _boolean(value, "audit classification signal")
+    _text(reason, "audit classification reason")
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _refresh_repository_state_locked(transaction)
+        if graph["workflow_id"] != workflow_id or graph["graph_revision"] != expected_revision:
+            raise RevisionConflict("audit classification workflow or revision conflict")
+        audit = copy.deepcopy(graph["audit"])
+        audit.update(breadth=breadth, complexity=complexity, high_consequence=high_consequence,
+            reason=reason, required=bool(breadth or complexity or high_consequence),
+            classification=_audit_classification(breadth, complexity, high_consequence), fresh=False, independent=False)
+        receipt = issue_operation_receipt(operation="classify-audit", workflow_id=workflow_id,
+            prior_graph_revision=expected_revision, target=["audit"], record_version=audit["record_version"], value=audit)
+        return _apply_updates_locked(transaction, workflow_id, expected_revision,
+            [{"op": "classify-audit", "path": ["audit"], "value": audit, "prior_graph_revision": expected_revision,
+              "record_version": audit["record_version"], "receipt": receipt}], reconcile_disjoint=False)
+
+
+def apply_plan_audit_result(repo: Path, branch: str, workflow_id: str, expected_revision: int, dispatch_id: str, state_home: Path | None = None) -> Receipt:
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _refresh_repository_state_locked(transaction)
+        if graph["workflow_id"] != workflow_id or graph["graph_revision"] != expected_revision:
+            raise RevisionConflict("audit attachment workflow or revision conflict")
+        with _plan_audit_store(transaction, graph) as (fd, _):
+            state = _load_plan_audit_ledger(fd, graph)
+            dispatch = state["dispatches"].get(dispatch_id)
+            if dispatch is None or dispatch["status"] != "accepted":
+                raise PlanGraphError("audit attachment requires a retained accepted result")
+            result = dispatch["result"]
+        audit = copy.deepcopy(graph["audit"])
+        audit.update(fresh=True, independent=True, graph_revision=expected_revision, dispatch_id=dispatch_id, result_digest=_canonical_digest(result))
+        for key in ("findings", "resolutions", "evidence", "constraints"):
+            audit[key] = copy.deepcopy(result[key])
+        receipt = issue_operation_receipt(operation="refresh-audit", workflow_id=workflow_id,
+            prior_graph_revision=expected_revision, target=["audit"], record_version=audit["record_version"], value=audit)
+        return _apply_updates_locked(transaction, workflow_id, expected_revision,
+            [{"op": "refresh-audit", "path": ["audit"], "value": audit, "prior_graph_revision": expected_revision,
+              "record_version": audit["record_version"], "receipt": receipt}], reconcile_disjoint=False)
 
 
 def _stale_repository_evidence(graph: dict[str, Any], context: _RepoContext) -> set[str]:
@@ -2688,10 +3235,19 @@ def _stale_repository_evidence(graph: dict[str, Any], context: _RepoContext) -> 
 def _refresh_repository_state_locked(transaction: _Transaction) -> dict[str, Any]:
     current = _read_current(transaction)
     stale = _stale_repository_evidence(current, transaction.context)
-    if not stale:
+    audit_invalid = False
+    if current["audit"]["required"] and current["audit"]["fresh"]:
+        try:
+            _bound_plan_audit_result(transaction, current, current["audit"], current_pin=False)
+        except PlanGraphError:
+            audit_invalid = True
+    if not stale and not audit_invalid:
         return current
     candidate = copy.deepcopy(current)
     _invalidate_semantic_dependents(candidate, {("evidence", evidence_id, "revision") for evidence_id in stale})
+    if audit_invalid and candidate["audit"]["fresh"]:
+        candidate["audit"].update(fresh=False, independent=False, operation_receipt=None)
+        candidate["audit"]["record_version"] += 1
     candidate["graph_revision"] = current["graph_revision"] + 1
     _finalize_graph(candidate, transaction.context, _transaction_provenance_resolver(transaction))
     _rotate(transaction, current, candidate)
@@ -2706,7 +3262,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         update = _mapping(row, "update")
         operation = update.get("op")
         typed = operation in {"refresh-evidence", "confirm-decision", "reconfirm-decision", "revalidate-decision", "refresh-proof", "refresh-proof-plan",
-                              "regenerate-projection", "reconfirm-projection", "clarify-projection", "refresh-audit", "resolve-finding", "record-design-join"}
+                              "regenerate-projection", "reconfirm-projection", "clarify-projection", "classify-audit", "refresh-audit", "resolve-finding", "record-design-join"}
         if operation != "set" and not typed:
             raise PlanGraphError("unsupported update operation")
         expected_fields = (
@@ -2751,7 +3307,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         if typed:
             expected_family = {"refresh-evidence": "evidence", "confirm-decision": "decisions", "reconfirm-decision": "decisions", "revalidate-decision": "decisions",
                 "refresh-proof": "proof", "refresh-proof-plan": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections", "clarify-projection": "projections",
-                "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
+                "classify-audit": "audit", "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
             expected_length = 1 if expected_family in {"audit", "design_join"} else 2
             if path[0] != expected_family or len(path) != expected_length:
                 raise PlanGraphError("typed update targets the wrong record family")
@@ -2826,6 +3382,7 @@ def _validate_typed_repairs(
     graph: dict[str, Any],
     updates: list[dict[str, Any]],
     prior_revision: int,
+    transaction: _Transaction,
 ) -> None:
     for update in updates:
         operation = update.get("_typed")
@@ -2869,10 +3426,11 @@ def _validate_typed_repairs(
             },
             "reconfirm-projection": {"confirmed", "operation_receipt"},
             "clarify-projection": {"clarifications", "operation_receipt"},
+            "classify-audit": {"classification", "breadth", "complexity", "high_consequence", "reason", "required", "fresh", "independent", "operation_receipt"},
             "refresh-audit": {
                 "classification", "breadth", "complexity", "high_consequence", "reason",
                 "required", "graph_revision", "evidence", "independent", "constraints",
-                "findings", "resolutions", "fresh", "operation_receipt",
+                "findings", "resolutions", "fresh", "operation_receipt", "dispatch_id", "result_digest",
             },
             "resolve-finding": {
                 "graph_revision", "evidence", "independent", "findings", "resolutions",
@@ -2990,13 +3548,22 @@ def _validate_typed_repairs(
                 or prior_presentation["source_digest"] != _projection_source_digest(graph, record)
             ):
                 raise PlanGraphError("wording clarification cannot change graph meaning or its retained approval")
+        elif operation == "classify-audit":
+            if record.get("fresh") or record.get("independent") or not record.get("required"):
+                raise PlanGraphError("audit classification must await independent inspection")
         elif operation == "refresh-audit":
             if graph["audit"].get("required") and (
                 not graph["audit"].get("fresh")
                 or not graph["audit"].get("independent")
             ):
                 raise PlanGraphError("audit refresh must be fresh and independent")
+            if graph["audit"]["required"]:
+                _bound_plan_audit_result(transaction, previous_graph, record, current_pin=True)
+                if _audit_meaning_digest(graph) != _audit_meaning_digest(previous_graph):
+                    raise PlanGraphError("audit attachment cannot also change the inspected graph meaning")
         elif operation == "resolve-finding":
+            if previous_record.get("dispatch_id") is not None and record.get("fresh"):
+                raise PlanGraphError("coordinator resolution must await a fresh independent correction check")
             finding_ids = {
                 item.get("id")
                 for item in graph["audit"].get("findings", [])
@@ -3332,7 +3899,7 @@ def _apply_updates_locked(
         audit["breadth"], audit["complexity"], audit["high_consequence"]
     )
     typed_audit_refresh = any(
-        update.get("_typed") in {"refresh-audit", "resolve-finding"}
+        update.get("_typed") in {"classify-audit", "refresh-audit", "resolve-finding"}
         for update in normalized
     )
     if (
@@ -3345,7 +3912,7 @@ def _apply_updates_locked(
         audit["operation_receipt"] = None
         audit["reason"] = floor_reason
     _validate_typed_repairs(
-        current, candidate, normalized, actual_previous_revision
+        current, candidate, normalized, actual_previous_revision, transaction
     )
     for update in normalized:
         if update.get("_typed") == "refresh-evidence":
@@ -3369,6 +3936,12 @@ def _apply_updates_locked(
                     raise PlanGraphError(
                         "new evidence receipt is not bound to the exact prior graph revision and commit"
                     )
+    if candidate["audit"]["required"] and candidate["audit"]["fresh"]:
+        try:
+            _bound_plan_audit_result(transaction, candidate, candidate["audit"], current_pin=False)
+        except PlanGraphError:
+            candidate["audit"].update(fresh=False, independent=False, operation_receipt=None)
+            candidate["audit"]["record_version"] += 1
     candidate["graph_revision"] = actual_previous_revision + 1
     _finalize_graph(
         candidate,
