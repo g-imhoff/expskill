@@ -1,6 +1,6 @@
 {
   "name": "expskill",
-  "version": "0.1.2+codex.20260921131214",
+  "version": "0.1.5",
   "description": "15 skills: fourteen independent skills and one optional lifecycle router.",
   "repository": "https://github.com/g-imhoff/expskill",
   "author": {
