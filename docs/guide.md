@@ -209,7 +209,7 @@ Invoke a skill directly when you know what you want:
 - `$unslop` rewrites prose to remove common AI tells and remains directly
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
-  fact-grounded interview and mandatory final confirmation.
+  fact-grounded interview, at most three material questions per round, and confirmed shared meaning.
 - `$autonomous-run` acts as an AI user on your behalf. It launches one initial
   `$use-expskill` conversation and follows the workflow's instructions and
   conversation transitions to a review-ready draft PR.
