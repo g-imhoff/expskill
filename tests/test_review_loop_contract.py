@@ -66,6 +66,22 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertRegex(self.body, r"one.*reviewer.*one categor|one categor.*one.*reviewer")
         self.assertIn("read only", self.body)
 
+    def test_all_material_blockers_survive_scores_and_later_omissions(self) -> None:
+        for phrase in (
+            '"findings"',
+            '"severity"',
+            '"impact"',
+            '"correction"',
+            "no inherited or forked history",
+            "must not have implemented, repaired, or previously endorsed",
+            "a high score cannot cancel",
+            "omitting an earlier finding does not close it",
+            "no high or medium finding remains open",
+            "every review is valid and current",
+            "never manufacture a code fix from missing review evidence",
+        ):
+            self.assertIn(phrase, self.body)
+
     def test_fixer_dispatch_uses_one_fixer_per_issue_with_worktrees(self) -> None:
         self.assertIn("one fixer", self.body)
         self.assertIn("worktree", self.body)
