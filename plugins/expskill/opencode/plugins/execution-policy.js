@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 const TASK_TOOLS = new Set(["task", "subagent"]);
 const POLICY_VERSION = "execution-budget-policy.v1";
@@ -282,6 +284,103 @@ function createBudgetTracker(budget) {
   };
 }
 
+function runLease(directory, filename, runID, route) {
+  const deadline = performance.now() + 3000;
+  const pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  const syncDirectory = () => {
+    const descriptor = fs.openSync(directory, "r");
+    try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+  };
+  const readOwner = (resource, expectedResource = resource) => {
+    const metadata = fs.lstatSync(resource);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4096 || (metadata.mode & 0o077) !== 0) throw new Error("execution-policy unsafe run lock");
+    const serialized = fs.readFileSync(resource, "utf8").trim();
+    const owner = JSON.parse(serialized);
+    if (serialized !== JSON.stringify(owner) || !isRecord(owner) || Object.keys(owner).sort().join(",") !== "host,pid,resource,route,run_id,schema_version,token" || owner.schema_version !== "execution-run-lock.v1" || owner.run_id !== runID || owner.route !== route || owner.resource !== path.basename(expectedResource) || !/^[0-9a-f]{32}$/.test(owner.token) || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || typeof owner.host !== "string" || !owner.host) throw new Error("execution-policy ambiguous run lock owner");
+    return owner;
+  };
+  const dead = (owner) => {
+    if (owner.host !== os.hostname()) throw new Error("execution-policy ambiguous remote run lock owner");
+    try { process.kill(owner.pid, 0); return false; }
+    catch (error) {
+      if (error.code === "ESRCH") return true;
+      throw new Error("execution-policy ambiguous live run lock owner");
+    }
+  };
+  const claimPath = (token) => `${filename}.claim.${token}`;
+  const recover = (resource, owner, depth) => {
+    const claim = acquire(claimPath(owner.token), depth + 1);
+    try {
+      let current;
+      try { current = readOwner(resource); }
+      catch (error) { if (error.code === "ENOENT") return; throw error; }
+      if (current.token === owner.token && dead(current)) {
+        fs.unlinkSync(resource);
+        syncDirectory();
+      }
+    } finally { claim.release(); }
+  };
+  const acquire = (resource, depth = 0) => {
+    if (depth > 16) throw new Error("execution-policy run lock recovery depth exhausted");
+    const token = randomBytes(16).toString("hex");
+    const temporaryOwner = `${filename}.owner-${token}.tmp`;
+    const owner = { schema_version: "execution-run-lock.v1", token, pid: process.pid, host: os.hostname(), resource: path.basename(resource), run_id: runID, route };
+    const descriptor = fs.openSync(temporaryOwner, "wx", 0o600);
+    try { fs.writeFileSync(descriptor, `${JSON.stringify(owner)}\n`); fs.fsyncSync(descriptor); }
+    finally { fs.closeSync(descriptor); }
+    try {
+      while (performance.now() < deadline) {
+        try {
+          fs.linkSync(temporaryOwner, resource);
+          syncDirectory();
+          return { token, release() {
+            const current = readOwner(resource);
+            if (current.token !== token || current.pid !== process.pid) throw new Error("execution-policy run lock lease changed");
+            fs.unlinkSync(resource);
+            syncDirectory();
+          } };
+        } catch (error) { if (error.code !== "EEXIST") throw error; }
+        let existing;
+        try { existing = readOwner(resource); }
+        catch (error) { if (error.code === "ENOENT") continue; throw error; }
+        if (dead(existing)) recover(resource, existing, depth);
+        else pause();
+      }
+      throw new Error("execution-policy run lock busy with live ownership");
+    } finally {
+      try { fs.unlinkSync(temporaryOwner); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  };
+  const lease = acquire(`${filename}.lock`);
+  try {
+    let inspected = 0;
+    for (const basename of fs.readdirSync(directory).sort()) {
+      if (inspected >= 16 || performance.now() >= deadline) break;
+      if (basename.startsWith(`${path.basename(filename)}.claim.`)) {
+        inspected += 1;
+        const resource = path.join(directory, basename);
+        let owner;
+        try { owner = readOwner(resource); }
+        catch (error) { if (error.code === "ENOENT") continue; throw error; }
+        if (dead(owner)) recover(resource, owner, 0);
+      } else if (basename.startsWith(`${path.basename(filename)}.owner-`) && basename.endsWith(".tmp")) {
+        inspected += 1;
+        const temporaryOwner = path.join(directory, basename);
+        let owner;
+        try {
+          const metadata = fs.lstatSync(temporaryOwner);
+          if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4096 || (metadata.mode & 0o077) !== 0) continue;
+          const value = JSON.parse(fs.readFileSync(temporaryOwner, "utf8"));
+          owner = readOwner(temporaryOwner, path.join(directory, value.resource || ""));
+          if (basename !== `${path.basename(filename)}.owner-${owner.token}.tmp`) continue;
+        } catch (error) { if (error.code === "ENOENT" || error instanceof SyntaxError) continue; throw error; }
+        if (dead(owner)) fs.unlinkSync(temporaryOwner);
+      }
+    }
+    return lease;
+  } catch (error) { lease.release(); throw error; }
+}
+
 function persistentRunCounter(env) {
   const runID = env.EXPSKILL_RUN_ID;
   if (runID === undefined || runID === "") return null;
@@ -305,11 +404,11 @@ function persistentRunCounter(env) {
   if (!metadata.isDirectory() || (metadata.mode & 0o077) !== 0) {
     throw new Error("execution-policy run budget directory must be private");
   }
-  return (entry, now = Date.now()) => {
+  return (entry) => {
     const filename = path.join(directory, `${runID}-${encodeURIComponent(entry.route)}.json`);
-    const lock = `${filename}.lock`;
-    const lockFD = fs.openSync(lock, "wx", 0o600);
-    const temporary = `${filename}.${process.pid}.tmp`;
+    const lease = runLease(directory, filename, runID, entry.route);
+    const now = Date.now();
+    const temporary = `${filename}.${process.pid}.${lease.token}.tmp`;
     try {
       let state = { schema_version: "execution-run-budget.v1", run_id: runID, route: entry.route, calls: 0, started_at: now };
       try {
@@ -344,8 +443,7 @@ function persistentRunCounter(env) {
       const parentFD = fs.openSync(directory, "r");
       try { fs.fsyncSync(parentFD); } finally { fs.closeSync(parentFD); }
     } finally {
-      fs.closeSync(lockFD);
-      fs.unlinkSync(lock);
+      lease.release();
       try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
   };
