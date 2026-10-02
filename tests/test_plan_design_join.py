@@ -211,6 +211,43 @@ def test_required_design_join_blocks_until_current_approved_receipt(tmp_path: Pa
     assert result.state == "ready"
 
 
+def test_wording_clarification_preserves_decision_audit_and_design_join(tmp_path: Path) -> None:
+    module = load_helper()
+    repo, baseline = repository(tmp_path)
+    state_home = tmp_path / "state"
+    template = required_graph()
+    template["decisions"]["D1"] = {
+        "question": "Choose the validation policy", "choice": "Reject invalid configuration",
+        "alternatives": [], "based_on": ["E1"], "material": True,
+        "version": 1, "confirmed_version": 1, "stale": False,
+    }
+    template["work"]["T1"]["decisions"] = ["D1"]
+    template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
+    module.initialize_workflow(repo, BRANCH, template, state_home)
+    graph = module.load_workflow(repo, BRANCH, state_home)
+    refresh_audit(module, repo, state_home, graph)
+    graph = module.load_workflow(repo, BRANCH, state_home)
+    module.apply_updates(repo, BRANCH, graph["workflow_id"], graph["graph_revision"],
+        [join_update(module, graph, design_commit(repo, baseline))], state_home)
+    before = module.load_workflow(repo, BRANCH, state_home)
+    record = module.issue_projection_clarification(graph=before, projection_id="U1",
+        text="Invalid configuration is rejected before startup; valid configuration remains compatible.",
+        classification="unchanged-meaning", reason="The user requested clearer wording for the accepted policy.")
+    operation = module.issue_operation_receipt(operation="clarify-projection", workflow_id=before["workflow_id"],
+        prior_graph_revision=before["graph_revision"], target=["projections", "U1"], record_version=record["version"], value=record)
+    result = module.apply_updates(repo, BRANCH, before["workflow_id"], before["graph_revision"], [{
+        "op": "clarify-projection", "path": ["projections", "U1"], "value": record,
+        "prior_graph_revision": before["graph_revision"], "record_version": record["version"], "receipt": operation,
+    }], state_home)
+    after = module.load_workflow(repo, BRANCH, state_home)
+    assert result.state == "ready"
+    assert after["decisions"] == before["decisions"]
+    assert after["audit"] == before["audit"]
+    assert after["design_join"] == before["design_join"]
+    assert after["projections"]["U1"]["presentation"] == before["projections"]["U1"]["presentation"]
+    assert after["projections"]["U1"]["clarifications"][-1]["trust"] == "coordinator-attestation"
+
+
 @pytest.mark.parametrize(
     "update",
     [
