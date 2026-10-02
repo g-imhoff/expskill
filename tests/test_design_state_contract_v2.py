@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 from unittest import mock
 
 
@@ -68,6 +68,7 @@ def _start(module: object, root: Path) -> tuple[dict, Path, Path, str]:
         scope={"components": ["CheckoutForm"], "exclusions": ["route"]},
         state_home=state_home,
     )
+    receipt = confirm_fixture_workflow(module, receipt, state_home)
     return receipt, repo, state_home, str(receipt["workflow_id"])
 
 
@@ -113,6 +114,8 @@ def _valid_records(component_names: tuple[str, ...] = ("CheckoutForm",)) -> dict
             "dependency_ids": [dependency_id],
             "decision": "approved",
         }
+    for collection in (components, evidence, approvals):
+        for item in collection.values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
     candidate = _valid_inventory("CheckoutForm.tsx", DIGEST, "component")
     review = _valid_inventory("review.json", DIGEST, "review")
     manifest = _valid_inventory("manifest.json", DIGEST, "manifest")
@@ -352,7 +355,7 @@ class DesignStateContractV2Tests(unittest.TestCase):
             self.assertEqual(state["manifest"], manifest)
             self.assertEqual(
                 set(delivered),
-                {"schema_version", "workflow_id", "revision", "lifecycle", "identity", "ui_contract", "candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest"},
+                {"schema_version", "workflow_id", "revision", "lifecycle", "identity", "ui_contract", "candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest", "brief_digest"},
             )
             self.assertEqual(delivered["identity"]["repository"], str(repo.resolve()))
             self.assertEqual(delivered["identity"]["head"], state["identity"]["head"])

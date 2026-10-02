@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 
 TECHNICAL_GATE_NAMES = frozenset(
     {
@@ -76,3 +79,12 @@ def prepare_delivery_fixture(module, receipt, state_home, workflow_id, records, 
         for name, layer in zip(("candidate", "review", "manifest"), layers):
             records["delivery"][name] = {"inventory_digest": hashlib.sha256(json.dumps(layer, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "files": layer["files"]}
     return layers
+
+
+FIXTURE_BRIEF = {"objective": "Fixture component review", "requirements": ["Preserve fixture behavior"], "responsive_expectations": {"compact": "No overflow", "intermediate": "No overflow", "wide": "No overflow"}, "non_goals": ["Integration"], "source": {"kind": "specification", "path": "README.md", "digest": hashlib.sha256(b"fixture\n").hexdigest()}}
+FIXTURE_BRIEF_DIGEST = hashlib.sha256(json.dumps({**FIXTURE_BRIEF, "confirmed": True}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def confirm_fixture_workflow(module, receipt, state_home):
+    confirmed = module.confirm_brief(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], brief=FIXTURE_BRIEF, confirmed=True, state_home=state_home)
+    return {**receipt, "revision": confirmed["revision"]}
