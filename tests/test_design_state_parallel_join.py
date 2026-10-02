@@ -298,3 +298,26 @@ def test_amended_candidate_invalidates_dependent_records(tmp_path: Path) -> None
     assert state["dependencies"] == {}
     assert state["evidence"] == {}
     assert state["approvals"] == {}
+
+
+def test_owned_scope_allows_authorized_bytes_and_rejects_unrelated_bytes(tmp_path: Path) -> None:
+    module, repo, state_home, receipt, baseline = initialize(tmp_path, invocation_mode="direct")
+    module.discard_workflow(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], confirmed=True, state_home=state_home)
+    (repo / "protected.txt").write_text("pre-existing user work\n")
+    receipt = module.initialize_workflow(repository=repo, branch="expskill/design/ui", worktree=repo, baseline=baseline, dirty_fingerprint=module._dirty(repo), ui_contract={"digest": DIGEST}, scope={"components": ["CheckoutForm"], "exclusions": [], "owned_paths": ["component.txt", "new-preview.html"]}, invocation_mode="direct", state_home=state_home)
+    (repo / "component.txt").write_text("accepted component change\n")
+    (repo / "new-preview.html").write_text("accepted specimen\n")
+    updated = module.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], updates={}, state_home=state_home)
+    (repo / "protected.txt").write_text("overwritten with the same untracked status\n")
+    with pytest.raises(ValueError, match="unrelated workspace bytes changed"):
+        module.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=updated["revision"], updates={}, state_home=state_home)
+
+
+@pytest.mark.parametrize("owned", [".", "../outside", "/tmp/outside", "component*", "src/**", ".git/config", "folder", "linked"])
+def test_owned_scope_rejects_directory_wildcard_traversal_and_symlink(tmp_path: Path, owned: str) -> None:
+    module, repo, state_home, receipt, baseline = initialize(tmp_path, invocation_mode="direct")
+    module.discard_workflow(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], confirmed=True, state_home=state_home)
+    (repo / "folder").mkdir()
+    (repo / "linked").symlink_to(repo / "component.txt")
+    with pytest.raises(ValueError):
+        module.initialize_workflow(repository=repo, branch="expskill/design/ui", worktree=repo, baseline=baseline, dirty_fingerprint=module._dirty(repo), ui_contract={"digest": DIGEST}, scope={"components": [], "exclusions": [], "owned_paths": [owned]}, invocation_mode="direct", state_home=state_home)
