@@ -102,6 +102,7 @@ Record user identity as available to the host, confirmation timestamp, exact con
 ### Evaluation pack
 
 Record the confirmed contract digest, target-snapshot digest, rubric digest, frozen target scoring parameters, freeze timestamp, and three case partitions: visible development, frozen validation, and hidden release. Each case holds an identifier, partition, purpose, raw request digest, allowed context, setup manifest, observable assertions, forbidden effects, evidence requirements, and pass or fail rule. Keep hidden prompts, expectations, and oracles in separately manifested helper-owned paths unavailable to candidate implementers and trial agents.
+Use `skill-builder-evaluation-pack.v2` for per-criterion scoring. It adds `criterion_evidence_map`, keyed by every one of the hundred rubric criterion IDs. Each value has exactly `frozen_parameter_identifiers`, a sorted nonempty array of unique frozen parameter IDs, and `case_evidence`, a nonempty object mapping relevant frozen case IDs to sorted nonempty arrays of observation fields. Allowed fields are `output_digest`, `tool_event_digest`, `filesystem_result_digest`, `before_target_manifest_digest`, and `after_target_manifest_digest`. Every frozen scoring parameter and case occurs somewhere in the map. A criterion need not reference unrelated parameters, cases, or output bytes. Freeze the map before candidate editing and invalidate the evaluation pack and downstream evidence when it changes. Historical v1 packs remain readable, but current per-criterion scoring requires refreezing them with a v2 map.
 
 ### Candidate record
 
@@ -118,6 +119,7 @@ Record each process gate identifier, pass or fail, evidence digests, affected st
 ### Review record
 
 Record reviewer identity, independence and read-only attestation, exact candidate revision, input artifacts and their digests, access-check evidence, freshness, contamination check, validity, findings, severity, evidence, impact, correction, affected target criteria, and `ready` or `not ready` when valid. An invalid review has no scoring verdict.
+The pre-score review is accepted by `accept-review`. The separate post-score review is accepted by `accept-final-review` from `scored` into `final-reviewed`, after every target score and conformance gate passes. Current final reviews use `skill-builder-review.v3`, the v2 fields plus the `target_scorecard` and `builder_run_conformance` input-provenance roles. Each role binds the current accepted artifact ID, envelope digest, and retained payload digest. The envelope binds both inputs, and its producing receipt must follow the current `accept-scores` receipt. A valid negative final review may be accepted as evidence but cannot authorize verification. Invalidate it and repair through the existing review-change transition. Invalid, stale, or incorrectly bound final reviews append no acceptance receipt. Historical review schemas still require this separate accepted stage and score/conformance envelope pins.
 
 ### Target scorecard
 
@@ -126,6 +128,7 @@ Record the exact ten target category names in accepted order with, for each cate
 ### Verification record
 
 Record verifier identity, independence and read-only attestation, exact candidate revision, exact commands or operations, start and end timestamps, exit status, relevant raw-output digests, before and after manifests, and conclusion.
+Retain verification after `accept-final-review` and bind its envelope to that accepted final review, the current candidate, trials, scorecard, and conformance ledger. `accept-verification` advances `final-reviewed` to `verified`. Verification changes rewind to `final-reviewed`, preserving the final review only while its pinned inputs stay current. Release records identify the accepted post-score final review, never the earlier scoring review.
 
 ### Release record
 
