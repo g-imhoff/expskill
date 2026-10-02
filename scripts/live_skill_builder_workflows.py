@@ -16,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/skill-builder/live-public-workflows.json"
 DRIVER = ROOT / "scripts/live_trials.py"
 SOURCES = {"skill": "SKILL.md", "contracts": "references/artifact-contracts.md", "rubric": "references/evaluation-rubric.md", "helper": "scripts/run_state.py"}
+RESEARCH_QUESTIONS = (
+    "Domain techniques for counting UTF-8 text lines safely.",
+    "Agent skill invocation, boundaries, authority and concise packaging.",
+    "Adversarial evaluation and repeatable evidence for this exact job.",
+)
 
 
 class WorkflowError(RuntimeError):
@@ -56,6 +61,66 @@ def tree(path):
         if item.is_file():
             result[item.relative_to(path).as_posix()] = digest(item.read_bytes())
     return result
+
+
+def source_sections(parent, headings, output):
+    raw = Path(parent["path"]).read_bytes()
+    if digest(raw) != parent["sha256"]:
+        raise WorkflowError("Pinned section source changed")
+    lines = raw.splitlines(keepends=True)
+    sections, contents = [], []
+    for heading in headings:
+        matches = [index for index, line in enumerate(lines) if line.decode().rstrip("\r\n") == heading]
+        if len(matches) != 1:
+            raise WorkflowError("Pinned bounded source heading is missing or ambiguous")
+        start = matches[0]
+        level = len(heading) - len(heading.lstrip("#"))
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            match = re.match(rb"(#+) ", lines[index])
+            if match and len(match[1]) <= level:
+                end = index
+                break
+        content = b"".join(lines[start:end])
+        contents.append(content)
+        sections.append({"heading": heading, "start_line": start + 1, "end_line": end, "sha256": digest(content)})
+    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output.write_bytes(b"\n".join(contents))
+    output.chmod(0o444)
+    return {"path": str(output), "sha256": digest(output.read_bytes()), "parent": parent, "sections": sections}
+
+
+def require_blind_research_origin(origin, *, helper, state_root, root, scratch, sources):
+    forbidden = [helper, state_root, *(root / name for name in ("actor-state", "controller-inputs", "canonical-target", "actors", "public", "case-targets", "requests", "synthetic-user-decisions.json", "research-actors.json"))]
+    allowed_sources = {Path(source["path"]).resolve() for source in sources.values()}
+    executable_paths = {Path(sys.executable).resolve()}
+    for name in ("sh", "bash", "zsh", "python3", "cat", "shasum", "sha256sum", "pwd", "ls", "mkdir", "rg"):
+        locator = shutil.which(name)
+        if locator:
+            executable_paths.add(Path(locator).resolve())
+    for event in origin["events"]:
+        item = event.get("item", {})
+        if not isinstance(item, dict) or item.get("type") != "command_execution":
+            continue
+        command = item.get("command")
+        if not isinstance(command, str) or any(str(path) in command for path in forbidden):
+            raise WorkflowError("Observed blind research command references shared helper or workflow state")
+        calls = shell_calls(command)
+        if not calls:
+            raise WorkflowError("Observed blind research terminal command has unsupported execution structure")
+        for parts, _ in calls:
+            for value in parts[1:]:
+                if Path(value).is_absolute() or value == ".." or value.startswith("../"):
+                    path = (scratch / value).resolve()
+                    if path not in allowed_sources | executable_paths and not path.is_relative_to(scratch.resolve()):
+                        raise WorkflowError("Observed blind research command references an unowned filesystem path")
+            if parts and Path(parts[0]).name in {"cat", "ls", "rg", "shasum", "sha256sum"}:
+                for value in parts[1:]:
+                    if value.startswith("-") or value.isdigit():
+                        continue
+                    path = (scratch / value).resolve()
+                    if path not in allowed_sources and not path.is_relative_to(scratch.resolve()):
+                        raise WorkflowError("Observed blind research file operand escapes its lane")
 
 
 def shell_calls(command):
@@ -261,6 +326,12 @@ class Workflow:
         self.decisions = save(root / "synthetic-user-decisions.json", {"synthetic_user_decisions": definition["synthetic_user_decisions"],
                                "improve_baseline": definition["improve_baseline"] if mode == "improve" else None})
         self.retained_pins = []
+        research_contracts = source_sections(self.sources["contracts"], ("## Canonical digest serialization", "### Research pack"),
+                                            self.root / "bounded-framework-sources" / "research-contracts.source")
+        self.research_sources = {"skill": self.sources["skill"], "research-contracts": research_contracts}
+        self.retained_pins.append(research_contracts)
+        self.observation["research_source_bindings"] = self.research_sources
+        self.observation["blind_research_scope_limit"] = "Role-scoped inputs and native command checks reject observed shared namespaces, parent paths and foreign file operands; these checks do not authenticate sessions or prove general filesystem isolation."
         self.persist()
 
     def persist(self):
@@ -278,6 +349,13 @@ class Workflow:
                 raise WorkflowError("Retained actor or controller evidence changed")
 
     def actor_packet(self, role):
+        if role.startswith("research-"):
+            lane = int(role.split("-")[1])
+            packet = {"role": role, "stage": "research-only", "blind": True, "question": RESEARCH_QUESTIONS[lane],
+                      "maximum_primary_sources": 3, "source_contract": self.research_sources["research-contracts"]}
+            evidence = save(self.root / "actor-workspaces" / role / "controller-input.json", packet)
+            self.retained_pins.append(evidence)
+            return evidence
         blind = role.startswith("research-") or role == "candidate-author" or role.startswith("invalidate-repair-")
         packet = {"mode": self.mode, "workflow_id": self.workflow_id, "target": str(self.target), "state_root": str(self.state_root),
                   "synthetic_decisions": self.decisions, "only_owned_candidate_paths": ["SKILL.md", "scripts/count_lines.py"]}
@@ -288,6 +366,14 @@ class Workflow:
         evidence = save(self.root / "controller-inputs" / (role + ".json"), packet)
         self.retained_pins.append(evidence)
         return evidence
+
+    def role_sources(self, role):
+        if role.startswith("research-"):
+            return self.research_sources
+        names = ["skill", "contracts"]
+        if role == "freeze-evaluation" or role.startswith(("pre-review-", "scoring-", "final-review-", "invalidate-repair-")):
+            names.append("rubric")
+        return {name: self.sources[name] for name in names}
 
     def public(self, command, payload):
         argv = [sys.executable, str(self.helper), command, "--state-root", str(self.state_root)]
@@ -329,26 +415,31 @@ class Workflow:
         identity = self.mode + ":" + role
         if cwd is None:
             cwd = self.root / "actor-workspaces" / role
-            cwd.mkdir(parents=True)
+            cwd.mkdir(parents=True, exist_ok=True)
             self.probe.initialize_workspace(self.driver, cwd, self.budget.remaining)
         if source_reads:
             packet = self.actor_packet(role)
-            commands = [shlex.join(["cat", self.sources[name]["path"]]) for name in ("skill", "contracts", "rubric")]
-            prompt = (f"Apply the assigned Skill Builder stage using this immutable framework snapshot. First read all three complete source references in separate tool operations: {json.dumps(commands)}. "
-                      f"Public helper: {self.helper}. Use its --help and supported CLI only, never private Python APIs or direct state edits. "
-                      f"Use state root {self.state_root}; this is an isolated test workflow. Scratch and candidate writes belong under {cwd}. "
+            sources = self.role_sources(role)
+            commands = [shlex.join(["cat", source["path"]]) for source in sources.values()]
+            research = role.startswith("research-")
+            interface = ("You are only a delegated blind research lane, never the workflow owner. Do not access the public helper, shared workflow state, other actors, synthetic user decisions, candidate direction or acceptance cases. Read only the assigned immutable source resources, your own lane packet and your own scratch files; web sources remain available. Do not inspect parent directories or siblings. Use simple unconditional terminal commands or an owned Python 3 heredoc for scratch writes; no shell loops, pipelines or dynamic shell evaluation. " if research else
+                         f"Public helper: {self.helper}. Before an unfamiliar operation execute {shlex.join([sys.executable, str(self.helper), 'describe'])} OPERATION to obtain exact JSON fields without state access. Use supported CLI only, never private Python APIs or direct state edits. Use state root {self.state_root}; this is an isolated test workflow. Only the public helper may mutate its state. Invoke it directly as a tool command with JSON stdin redirected from an owned request file, so raw traces prove each public command. Keep helper invocations unconditional, without shell loops, aliases, eval, traps, or pipelines. When the same tool command also prepares a request or cats redirected results, expose the helper's original operation JSON as its entire terminal output; that receipt must belong to this exact workflow and state root. ")
+            prompt = (f"Apply only the assigned Skill Builder stage using this immutable framework snapshot. First read these complete role-required sources or complete pinned relevant sections in separate tool operations: {json.dumps(commands)}. "
+                      f"Available Python 3 interpreter: {sys.executable}; use that exact executable for local JSON preparation and any permitted helper command, never assume python exists. "
+                      + interface + f"Scratch and candidate writes belong under {cwd}. "
                       f"Actor producer identity: {identity}. Preserve this exact identity in your payloads and envelopes. "
                       f"Mode: {self.mode}. Controller input locator: {packet['path']}, SHA-256 {packet['sha256']}. "
                       "Synthetic user decisions are explicitly a simulation, not a real user event. No target score or desired verdict is supplied. "
                       "Author operational artifacts from actual evidence. Never import test fixtures, invent raw events, fill criteria with default success, or claim unobserved outcomes. "
-                      "Only the public helper may mutate its state. Invoke it directly as a tool command with JSON stdin redirected from an owned request file, so raw traces prove each public command. Keep helper invocations unconditional, without shell loops, aliases, eval, traps, or pipelines. When the same tool command also prepares a request or cats redirected results, expose the helper's original operation JSON as its entire terminal output; that receipt must belong to this exact workflow and state root. "
                       "Do not delegate, commit, deliver, install, publish, or clean state. " + prompt)
-            prompt += " Return exactly one JSON object with workflow_id as a string or null, stage as a string, and artifact_ids as an array of strings naming every newly created public artifact, including helper-generated resolution or invalidation records. An initialized workflow must return its actual workflow_id; the controller input names the existing active ID. Null is allowed only before initialization. Research-only replies instead name their scratch file locators as specified. No code fences or surrounding prose."
+            prompt += (" Return exactly one JSON object with workflow_id=null, stage=\"research-only\", and artifact_ids as an array of absolute owned scratch file locators containing your evidence cards and actual source observations. No public artifacts or stage advancement. No code fences or surrounding prose." if research else
+                       " Return exactly one JSON object with workflow_id as a string or null, stage as a string, and artifact_ids as an array of strings naming every newly created public artifact, including helper-generated resolution or invalidation records. An initialized workflow must return its actual workflow_id; the controller input names the existing active ID. Null is allowed only before initialization. No code fences or surrounding prose.")
         before_candidate = None
         if read_only and self.current and any(record["type"] == "candidate-record" and record["derived_status"] == "accepted" for record in self.current["artifact_index"].values()):
             before_candidate = tree(Path(self.accepted("candidate-record")[3]["isolated_locator"]))
+        stage_timeout = self.budget.research_timeout if role.startswith("research-") else self.budget.actor_timeout
         options = {"prompt": prompt, "cwd": cwd, "state_home": self.state_home,
-                   "evidence_dir": self.root / "actors" / role, "timeout": min(self.budget.actor_timeout, self.budget.remaining() / (1 + retry)),
+                   "evidence_dir": self.root / "actors" / role, "timeout": min(stage_timeout, self.budget.remaining() / (1 + retry)),
                    "sandbox": "read-only" if not source_reads else "workspace-write", "live": True, "cli": self.cli,
                    "infrastructure_retries": retry}
         if model is not None:
@@ -358,7 +449,8 @@ class Workflow:
             options.update(persistent=True, resume_from=resume_from)
         actor = self.driver.run_actor(**options)
         self.budget.calls += len(actor.get("attempts", []))
-        row = {"role": role, "producer_identity": identity, "transport": actor}
+        row = {"role": role, "producer_identity": identity, "transport": actor, "stage_timeout_seconds": stage_timeout,
+               "effective_attempt_timeout_seconds": options["timeout"], "required_sources": sources if source_reads else {}}
         self.observation["actors"].append(row)
         for attempt in actor.get("attempts", []):
             self.retained_pins.append({"path": attempt["raw_events"], "sha256": attempt["raw_events_sha256"]})
@@ -377,11 +469,15 @@ class Workflow:
         self.budget.seen_threads.update(seen)
         row["context_identity"] = origin["thread_id"]
         if source_reads:
-            self.probe.require_framework_reads(origin, {name: self.sources[name] for name in ("skill", "contracts", "rubric")})
+            self.probe.require_framework_reads(origin, sources)
         reply = json.loads(actor["final_text"]) if source_reads else None
         if source_reads and (not isinstance(reply, dict) or set(reply) != {"workflow_id", "stage", "artifact_ids"} or not isinstance(reply["workflow_id"], (str, type(None))) or not isinstance(reply["stage"], str) or not isinstance(reply["artifact_ids"], list) or any(not isinstance(value, str) for value in reply["artifact_ids"])):
             raise WorkflowError("Actor reply violates the explicit workflow transport contract")
-        if self.workflow_id and source_reads and reply["workflow_id"] != self.workflow_id:
+        if source_reads and role.startswith("research-"):
+            require_blind_research_origin(origin, helper=self.helper, state_root=self.state_root, root=self.root, scratch=Path(cwd), sources=sources)
+            if reply["workflow_id"] is not None or reply["stage"] != "research-only":
+                raise WorkflowError("Delegated blind research reply exposes or advances public workflow state")
+        elif self.workflow_id and source_reads and reply["workflow_id"] != self.workflow_id:
             raise WorkflowError("Actor switched the active public workflow")
         if before_candidate is not None and tree(Path(self.accepted("candidate-record")[3]["isolated_locator"])) != before_candidate:
             raise WorkflowError("Independent judge altered candidate source")
@@ -539,7 +635,7 @@ class Workflow:
         try:
             self.stage("resolve-baseline", "Resolve stage 1 and capture the real mode-specific stage 2 baseline. Set the initialize request's owner_identity to your exact producer identity. Initialize the public run, retain baseline raw observations, and accept capture-baseline. Include the helper-generated resolution ID in your reply. Never modify the canonical target.", "baseline", ("initialize", "retain", "transition"))
             research = []
-            for lane, question in enumerate(("Domain techniques for counting UTF-8 text lines safely.", "Agent skill invocation, boundaries, authority and concise packaging.", "Adversarial evaluation and repeatable evidence for this exact job.")):
+            for lane, question in enumerate(RESEARCH_QUESTIONS):
                 actor, origin, reply = self.actor(f"research-{lane}", f"Run only blind research lane {lane}: {question} Maximum three primary sources. Do not read sibling lane output, candidate direction, or hidden cases. Use actual web search and retain your independently authored evidence cards and actual source observations in your own scratch path. For this research-only stage, artifact_ids must contain absolute paths to those retained files. Do not advance public state.", model="gpt-5.6-luna")
                 if not any(event.get("item", {}).get("type") == "web_search" for event in origin["events"] if isinstance(event.get("item"), dict)):
                     raise WorkflowError("Research lane lacks retained actual web-search events")
@@ -607,8 +703,8 @@ class Workflow:
 
 
 class Budget:
-    def __init__(self, calls, seconds, actor_timeout):
-        self.maximum_calls, self.actor_timeout = calls, actor_timeout
+    def __init__(self, calls, seconds, actor_timeout, research_timeout=480):
+        self.maximum_calls, self.actor_timeout, self.research_timeout = calls, actor_timeout, research_timeout
         self.deadline = time.monotonic() + seconds
         self.calls = 0
         self.seen_threads = set()
@@ -621,11 +717,13 @@ class Budget:
 
 
 def run_workflows(*, output_root, repository=ROOT, framework_revision, live=False, driver_path=DRIVER, fixture_path=FIXTURE,
-                  maximum_actor_attempts=96, deadline_seconds=7200, actor_timeout=240, maximum_repairs=1, cli="codex", driver=None):
+                  maximum_actor_attempts=96, deadline_seconds=7200, actor_timeout=240, research_timeout=480, maximum_repairs=1, cli="codex", driver=None):
     if not live:
         raise WorkflowError("Public Builder workflows require explicit --live opt-in")
-    if type(maximum_actor_attempts) is not int or not 1 <= maximum_actor_attempts <= 128 or type(deadline_seconds) is not int or not 1 <= deadline_seconds <= 10800 or type(actor_timeout) is not int or not 1 <= actor_timeout <= 240 or type(maximum_repairs) is not int or not 0 <= maximum_repairs <= 2:
+    if type(maximum_actor_attempts) is not int or not 1 <= maximum_actor_attempts <= 128 or type(deadline_seconds) is not int or not 1 <= deadline_seconds <= 10800 or type(actor_timeout) is not int or not 1 <= actor_timeout <= 240 or type(research_timeout) is not int or not 1 <= research_timeout <= 480 or type(maximum_repairs) is not int or not 0 <= maximum_repairs <= 2:
         raise WorkflowError("Workflow budget exceeds the declared hard ceilings")
+    if sys.version_info.major != 3 or not Path(sys.executable).is_file() or not os.access(sys.executable, os.X_OK):
+        raise WorkflowError("An available exact Python 3 interpreter is required")
     probe = load_module(ROOT / "scripts/live_skill_builder_benchmark.py", "bounded_builder_probe_primitives")
     injected = driver is not None
     driver = driver or probe.load_driver(driver_path)
@@ -645,13 +743,14 @@ def run_workflows(*, output_root, repository=ROOT, framework_revision, live=Fals
         Path(source["path"]).chmod(0o444)
     evidence = save(output_root / "frozen-synthetic-decisions.json", definition)
     Path(evidence["path"]).chmod(0o400)
-    budget = Budget(maximum_actor_attempts, deadline_seconds, actor_timeout)
+    budget = Budget(maximum_actor_attempts, deadline_seconds, actor_timeout, research_timeout)
     report = {"schema_version": "skill-builder-public-workflows-observation.v1", "framework_revision": framework_revision, "sources": sources,
               "runner_sha256": digest(Path(__file__).read_bytes()), "transport": "scripted-test-transport" if injected else "native-shared-driver",
               "driver": {"path": str(Path(driver.__file__).resolve()), "sha256": digest(Path(driver.__file__).read_bytes())} if hasattr(driver, "__file__") else {"origin": "scripted-test-transport"},
               "origin_validator_sha256": digest(Path(probe.__file__).read_bytes()),
               "full_builder_conformance_claim": False, "synthetic_foundation": "Frozen synthetic user decisions and a declared defective improve starting target; operational artifact authorship belongs to native actors. Disposable cases are harness-authored development fixtures.",
-              "budgets": {"maximum_actor_attempts": maximum_actor_attempts, "deadline_seconds": deadline_seconds, "actor_timeout": actor_timeout,
+              "python3": {"executable": sys.executable, "version": sys.version},
+              "budgets": {"maximum_actor_attempts": maximum_actor_attempts, "deadline_seconds": deadline_seconds, "actor_timeout": actor_timeout, "research_timeout": research_timeout,
                           "maximum_repairs_per_mode": maximum_repairs, "maximum_concurrent_native_actors": 1,
                           "planned_actor_calls_without_infrastructure_retries": 50 + 32 * maximum_repairs,
                           "planned_fresh_contexts": 44 + 26 * maximum_repairs,
@@ -681,14 +780,15 @@ def main():
     parser.add_argument("--driver-path", type=Path, default=DRIVER)
     parser.add_argument("--maximum-actor-attempts", type=int, default=96)
     parser.add_argument("--deadline-seconds", type=int, default=7200)
-    parser.add_argument("--actor-timeout", type=int, default=240)
+    parser.add_argument("--actor-timeout", type=int, default=240, help="per-attempt seconds for non-research actors; maximum 240")
+    parser.add_argument("--research-timeout", type=int, default=480, help="per-attempt seconds for blind research lanes; maximum 480, within the shared cumulative deadline")
     parser.add_argument("--maximum-repairs", type=int, default=1)
     parser.add_argument("--cli", default="codex")
     args = parser.parse_args()
     try:
         report = run_workflows(output_root=args.output_root, repository=args.repository, framework_revision=args.framework_revision,
                                live=args.live, driver_path=args.driver_path, maximum_actor_attempts=args.maximum_actor_attempts,
-                               deadline_seconds=args.deadline_seconds, actor_timeout=args.actor_timeout, maximum_repairs=args.maximum_repairs, cli=args.cli)
+                               deadline_seconds=args.deadline_seconds, actor_timeout=args.actor_timeout, research_timeout=args.research_timeout, maximum_repairs=args.maximum_repairs, cli=args.cli)
         print(json.dumps({"outcome": report["outcome"], "report": str(args.output_root / "report.json"), "full_builder_conformance_claim": False}))
         return 0 if report["outcome"] == "public-workflows-observed" else 1
     except (WorkflowError, OSError, ValueError) as error:
