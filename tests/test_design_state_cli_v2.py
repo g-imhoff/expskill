@@ -9,14 +9,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
 DIGEST = hashlib.sha256(b"fixture-artifact").hexdigest()
 BASE_RECEIPT_KEYS = {"schema_version", "operation", "workflow_id", "revision", "lifecycle", "identity", "state_digest"}
-DELIVERY_RECEIPT_KEYS = BASE_RECEIPT_KEYS | {"candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest"}
+DELIVERY_RECEIPT_KEYS = BASE_RECEIPT_KEYS | {"candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest", "brief_digest"}
 
 
 def _repo(root: Path) -> tuple[Path, str]:
@@ -95,6 +95,8 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             "review": {"inventory_digest": inventory_digest(review), "files": review["files"]},
             "manifest": {"inventory_digest": inventory_digest(manifest), "files": manifest["files"]},
         }
+        for collection in ("components", "evidence", "approvals"):
+            for item in records[collection].values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
         return records
 
     def _layers(self) -> tuple[dict, dict, dict]:
@@ -108,7 +110,8 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         result = self._run("initialize", self._payload(repo, head), env, *flags)
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = self._receipt(result, "initialize")
-        return receipt
+        from tests.test_design_state_contract_v3 import _load
+        return confirm_fixture_workflow(_load("design_cli_confirm"), receipt, Path(env["XDG_STATE_HOME"]) / "expskill")
 
     def test_cli_is_present_closed_and_exposes_every_lifecycle_operation(self) -> None:
         """Regression: absent or permissive CLI prevents deterministic external validation."""

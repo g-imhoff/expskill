@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import TECHNICAL_GATE_NAMES, passing_technical, prepare_delivery_fixture
+from tests.design_state_test_support import TECHNICAL_GATE_NAMES, passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +44,7 @@ def _start(module: object, root: Path) -> tuple[dict, Path, Path, str]:
     repo, head = _repo(root)
     state_home = root / "state"
     receipt = module.initialize_workflow(repository=repo, branch="feature/design", worktree=repo, baseline=head, dirty_fingerprint=hashlib.sha256(b"").hexdigest(), ui_contract={"digest": DIGEST, "outcome": "checkout"}, scope={"components": ["CheckoutForm"], "exclusions": ["route"]}, state_home=state_home)
+    receipt = confirm_fixture_workflow(module, receipt, state_home)
     return receipt, repo, state_home, str(receipt["workflow_id"])
 
 
@@ -51,12 +52,16 @@ def _records() -> dict[str, dict]:
     code = hashlib.sha256(b"checkout-code").hexdigest()
     contract = hashlib.sha256(b"checkout-contract").hexdigest()
     evidence = hashlib.sha256(b"checkout-evidence").hexdigest()
-    return {
+    records = {
         "components": {"CheckoutForm": {"id": "CheckoutForm", "code_digest": code, "contract_digest": contract, "evidence_ids": ["E1"], "dependency_ids": ["D1"], "approval_id": "A1"}},
         "dependencies": {"D1": {"id": "D1", "digest": hashlib.sha256(b"dependency").hexdigest(), "component_ids": ["CheckoutForm"]}},
         "evidence": {"E1": {"id": "E1", "component_id": "CheckoutForm", "digest": evidence, "code_digest": code, "contract_digest": contract, "widths": ["compact", "intermediate", "wide"], "themes": ["light", "dark"], "states": ["default", "error"], "technical": passing_technical(evidence)}},
         "approvals": {"A1": {"id": "A1", "component_id": "CheckoutForm", "code_digest": code, "contract_digest": contract, "evidence_ids": ["E1"], "dependency_ids": ["D1"], "decision": "approved"}},
     }
+
+    for collection in ("components", "evidence", "approvals"):
+        for item in records[collection].values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
+    return records
 
 
 def _layers(records: dict[str, dict]) -> tuple[dict, dict, dict]:
@@ -334,3 +339,38 @@ def test_caller_only_command_claim_cannot_deliver(tmp_path):
     target.write_text(json.dumps(state))
     with pytest.raises(ValueError, match="recorded checks"):
         module.deliver_workflow(workflow_id=workflow, expected_revision=updated["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+
+
+def test_unconfirmed_direct_workflow_cannot_approve_or_deliver(tmp_path):
+    import pytest
+
+    module = _load("design_state_unconfirmed_delivery")
+    repo, head = _repo(tmp_path)
+    home = tmp_path / "state"
+    receipt = module.initialize_workflow(repository=repo, branch="feature/design", worktree=repo, baseline=head, dirty_fingerprint=hashlib.sha256(b"").hexdigest(), ui_contract={"digest": DIGEST}, scope={"components": ["CheckoutForm"]}, state_home=home)
+    with pytest.raises(ValueError, match="confirmed design brief"):
+        module.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], updates=_records(), state_home=home)
+    candidate, review, manifest = _layers(_records())
+    with pytest.raises(ValueError, match="confirmed design brief"):
+        module.deliver_workflow(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+    assert module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)["revision"] == receipt["revision"]
+
+
+def test_normal_updates_block_ineligible_and_unresolved_material_delivery(tmp_path):
+    import pytest
+
+    module = _load("design_state_material_delivery")
+    receipt, _, home, workflow = _start(module, tmp_path)
+    current, records, candidate, review, manifest = _seed(module, receipt, home, workflow)
+    component = {**records["components"]["CheckoutForm"], "eligible": False}
+    current = module.apply_updates(workflow_id=workflow, expected_revision=current["revision"], updates={"components": {"CheckoutForm": component}}, state_home=home)
+    with pytest.raises(ValueError, match="ineligible"):
+        module.deliver_workflow(workflow_id=workflow, expected_revision=current["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+    component["eligible"] = True
+    question = {"id": "scope", "material": True, "resolved": False, "decision_reference": ""}
+    current = module.apply_updates(workflow_id=workflow, expected_revision=current["revision"], updates={"components": {"CheckoutForm": component}, "questions": {"scope": question}}, state_home=home)
+    with pytest.raises(ValueError, match="unresolved material"):
+        module.deliver_workflow(workflow_id=workflow, expected_revision=current["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+    question.update(resolved=True, decision_reference="user confirmed existing scope")
+    current = module.apply_updates(workflow_id=workflow, expected_revision=current["revision"], updates={**records, "components": {"CheckoutForm": component}, "questions": {"scope": question}, "delivery": _delivery(candidate, review, manifest)}, state_home=home)
+    assert module.deliver_workflow(workflow_id=workflow, expected_revision=current["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)["brief_digest"] == FIXTURE_BRIEF_DIGEST
