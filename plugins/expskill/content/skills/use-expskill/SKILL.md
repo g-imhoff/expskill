@@ -1,6 +1,6 @@
 ---
 name: use-expskill
-description: Use only for code or executable-configuration requests needing lifecycle routing. Stay inactive for explicit skills, read-only work, and non-code requests.
+description: Use only for code or executable-configuration requests needing lifecycle routing. Stay inactive for other explicit skills, read-only work, and non-code requests.
 ---
 
 # Use ExpSkill
@@ -11,8 +11,8 @@ request may use the bounded Plan and Design conversation pair defined below.
 
 ## Stay inactive
 
-Stay inactive when the user names a skill, requests read-only analysis, or asks
-for non-code work. Let that direct request proceed.
+Stay inactive when the user names another skill, requests read-only analysis, or asks
+for non-code work. Let that direct request proceed. Explicit `$use-expskill` invocation authorizes deliberate selection within the requested lifecycle. Explain each selection. Product skills keep implicit activation disabled.
 
 ## Route by missing decision
 
@@ -48,16 +48,16 @@ There is no setup gate. Neither `$setup-design` nor `$setup-test` is
 auto-loaded or router-selected merely because a setup record is absent or
 invalid, and no inspector script runs before routing. If the user explicitly
 asks for design-sketch or test-method setup, select only that setup skill. If
-UI work arrives with no setup record and no explicit setup intent, report
-"not configured, run `$setup-design` / `$setup-test`" and stop before
-Plan, Design, or feature implementation in that transition. A ready
+UI work arrives with no setup record and no explicit setup intent, continue with
+the selected phase using discoverable project-native capabilities. Report a
+missing capability only when that phase actually needs it. A ready
 `.expskill/setup-design.md` or `.expskill/setup-test.md` record, when present,
 is read by its owning skill only and never acts as a routing precondition.
 Do not apply any setup requirement to an eligible `$correct` repair that
 restores accepted UI behavior without redesign. Direct `$setup-design` and
 `$setup-test` remain independently usable.
 
-When setup is ready and only one of technical planning or production UI
+When only one of technical planning or production UI
 approval is unresolved, select its normal standalone skill. When both are
 unresolved, use the `parallel-plan-design` execution-policy route. The user talks
 to Plan and Design directly in two CLI conversations the user opens. The
@@ -75,19 +75,21 @@ Direct Design uses the default `direct` mode, which cannot checkpoint a
 candidate.
 
 Hand the user one command per conversation, in the CLI the user already runs.
-Each shape below was checked against the stated release. Run the Plan
+Each shape below was checked against the stated release. Render shell-safe
+prompts with the literal skill names and exact paths, and never execute
+unfilled placeholders. Run the Plan
 conversation from the target checkout.
 
-- `codex exec "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on codex-cli 0.153.4.
-- `claude -p "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
-- `opencode run "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
+- `codex exec 'Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user.'` Checked on codex-cli 0.153.4.
+- `claude -p 'Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user.'` Checked on Claude Code 2.1.197.
+- `opencode run 'Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user.'` Checked on opencode 1.18.30.
 
 Run the Design conversation from the isolated worktree, with the
 same baseline and Concept Brief.
 
-- `codex exec "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
-- `claude -p "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
-- `opencode run "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
+- `codex exec 'Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user.'`
+- `claude -p 'Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user.'`
+- `opencode run 'Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user.'`
 
 The router owns user interaction while the two conversations run, and each
 conversation returns questions instead of asking the user. Present at most one
@@ -107,7 +109,7 @@ its route-neutral manifest and candidate-bearing Design receipt. Pass that
 unchanged receipt and commit identity to the same Plan session. Plan records
 the typed Design join only while the isolated branch still points to that
 candidate and cannot become ready before validation. A blocked conversation,
-stale baseline, moved branch, malformed receipt, invalid setup, or failed
+stale baseline, moved branch, malformed receipt, or failed
 Design gate stops the join. Keep the isolated worktree for `$implement`, which
 alone may later integrate and clean it. Once the exact candidate is an ancestor
 of the target HEAD, the Plan Graph validates that integrated ancestry and the
