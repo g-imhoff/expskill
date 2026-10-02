@@ -1931,6 +1931,9 @@ await hooks["experimental.chat.system.transform"]({ sessionID: "packed" }, outpu
 if (!output.system[0].includes("<unslop-scope>")) {
   throw new Error("installed UnslopPlugin could not load its packaged skill");
 }
+if (!output.system[0].includes("Never create documentation files or add code comments unless the user asked for them.")) {
+  throw new Error("installed UnslopPlugin omitted the unsolicited documentation and comments rule");
+}
 console.log(JSON.stringify(names));
 """
                 clean_env = dict(os.environ)
