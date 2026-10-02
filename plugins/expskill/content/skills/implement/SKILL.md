@@ -100,10 +100,11 @@ Report completion only when every node and both whole-branch gates pass on the
 current target head. Summarize the implemented behavior, commits, checks, gate
 verdicts, retained risks, and any preserved worktrees.
 
-For UI work, include the Yodea preview link and represented Design candidate
-revision or digest from the delivery manifest. Preserve the hosted note for downstream PR delivery
-before removing local worktree evidence and carry the link into the handoff for the PR description
-and final response. Keep the hosted preview available through PR review. If implementation changed what
+For UI work, include the hosted preview link or local native review entry and hosting limitation,
+with the represented Design candidate revision or digest from the delivery manifest. Preserve its
+review note for downstream PR delivery and carry that review entry into the PR description and
+final response. Keep hosted previews available through PR review. For local mode, preserve or
+transfer the exact specimen and reproducible launch recipe before removing worktree evidence. If implementation changed what
 the specimen represents, flag that mismatch instead of claiming the preview shows the current implementation.
 
 Do not push, open or update a merge request, approve, merge, enable auto-merge,
