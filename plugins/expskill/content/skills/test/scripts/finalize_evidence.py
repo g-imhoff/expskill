@@ -26,6 +26,7 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import execution_budget
+import record_final_action
 
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -1124,6 +1125,37 @@ def validate_inputs(
 
     known_oracles = set(oracle_ids)
     known_artifacts = set(artifact_ids)
+    if result == "PASS" and artifacts_must_exist:
+        artifact_by_id = {item.get("artifact_id"): item for item in artifacts}
+        charter_raw = _read_regular_at(root_descriptor, Path("charter.json"), code="unreadable-json") if root_descriptor is not None else _read_regular_nofollow(root / "charter.json", code="unreadable-json")
+        for index, entry in enumerate(entries):
+            verified = 0
+            referenced = [artifact_by_id.get(key) for key in entry.get("artifact_ids", []) if isinstance(key, str)] if isinstance(entry.get("artifact_ids"), list) else []
+            for artifact in referenced:
+                if not isinstance(artifact, dict):
+                    continue
+                path, issue = _validate_artifact_path(root, artifact.get("path"), root_descriptor=root_descriptor)
+                if issue is not None or path is None:
+                    continue
+                try:
+                    raw = _read_regular_at(root_descriptor, path.relative_to(root), code="unreadable-json") if root_descriptor is not None else _read_regular_nofollow(path, code="unreadable-json")
+                    record = json.loads(raw.decode("utf-8"), object_pairs_hook=_closed_object, parse_int=_reject_number, parse_float=_reject_number, parse_constant=_reject_number)
+                except (FinalizerError, ValueError, UnicodeDecodeError, OSError):
+                    continue
+                if not isinstance(record, dict) or record.get("schema_version") != "test-execution-record.v1":
+                    continue
+                observation_path = record.get("observation_path")
+                observations = [item for item in referenced if isinstance(item, dict) and item.get("path") == observation_path]
+                spec = record.get("execution_spec")
+                if len(observations) != 1 or not isinstance(spec, dict) or spec.get("metadata_path") != artifact.get("path"):
+                    continue
+                observation, issue = _validate_artifact_path(root, observation_path, root_descriptor=root_descriptor)
+                if issue is None and observation is not None:
+                    raw = _read_regular_at(root_descriptor, observation.relative_to(root), code="unreadable-artifact") if root_descriptor is not None else _read_regular_nofollow(observation, code="unreadable-artifact")
+                    if record_final_action.verify_execution_record(record, entry, charter_raw, raw, observation_path):
+                        verified += 1
+            if verified != 1:
+                _add(issues, "unrecorded-execution", f"ledger.entries[{index}]", "PASS requires one recorder receipt with matching raw bytes, predicate, frozen charter and exact action bindings")
     for index, entry in enumerate(entries):
         for oracle_id in entry.get("oracle_ids", []) if isinstance(entry.get("oracle_ids"), list) else []:
             if not isinstance(oracle_id, str):

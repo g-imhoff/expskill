@@ -859,7 +859,7 @@ def _assert_terminal_evidence_transaction(contents: str) -> None:
         "the successful terminal path is exactly",
         "write and freeze it before the first product/runtime action",
         "changing it after execution starts invalidates the run",
-        "immediately after each sequential action or parallel batch completes",
+        "record every ordinary action or independent wave through the shipped recorder",
         "never rewrite or remove a completed entry",
         "composes and semantically preflights `draft.json` before the final product/runtime action",
         "future final-action artifact bytes may still be absent",
@@ -1071,6 +1071,7 @@ class TestSkillContractTests(unittest.TestCase):
                 "references/quality-rules.json",
                 "references/evidence-contract.json",
                 "scripts/append_ledger.py",
+                "scripts/execution_budget.py",
                 "scripts/bootstrap_run.py",
                 "scripts/finalize_evidence.py",
                 "scripts/freeze_charter.py",
@@ -2051,10 +2052,7 @@ class TestSkillContractTests(unittest.TestCase):
                     "rejection preserves ledger bytes and only the batch is corrected"
                 ),
                 "observation_capture": (
-                    "before artifact or ledger-batch authoring, required outcome bytes "
-                    "come only from returned direct-command output, one immediate exact "
-                    "capture repair is mandatory when safe, including for blocker proof, "
-                    "and unavailable output is never reconstructed"
+                    "the recorder retains literal command output directly, unavailable output is never reconstructed or transcribed"
                 ),
                 "action_status_semantics": (
                     "ledger status records whether actual satisfies the entry's declared "
@@ -2063,9 +2061,7 @@ class TestSkillContractTests(unittest.TestCase):
                     "on an expected nonzero or product-level failure"
                 ),
                 "diagnostic_completion": (
-                    "before terminal preparation, every required diagnostic observation "
-                    "exists as a separate direct command, the recorder cannot supply it "
-                    "and stateful diagnostic commands are final-action-ineligible"
+                    "before terminal preparation, ordinary recorder invocations produce every required separate diagnostic observation, the final handoff cannot replace them and stateful diagnostic commands are final-action-ineligible"
                 ),
                 "late_probes": (
                     "no standalone time, status, integrity, or artifact-listing "
@@ -2105,9 +2101,7 @@ class TestSkillContractTests(unittest.TestCase):
                     "for terminal recording"
                 ),
                 "branch_budget": (
-                    "before charter freeze, every permitted execution branch including "
-                    "conditional diagnostic actions fits seven ordinary entries, remove "
-                    "redundant probes before product execution"
+                    "before charter freeze, every permitted execution branch including conditional diagnostic actions fits the validated frozen action and wave budget, including one final proving action"
                 ),
                 "canary_independence": (
                     "when repository evidence exposes a distinct literal canary action, "
@@ -2119,9 +2113,7 @@ class TestSkillContractTests(unittest.TestCase):
                     "action and cannot be replaced by relabeling another probe"
                 ),
                 "direct_result_gate": (
-                    "before the first observation or ledger file write, every ordinary ledger "
-                    "candidate maps one-to-one to a completed direct command tool result with "
-                    "exact argv and returned bytes, source or expected behavior cannot fill it"
+                    "every PASS ledger action has one matching recorder receipt, frozen charter binding, raw output digest and recomputed predicate"
                 ),
                 "machine_identity": (
                     "bootstrap allocates root/time/branch, freezer, appender, and recorder "
@@ -2133,8 +2125,7 @@ class TestSkillContractTests(unittest.TestCase):
                     "successful bootstrap, agents never create siblings or unseal the parent"
                 ),
                 "direct_argv": (
-                    "ordinary product tool-call command strings are exact discovered argv "
-                    "with no shell prefix, suffix, pipeline, redirection, tee, or capture wrapper"
+                    "ordinary manifests contain exact discovered literal argv, the shipped recorder executes it without a shell"
                 ),
             },
         )
@@ -2638,34 +2629,28 @@ class TestSkillContractTests(unittest.TestCase):
             contract["capture_repair"],
             {
                 "trigger": (
-                    "required returned output is empty, missing, truncated, or unparseable"
+                    "recorder cannot retain attributable execution bytes or publish its ledger result"
                 ),
                 "safe_replay": (
-                    "next command repeats the exact literal argv once with no intervening action"
+                    "only a predeclared safe diagnostic repetition may reobserve the literal argv in a new manifest"
                 ),
                 "parallel_replay": (
-                    "after already-started siblings return, the next tool action is one "
-                    "repair-only parallel batch with one literal replay per unusable sibling"
+                    "retain each wave result separately, never reconstruct a missing sibling observation"
                 ),
                 "file_change_gate": (
-                    "immediately before every file-change action, scan every required raw "
-                    "tool result, any unusable result forbids the write and makes its exact "
-                    "replay the sole legal next command action"
+                    "ordinary raw artifacts and result fields are recorder-owned, agent transcription is forbidden"
                 ),
                 "empty_zero_exit": (
-                    "exit code zero with zero returned bytes is unusable, never fill an "
-                    "artifact or ledger actual from expected or customary command output"
+                    "zero returned bytes are retained and may satisfy a predeclared exit-only predicate, missing execution cannot"
                 ),
                 "precedence": (
-                    "capture repair precedes commentary, file changes, revision checks, and "
-                    "head-drift handling"
+                    "missing recorder evidence blocks PASS before draft authoring or revision handling"
                 ),
                 "accounting": (
-                    "physical replay of the same semantic action, no new ledger entry "
-                    "or semantic-action slot"
+                    "each new diagnostic execution is a separately planned semantic action"
                 ),
                 "failure": (
-                    "unsafe replay or a second unusable observation forces BLOCKED"
+                    "unavailable attributable recorder evidence forces BLOCKED"
                 ),
             },
         )
@@ -3055,8 +3040,8 @@ class TestSkillContractTests(unittest.TestCase):
             ),
             (
                 "batched-ledger",
-                "Immediately after each sequential action or parallel batch completes, append all",
-                "After all selected checks and journeys complete, append all",
+                "Record every ordinary action or independent wave through the shipped recorder:",
+                "Authorize ordinary results from handwritten expected observations:",
             ),
             (
                 "unconditional-candidate",
@@ -3284,7 +3269,7 @@ class TestSkillContractTests(unittest.TestCase):
             "if exemption is proven, do not load the quality catalog",
             "do not run a unit command, harness, product journey, or behavioral probe",
             "at most one discovered read-only, non-behavioral description command",
-            "if exemption is not proven, load the complete quality catalog as the fourth grounding call",
+            "if exemption is not proven, load the complete quality catalog as the fourth common grounding call after any targeted continuation",
             "test alone decides `exempt`",
             "comments, formatting, or non-runtime metadata",
             "diff size, convenience, time pressure, or green unit tests",
@@ -3362,8 +3347,8 @@ class TestSkillContractTests(unittest.TestCase):
             "do not run every discoverable command",
             "same evidence as a real journey",
             "an advertised-surface `describe` is material when it is the only public binding",
-            "at most eight semantic actions",
-            "including the final action",
+            "defaults remain eight actions",
+            "allocate one final proving action within the total",
             "budget the worst-case executed branch",
             "reserve an ordinary-action slot for every permitted conditional diagnostic action",
             "when the repository exposes a distinct literal canary action, select and run it",
@@ -3375,7 +3360,7 @@ class TestSkillContractTests(unittest.TestCase):
             "the ordinary changed-behavior observation is protected",
             "never list the final repetition as the changed behavior's sole required action",
             "drop an auxiliary `describe` action before any protected action",
-            "remove redundant probes before any product action",
+            "remove only redundant optional probes",
             "relevant existing automated suites",
             "repository-required suites",
             "backend-only work is not exempt",
@@ -3421,23 +3406,23 @@ class TestSkillContractTests(unittest.TestCase):
             "evidence budget",
             "teardown",
             "stop condition",
-            "own literal direct command tool call",
-            "tool-call command string is exactly the discovered product argv",
-            "no shell prefix or suffix, pipeline, redirection, `tee`, or output-capture wrapper",
-            "copy its returned stdout and stderr into artifacts only in the following file-change batch",
-            "at most two dependency waves",
-            "all independent charter-selected ordinary calls",
-            "changed, neighbour, canary, exploration, and required-suite calls",
-            "before any ledger write",
-            "before any ledger write or artifact write",
-            "do not serialize a wave by recording one result before launching the next independent call",
-            "every selected check and journey, including bounded exploration, must appear at least once as its own literal direct command",
+            "own literal discovered argv in a recorded action manifest",
+            "literal argv array discovered from repository evidence",
+            "executes each argv directly without a shell",
+            "retains combined stdout/stderr bytes",
+            "at most two waves under legacy defaults",
+            "all independent argv concurrently",
+            "before each ordinary action",
+            "appends one ledger batch after every command completes",
+            "retains separate outputs",
+            "keep output paths and cleanup ownership disjoint",
+            "give every material product or suite command its own literal discovered argv",
             "recorder-wrapped final action only repeats an already-observed material journey",
-            "never hide several commands inside one shell script",
-            "append all completed ledger entries in one file-change action",
-            "one completed direct command result for every ordinary ledger candidate",
-            "repository source or an expected scenario cannot stand in for execution",
-            "if any candidate lacks its direct result, the file-change action is forbidden",
+            "never transcribe command output",
+            "appends one ledger batch after every command completes",
+            "recorder's ledger publication, raw observations, and metadata are the direct command result gate",
+            "source and expected behavior as execution evidence",
+            "if the recorder cannot retain an attributable observation, return `blocked`",
             "expected-versus-actual oracle",
         ):
             with self.subTest(marker=marker):
@@ -3456,9 +3441,9 @@ class TestSkillContractTests(unittest.TestCase):
             "planned branch, not an anomaly or stop",
             "next tool call",
             "frozen literal recovery command",
-            "no commentary, recording, reread, replanning, or deadline deliberation",
-            "ordered prerequisite segment of the first dependency wave",
-            "record both actions together",
+            "no commentary, reread, replanning, or deadline deliberation",
+            "predeclare both action manifests before probing",
+            "the next tool call records the literal recovery",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, section)
@@ -3474,7 +3459,7 @@ class TestSkillContractTests(unittest.TestCase):
             "literal recovery command",
             "two distinct ordinary actions",
             "configuration, request text, or an expected initial state cannot replace the observed probe",
-            "remove a redundant suite or probe before freezing the charter",
+            "never omit a required consumer, canary, exploration, diagnostic, or project check to fit the default",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, section)
@@ -3488,7 +3473,7 @@ class TestSkillContractTests(unittest.TestCase):
         )
         for marker in (
             "`charter-preparation.json`",
-            "`test-charter-preparation.v1`",
+            "`test-charter-preparation.v2`",
             "`freeze_charter.py`",
             "before the first product/runtime action",
             "derives the canonical repository, branch, exact head, and run id",
@@ -3523,14 +3508,14 @@ class TestSkillContractTests(unittest.TestCase):
         contents = (TEST_SKILL / "SKILL.md").read_text(encoding="utf-8")
         execution = _normalized(_markdown_section(contents, "## Execute and explore"))
         for marker in (
-            "`ledger-batch.json`",
-            "`test-ledger-batch.v1`",
-            "`append_ledger.py`",
-            "never edit `ledger.json` directly",
-            "validates every complete entry before publication",
-            "derives every entry head from the frozen charter",
-            "rejected batch leaves the ledger byte-for-byte unchanged",
-            "correct only the non-authoritative batch",
+            "never edit `ledger.json`",
+            "`test-recorded-action.v1`",
+            "`record_final_action.py record --root <returned root> --spec <relative manifest path>`",
+            "never edit `ledger.json`",
+            "the recorder's ledger publication",
+            "derives ledger `actual`, `status`, and `head`",
+            "a failed action is mechanically recorded as `fail`",
+            "it cannot be relabeled after execution",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, execution)
@@ -3566,9 +3551,9 @@ class TestSkillContractTests(unittest.TestCase):
         for marker in (
             "before any artifact or ledger-batch write",
             "enforce the authoring contract's `capture_repair` map",
-            "reobserved by exact literal replay",
+            "unavailable execution evidence is never reconstructed from expectation",
             "never reconstructed from expectation",
-            "second unusable observation forces `blocked`",
+            "if the recorder cannot retain an attributable observation, return `blocked`",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, execution)
