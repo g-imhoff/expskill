@@ -9,6 +9,7 @@ snapshot for the opening grounding call.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import secrets
@@ -205,6 +206,8 @@ def _text_snapshot(repository: Path, paths: list[str]) -> list[tuple[str, str | 
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             records.append((raw_path, None))
             continue
+        if metadata.st_size > MAX_TEXT_BYTES:
+            return []
         try:
             raw = path.read_bytes()
             if b"\0" in raw:
@@ -225,8 +228,71 @@ def _timestamp(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _run() -> None:
+def _continue(repository: Path, arguments: argparse.Namespace) -> None:
+    root = Path(arguments.root)
+    if not root.is_absolute() or root.parent != repository / ".test-evidence" or root.is_symlink():
+        _error("invalid-run-root", "continuation requires the allocated absolute run root")
+    _secure_directory(root, "run root")
+    record = root / "bootstrap.json"
+    if record.is_symlink() or not record.is_file() or record.stat().st_size > 10_000:
+        _error("invalid-run-root", "continuation requires the retained bootstrap record")
+    metadata = record.stat()
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+        _error("invalid-run-root", "bootstrap record must be private and owned")
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("root") != str(root) or payload.get("repository") != str(repository):
+        _error("invalid-run-root", "bootstrap record does not bind this run root")
+    if payload.get("branch") != str(_git(repository, "branch", "--show-current")).strip() or payload.get("head") != str(_git(repository, "rev-parse", "HEAD")).strip():
+        _error("revision-drift", "repository revision differs from the opening bootstrap")
+    if not arguments.read_path or len(arguments.read_path) > 32:
+        _error("invalid-read-path", "select between one and 32 inventory paths")
+    if not 1 <= arguments.max_lines <= 2_000 or arguments.start_line < 1:
+        _error("invalid-read-path", "line window must be positive and at most 2000 lines")
+    inventory = set(_inventory(repository))
+    selected: list[tuple[str, list[str]]] = []
+    total = 0
+    for raw_path in arguments.read_path:
+        path = Path(raw_path)
+        if path.is_absolute() or ".." in path.parts or path.as_posix() not in inventory or raw_path.startswith(SKILL_PREFIX):
+            _error("invalid-read-path", "read paths must name first-party inventory files")
+        target = repository / path
+        if any(parent.is_symlink() for parent in (target, *target.parents)) or not target.is_file():
+            _error("invalid-read-path", "read path must be a regular file without symlinks")
+        lines: list[str] = []
+        with target.open("rb") as source:
+            for number in range(1, arguments.start_line + arguments.max_lines):
+                raw = source.readline(MAX_TEXT_BYTES + 1)
+                if not raw:
+                    break
+                if len(raw) > MAX_TEXT_BYTES or b"\0" in raw:
+                    _error("invalid-read-path", "read window contains an oversized or binary line")
+                if number >= arguments.start_line:
+                    try:
+                        line = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        _error("invalid-read-path", "read window is not UTF-8 text")
+                    total += len(raw)
+                    if total > MAX_TEXT_BYTES:
+                        _error("read-budget-exceeded", "select a smaller targeted line window")
+                    lines.append(line)
+        selected.append((raw_path, lines))
+    print("test_run_grounding=" + json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    for path, lines in selected:
+        print(f"FIRST_PARTY_FILE_BEGIN={path}")
+        print(f"FIRST_PARTY_FILE_LINES={arguments.start_line}:{arguments.start_line + len(lines) - 1}")
+        sys.stdout.write("".join(lines))
+        if lines and not lines[-1].endswith("\n"):
+            print()
+        print(f"FIRST_PARTY_FILE_END={path}")
+
+
+def _run(arguments: argparse.Namespace) -> None:
     repository = _repository()
+    if arguments.root is not None:
+        _continue(repository, arguments)
+        return
+    if arguments.read_path:
+        _error("invalid-run-root", "targeted reads require the existing --root")
     now = datetime.now(timezone.utc)
     branch = str(_git(repository, "branch", "--show-current")).strip()
     if not branch:
@@ -234,12 +300,17 @@ def _run() -> None:
     root = _allocate_root(repository, now)
     payload = {
         "branch": branch,
+        "head": str(_git(repository, "rev-parse", "HEAD")).strip(),
         "cutoff_at": _timestamp(now + timedelta(seconds=USABLE_BUDGET_SECONDS)),
         "repository": str(repository),
         "root": str(root),
         "run_id": root.name,
         "started_at": _timestamp(now),
     }
+    descriptor = os.open(root / "bootstrap.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(payload, output, sort_keys=True, separators=(",", ":"))
+        output.write("\n")
     print("test_run_bootstrap=" + json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
     paths = _inventory(repository)
@@ -263,14 +334,20 @@ def _run() -> None:
         print(f"FIRST_PARTY_FILE_END={path}")
 
 
-def main() -> int:
+def main(arguments: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root")
+    parser.add_argument("--read-path", action="append", default=[])
+    parser.add_argument("--start-line", type=int, default=1)
+    parser.add_argument("--max-lines", type=int, default=200)
+    parsed = parser.parse_args(arguments)
     try:
-        _run()
+        _run(parsed)
         return 0
     except BootstrapError as error:
         print(f"test_run_bootstrap_error={error.code} {error}", file=sys.stderr)
         return 2
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError) as error:
         print(
             f"test_run_bootstrap_error=runtime-error {type(error).__name__}: {error}",
             file=sys.stderr,
