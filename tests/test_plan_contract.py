@@ -265,6 +265,25 @@ class PlanContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, research)
 
+    def test_routed_planner_can_run_only_bounded_evidence_services_and_relay_their_provenance(self) -> None:
+        planner = (PLUGIN_ROOT / "content/agents/expskill-planner.md").read_text().lower()
+        self.assertNotIn("do not delegate,", planner)
+        for phrase in ("delegate only evidence-only researchers and one independent plan auditor",
+                       "no repository access", "fresh conversation", "no inherited planner history",
+                       "only plan graph writer", "no product or git mutations", "no further delegation",
+                       "inherited lifecycle allowance", "five-minute", "dispatch id", "output locator and digest",
+                       "spent and outstanding", "router"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, planner)
+        validation = _numbered_workflow(self.body)[8]
+        for phrase in ("fresh read-only conversation", "frozen graph locator and digest",
+                       "no inherited planner history", "one five-minute auditor call",
+                       "inherited lifecycle allowance", "never certify your own audit as independent"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, validation)
+        self.assertIn("research or auditor dispatch id", self.body.lower())
+        self.assertIn("remaining allowance", self.body.lower())
+
     def test_work_proof_and_parallelism_are_proportional_and_revision_bound(self) -> None:
         graph_step = _numbered_workflow(self.body)[7]
         proof = _markdown_section(self.body, "Implementation, proof, and Git execution contract")
