@@ -562,6 +562,55 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertTrue(final_graph["proof"]["P1"]["operation_receipt"])
         self.assertTrue(final_graph["audit"]["operation_receipt"])
 
+    def test_revised_unexecuted_proof_plan_can_be_confirmed_without_execution(self) -> None:
+        receipt = self._initialize()
+        changed = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["outcomes", "O1", "result"],
+              "value": "Configuration is validated without coercion"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        proof = dict(graph["proof"]["P1"], fresh=True)
+        refreshed = self._typed_update(
+            receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], proof)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["proof"]["P1"]["evidence"], [])
+        self.assertFalse(graph["proof"]["P1"]["execution_required"])
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        confirmed = dict(graph["projections"]["U1"], confirmed=True)
+        ready = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], confirmed)
+        self.assertEqual(ready.state, "ready")
+        self.assertGreater(ready.revision, refreshed.revision)
+        self.assertEqual(changed.state, "stale")
+
+    def test_executed_proof_cannot_downgrade_to_an_unexecuted_plan(self) -> None:
+        receipt = self._initialize()
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["proof", "P1", "evidence"], "value": [{
+                "workflow_id": receipt.workflow_id, "graph_revision": receipt.revision,
+                "node": "T1", "branch": BRANCH, "commit": self._git("rev-parse", "HEAD"),
+                "check": "python3 -m pytest", "result": {"status": "pass", "exit_code": 0}}]}],
+            self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(graph["proof"]["P1"]["execution_required"])
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["outcomes", "O1", "result"], "value": "Revised outcome"},
+             {"op": "set", "path": ["proof", "P1", "evidence"], "value": []}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        proof = dict(graph["proof"]["P1"], fresh=True)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "unexecuted planning obligation"):
+            self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], proof)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "exact execution evidence"):
+            self._typed_update(receipt.workflow_id, graph, "refresh-proof", ["proof", "P1"], proof)
+        replacement = dict(graph["proof"]["P1"], execution_required=False)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "execution requirement cannot be downgraded"):
+            self.helper.apply_updates(
+                self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                [{"op": "set", "path": ["proof", "P1"], "value": replacement}], self.state_home)
+
     def test_typed_refresh_malformed_wrong_target_and_stale_receipt_reject(self) -> None:
         receipt = self._initialize()
         with self.assertRaises(self.helper.PlanGraphError):
