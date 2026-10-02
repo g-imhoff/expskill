@@ -199,7 +199,9 @@ def _validate_domains(state: dict) -> None:
     if state["invocation_mode"] == "direct" and state["candidate"] is not None: raise ValueError("direct Design workflow cannot contain a candidate checkpoint")
     if set(state["ui_contract"]) - {"digest", "outcome"} or not DIGEST_RE.fullmatch(str(state["ui_contract"].get("digest", ""))): raise ValueError("invalid ui contract")
     scope=state["scope"]
-    if scope and (set(scope) - {"components", "exclusions"} or not isinstance(scope.get("components", []), list) or not isinstance(scope.get("exclusions", []), list)): raise ValueError("invalid scope")
+    if scope and (set(scope) - {"components", "exclusions", "owned_paths", "protected_digest"} or not isinstance(scope.get("components", []), list) or not isinstance(scope.get("exclusions", []), list)): raise ValueError("invalid scope")
+    owned_paths = _owned_paths(scope, Path(state["identity"]["worktree"]))
+    if owned_paths and not DIGEST_RE.fullmatch(str(scope.get("protected_digest", ""))): raise ValueError("missing protected workspace digest")
     for item in state["selected_rules"].values():
         if not isinstance(item, dict) or set(item) != {"id", "reason"} or not all(isinstance(v, str) and v for v in item.values()): raise ValueError("invalid selected rule")
     if state["seed_permission"] and (set(state["seed_permission"]) != {"source", "version", "approved"} or not isinstance(state["seed_permission"].get("approved"), bool)): raise ValueError("invalid seed permission")
@@ -281,6 +283,12 @@ def _durable_write(root: Path, workflow: str, state: dict) -> None:
 def initialize_workflow(*, repository, branch, worktree, baseline, dirty_fingerprint, ui_contract, scope, state_home, invocation_mode="direct"):
     if invocation_mode not in {"direct", "routed"}: raise ValueError("invalid invocation mode")
     identity = _identity(repository, branch, worktree, baseline, dirty_fingerprint, ui_contract)
+    scope = dict(scope)
+    owned_paths = _owned_paths(scope, Path(identity["worktree"]))
+    if owned_paths:
+        scope["protected_digest"] = _protected_workspace_digest(Path(identity["worktree"]), owned_paths)
+    elif "protected_digest" in scope:
+        raise ValueError("protected digest requires an owned path scope")
     with _locked(Path(state_home)) as root:
         for p in root.iterdir():
             if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
@@ -307,9 +315,46 @@ def load_workflow(*, workflow_id, state_home, repository=None, branch=None, work
             if expected != state["identity"]: raise ValueError("identity revalidation failed")
         return state
 
+def _owned_paths(scope: dict, worktree: Path) -> list[str]:
+    paths = scope.get("owned_paths", [])
+    if not isinstance(paths, list) or any(not isinstance(item, str) or not item or item.startswith("/") or "\\" in item or any(part in {"", ".", "..", ".git"} for part in item.split("/")) or any(character in item for character in "*?[]{}") for item in paths):
+        raise ValueError("invalid owned path scope")
+    if len({item.casefold() for item in paths}) != len(paths):
+        raise ValueError("duplicate owned path scope")
+    for item in paths:
+        target = worktree / item
+        _reject_links(target)
+        if target.exists() and not target.is_file(): raise ValueError("owned paths must name exact files")
+    return paths
+
+
+def _protected_workspace_digest(worktree: Path, owned_paths: list[str]) -> str:
+    raw = subprocess.check_output(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    records = []
+    for relative in sorted(set(os.fsdecode(item) for item in raw.split(b"\0") if item)):
+        if relative in owned_paths: continue
+        target = worktree / relative
+        if target.is_symlink():
+            records.append([relative, "symlink", os.readlink(target)])
+        elif target.is_file():
+            records.append([relative, "file", hashlib.sha256(target.read_bytes()).hexdigest()])
+        elif target.exists():
+            records.append([relative, "other", target.stat().st_mode])
+        else:
+            records.append([relative, "missing"])
+    return canonical_digest(records)
+
+
 def _revalidate(state: dict) -> None:
     i = state["identity"]
-    actual = _identity(i["repository"], i["branch"], i["worktree"], i["baseline"], i["dirty_fingerprint"], {"digest": state["identity"]["ui_contract_digest"]}, head=i["head"])
+    worktree = Path(i["worktree"])
+    owned_paths = _owned_paths(state["scope"], worktree)
+    expected_dirty = _dirty(worktree) if owned_paths else i["dirty_fingerprint"]
+    actual = _identity(i["repository"], i["branch"], i["worktree"], i["baseline"], expected_dirty, {"digest": i["ui_contract_digest"]}, head=i["head"])
+    if owned_paths:
+        if _protected_workspace_digest(worktree, owned_paths) != state["scope"].get("protected_digest"):
+            raise ValueError("unrelated workspace bytes changed")
+        actual["dirty_fingerprint"] = i["dirty_fingerprint"]
     if actual != i: raise ValueError("external workspace change")
 
 def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_home):
@@ -363,6 +408,9 @@ def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, st
         parents = _git(worktree, "rev-list", "--parents", "-n", "1", candidate_commit).split()
         if len(parents) != 2 or parents[1] != identity["baseline"]: raise ValueError("candidate must be one commit above baseline")
         if _git(worktree, "rev-list", "--count", f"{identity['baseline']}..{candidate_commit}") != "1": raise ValueError("candidate history is not atomic")
+        owned_paths = _owned_paths(state["scope"], worktree)
+        if owned_paths and _protected_workspace_digest(worktree, owned_paths) != state["scope"].get("protected_digest"):
+            raise ValueError("unrelated workspace bytes changed")
         previous = state["candidate"]
         changed = previous is not None and previous["commit"] != candidate_commit
         if changed:
@@ -402,10 +450,12 @@ def apply_updates(*, workflow_id, expected_revision, updates, state_home):
         old_evidence=dict(s["evidence"])
         old_dependencies=dict(s["dependencies"])
         if not isinstance(updates,dict) or not set(updates)<= {"components","dependencies","evidence","approvals","scope","ui_contract","selected_rules","seed_permission","questions","delivery"}: raise ValueError("closed update")
+        if "scope" in updates and (not isinstance(updates["scope"], dict) or updates["scope"].get("owned_paths") != s["scope"].get("owned_paths") or updates["scope"].get("protected_digest") != s["scope"].get("protected_digest")):
+            raise ValueError("owned path scope cannot change silently")
         for k,v in updates.items():
             if not isinstance(v,dict): raise ValueError("typed update required")
             if k=="ui_contract" and (set(v)-{"digest","outcome"} or not isinstance(v.get("digest"),str) or not DIGEST_RE.fullmatch(v["digest"])): raise ValueError("invalid ui contract")
-            if k=="scope" and set(v)-{"components","exclusions"}: raise ValueError("invalid scope")
+            if k=="scope" and set(v)-{"components","exclusions","owned_paths","protected_digest"}: raise ValueError("invalid scope")
             if k in {"components","dependencies","evidence","approvals"} and any(not isinstance(n,str) or not isinstance(x,dict) for n,x in v.items()): raise ValueError("typed binding required")
             allowed = {"components":{"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved"},"dependencies":{"id","digest","component_ids"},"evidence":{"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"},"approvals":{"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision"}}
             if k in allowed:
