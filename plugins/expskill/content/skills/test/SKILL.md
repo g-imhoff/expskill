@@ -143,11 +143,12 @@ when it supplies the same evidence as a real journey or required suite. Keep a
 probe only when it independently covers an otherwise unproven prerequisite.
 An advertised-surface `describe` is material when it is the only public binding
 from one composed journey to named layers.
-Use at most eight semantic actions including the final action, at most seven are
+By default, use at most eight semantic actions including the final action, at most seven are
 ordinary actions. A coherent repository suite or product journey may contain
 multiple compatible commands and satisfy multiple oracles without being split.
 Before freezing the charter, budget the worst-case executed branch, not only the happy path, and reserve an ordinary-action slot for every permitted conditional diagnostic action. If a reversible local prerequisite may be unavailable, reserve its pre-recovery status probe and literal recovery command as two distinct ordinary actions.
-Configuration, request text, or an expected initial state cannot replace the observed probe. If any branch would exceed seven ordinary actions, remove a redundant suite or probe before freezing the charter, remove redundant probes before any product action or choose a coherent suite or journey. Never discover overflow at terminal preflight. A distinct repository-declared canary is a required ring, not a redundant probe.
+Configuration, request text, or an expected initial state cannot replace the observed probe. If required scope exceeds the default, freeze a scope-derived execution budget before any product action. Remove only redundant optional probes, never omit a required consumer, canary, exploration, diagnostic, or project check to fit the default. A distinct repository-declared canary is a required ring, not a redundant probe. Never discover overflow at terminal preflight.
+Use `test-charter-preparation.v2` with the same conceptual fields as v1 plus `execution_budget`. Its exact fields are `semantic_actions_max`, `waves_max`, `usable_budget_seconds`, `rationale`, and `waves`. The three limits are decimal strings. `waves` is an ordered array of nonempty arrays of unique action IDs, with at most eight IDs per wave. Include every material oracle's required actions and every selected independent or conditional action. Explain the required scope in `rationale`. The helper validates coverage, action count, and wave order and freezes `test-charter.v2`. Defaults remain eight actions and 780 usable seconds. Absolute ceilings are 64 actions, sixteen waves, and 3600 usable seconds. Allocate one final proving action within the total, after ordinary actions. If complete required scope cannot fit the ceilings, stop `BLOCKED` with the unfinished scope and needed execution capacity. Do not claim a narrower run proves the original scope. Legacy v1 inputs retain their original eight-action default.
 
 Run relevant existing automated suites when available. Focused checks may give
 earlier evidence but never replace repository-required suites. Backend-only
@@ -283,7 +284,7 @@ result with null workflow ancestry.
 At grounding time, use the shipped bootstrap's one canonical private, uncommitted, worktree-bound `.test-evidence/<run-id>/` root. Keep all artifacts and inputs there, never externally, never create a replacement root for an authoring error.
 
 Before the first product/runtime action, write private `charter-preparation.json` with schema
-`test-charter-preparation.v1` and only conceptual charter fields, then invoke `freeze_charter.py` once. It derives the
+`test-charter-preparation.v2`, its conceptual charter fields, and the validated scope-derived budget described above, then invoke `freeze_charter.py` once. It derives the
 canonical repository, branch, exact HEAD, and run ID and exclusively creates `charter.json` plus the initial empty
 `ledger.json`. Never hand-author `charter.json` or the initial `ledger.json`, never transcribe, shorten, or repair an
 identity field. If freezing fails, correct only the preparation before product execution.
@@ -292,7 +293,7 @@ identity field. If freezing fails, correct only the preparation before product e
 python3 .agents/skills/test/scripts/freeze_charter.py --root .test-evidence/<run-id>
 ```
 
-Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes without stealing evidence time. Reserve at least 180 seconds of response margin, at least 600 seconds
+Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and default 780-second usable budget or the validated v2 budget. The declared deadline starts at the bootstrap timestamp, and the recorder refuses execution after expiry and bounds each child command by the remaining window. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes without stealing evidence time. Reserve at least 180 seconds of response margin, at least 600 seconds
 total.
 
 Author from this complete contract, do not inspect the helper source to rediscover it.
