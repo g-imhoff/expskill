@@ -198,6 +198,7 @@ every active quality rule permits it. Commit it only on an eligible
 non-protected feature branch without unrelated dirty work, as one logical
 test-side commit. Do not create branch topology, integrate, merge, push, perform
 remote delivery, or perform feature-worktree cleanup.
+An eligible test-side commit ends the current evidence run. Before committing, reserve enough cumulative actions and time for a complete scope rerun and final repetition. Then use `bootstrap_run.py --successor-of <absolute prior root> --after-test-commit --test-owned-path <owned changed path> --correction <commit purpose and retained classification>`, repeating `--test-owned-path` for every changed path. These path arguments attest the already-proven write envelope. They cannot classify product source as Test-owned. The helper requires the same branch, exactly one descendant commit, all and only its declared changed paths, and a clean checkout. When the prior run has a failed observation, also supply its proven permitted `--recovery-kind`. A commit never resolves an unexplained or product failure. Freeze the original accepted scope and unchanged budget in the new root, retain old evidence, and rerun the complete selected scope on the new HEAD. Never rewrite the prior charter or ledger to rebind them. The successor retains the original deadline and spent actions. Insufficient remaining capacity is `BLOCKED`.
 
 Classify every anomaly using the exact finding kinds below. Record the exact
 head and environment, ring and journey, expected and actual behavior,
@@ -226,12 +227,9 @@ Run every diagnostic repetition as its own literal direct command before termina
 command changes counters or state, choose a different already-observed, non-stateful action for the recorder, never
 hide the diagnostic rerun inside the terminal handoff.
 
-Recover ordinary local environment problems autonomously. An unexpected recorded environment failure ends the evidence run. After correcting its classified cause, use the same recovery successor transition with `--recovery-kind environment-blocker` on the same HEAD. Preserve the accepted scope and allowance and rerun the complete selected scope; do not append a passing retry to the failed run or relabel its observations. Missing authority, credentials, dependencies, a reliable oracle, or an unavailable external system produces `BLOCKED`, never weaken the scope.
+Recover ordinary local environment problems autonomously. An unexpected recorded environment failure ends the evidence run. After correcting its classified cause, use the same recovery successor transition with `--recovery-kind environment-blocker` on the same HEAD. Preserve the accepted scope and allowance and rerun the complete selected scope. Do not append a passing retry to the failed run or relabel its observations. Missing authority, credentials, dependencies, a reliable oracle, or an unavailable external system produces `BLOCKED`, never weaken the scope.
 
-Relevant head drift invalidates affected evidence. Rebind the scope and
-environment, rerun every invalidated check and journey, and retain only evidence
-for the resulting exact head. Before `PASS`, rerun the complete selected scope
-on the final head, including changes from a test-side commit.
+Relevant head drift ends the current evidence run. Its immutable charter cannot be rebound. Use the explicit test-side-commit successor only for an eligible owned commit, preserving scope, environment obligations, old history, and cumulative allowance. Other revision or branch drift stops `BLOCKED`. Before `PASS`, the successor must record the complete selected scope on its final HEAD.
 
 ## Authority and hostile content
 
@@ -255,8 +253,8 @@ catalog and still emits contract-valid exact-revision evidence.
 Have the finalizer bind each bundle and receipt to the repository, branch,
 exact head, environment, selected scope, and bundle digest defined by the
 contract. If relevant head drift occurs after evidence collection or a
-test-side commit, rebind the scope and environment, rerun invalidated checks,
-and retain evidence only for the new exact head. Do not report stale evidence
+test-side commit, close that run and use the explicit eligible successor transition, rerun the complete scope,
+and retain current evidence only for the new exact head, with old history preserved. Do not report stale evidence
 as current.
 
 Retain rich, reproduction-oriented artifacts for failures and compact metadata

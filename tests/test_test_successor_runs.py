@@ -200,3 +200,55 @@ def test_successor_cannot_restart_an_expired_original_deadline(runtime):
     result = runtime.helper("bootstrap_run.py", "--successor-of", previous, "--recovery-kind", "environment-blocker", "--correction", "Corrected local prerequisite.")
     assert result.returncode != 0 and "allowance-exhausted" in result.stderr
     assert not (previous / "successor.json").exists()
+
+
+@pytest.mark.parametrize("initially_failed", (False, True))
+def test_actual_test_side_commit_requires_new_head_successor_and_complete_reruns(runtime, initially_failed):
+    previous = runtime.bootstrap()
+    assert runtime.freeze(previous).returncode == 0
+    if not initially_failed:
+        (runtime.repository / "test_fixture.txt").write_text("pass\n")
+    for action in ("consumer", "canary", "harness"):
+        result = runtime.record(previous, action)
+        assert result.returncode == (1 if action == "harness" and initially_failed else 0), result.stderr
+    old_head = json.loads((previous / "charter.json").read_text())["head"]
+    old_ledger = (previous / "ledger.json").read_bytes()
+    (runtime.repository / "test_fixture.txt").write_text("pass\n")
+    runtime.git("add", "test_fixture.txt")
+    runtime.commit("retain test fixture correction")
+    new_head = runtime.git("rev-parse", "HEAD")
+    assert new_head != old_head
+    stale = runtime.record(previous, "stale-consumer")
+    assert stale.returncode != 0 and "revision-mismatch" in stale.stderr
+    options = ["--successor-of", previous, "--after-test-commit", "--test-owned-path", "test_fixture.txt", "--correction", "One permitted fixture-only commit; accepted behavior unchanged."]
+    if initially_failed:
+        options.extend(["--recovery-kind", "test-system-defect"])
+    successor = runtime.bootstrap(*options)
+    result = runtime.freeze(successor)
+    assert result.returncode == 0, result.stderr
+    for action in ("consumer", "canary", "harness"):
+        result = runtime.record(successor, action)
+        assert result.returncode == 0, result.stderr
+    result = runtime.terminal(successor)
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads(result.stdout.splitlines()[-1])["receipt"]
+    assert receipt["head"] == new_head
+    assert (previous / "ledger.json").read_bytes() == old_ledger
+    opening = json.loads((successor / "bootstrap.json").read_text())
+    assert opening["successor"]["test_owned_paths"] == ["test_fixture.txt"]
+    assert opening["started_at"] == json.loads((previous / "bootstrap.json").read_text())["started_at"]
+
+
+def test_postcommit_successor_rejects_misdeclared_paths_or_unchanged_head(runtime):
+    previous = failed_run(runtime)
+    options = ("--successor-of", previous, "--after-test-commit", "--test-owned-path", "test_fixture.txt", "--correction", "Owned fixture commit.")
+    unchanged = runtime.helper("bootstrap_run.py", *options)
+    assert unchanged.returncode != 0
+    (runtime.repository / "test_fixture.txt").write_text("pass\n")
+    runtime.git("add", "test_fixture.txt")
+    runtime.commit("fixture correction")
+    incorrect = runtime.helper("bootstrap_run.py", "--successor-of", previous, "--after-test-commit", "--test-owned-path", "wrong-fixture.txt", "--correction", "Owned fixture commit.")
+    assert incorrect.returncode != 0 and "changed paths" in incorrect.stderr
+    unclassified = runtime.helper("bootstrap_run.py", *options)
+    assert unclassified.returncode != 0 and "classified permitted recovery" in unclassified.stderr
+    assert not (previous / "successor.json").exists()

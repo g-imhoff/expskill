@@ -291,6 +291,8 @@ def _continue(repository: Path, arguments: argparse.Namespace) -> None:
 def _run(arguments: argparse.Namespace) -> None:
     repository = _repository()
     if arguments.root is not None:
+        if arguments.successor_of is not None or arguments.after_test_commit or arguments.recovery_kind is not None or arguments.correction is not None or arguments.test_owned_path:
+            _error("invalid-successor", "continuation cannot allocate or redefine a successor")
         _continue(repository, arguments)
         return
     if arguments.read_path:
@@ -311,20 +313,41 @@ def _run(arguments: argparse.Namespace) -> None:
         previous = execution_budget._private_json(predecessor / "charter.json")
         opening = execution_budget._private_json(predecessor / "bootstrap.json")
         ledger = execution_budget._private_json(predecessor / "ledger.json")
-        if previous.get("repository") != str(repository) or previous.get("run_id") != predecessor.name or previous.get("branch") != branch or previous.get("head") != str(_git(repository, "rev-parse", "HEAD")).strip():
-            _error("invalid-successor", "recovery requires the same repository, branch, and HEAD")
-        if arguments.recovery_kind not in {"test-system-defect", "environment-blocker"} or not arguments.correction or not arguments.correction.strip():
+        current_head = str(_git(repository, "rev-parse", "HEAD")).strip()
+        if previous.get("repository") != str(repository) or previous.get("run_id") != predecessor.name or previous.get("branch") != branch:
+            _error("invalid-successor", "successor requires the same repository and branch")
+        if not arguments.correction or not arguments.correction.strip():
             _error("invalid-successor", "classify the recovered cause and state its permitted correction")
         entries = ledger.get("entries")
-        if not isinstance(entries, list) or not any(isinstance(entry, dict) and entry.get("status") == "fail" for entry in entries):
-            _error("invalid-successor", "recovery requires a retained failed action")
+        if not isinstance(entries, list):
+            _error("invalid-successor", "predecessor ledger entries are invalid")
+        failed = any(isinstance(entry, dict) and entry.get("status") == "fail" for entry in entries)
+        owned_paths = None
+        if arguments.after_test_commit:
+            if previous.get("head") == current_head:
+                _error("invalid-successor", "test-side commit requires a changed HEAD")
+            _git(repository, "merge-base", "--is-ancestor", str(previous["head"]), current_head)
+            if str(_git(repository, "rev-list", "--count", str(previous["head"]) + ".." + current_head)).strip() != "1":
+                _error("invalid-successor", "test-side transition binds exactly one local commit")
+            raw_paths = _git(repository, "diff", "--name-only", "-z", str(previous["head"]), current_head, binary=True)
+            owned_paths = sorted(set(arguments.test_owned_path))
+            if any(Path(path).is_absolute() or ".." in Path(path).parts or "\n" in path for path in owned_paths) or owned_paths != sorted(item.decode("utf-8") for item in raw_paths.split(b"\0") if item):
+                _error("invalid-successor", "declare all and only the commit's changed paths as Test-owned")
+            if not owned_paths or str(_git(repository, "status", "--porcelain", "--untracked-files=all")).strip():
+                _error("invalid-successor", "test-side transition requires a clean checkout after its owned commit")
+            if failed and arguments.recovery_kind not in {"test-system-defect", "environment-blocker"}:
+                _error("invalid-successor", "failed history requires a classified permitted recovery as well as the commit")
+        elif previous.get("head") != current_head or not failed or arguments.recovery_kind not in {"test-system-defect", "environment-blocker"} or arguments.test_owned_path:
+            _error("invalid-successor", "recovery requires a retained failed action on the same HEAD")
         context = execution_budget.successor_context(previous, predecessor)
         if int(context["actions_used"]) + len(entries) >= int(execution_budget.for_charter(previous)["semantic_actions_max"]) or execution_budget.remaining_seconds(previous, predecessor) <= 0:
             _error("allowance-exhausted", "successor cannot reset the cumulative action or time allowance")
         inherited_start = opening["started_at"]
-        successor = {"predecessor_root": str(predecessor), "reason": "recovery", "classification": arguments.recovery_kind,
+        successor = {"predecessor_root": str(predecessor), "reason": "test-side-commit" if arguments.after_test_commit else "recovery", "classification": arguments.recovery_kind or "test-side-commit",
                      "correction": arguments.correction, "source_files": execution_budget.retained_files(predecessor)}
-    elif arguments.recovery_kind is not None or arguments.correction is not None:
+        if owned_paths is not None:
+            successor["test_owned_paths"] = owned_paths
+    elif arguments.recovery_kind is not None or arguments.correction is not None or arguments.after_test_commit or arguments.test_owned_path:
         _error("invalid-successor", "recovery details require --successor-of")
     root = _allocate_root(repository, now)
     payload = {
@@ -375,6 +398,8 @@ def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root")
     parser.add_argument("--successor-of")
+    parser.add_argument("--after-test-commit", action="store_true")
+    parser.add_argument("--test-owned-path", action="append", default=[])
     parser.add_argument("--recovery-kind", choices=("test-system-defect", "environment-blocker"))
     parser.add_argument("--correction")
     parser.add_argument("--read-path", action="append", default=[])
