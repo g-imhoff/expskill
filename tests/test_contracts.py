@@ -820,7 +820,8 @@ class ContractTests(unittest.TestCase):
                 "private plan graph",
                 "never edit",
                 "only plan graph writer",
-                "do not delegate",
+                "delegate only evidence-only researchers and one independent plan auditor",
+                "no further delegation",
             ),
             "expskill-designer": (
                 "isolated helper-owned worktree",

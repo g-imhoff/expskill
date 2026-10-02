@@ -489,6 +489,7 @@ class TransactionLayerTests(unittest.TestCase):
         template["projections"]["U2"] = {"covers": ["O1"], "version": 1,
             "decision_versions": {}, "presented": True, "confirmed": True, "stale": False,
             "presentation": "Configuration is validated."}
+        template["audit"] = {"breadth": True, "reason": "Changes ownership across configuration and startup callers"}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         self.assertEqual(receipt.state, "stale")
 
@@ -747,6 +748,69 @@ class TransactionLayerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.helper.PlanGraphError, "typed confirmation"):
             self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
                                       [{"op": "set", "path": ["decisions", "D1"], "value": downgraded}], self.state_home)
+
+    def test_adaptive_material_decision_insertion_is_fresh_presentable_and_first_confirmable(self) -> None:
+        receipt = self._initialize()
+        decision = {
+            "question": "Choose compatibility policy", "choice": "Reject unknown configuration keys",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+            "invalidates": [], "consequences": [], "operation_receipt": None,
+        }
+        inserted = self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["decisions", "D1"], "value": decision},
+             {"op": "set", "path": ["work", "T1", "decisions"], "value": ["D1"]},
+             {"op": "set", "path": ["projections", "U1", "covers"], "value": ["D1", "T1", "P1"]}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(inserted.state, "stale")
+        self.assertEqual(graph["decisions"]["D1"]["version"], 1)
+        self.assertIsNone(graph["decisions"]["D1"]["confirmed_version"])
+        self.assertFalse(graph["decisions"]["D1"]["stale"])
+        self.assertFalse(graph["decisions"]["D1"].get("revalidation_required", False))
+        self.assertFalse(graph["proof"]["P1"]["fresh"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False, decision_versions={"D1": 1})
+        presented_graph = json.loads(json.dumps(graph))
+        presented_graph["projections"]["U1"] = projection
+        projection["presentation"] = self.helper.issue_projection_presentation(graph=presented_graph, projection_id="U1", text="Validate configuration and reject unknown keys.")
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        decision = self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1")
+        self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"], decision)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        confirmed = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], dict(graph["projections"]["U1"], confirmed=True))
+        self.assertEqual(confirmed.state, "ready")
+        final = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(final["decisions"]["D1"]["version"], 1)
+        self.assertEqual(final["decisions"]["D1"]["confirmation"]["presentation"], final["projections"]["U1"]["presentation"])
+
+    def test_adaptive_insertion_does_not_preserve_changed_existing_approval_or_accept_preconfirmed_new_choice(self) -> None:
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, self._shared_decision_graph(), self.state_home)
+        decision = {
+            "question": "Choose another policy", "choice": "Use bounded validation",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+            "invalidates": [], "consequences": [], "operation_receipt": None,
+        }
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["decisions", "D3"], "value": decision},
+             {"op": "set", "path": ["decisions", "D1", "choice"], "value": "A materially changed choice"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["decisions"]["D3"]["version"], 1)
+        self.assertFalse(graph["decisions"]["D3"]["stale"])
+        self.assertEqual(graph["decisions"]["D1"]["version"], 2)
+        self.assertEqual(graph["decisions"]["D1"]["confirmed_version"], 1)
+        self.assertTrue(graph["decisions"]["D1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertTrue(graph["projections"]["U3"]["confirmed"])
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["decisions", "D4"], "value": dict(decision, confirmed_version=1)}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(graph["decisions"]["D4"]["stale"])
+        self.assertNotEqual(graph["decisions"]["D4"]["version"], graph["decisions"]["D4"]["confirmed_version"])
+        self.assertNotEqual(graph["lifecycle"]["derived_state"], "ready")
 
     def test_projection_rejects_presentation_bound_to_superseded_graph_meaning(self) -> None:
         graph = _graph()
@@ -1277,8 +1341,61 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertFalse(graph["projections"]["U1"]["confirmed"])
         self.assertIsNone(graph["projections"]["U1"]["operation_receipt"])
 
+    def test_tiny_settled_serial_plan_needs_no_audit_for_external_grounding_or_rejected_alternative(self) -> None:
+        for mode in ("external", "alternative", "both"):
+            with self.subTest(mode=mode):
+                graph = _graph()
+                if mode in {"external", "both"}:
+                    graph["evidence"]["E2"] = {
+                        "kind": "external", "fact": "The chosen parser rejects unknown keys",
+                        "source": "https://example.invalid/parser/official-contract", "version": "1",
+                        "fresh": True, "supports": ["T1"], "limitations": ["Repository wiring is grounded separately"],
+                    }
+                    graph["work"]["T1"]["based_on"] = ["E1", "E2"]
+                if mode in {"alternative", "both"}:
+                    graph["decisions"]["D1"] = {
+                        "question": "Choose the validation seam", "choice": "Use the existing seam",
+                        "alternatives": [{"id": "A", "status": "selected", "reason": "Preserves the current caller contract"},
+                                         {"id": "B", "status": "rejected", "reason": "Duplicates validation in the caller"}],
+                        "based_on": ["E1"], "material": True, "version": 1, "confirmed_version": 1, "stale": False,
+                    }
+                    graph["work"]["T1"]["decisions"] = ["D1"]
+                    graph["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
+                home = self.root / f"tiny-{mode}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(receipt.state, "ready")
+                self.assertEqual(loaded["audit"]["classification"], "tiny")
+                self.assertFalse(loaded["audit"]["required"])
+                self.assertIsNone(loaded["audit"]["operation_receipt"])
+                self.assertEqual(loaded["work"]["T1"]["concurrency"], "serial")
+
+    def test_parallel_ownership_and_required_design_join_enforce_independent_audit_despite_tiny_claim(self) -> None:
+        for mode in ("parallel", "design-join"):
+            with self.subTest(mode=mode):
+                graph = self._three_node_graph()
+                graph["audit"] = {"classification": "tiny", "breadth": False, "complexity": False,
+                                  "high_consequence": False, "required": False}
+                if mode == "parallel":
+                    graph["work"]["T2"]["concurrency"] = "parallel-candidate"
+                    graph["work"]["T3"]["concurrency"] = "parallel-candidate"
+                else:
+                    graph["design_join"] = self.helper._empty_design_join()
+                    graph["design_join"].update(required=True, fresh=False)
+                home = self.root / f"complex-{mode}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertTrue(loaded["audit"]["required"])
+                self.assertTrue(loaded["audit"]["complexity"])
+                self.assertEqual(loaded["audit"]["classification"], "complex")
+                self.assertFalse(loaded["audit"]["fresh"])
+                self.assertNotEqual(receipt.state, "ready")
+                attempted = dict(loaded["audit"], fresh=True, independent=False, graph_revision=loaded["graph_revision"])
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "fresh and independent"):
+                    self._typed_update(receipt.workflow_id, loaded, "refresh-audit", ["audit"], attempted, home)
+
     def test_semantics_derived_audit_floor_and_resolved_findings_readiness(self) -> None:
-        template = _graph()
+        template = self._three_node_graph()
         template["evidence"]["E1"]["supports"] = ["D1", "T1"]
         template["decisions"]["D1"] = {
             "question": "Choose a boundary", "choice": "A",
@@ -1290,12 +1407,16 @@ class TransactionLayerTests(unittest.TestCase):
         }
         template["work"]["T1"]["decisions"] = ["D1"]
         template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
-        template["audit"] = {"classification": "tiny", "breadth": False,
-            "complexity": False, "high_consequence": False, "required": False}
+        template["work"]["T2"]["decisions"] = ["D1"]
+        template["work"]["T3"]["decisions"] = ["D1"]
+        template["audit"] = {"classification": "broad", "breadth": True,
+            "complexity": False, "high_consequence": False, "required": True,
+            "reason": "Changes validation ownership across producer and two independent consumer boundaries"}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         self.assertTrue(graph["audit"]["required"])
         self.assertTrue(graph["audit"]["breadth"])
+        self.assertEqual(graph["audit"]["reason"], template["audit"]["reason"])
         self.assertEqual(receipt.state, "stale")
 
         audited = json.loads(json.dumps(graph["audit"]))
