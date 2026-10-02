@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 
@@ -241,6 +242,118 @@ class ScriptedOwners:
     def typed(self, helper, target, root, graph, operation, path, value, version):
         receipt = helper.issue_operation_receipt(operation=operation, workflow_id=graph["workflow_id"], prior_graph_revision=graph["graph_revision"], target=path, record_version=version, value=value)
         helper.apply_updates(target, "trial/routed-ui", graph["workflow_id"], graph["graph_revision"], [{"op": operation, "path": path, "value": value, "prior_graph_revision": graph["graph_revision"], "record_version": version, "receipt": receipt}], root)
+
+
+class ScriptedCliOwners(ScriptedOwners):
+    def __init__(self, failure_kind=None):
+        super().__init__()
+        self.failure_kind = failure_kind
+        self.commands = []
+        self.state_before = None
+        self.state_after = None
+
+    def run_actor(self, **arguments):
+        if arguments["evidence_dir"].name != "design-initial":
+            return super().run_actor(**arguments)
+        output = arguments["evidence_dir"].parent.parent
+        helper = output / "framework-snapshot/plugins/expskill/content/scripts/design_state.py"
+        state = output / "state/expskill"
+        cwd = arguments["cwd"]
+        environment = {**os.environ, "XDG_STATE_HOME": str(output / "state")}
+        def execute(argv, payload=None):
+            result = subprocess.run(argv, input=None if payload is None else json.dumps(payload), cwd=cwd, env=environment, text=True, capture_output=True, timeout=10, check=False)
+            self.commands.append({"type": "item.completed", "item": {"type": "command_execution", "command": shlex.join(argv), "exit_code": result.returncode, "aggregated_output": result.stdout + result.stderr}})
+            return result
+        command = [sys.executable, "-B", str(helper)]
+        payload = {"repository": str(cwd), "branch": self.git(cwd, "branch", "--show-current")}
+        failure = None
+        actor = super().run_actor(**arguments)
+        result = json.loads(actor["final_text"])
+        if self.failure_kind in {None, "repeated-usage"}:
+            self.state_before = probe.tree_pin(state / "design")
+            rejected = execute(command + ["discover", json.dumps(payload)])
+            assert rejected.returncode == 2
+            assert probe.tree_pin(state / "design") == self.state_before
+            permitted = "at most one in-attempt correction" in arguments["prompt"]
+            if permitted:
+                help_result = execute(command + ["--help"])
+                assert help_result.returncode == 0 and "discover" in help_result.stdout
+                corrected = execute(command + ["discover"] + ([json.dumps(payload)] if self.failure_kind else []), None if self.failure_kind else payload)
+                if corrected.returncode:
+                    failure = {"operation": "discover", "exit_code": corrected.returncode, "reason": "Corrected parser invocation still failed; one correction exhausted"}
+                else:
+                    assert json.loads(corrected.stdout)["operation"] == "discover"
+            else:
+                failure = {"operation": "discover", "exit_code": rejected.returncode, "reason": "Original parser invocation blocked by blanket stop instruction"}
+        if self.failure_kind in {"domain-reject", "reinitialize", "partial-mutation", "absent-owner"}:
+            self.state_before = probe.tree_pin(state / "design")
+            if self.failure_kind == "domain-reject":
+                failed = execute(command + ["pause"], {"workflow_id": result["workflow_id"], "expected_revision": 0})
+                assert failed.returncode == 1 and "stale workflow" in failed.stderr
+            elif self.failure_kind == "reinitialize":
+                design = probe.module(helper, "offline_cli_reinitialization")
+                current = design.load_workflow(workflow_id=result["workflow_id"], state_home=state)
+                failed = execute(command + ["initialize"], {"repository": str(cwd), "branch": payload["branch"], "worktree": str(cwd), "baseline": current["identity"]["baseline"], "dirty_fingerprint": current["identity"]["dirty_fingerprint"], "ui_contract": current["ui_contract"], "scope": current["scope"], "invocation_mode": "routed"})
+                assert failed.returncode == 1
+            elif self.failure_kind == "absent-owner":
+                failed = execute(command + ["discover"], {"repository": str(cwd), "branch": "feature/no-existing-owner"})
+                assert failed.returncode == 1 and "ambiguous workflow" in failed.stderr
+            else:
+                failed = execute([sys.executable, "-B", "-c", "from pathlib import Path; Path('review/native-checks.json').write_text('PARTIAL OUTPUT RETAINED'); raise SystemExit(2)"])
+                assert failed.returncode == 2
+            failure = {"operation": self.failure_kind, "exit_code": failed.returncode, "reason": failed.stderr.strip() or "Command exited after partial output; mutation is not a parser correction"}
+        self.state_after = probe.tree_pin(state / "design")
+        if failure is not None:
+            result.update(status="blocked", failure=failure, last_saved_workflow_revision=result["revision"])
+            actor["final_text"] = json.dumps(result)
+        raw = Path(actor["attempts"][0]["raw_events"])
+        events = [json.loads(line) for line in raw.read_text().splitlines()]
+        events[-1]["item"]["text"] = actor["final_text"]
+        raw.write_text("\n".join(json.dumps(row) for row in [events[0], *self.commands, *events[1:]]) + "\n")
+        actor["attempts"][0]["raw_events_sha256"] = probe.digest(raw.read_bytes())
+        return actor
+
+
+def test_actual_parser_usage_can_be_corrected_once_inside_the_same_owner_attempt(tmp_path, framework_source, monkeypatch):
+    owners = ScriptedCliOwners()
+    monkeypatch.setattr(probe, "native_checks", offline_static_fixture)
+    repository, revision = framework_source
+    report = probe.run_probe(output_root=tmp_path / "run", repository=repository, revision=revision, driver=owners, live=True, browser=sys.executable, actor_timeout=240, deadline_seconds=1800)
+    assert report["outcome"] == "offline-protocol-observed", report.get("failure")
+    assert len(owners.calls) == report["budgets"]["spent_or_reserved_actor_calls"] == 9
+    assert owners.state_after == owners.state_before
+    assert [event["item"]["exit_code"] for event in owners.commands] == [2, 0, 0]
+    assert "--help" in owners.commands[1]["item"]["command"]
+    assert len(report["actors"]["design-initial"]["attempts"]) == 1
+    assert all("at most one in-attempt correction" in prompt and "unknown or partial mutation" in prompt for _, prompt, _ in owners.calls)
+    assert report["limits"]["maximum_in_attempt_usage_corrections"] == 1
+    assert report["limits"]["actor_timeout_seconds"] == 240 and report["limits"]["deadline_seconds"] == 1800
+    assert report["claims"]["usage_recovery_enforcement"] == "actor instruction with retained raw commands; not a mechanical parser sandbox"
+    assert "no Design owner has been initialized. Initialize it once" in owners.calls[1][1]
+    raw = Path(report["actors"]["design-initial"]["attempts"][0]["raw_events"])
+    assert [event["item"]["exit_code"] for event in map(json.loads, raw.read_text().splitlines()) if event.get("item", {}).get("type") == "command_execution"] == [2, 0, 0]
+
+
+@pytest.mark.parametrize("kind", ["repeated-usage", "domain-reject", "reinitialize", "partial-mutation", "absent-owner"])
+def test_failed_correction_or_domain_failure_preserves_saved_owner_without_another_actor(tmp_path, framework_source, monkeypatch, kind):
+    owners = ScriptedCliOwners(kind)
+    monkeypatch.setattr(probe, "native_checks", offline_static_fixture)
+    repository, revision = framework_source
+    report = probe.run_probe(output_root=tmp_path / "run", repository=repository, revision=revision, driver=owners, live=True, browser=sys.executable)
+    assert report["outcome"] == "probe-blocked"
+    assert len(owners.calls) == report["budgets"]["spent_or_reserved_actor_calls"] == 2
+    assert report["failure"]["type"] == "ActorBlocked"
+    assert report["failure"]["last_saved_workflow_revision"] == report["failure"]["revision"]
+    assert report["relay"] == [] and "host_integration" not in report["observations"]
+    assert len(report["actors"]["design-initial"]["attempts"]) == 1
+    if kind == "repeated-usage":
+        assert [event["item"]["exit_code"] for event in owners.commands] == [2, 0, 2]
+    else:
+        assert len(owners.commands) == 1
+        assert owners.state_after == owners.state_before
+    if kind == "partial-mutation":
+        path = Path(report["fixture"]["design_worktree"]) / "review/native-checks.json"
+        assert path.read_text() == "PARTIAL OUTPUT RETAINED"
 
 
 def test_probe_requires_opt_in_before_fixture_or_transport(tmp_path):
