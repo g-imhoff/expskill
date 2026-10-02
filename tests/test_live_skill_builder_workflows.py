@@ -159,13 +159,17 @@ class ScriptedTransport:
                         "host_conventions": [], "preserved_regressions": [], "raw_evidence_digests": [], "limitations": ["offline mechanical fixture"]}
             retained("baseline-report", baseline, "baseline")
             transition("capture-baseline", "baseline", ["baseline"])
-        elif role == "synthesis-contract":
-            for name, kind, event in (("research", "research-pack", "complete-research"), ("sieve", "evidence-sieve", "sieve-evidence"), ("design", "design-record", "accept-design")):
-                retained(kind, fixtures.stage_payload(public, state, workflow.workflow_id, kind), name)
-                transition(event, name, [name])
+        elif role in {"normalize-research", "sieve-evidence", "challenge-design"}:
+            name, kind, event = {"normalize-research": ("research", "research-pack", "complete-research"),
+                                 "sieve-evidence": ("sieve", "evidence-sieve", "sieve-evidence"),
+                                 "challenge-design": ("design", "design-record", "accept-design")}[role]
+            retained(kind, fixtures.stage_payload(public, state, workflow.workflow_id, kind), name)
+            transition(event, name, [name])
+        elif role == "author-contract":
             contract = retained("skill-contract", fixtures.contract_payload(public, state, workflow.workflow_id), "contract")
             transition("accept-contract", "contract", ["contract"])
-            retained("user-confirmation-record", fixtures.confirmation_payload(contract_id="contract", contract_digest=contract["artifact_digest"],
+        elif role == "confirm-contract":
+            retained("user-confirmation-record", fixtures.confirmation_payload(contract_id="contract", contract_digest=current()["artifact_index"]["contract"]["digest"],
                      target=current()["target_identity"]["canonical"], snapshot_digest=current()["target_snapshot"]["snapshot_digest"], authority_digest="2" * 64), "confirmation")
             transition("confirm-contract", "confirmed", ["confirmation"], authority_event_digest="2" * 64)
         elif role == "freeze-evaluation":
@@ -324,7 +328,7 @@ def test_budget_and_explicit_opt_in_reject_before_transport(tmp_path):
 
 def test_role_source_requirements_preserve_owner_and_judge_reads_without_leaf_rubric(tmp_path):
     workflow = offline_workflow(tmp_path)
-    for role in ("resolve-baseline", "synthesis-contract", "candidate-author", "trial-assessment-0", "verification-1", "finalize-1"):
+    for role in ("resolve-baseline", "normalize-research", "sieve-evidence", "challenge-design", "author-contract", "confirm-contract", "candidate-author", "trial-assessment-0", "verification-1", "finalize-1"):
         assert set(workflow.role_sources(role)) == {"skill", "contracts"}
     for role in ("freeze-evaluation", "pre-review-0", "scoring-0", "final-review-1", "invalidate-repair-1"):
         assert set(workflow.role_sources(role)) == {"skill", "contracts", "rubric"}
@@ -396,6 +400,87 @@ def test_research_prompt_caps_and_actual_scoped_reads_keep_owner_state_unpublish
     assert workflow.observation["actors"][-1]["stage_timeout_seconds"] == 480
     assert workflow.observation["actors"][-1]["effective_attempt_timeout_seconds"] == 480
     probe.require_framework_reads(origin, workflow.role_sources("research-0"))
+
+
+def test_contract_stages_have_fresh_producers_one_current_artifact_and_public_checkpoints(tmp_path):
+    transport = ScriptedTransport()
+    workflow = offline_workflow(tmp_path, transport=transport)
+    transport.workflow = workflow
+    workflow.stage("resolve-baseline", "Capture baseline.", "baseline", ("initialize", "retain", "transition"))
+    stages = (("normalize-research", "research", "research-pack"), ("sieve-evidence", "sieve", "evidence-sieve"),
+              ("challenge-design", "design", "design-record"), ("author-contract", "contract", "skill-contract"),
+              ("confirm-contract", "confirmed", "user-confirmation-record"))
+    for role, stage, kind in stages:
+        previous_ids = set(workflow.current["artifact_index"])
+        workflow.stage(role, "Perform only the assigned public stage.", stage, ("retain", "transition"), expected_artifact_types=(kind,))
+        new_ids = set(workflow.current["artifact_index"]) - previous_ids
+        assert len(new_ids) == 1
+        artifact_id = new_ids.pop()
+        record = workflow.current["artifact_index"][artifact_id]
+        assert record["type"] == kind and record["derived_status"] == "accepted"
+        envelope = json.loads((workflow.state_root / "live" / workflow.workflow_id / record["path"] / "envelope.json").read_text())
+        assert envelope["producer"] == workflow.mode + ":" + role
+        assert all(binding["digest"] == workflow.current["artifact_index"][binding["artifact_id"]]["digest"] for binding in envelope["input_bindings"])
+        saved = json.loads(workflow.observation_path.read_text())
+        assert saved["latest_public_state"]["stage"] == stage
+        assert saved["latest_public_state"]["head_sequence"] == workflow.current["head_sequence"]
+    actors = workflow.observation["actors"][-5:]
+    assert len({actor["context_identity"] for actor in actors}) == 5
+    assert [actor["role"] for actor in actors] == [role for role, _, _ in stages]
+    assert all(actor["stage_timeout_seconds"] == 30 for actor in actors)
+
+
+def test_timed_out_contract_actor_preserves_failed_evidence_and_refreshes_actual_progress(tmp_path):
+    class TimedOutAfterRetain(ScriptedTransport):
+        def run_actor(self, **options):
+            actor = super().run_actor(**options)
+            if Path(options["evidence_dir"]).name == "author-contract":
+                actor["outcome"] = "timed-out"
+                actor["attempts"][0]["timed_out"] = True
+            return actor
+
+        def advance(self, public, role):
+            if role != "author-contract":
+                return super().advance(public, role)
+            current = public.load_run(workflow_id=self.workflow.workflow_id)
+            fixtures.retain_json(public, state_root=self.workflow.state_root, workflow_id=self.workflow.workflow_id,
+                                 sequence=current["head_sequence"], artifact_id="retained-but-not-transitioned-contract", artifact_type="skill-contract",
+                                 payload=fixtures.contract_payload(public, self.workflow.state_root, self.workflow.workflow_id),
+                                 input_bindings=fixtures.current_bindings(public, self.workflow.state_root, self.workflow.workflow_id),
+                                 producer=self.workflow.mode + ":" + role)
+
+    transport = TimedOutAfterRetain()
+    workflow = offline_workflow(tmp_path, transport=transport)
+    transport.workflow = workflow
+    workflow.stage("resolve-baseline", "Capture baseline.", "baseline", ("initialize", "retain", "transition"))
+    for role, stage in (("normalize-research", "research"), ("sieve-evidence", "sieve"), ("challenge-design", "design")):
+        workflow.stage(role, "One stage only.", stage, ("retain", "transition"))
+    prior_sequence = workflow.current["head_sequence"]
+    with pytest.raises(probe.ProbeError, match="timed-out"):
+        workflow.stage("author-contract", "Only retain and accept the contract.", "contract", ("retain", "transition"))
+    saved = json.loads(workflow.observation_path.read_text())
+    assert saved["latest_public_state"]["stage"] == "design"
+    assert saved["latest_public_state"]["head_sequence"] == prior_sequence + 1
+    assert saved["latest_public_state"]["artifact_index"]["retained-but-not-transitioned-contract"]["derived_status"] == "accepted"
+    receipt_root = workflow.state_root / "live" / workflow.workflow_id / "receipts"
+    receipt = json.loads((receipt_root / f"{prior_sequence + 1:08d}.json").read_text())
+    assert receipt["event"] == "retain-artifact"
+    assert not any(json.loads(path.read_text())["event"] == "accept-contract" for path in receipt_root.glob("*.json"))
+    assert saved["public_state_refresh_after_actor_failure"]["outcome"] == "refreshed"
+    assert workflow.observation["actors"][-1]["transport"]["outcome"] == "timed-out"
+    assert "confirm-contract" not in [call["role"] for call in transport.observed_calls]
+
+
+def test_stage_artifact_ownership_rejects_wrong_type_after_valid_public_transition(tmp_path):
+    transport = ScriptedTransport()
+    workflow = offline_workflow(tmp_path, transport=transport)
+    transport.workflow = workflow
+    workflow.stage("resolve-baseline", "Capture baseline.", "baseline", ("initialize", "retain", "transition"))
+    with pytest.raises(runner.WorkflowError, match="exactly its owned artifact types"):
+        workflow.stage("normalize-research", "Normalize research.", "research", ("retain", "transition"),
+                       expected_artifact_types=("design-record",))
+    assert workflow.current["stage"] == "research"
+    assert workflow.current["artifact_index"]["research"]["type"] == "research-pack"
 
 
 def test_retained_controller_packet_tampering_blocks_next_actor(tmp_path):
