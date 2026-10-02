@@ -1037,6 +1037,7 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
         for record in proof.values():
             if isinstance(record, dict):
                 record.setdefault("fresh", True)
+                record.setdefault("execution_required", bool(record.get("evidence")))
                 record.setdefault("record_version", 1)
                 record.setdefault("operation_receipt", None)
     projections = value.get("projections")
@@ -1215,6 +1216,7 @@ def issue_operation_receipt(
         "refresh-evidence",
         "reconfirm-decision",
         "refresh-proof",
+        "refresh-proof-plan",
         "regenerate-projection",
         "reconfirm-projection",
         "refresh-audit",
@@ -1230,7 +1232,9 @@ def issue_operation_receipt(
         not isinstance(component, str) or not component for component in target
     ):
         raise PlanGraphError("invalid typed operation target")
-    record = _mapping(value, "typed operation value")
+    record = copy.deepcopy(_mapping(value, "typed operation value"))
+    if operation == "refresh-proof" and record.get("evidence"):
+        record["execution_required"] = True
     receipt: dict[str, Any] = {
         "schema_version": _OPERATION_RECEIPT_SCHEMA,
         "receipt_id": secrets.token_hex(16),
@@ -1714,7 +1718,7 @@ def _validate_graph_inner(
         record = _mapping(raw, f"proof {proof_id}")
         _only(
             record,
-            {"claim", "covers", "required_by", "planned_method", "evidence", "fresh",
+            {"claim", "covers", "required_by", "planned_method", "evidence", "fresh", "execution_required",
              "record_version", "operation_receipt"},
             f"proof {proof_id}",
         )
@@ -1735,6 +1739,9 @@ def _validate_graph_inner(
             record.get("record_version"), "proof record version", minimum=1
         )
         receipts = _sequence(record.get("evidence"), "proof evidence")
+        execution_required = _boolean(record.get("execution_required", bool(receipts)), "proof execution requirement")
+        if receipts and not execution_required:
+            raise PlanGraphError("executed proof requires execution evidence")
         for receipt in receipts:
             _validate_receipt(receipt, value, context, proof_id)
         for work_id in required_by:
@@ -1749,7 +1756,7 @@ def _validate_graph_inner(
             target=("proof", proof_id),
             record=record,
             record_version=proof_version,
-            allowed_operations={"refresh-proof"},
+            allowed_operations={"refresh-proof", "refresh-proof-plan"},
         )
 
     git = _mapping(value.get("git"), "Git topology")
@@ -2218,7 +2225,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
     for row in rows:
         update = _mapping(row, "update")
         operation = update.get("op")
-        typed = operation in {"refresh-evidence", "reconfirm-decision", "refresh-proof",
+        typed = operation in {"refresh-evidence", "reconfirm-decision", "refresh-proof", "refresh-proof-plan",
                               "regenerate-projection", "reconfirm-projection", "refresh-audit", "resolve-finding", "record-design-join"}
         if operation != "set" and not typed:
             raise PlanGraphError("unsupported update operation")
@@ -2263,7 +2270,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
             raise PlanGraphError("readiness-enabling fields require a typed operation")
         if typed:
             expected_family = {"refresh-evidence": "evidence", "reconfirm-decision": "decisions",
-                "refresh-proof": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections",
+                "refresh-proof": "proof", "refresh-proof-plan": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections",
                 "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
             expected_length = 1 if expected_family in {"audit", "design_join"} else 2
             if path[0] != expected_family or len(path) != expected_length:
@@ -2373,7 +2380,8 @@ def _validate_typed_repairs(
                 "supports", "observed_at", "operation_receipt",
             },
             "reconfirm-decision": {"confirmed_version", "stale", "operation_receipt"},
-            "refresh-proof": {"evidence", "fresh", "operation_receipt"},
+            "refresh-proof": {"evidence", "fresh", "execution_required", "operation_receipt"},
+            "refresh-proof-plan": {"fresh", "operation_receipt"},
             "regenerate-projection": {
                 "decision_versions", "presented", "confirmed", "stale", "operation_receipt",
             },
@@ -2424,6 +2432,16 @@ def _validate_typed_repairs(
                 or record.get("stale")
             ):
                 raise PlanGraphError("decision reconfirmation is not current")
+        elif operation == "refresh-proof-plan":
+            if (
+                previous_record.get("fresh") is not False
+                or record.get("fresh") is not True
+                or previous_record.get("execution_required", bool(previous_record.get("evidence")))
+                or record.get("execution_required", bool(record.get("evidence")))
+                or record.get("evidence")
+                or graph["git"]["delivery"].get("state") != "planning"
+            ):
+                raise PlanGraphError("proof plan refresh requires an unexecuted planning obligation")
         elif operation == "refresh-proof":
             if (
                 previous_record.get("fresh") is not False
@@ -2661,6 +2679,13 @@ def _apply_updates_locked(
 
     candidate = copy.deepcopy(current)
     _apply_to_graph(candidate, normalized)
+    for proof_id, record in candidate["proof"].items():
+        previous_record = current["proof"].get(proof_id, {})
+        was_executed = previous_record.get("execution_required", bool(previous_record.get("evidence")))
+        if was_executed and record.get("execution_required", True) is not True:
+            raise PlanGraphError("proof execution requirement cannot be downgraded")
+        if was_executed or record.get("evidence"):
+            record["execution_required"] = True
     if current["audit"]["required"] and not candidate["audit"]["required"]:
         raise PlanGraphError("required audit cannot be downgraded")
     if current["design_join"]["required"] and not candidate["design_join"]["required"]:
@@ -2677,6 +2702,8 @@ def _apply_updates_locked(
     semantic_changes: set[tuple[str, ...]] = set()
     preserved_evidence: set[str] = set()
     for path in _changed_paths(current, candidate):
+        if len(path) == 3 and path[0] == "proof" and path[2] == "execution_required":
+            continue
         operation = next(
             (
                 typed_operation
