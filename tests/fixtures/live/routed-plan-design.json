@@ -1,0 +1,35 @@
+{
+  "schema_version": "routed-plan-design-probe.v1",
+  "case_id": "native-notification-preference",
+  "scope": "One retained routed Plan/Design conversation pair, exact answer relay, immutable handoff recovery, fresh Plan audit, native browser proof, and authorized exact integration.",
+  "accepted_input": {
+    "objective": "Design a native email notification preference control and plan its integration at the existing UI seam.",
+    "requirements": [
+      "Preserve the native checkbox with id enabled, its app.js change handler, and status output with id status.",
+      "Use the visible and accessible label Send email notifications.",
+      "Support unchecked, checked, and disabled states with keyboard focus and Space activation.",
+      "Avoid page overflow at 390, 768, and 1280 pixels, including a long localized label.",
+      "Support light and dark presentation and reduced motion using the existing native HTML/CSS/JavaScript stack.",
+      "Preserve unrelated.txt and the independent native_checks.py oracle byte for byte."
+    ],
+    "non_goals": ["No backend, network dependency, new framework, hosted publication, global installation, or feature outside the preference control."],
+    "pending_approvals": ["The presented technical Plan projection", "The exact candidate's rendered UI and technical evidence"],
+    "decision_reference": "synthetic-case-accepted-intent",
+    "approval_authority": "Frozen synthetic case answers are authorized fixture input, not a real human or authenticated visual approval."
+  },
+  "synthetic_answers": {
+    "plan": "Approve the exact retained Plan projection identified by this answer receipt within the accepted criteria and non-goals.",
+    "design": "Approve the exact checkpointed UI candidate and represented native browser states identified by this answer receipt. This is synthetic test approval, not human visual judgment."
+  },
+  "fixture_files": {
+    "index.html": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Notification preference</title><link rel=\"stylesheet\" href=\"styles.css\"></head><body><main><h1>Preferences</h1><label for=\"enabled\">Notifications</label><input id=\"enabled\" type=\"checkbox\"><output id=\"status\" aria-live=\"polite\">Off</output></main><script src=\"app.js\"></script></body></html>\n",
+    "styles.css": "body { min-width: 800px; font-family: system-ui, sans-serif; }\n",
+    "app.js": "const input = document.querySelector('#enabled');\nconst state = new URLSearchParams(location.search).get('state');\ninput.checked = state === 'checked';\ninput.disabled = state === 'disabled';\nconst update = () => { document.querySelector('#status').textContent = input.checked ? 'On' : 'Off'; };\ninput.addEventListener('change', update);\nupdate();\n",
+    "unrelated.txt": "PRESERVE THESE EXACT UNRELATED BYTES\n"
+  },
+  "production_files": ["app.js", "index.html", "styles.css"],
+  "viewports": {"compact": 390, "intermediate": 768, "wide": 1280},
+  "themes": ["light", "dark"],
+  "states": ["default", "checked", "disabled"],
+  "limits": {"maximum_actor_calls": 9, "maximum_concurrent_actors": 1, "maximum_infrastructure_attempts": 1}
+}
