@@ -846,6 +846,14 @@ EXPECTED_POLICY_PROFILES = {
     },
 }
 
+EXPECTED_PLANNER_EVIDENCE = {
+    "schema_version": "plan-evidence-dispatch.v1",
+    "caller_profile": "expskill-planner",
+    "service_profile": "expskill-explorer",
+    "purposes": ["research", "plan-audit"],
+    "max_prompt_lines": 300,
+}
+
 EXPECTED_POLICY_ROUTES = {
     "use-expskill": {
         "parallel-plan-design": {
@@ -2717,14 +2725,17 @@ def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
         "policy_version": "execution-budget-policy.v1",
         "profiles": EXPECTED_POLICY_PROFILES,
         "routes": EXPECTED_POLICY_ROUTES,
+        "planner_evidence": EXPECTED_PLANNER_EVIDENCE,
     }
     if set(policy) != set(expected):
-        errors.append("execution policy keys must be exactly policy_version, profiles, and routes")
+        errors.append("execution policy keys must be exactly policy_version, profiles, routes, and planner_evidence")
         return
     if policy.get("policy_version") != expected["policy_version"]:
         errors.append("execution policy policy_version is not execution-budget-policy.v1")
     if policy.get("profiles") != EXPECTED_POLICY_PROFILES:
         errors.append("execution policy profiles do not match the exact validated roster")
+    if policy.get("planner_evidence") != EXPECTED_PLANNER_EVIDENCE:
+        errors.append("execution policy planner evidence service does not match its scoped contract")
     if policy.get("routes") != EXPECTED_POLICY_ROUTES:
         errors.append("execution policy routes do not match the exact validated plans")
 
@@ -3883,6 +3894,21 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
     if not isinstance(entries, dict) or set(entries) != set(OPENCODE_AGENTS):
         errors.append("opencode agent spec agents must cover the exact agent roster")
         return
+    planner_entry = entries["expskill-planner"]
+    planner_permission = planner_entry.get("permission", {}) if isinstance(planner_entry, dict) else {}
+    if not isinstance(planner_permission, dict):
+        planner_permission = {}
+    expected_tasks = {"*": "deny", "expskill-explorer": "allow"}
+    if planner_permission.get("task") != expected_tasks or list(planner_permission.get("task", {}).items()) != list(expected_tasks.items()):
+        errors.append("opencode planner task permission must allow only the scoped explorer service after its wildcard denial")
+    if planner_permission.get("edit") != "deny":
+        errors.append("opencode planner must retain its product edit denial")
+    explorer_entry = entries["expskill-explorer"]
+    explorer_permission = explorer_entry.get("permission", {}) if isinstance(explorer_entry, dict) else {}
+    if not isinstance(explorer_permission, dict):
+        explorer_permission = {}
+    if explorer_permission.get("external_directory") != "ask" or explorer_permission.get("edit") != "deny" or explorer_permission.get("task") != "deny":
+        errors.append("opencode explorer must ask for external reads while retaining edit and task denials")
     for name in OPENCODE_READ_ONLY_GIT_AGENTS:
         entry = entries.get(name)
         if not isinstance(entry, dict):
@@ -4103,7 +4129,8 @@ def _validate_opencode_agents(
             errors.append(
                 f"opencode agent {name!r} description must match the bounded canonical profile"
             )
-        for marker in ("task: deny", "question: deny"):
+        task_markers = ('task:', '"*": deny', 'expskill-explorer: allow') if name == "expskill-planner" else ("task: deny",)
+        for marker in (*task_markers, "question: deny"):
             if marker not in block:
                 errors.append(f"opencode agent {name!r} permission must declare {marker}")
         if name in OPENCODE_READ_ONLY_AGENTS:
