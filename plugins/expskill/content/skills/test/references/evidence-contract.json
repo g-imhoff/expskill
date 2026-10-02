@@ -1,5 +1,13 @@
 {
   "schema_version": "test-evidence-contract.v1",
+  "output_predicates": {
+    "modes": ["exact-text", "sha256", "json-fields", "exit-only"],
+    "json_assertion_fields": ["path", "operator", "value"],
+    "json_operators": ["equals", "integer-equals", "length-equals", "type", "exists"],
+    "assertions_max": 64,
+    "path_depth_max": 16,
+    "semantics": "all typed assertions and the exact expected exit code must match, reject duplicate keys and executable predicates"
+  },
   "run_budgets": {
     "preparation_schema": "test-charter-preparation.v2",
     "charter_schema": "test-charter.v2",
