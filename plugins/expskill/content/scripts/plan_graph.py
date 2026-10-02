@@ -1025,6 +1025,11 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
                 record.setdefault("operation_receipt", None)
                 if record.get("kind") == "repository":
                     record.setdefault("revision", context.head)
+        value["baseline"]["evidence_fingerprints"] = {
+            evidence_id: _repository_source_fingerprint(record["source"], context.repository)
+            for evidence_id, record in evidence.items()
+            if isinstance(record, dict) and record.get("kind") == "repository" and isinstance(record.get("source"), str)
+        }
     decisions = value.get("decisions")
     if isinstance(decisions, dict):
         for record in decisions.values():
@@ -1095,7 +1100,47 @@ def _dirty_fingerprint(repo: Path) -> str:
     )
     if process.returncode:
         raise PlanGraphError("cannot fingerprint repository dirty state")
-    return hashlib.sha256(process.stdout).hexdigest()
+    digest = hashlib.sha256(process.stdout)
+    for row in process.stdout.split(b"\0"):
+        if len(row) >= 4:
+            source = row[3:].decode("utf-8", "surrogateescape")
+            digest.update(_repository_source_fingerprint(source, repo).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _repository_source_fingerprint(source: str, repository: Path) -> str:
+    records: dict[str, str] = {}
+    root = repository.resolve()
+
+    def capture(path: Path) -> None:
+        relative = path.relative_to(root).as_posix()
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            records[relative] = "missing"
+            return
+        if stat.S_ISLNK(info.st_mode):
+            records[relative] = "symlink:" + os.readlink(path)
+        elif stat.S_ISDIR(info.st_mode):
+            records[relative] = "directory"
+            for child in sorted(path.iterdir()):
+                if child.name != ".git":
+                    capture(child)
+        elif stat.S_ISREG(info.st_mode):
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            records[relative] = f"file:{stat.S_IMODE(info.st_mode)}:{digest.hexdigest()}"
+        else:
+            raise PlanGraphError("repository evidence source is not a regular file or directory")
+
+    try:
+        for source_path in sorted(_repository_source_paths(source, root)):
+            capture(root / source_path)
+    except OSError as error:
+        raise PlanGraphError("cannot fingerprint repository evidence source") from error
+    return _canonical_digest(records)
 
 
 def _validate_receipt(
@@ -1548,7 +1593,7 @@ def _validate_graph_inner(
         raise PlanGraphError("target branch identity mismatch")
 
     baseline = _mapping(value.get("baseline"), "baseline")
-    if set(baseline) != {
+    if set(baseline) - {"evidence_fingerprints"} != {
         "repository_revision",
         "dirty_state_fingerprint",
         "observed_at",
@@ -1579,6 +1624,12 @@ def _validate_graph_inner(
         _text(record.get("result"), "outcome result")
 
     evidence = _mapping(value.get("evidence"), "evidence", allow_empty=False)
+    fingerprints = _mapping(baseline.get("evidence_fingerprints", {}), "repository evidence fingerprints")
+    for evidence_id, fingerprint in fingerprints.items():
+        if evidence_id not in evidence or evidence[evidence_id].get("kind") != "repository":
+            raise PlanGraphError("repository fingerprint references unknown evidence")
+        if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise PlanGraphError("invalid repository evidence fingerprint")
     decision_ids = set(_mapping(value.get("decisions"), "decisions"))
     work_ids = set(_mapping(value.get("work"), "work", allow_empty=False))
     for evidence_id, raw in evidence.items():
@@ -2272,7 +2323,7 @@ def discover_workflow(
     repo: Path, branch: str, state_home: Path | None = None
 ) -> Receipt:
     with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
-        graph = _read_current(transaction)
+        graph = _refresh_repository_state_locked(transaction)
         return _receipt(
             graph,
             transaction,
@@ -2284,7 +2335,40 @@ def load_workflow(
     repo: Path, branch: str, state_home: Path | None = None
 ) -> dict[str, Any]:
     with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
-        return copy.deepcopy(_read_current(transaction))
+        return copy.deepcopy(_refresh_repository_state_locked(transaction))
+
+
+def _stale_repository_evidence(graph: dict[str, Any], context: _RepoContext) -> set[str]:
+    fingerprints = graph["baseline"].get("evidence_fingerprints", {})
+    changed = None
+    stale: set[str] = set()
+    for evidence_id, evidence in graph["evidence"].items():
+        if evidence["kind"] != "repository" or not evidence["fresh"]:
+            continue
+        if evidence_id in fingerprints:
+            if fingerprints[evidence_id] != _repository_source_fingerprint(evidence["source"], context.repository):
+                stale.add(evidence_id)
+        else:
+            if changed is None:
+                changed = _changed_repository_paths(context, graph["baseline"]["repository_revision"])
+            if graph["baseline"]["dirty_state_fingerprint"] != hashlib.sha256(b"").hexdigest() or any(
+                _path_related(evidence["source"], path, context.repository) for path in changed
+            ):
+                stale.add(evidence_id)
+    return stale
+
+
+def _refresh_repository_state_locked(transaction: _Transaction) -> dict[str, Any]:
+    current = _read_current(transaction)
+    stale = _stale_repository_evidence(current, transaction.context)
+    if not stale:
+        return current
+    candidate = copy.deepcopy(current)
+    _invalidate_semantic_dependents(candidate, {("evidence", evidence_id, "revision") for evidence_id in stale})
+    candidate["graph_revision"] = current["graph_revision"] + 1
+    _finalize_graph(candidate, transaction.context, _transaction_provenance_resolver(transaction))
+    _rotate(transaction, current, candidate)
+    return candidate
 
 
 def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tuple[str, ...], ...]]:
@@ -2748,7 +2832,7 @@ def _apply_updates_locked(
         raise PlanGraphError("invalid workflow identity")
     _integer(expected_revision, "expected graph revision", minimum=1)
     normalized, paths = _validated_updates(updates)
-    current = _read_current(transaction)
+    current = _refresh_repository_state_locked(transaction)
     if current["workflow_id"] != workflow_id:
         raise PlanGraphError("workflow identity mismatch")
     actual_previous_revision = current["graph_revision"]
@@ -2847,6 +2931,13 @@ def _apply_updates_locked(
     _validate_typed_repairs(
         current, candidate, normalized, actual_previous_revision
     )
+    for update in normalized:
+        if update.get("_typed") == "refresh-evidence":
+            evidence_id = update["path"][1]
+            record = candidate["evidence"][evidence_id]
+            fingerprints = candidate["baseline"].setdefault("evidence_fingerprints", {})
+            if record["kind"] == "repository":
+                fingerprints[evidence_id] = _repository_source_fingerprint(record["source"], transaction.context.repository)
     # A newly attached execution receipt is produced against the exact graph
     # generation the worker consumed.  Older already-attached receipts remain
     # valid records across later disjoint graph revisions.
@@ -2929,12 +3020,7 @@ def recover_workflow(
             raise PlanGraphError("current generation is valid; recovery is not applicable")
         recovered = copy.deepcopy(previous)
         recovered["graph_revision"] = previous["graph_revision"] + 2
-        changed_paths = _changed_repository_paths(transaction.context, recovered["baseline"]["repository_revision"])
-        stale_evidence = {
-            evidence_id for evidence_id, record in recovered["evidence"].items()
-            if record["kind"] == "repository"
-            and any(_path_related(record["source"], path, transaction.context.repository) for path in changed_paths)
-        }
+        stale_evidence = _stale_repository_evidence(recovered, transaction.context)
         _invalidate_semantic_dependents(
             recovered,
             {("projections", projection_id, "version") for projection_id in recovered["projections"]}
@@ -3059,15 +3145,7 @@ def resume_workflow(
             raise PlanGraphError("workflow is not paused")
         candidate = copy.deepcopy(current)
         candidate["lifecycle"]["state"] = None
-        changed = _changed_repository_paths(
-            transaction.context, candidate["baseline"]["repository_revision"]
-        )
-        stale_evidence = {
-            evidence_id
-            for evidence_id, evidence in candidate["evidence"].items()
-            if evidence["kind"] == "repository"
-            and any(_path_related(evidence["source"], path, transaction.context.repository) for path in changed)
-        }
+        stale_evidence = _stale_repository_evidence(candidate, transaction.context)
         _invalidate_semantic_dependents(
             candidate,
             {("evidence", evidence_id, "revision") for evidence_id in stale_evidence},
