@@ -675,6 +675,7 @@ EXPECTED_AGENTS = {
 }
 
 REVIEW_HANDOFF_PATHS = (
+    "content/skills/review-loop/SKILL.md",
     "content/skills/implement/SKILL.md",
     "content/skills/skill-builder/SKILL.md",
     "content/skills/skill-builder/references/evaluation-rubric.md",
@@ -699,6 +700,7 @@ REVIEW_HANDOFF_CLAUSES = (
     "do not attach binary or opaque review context.",
 )
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
+    "content/skills/review-loop/SKILL.md": "f6e9ac75b0c9f030ae09686633c6671d7b9dfdb26c0399bb6424d83f9a3d5810",
     "content/skills/implement/SKILL.md": "617061608dcf8c468cb712455ec120d1572b1be3df7a9e4daea3ff6511e383ea",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
