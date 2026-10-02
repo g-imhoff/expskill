@@ -115,6 +115,10 @@ PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
 UNSLOP_HOOK_CONFIG_PATH = "codex/hooks/hooks.json"
 UNSLOP_HOOK_SCRIPT_PATH = "codex/hooks/inject_unslop.py"
 THIRD_PARTY_LOCK_PATH = "content/third-party/upstream-lock.json"
+PUBLIC_GRILL_DECLARED_BODY_SHA256 = {
+    "upstream-derived-v1": "12480936945e61f35b95f2dfc70279f778b51b0d8a71437aa39e8feaa83dad93",
+    "bounded-authored-v2": "92e451dc5a18c9e6139146623986c463af28b23628912d23e311875b8f617c63",
+}
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
 LEGACY_PROJECT_IDENTITIES = (
@@ -1148,6 +1152,7 @@ def validate_repository(
             _validate_unslop_hook(plugin_root, errors)
             _validate_authoring_runtime(plugin_root, errors)
             _validate_third_party_sources(plugin_root, errors)
+            _validate_authored_skill_integrity(plugin_root, errors)
             _validate_helper_and_package_layout(plugin_root, errors)
         _validate_public_readme(repository_root, errors)
         _validate_removed_repository_local_skill(repository_root, errors)
@@ -2358,6 +2363,17 @@ def _validate_public_third_party_derivations(
         )
         if not grill.startswith(b"---\nname: grill-me\n") or any(clause not in grill for clause in clauses):
             errors.append("public skill 'grill-me' must retain attributed bounded decision behavior")
+
+
+def _validate_authored_skill_integrity(plugin_root: Path, errors: list[str]) -> None:
+    path = plugin_root / "content" / "skills" / "grill-me" / "SKILL.md"
+    try:
+        content = _without_shared_metadata_block(path.read_bytes())
+    except OSError as error:
+        errors.append(f"public Grill Me authored-wrapper validation failed: {error}")
+        return
+    if hashlib.sha256(content).hexdigest() not in PUBLIC_GRILL_DECLARED_BODY_SHA256.values():
+        errors.append("public skill 'grill-me' differs from its declared derived or authored-wrapper body")
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
