@@ -197,7 +197,7 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             environment = dict(os.environ)
             environment.pop("PLUGIN_ROOT", None)
             skill = (output / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn(
+            self.assertNotIn(
                 "Never create documentation files or add code comments unless the user asked for them.",
                 skill,
             )

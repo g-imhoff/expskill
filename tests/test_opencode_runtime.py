@@ -631,7 +631,7 @@ import(%s).then(async (module) => {
   assert('composed-unslop-effect', output.system.join('\n').includes('<unslop-scope>'));
   const context = { context: [] };
   await hooks['experimental.session.compacting']({ sessionID: 'root-compact' }, context);
-  assert('composed-compacting-effect', context.context.length === 1);
+  assert('composed-compacting-effect', context.context.length === 2);
   const policyArgs = { subagent_type: 'expskill-implementer' };
   await hooks['tool.execute.before'](
     { tool: 'task', sessionID: 'root-policy', callID: 'valid' },

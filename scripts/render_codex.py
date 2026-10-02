@@ -151,6 +151,12 @@ def render_agent(name: str, metadata: Mapping[str, Any], body: str) -> str:
 def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
     package, spec = load_adapter(repo_root)
     content = load_agent_content(package)
+    policy = _read_json(package / "content/policies/authoring-runtime.json", "authoring runtime policy")
+    instructions = policy.get("instructions")
+    if set(policy) != {"schema_version", "instructions"} or policy.get("schema_version") != "authoring-runtime.v1":
+        raise RenderError("authoring runtime policy has an unsupported schema")
+    if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 1000:
+        raise RenderError("authoring runtime instructions must contain 1-1000 characters")
     content_agents = package / "content" / "agents"
     result: dict[str, str] = {}
     for name in EXPECTED_AGENT_NAMES:
@@ -162,7 +168,7 @@ def render_agents(repo_root: Path | str | None = None) -> dict[str, str]:
         result[f"agents/{name}.toml"] = render_agent(
             name,
             {**metadata, "description": shared["description"]},
-            body,
+            f"{body.rstrip()}\n\n{instructions}",
         )
     return result
 

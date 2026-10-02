@@ -111,8 +111,8 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["matcher"], "^(startup|resume|clear|compact)$")
         handlers = groups[0]["hooks"]
-        self.assertEqual(len(handlers), 1)
-        handler = handlers[0]
+        self.assertEqual(len(handlers), 2)
+        handler = handlers[1]
         self.assertEqual(handler["type"], "command")
         self.assertIn("${PLUGIN_ROOT}/codex/hooks/inject_unslop.py", handler["command"])
         self.assertGreaterEqual(handler["additionalContextLimit"], 4000)
@@ -235,8 +235,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
             "machine-readable data, logs, identifiers, API names, quotations, citations, "
             "source excerpts, approved copy, and project-required terminology exactly. "
             "Higher-priority instructions and explicit user formatting or tone choices win. "
-            "Before sending user-facing prose, perform the included self-audit. "
-            "Never create documentation files or add code comments unless the user asked for them.\n\n"
+            "Before sending user-facing prose, perform the included self-audit.\n\n"
             "## Process\n",
             1,
         )

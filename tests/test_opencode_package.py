@@ -1936,8 +1936,20 @@ if (!output.system[0].includes("Always load $expskill:unslop") || output.system[
 }
 const { readFile } = await import("node:fs/promises");
 const skill = await readFile(new URL("./skills/unslop/SKILL.md", import.meta.resolve("opencode-expskill")), "utf8");
-if (!skill.includes("Never create documentation files or add code comments unless the user asked for them.")) {
-  throw new Error("installed Unslop skill omitted the unsolicited documentation and comments rule");
+const authoringRule = "Never create documentation files or add code comments unless the user asked for them.";
+if (skill.includes(authoringRule)) {
+  throw new Error("installed Unslop skill still contains the authoring rule");
+}
+const authoring = await plugin.ExpSkillPlugin({});
+const authored = { system: ["base instructions"] };
+await authoring["experimental.chat.system.transform"]({ sessionID: "packed" }, authored);
+if (!authored.system.join("\\n").includes(authoringRule)) {
+  throw new Error("installed plugin omitted its authoring instructions");
+}
+const authoringCompact = { context: [] };
+await authoring["experimental.session.compacting"]({}, authoringCompact);
+if (!authoringCompact.context.join("\\n").includes(authoringRule)) {
+  throw new Error("installed plugin omitted authoring instructions during compaction");
 }
 const context = { context: [] };
 await hooks["experimental.session.compacting"]({ sessionID: "packed" }, context);
