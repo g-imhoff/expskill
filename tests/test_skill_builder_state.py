@@ -1568,6 +1568,18 @@ def review_payload(
     }
 
 
+def final_review_inputs(helper: ModuleType, state_root: Path, workflow_id: str) -> tuple[dict[str, object], list[dict[str, str]]]:
+    provenance = review_input_provenance(helper, state_root, workflow_id)
+    bindings = review_envelope_bindings(helper, state_root, workflow_id)
+    run = state_root / "live" / workflow_id
+    for role, artifact_type in (("target_scorecard", "target-scorecard"), ("builder_run_conformance", "builder-run-conformance-ledger")):
+        artifact_id, digest = accepted_artifact(helper, state_root, workflow_id, artifact_type)
+        envelope, _ = helper._validate_envelope(run, artifact_id)
+        provenance[role] = {"artifact_id": artifact_id, "artifact_digest": digest, "component_digest": envelope["payload_digest"]}
+        bindings.append({"artifact_id": artifact_id, "digest": digest})
+    return provenance, sorted(bindings, key=lambda binding: binding["artifact_id"])
+
+
 def conformance_payload(
     candidate_digest: str,
     *,
@@ -1981,6 +1993,10 @@ def build_verified_stage(
     tmp_path: Path,
     *,
     triggering_score: int = 10,
+    skip_final_review: bool = False,
+    stop_after_scores: bool = False,
+    stop_before_scores: bool = False,
+    final_review_overrides: dict[str, object] | None = None,
     review_fresh: bool = True,
     verification_fresh: bool = True,
     queued_targets: list[dict[str, str]] | None = None,
@@ -2151,6 +2167,8 @@ def build_verified_stage(
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
+    if stop_before_scores:
+        return state_root, workflow_id, scorecard["sequence"], scorecard
     sequence = helper.transition_run(
         workflow_id=workflow_id,
         expected_sequence=scorecard["sequence"],
@@ -2159,6 +2177,18 @@ def build_verified_stage(
         artifact_ids=["conformance", "scores"],
         state_root=state_root,
     )["sequence"]
+    if stop_after_scores:
+        return state_root, workflow_id, sequence, scorecard
+    if not skip_final_review:
+        provenance, bindings = final_review_inputs(helper, state_root, workflow_id) if not historical_review else (None, current_bindings(helper, state_root, workflow_id))
+        payload = review_payload(candidate["artifact_digest"], schema_version="skill-builder-review.v1" if historical_review else "skill-builder-review.v3", input_artifacts=provenance)
+        payload.update(final_review_overrides or {})
+        final_review = retain_json(helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence,
+                                   artifact_id="post-score-review", artifact_type="review-record", payload=payload, input_bindings=bindings)
+        sequence = helper.transition_run(workflow_id=workflow_id, expected_sequence=final_review["sequence"], event="accept-final-review",
+                                         destination_stage="final-reviewed", artifact_ids=["post-score-review"], state_root=state_root)["sequence"]
+    else:
+        final_review = review
     verification = retain_json(
         helper,
         state_root=state_root,
@@ -2204,7 +2234,7 @@ def build_verified_stage(
             )["artifact_index"]["evaluation"]["digest"],
             conformance_digest=conformance["artifact_digest"],
             scorecard_digest=scorecard["artifact_digest"],
-            review_digest=review["artifact_digest"],
+            review_digest=final_review["artifact_digest"],
             verification_digest=verification["artifact_digest"],
             authorized_delivery_scope=release_scope
             if release_scope is not None
@@ -3016,24 +3046,13 @@ def test_finalization_rejects_false_all_ten_scorecard_without_transition(
 ) -> None:
     """A score label cannot hide a category below the required independent 10."""
     helper = load_helper()
-    state_root, workflow_id, sequence, release = build_verified_stage(
-        helper, tmp_path, triggering_score=9
-    )
-
-    try:
-        helper.finalize_run(
-            workflow_id=workflow_id,
-            expected_sequence=sequence,
-            release_artifact_id="release",
-            state_root=state_root,
-        )
-    except helper.RunStateError as error:
-        assert "score" in str(error)
-    else:
-        raise AssertionError("finalization accepted a category below 10")
+    with pytest.raises(helper.RunStateError, match="score"):
+        build_verified_stage(helper, tmp_path, triggering_score=9)
+    state_root = tmp_path / "state"
+    workflow_id = next((state_root / "live").iterdir()).name
     loaded = helper.load_run(workflow_id=workflow_id, state_root=state_root)
-    assert loaded["head_sequence"] == sequence
-    assert loaded["stage"] == "verified"
+    assert loaded["stage"] == "scored"
+    assert all(receipt["event"] != "accept-final-review" for receipt in helper._load_receipt_chain(state_root / "live" / workflow_id))
     assert (state_root / "live" / workflow_id).is_dir()
 
 
@@ -5368,10 +5387,11 @@ def test_finalization_rejects_every_blocking_review_severity(tmp_path: Path) -> 
     helper = load_helper()
     for severity in ("critical", "important", "high", "medium"):
         case_root = tmp_path / severity
-        state_root, workflow_id, sequence, _ = build_verified_stage(
-            helper,
-            case_root,
-            review_findings=[
+        with pytest.raises(helper.RunStateError, match="review|finding"):
+            build_verified_stage(
+                helper,
+                case_root,
+                review_findings=[
                 {
                     "severity": severity,
                     "release_blocking": True,
@@ -5380,20 +5400,7 @@ def test_finalization_rejects_every_blocking_review_severity(tmp_path: Path) -> 
                     "correction": "repair before release",
                     "affected_target_criteria": ["safety"],
                 }
-            ],
-        )
-        try:
-            helper.finalize_run(
-                workflow_id=workflow_id,
-                expected_sequence=sequence,
-                release_artifact_id="release",
-                state_root=state_root,
-            )
-        except helper.RunStateError as error:
-            assert "review" in str(error) or "finding" in str(error)
-        else:
-            raise AssertionError(
-                f"finalization accepted a release-blocking {severity} finding"
+                ],
             )
 
 
@@ -5403,10 +5410,11 @@ def test_finalization_rejects_material_findings_despite_caller_flag(
 ) -> None:
     """High and Medium severity, not a caller boolean, determine release blocking."""
     helper = load_helper()
-    state_root, workflow_id, sequence, _ = build_verified_stage(
-        helper,
-        tmp_path,
-        review_findings=[
+    with pytest.raises(helper.RunStateError, match="review|finding"):
+        build_verified_stage(
+            helper,
+            tmp_path,
+            review_findings=[
             {
                 "severity": severity,
                 "release_blocking": False,
@@ -5415,15 +5423,7 @@ def test_finalization_rejects_material_findings_despite_caller_flag(
                 "correction": "repair before release",
                 "affected_target_criteria": ["SA9"],
             }
-        ],
-    )
-
-    with pytest.raises(helper.RunStateError, match="review|finding"):
-        helper.finalize_run(
-            workflow_id=workflow_id,
-            expected_sequence=sequence,
-            release_artifact_id="release",
-            state_root=state_root,
+            ],
         )
 
 
@@ -5466,17 +5466,8 @@ def test_finalization_requires_exact_conformance_and_category_criteria(
 ) -> None:
     """A passing subset or caller-invented gate cannot satisfy the release rubric."""
     helper = load_helper()
-    state_root, workflow_id, sequence, _ = build_verified_stage(
-        helper, tmp_path / case_name, **options
-    )
-
     with pytest.raises(helper.RunStateError, match="conformance|criterion|score"):
-        helper.finalize_run(
-            workflow_id=workflow_id,
-            expected_sequence=sequence,
-            release_artifact_id="release",
-            state_root=state_root,
-        )
+        build_verified_stage(helper, tmp_path / case_name, **options)
 
 
 def test_finalization_rejects_release_without_exact_target_binding(tmp_path: Path) -> None:
@@ -6963,6 +6954,125 @@ def test_scorecard_accepts_relevant_selective_criterion_evidence(tmp_path: Path)
         },
     )
     assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "verified"
+
+
+def test_prescore_review_alone_cannot_authorize_verification(tmp_path: Path) -> None:
+    helper = load_helper()
+    with pytest.raises(helper.RunStateError, match="final.review|stage|transition"):
+        build_verified_stage(helper, tmp_path, skip_final_review=True)
+
+
+def test_final_review_is_postscore_pinned_and_selected_by_release(tmp_path: Path) -> None:
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    run = state_root / "live" / workflow_id
+    pre_id, pre_envelope = helper._event_artifact(run, "accept-review", "review-record")
+    final_id, final_envelope = helper._event_artifact(run, "accept-final-review", "review-record")
+    assert pre_id != final_id
+    assert helper._artifact_payload_json(run, "scores")["review_digest"] == pre_envelope["envelope_digest"]
+    assert helper._artifact_payload_json(run, "release")["review_digest"] == final_envelope["envelope_digest"]
+    score_receipt = next(receipt for receipt in helper._load_receipt_chain(run) if receipt["event"] == "accept-scores")
+    final_receipt = next(receipt for receipt in helper._load_receipt_chain(run) if receipt["event"] == "accept-final-review")
+    assert final_envelope["created_sequence"] > score_receipt["sequence"]
+    verification_envelope, _ = helper._validate_envelope(run, "verification")
+    assert verification_envelope["created_sequence"] > final_receipt["sequence"]
+    finalized = helper.finalize_run(workflow_id=workflow_id, expected_sequence=sequence, release_artifact_id="release", state_root=state_root)
+    assert finalized["stage"] == "finalized"
+
+
+@pytest.mark.parametrize("overrides", ({"valid": False, "verdict": None}, {"fresh": False}, {"candidate_revision": "stale-candidate"}))
+def test_invalid_or_stale_final_review_never_advances(tmp_path: Path, overrides: dict[str, object]) -> None:
+    helper = load_helper()
+    with pytest.raises(helper.RunStateError, match="review|stale|invalid"):
+        build_verified_stage(helper, tmp_path, final_review_overrides=overrides)
+    state_root = tmp_path / "state"
+    workflow_id = next((state_root / "live").iterdir()).name
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert current["stage"] == "scored"
+    assert not any(receipt["event"] == "accept-final-review" for receipt in helper._load_receipt_chain(state_root / "live" / workflow_id))
+
+
+def test_negative_final_review_blocks_verification_and_invalidates_scores_for_repair(tmp_path: Path) -> None:
+    helper = load_helper()
+    finding = {"severity": "medium", "release_blocking": False, "evidence": [fixture_digest(REVIEW_FINDING_BYTES)],
+               "impact": "material accepted behavior fails", "correction": "repair the isolated candidate", "affected_target_criteria": ["TR1"]}
+    with pytest.raises(helper.RunStateError, match="final review.*ready"):
+        build_verified_stage(helper, tmp_path, final_review_overrides={"verdict": "not ready", "findings": [finding]})
+    state_root = tmp_path / "state"
+    workflow_id = next((state_root / "live").iterdir()).name
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert current["stage"] == "final-reviewed"
+    repaired = helper.invalidate_run(workflow_id=workflow_id, expected_sequence=current["head_sequence"], change_kind="review",
+                                    changed_artifact_id="post-score-review", reason="mapped final finding requires repair", state_root=state_root)
+    assert repaired["stage"] == "trials"
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    assert current["artifact_index"]["scores"]["derived_status"] == "invalidated"
+    assert current["artifact_index"]["conformance"]["derived_status"] == "invalidated"
+
+
+@pytest.mark.parametrize("role", ("target_scorecard", "builder_run_conformance"))
+def test_final_review_requires_current_score_and_conformance_provenance(tmp_path: Path, role: str) -> None:
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path, stop_after_scores=True)
+    run = state_root / "live" / workflow_id
+    candidate = helper._artifact_payload_json(run, "scores")["candidate_digest"]
+    provenance, bindings = final_review_inputs(helper, state_root, workflow_id)
+    provenance[role]["component_digest"] = "a" * 64
+    retained = retain_json(helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence, artifact_id="stale-final",
+                           artifact_type="review-record", payload=review_payload(candidate, schema_version="skill-builder-review.v3", input_artifacts=provenance), input_bindings=bindings)
+    with pytest.raises(helper.RunStateError, match="provenance|stale"):
+        helper.transition_run(workflow_id=workflow_id, expected_sequence=retained["sequence"], event="accept-final-review",
+                              destination_stage="final-reviewed", artifact_ids=["stale-final"], state_root=state_root)
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["head_sequence"] == retained["sequence"]
+
+
+def test_final_review_retained_before_scoring_acceptance_is_rejected(tmp_path: Path) -> None:
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path, stop_before_scores=True)
+    run = state_root / "live" / workflow_id
+    candidate = helper._artifact_payload_json(run, "scores")["candidate_digest"]
+    provenance, bindings = final_review_inputs(helper, state_root, workflow_id)
+    retained = retain_json(helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence, artifact_id="early-final",
+                           artifact_type="review-record", payload=review_payload(candidate, schema_version="skill-builder-review.v3", input_artifacts=provenance), input_bindings=bindings)
+    scored = helper.transition_run(workflow_id=workflow_id, expected_sequence=retained["sequence"], event="accept-scores", destination_stage="scored",
+                                   artifact_ids=["conformance", "scores"], state_root=state_root)
+    with pytest.raises(helper.RunStateError, match="after.*scores"):
+        helper.transition_run(workflow_id=workflow_id, expected_sequence=scored["sequence"], event="accept-final-review", destination_stage="final-reviewed",
+                              artifact_ids=["early-final"], state_root=state_root)
+
+
+def test_verification_retained_before_final_review_acceptance_is_rejected(tmp_path: Path) -> None:
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper, tmp_path, stop_after_scores=True
+    )
+    run = state_root / "live" / workflow_id
+    candidate_digest = helper._artifact_payload_json(run, "scores")["candidate_digest"]
+    provenance, bindings = final_review_inputs(helper, state_root, workflow_id)
+    review = retain_json(
+        helper, state_root=state_root, workflow_id=workflow_id, sequence=sequence,
+        artifact_id="final-review-early-verification", artifact_type="review-record",
+        payload=review_payload(candidate_digest, schema_version="skill-builder-review.v3", input_artifacts=provenance),
+        input_bindings=bindings,
+    )
+    verification = retain_json(
+        helper, state_root=state_root, workflow_id=workflow_id, sequence=review["sequence"],
+        artifact_id="early-verification", artifact_type="verification-record",
+        payload=verification_payload(candidate_digest),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+    accepted = helper.transition_run(
+        workflow_id=workflow_id, expected_sequence=verification["sequence"],
+        event="accept-final-review", destination_stage="final-reviewed",
+        artifact_ids=["final-review-early-verification"], state_root=state_root,
+    )
+    with pytest.raises(helper.RunStateError, match="verification.*follow.*final review"):
+        helper.transition_run(
+            workflow_id=workflow_id, expected_sequence=accepted["sequence"],
+            event="accept-verification", destination_stage="verified",
+            artifact_ids=["early-verification"], state_root=state_root,
+        )
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "final-reviewed"
 
 
 @pytest.mark.parametrize("mutation", ("criterion", "parameters", "cases", "observations", "unknown-parameter", "unknown-case", "unknown-observation", "duplicate", "parameter-coverage", "case-coverage"))

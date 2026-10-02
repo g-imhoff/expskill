@@ -47,6 +47,7 @@ LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
 TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
 LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
 REVIEW_SCHEMA = "skill-builder-review.v2"
+FINAL_REVIEW_SCHEMA = "skill-builder-review.v3"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
 SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
 LEGACY_EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v1"
@@ -115,6 +116,7 @@ _STAGES = (
     "trials",
     "reviewed",
     "scored",
+    "final-reviewed",
     "verified",
     "finalized",
     "delivered",
@@ -132,7 +134,8 @@ _STAGE_TRANSITIONS = {
     "complete-trials": ("candidate", "trials"),
     "accept-review": ("trials", "reviewed"),
     "accept-scores": ("reviewed", "scored"),
-    "accept-verification": ("scored", "verified"),
+    "accept-final-review": ("scored", "final-reviewed"),
+    "accept-verification": ("final-reviewed", "verified"),
 }
 _EVENT_ARTIFACT_TYPES = {
     "capture-baseline": ("baseline-report",),
@@ -146,6 +149,7 @@ _EVENT_ARTIFACT_TYPES = {
     "complete-trials": ("trial-pack",),
     "accept-review": ("review-record",),
     "accept-scores": ("builder-run-conformance-ledger", "target-scorecard"),
+    "accept-final-review": ("review-record",),
     "accept-verification": ("verification-record",),
 }
 
@@ -165,7 +169,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     },
     "trial-pack": {LEGACY_TRIAL_SCHEMA, TRIAL_SCHEMA},
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
-    "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA},
+    "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA, FINAL_REVIEW_SCHEMA},
     "target-scorecard": {LEGACY_SCORECARD_SCHEMA, SCORECARD_SCHEMA},
     "verification-record": "skill-builder-verification.v1",
     "release-record": "skill-builder-release.v1",
@@ -2292,6 +2296,12 @@ def _validate_artifact_schema_pairing(
     if marker is None:
         return
     marker_name, default_schema = marker
+    if (
+        artifact_type == "review-record"
+        and payload["schema_version"] == FINAL_REVIEW_SCHEMA
+        and resolution.get(marker_name) == REVIEW_SCHEMA
+    ):
+        return
     if payload["schema_version"] != resolution.get(marker_name, default_schema):
         label = {
             "candidate-record": "candidate",
@@ -3351,6 +3361,23 @@ def _event_artifact(
     raise RunStateError(f"current {artifact_type} binding is missing")
 
 
+def _accepted_event_sequence(
+    run: Path,
+    event: str,
+    event_artifacts: dict[str, dict[str, Any]] | None,
+) -> int | None:
+    if event_artifacts is not None:
+        return event_artifacts.get(event, {}).get("sequence")
+    return next(
+        (
+            receipt["sequence"]
+            for receipt in reversed(_load_receipt_chain(run))
+            if receipt["event"] == event
+        ),
+        None,
+    )
+
+
 def _require_retained_raw_digests(
     run: Path,
     artifact_id: str,
@@ -3522,6 +3549,8 @@ def _validate_review_binding(
     current: dict[str, Any],
     review_id: str,
     event_artifacts: dict[str, dict[str, Any]] | None = None,
+    *,
+    final_review: bool = False,
 ) -> None:
     review_envelope, _ = _validate_envelope(run, review_id)
     review = _artifact_payload_json(run, review_id)
@@ -3550,6 +3579,8 @@ def _validate_review_binding(
     required_review_schema = resolution.get(
         "review_record_schema", LEGACY_REVIEW_SCHEMA
     )
+    if final_review and required_review_schema == REVIEW_SCHEMA:
+        required_review_schema = FINAL_REVIEW_SCHEMA
     if review["schema_version"] != required_review_schema:
         raise RunStateError(
             "review schema does not match the run's versioned semantics"
@@ -3572,6 +3603,17 @@ def _validate_review_binding(
         candidate_id: candidate_envelope,
         trials_id: trials_envelope,
     }
+    final_sources: dict[str, tuple[str, dict[str, Any]]] = {}
+    if final_review:
+        for role, artifact_type in (
+            ("target_scorecard", "target-scorecard"),
+            ("builder_run_conformance", "builder-run-conformance-ledger"),
+        ):
+            artifact_id, envelope = _event_artifact(
+                run, "accept-scores", artifact_type, event_artifacts
+            )
+            sources[artifact_id] = envelope
+            final_sources[role] = (artifact_id, envelope)
     for artifact_id, envelope in sources.items():
         record = current["artifact_index"].get(artifact_id)
         if (
@@ -3695,6 +3737,10 @@ def _validate_review_binding(
                 evaluation["rubric_digest"],
             ),
         }
+        for role, (artifact_id, envelope) in final_sources.items():
+            expected_provenance[role] = binding(
+                artifact_id, envelope, envelope["payload_digest"]
+            )
         if review["input_artifacts"] != expected_provenance:
             raise RunStateError(
                 "review input provenance is missing, extra, substituted, or stale"
@@ -3727,6 +3773,10 @@ def _validate_review_binding(
                 evaluation_id: evaluation_envelope["envelope_digest"],
                 candidate_id: candidate_envelope["envelope_digest"],
                 trials_id: trials_envelope["envelope_digest"],
+                **{
+                    artifact_id: envelope["envelope_digest"]
+                    for artifact_id, envelope in final_sources.values()
+                },
             },
             "review record",
         )
@@ -3737,6 +3787,22 @@ def _validate_review_binding(
         for digest in finding["evidence"]
     )
     _require_retained_raw_digests(run, review_id, claims, "review record")
+    if final_review:
+        _require_input_bindings(
+            review_envelope,
+            {
+                artifact_id: envelope["envelope_digest"]
+                for artifact_id, envelope in final_sources.values()
+            },
+            "final review",
+        )
+        score_sequence = _accepted_event_sequence(
+            run, "accept-scores", event_artifacts
+        )
+        if score_sequence is None or review_envelope["created_sequence"] <= score_sequence:
+            raise RunStateError(
+                "final review must be retained after the current accepted scores"
+            )
 
 
 def _validate_score_bindings(
@@ -3836,6 +3902,8 @@ def _validate_score_bindings(
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
+            if criterion_id not in evaluation["criterion_evidence_map"]:
+                raise RunStateError("scorecard contains an unfrozen criterion")
             frozen_binding = evaluation["criterion_evidence_map"][criterion_id]
             selected_case_ids = sorted(frozen_binding["case_evidence"])
             selected_cases = [cases_by_id[case_id] for case_id in selected_case_ids]
@@ -3880,8 +3948,27 @@ def _validate_verification_binding(
         run, "complete-trials", "trial-pack", event_artifacts
     )
     review_id, review_envelope = _event_artifact(
-        run, "accept-review", "review-record", event_artifacts
+        run, "accept-final-review", "review-record", event_artifacts
     )
+    _validate_score_release_readiness(run, current, event_artifacts)
+    _validate_review_binding(
+        run, current, review_id, event_artifacts, final_review=True
+    )
+    final_review_sequence = _accepted_event_sequence(
+        run, "accept-final-review", event_artifacts
+    )
+    if (
+        final_review_sequence is None
+        or verification_envelope["created_sequence"] <= final_review_sequence
+    ):
+        raise RunStateError("verification must follow the accepted final review")
+    review = _artifact_payload_json(run, review_id)
+    if review["verdict"] != "ready" or any(
+        finding["release_blocking"]
+        or finding["severity"] in _MATERIAL_REVIEW_SEVERITIES
+        for finding in review["findings"]
+    ):
+        raise RunStateError("final review is not ready for verification")
     conformance_id, conformance_envelope = _event_artifact(
         run, "accept-scores", "builder-run-conformance-ledger", event_artifacts
     )
@@ -4226,6 +4313,15 @@ def _validate_transition_semantics(
             _artifact_id_of_type(run, artifact_ids, "target-scorecard"),
             event_artifacts,
         )
+    elif event == "accept-final-review":
+        _validate_score_release_readiness(run, current, event_artifacts)
+        _validate_review_binding(
+            run,
+            current,
+            _artifact_id_of_type(run, artifact_ids, "review-record"),
+            event_artifacts,
+            final_review=True,
+        )
     elif event == "accept-verification":
         _validate_verification_binding(
             run,
@@ -4432,6 +4528,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
             event_artifacts[event]["authority_event_digest"] = receipt[
                 "authority_event_digest"
             ]
+            event_artifacts[event]["sequence"] = receipt["sequence"]
     for artifact_id, record in artifact_status.items():
         if (
             record["type"] != "candidate-record"
@@ -5657,17 +5754,17 @@ _INVALIDATION_RULES = {
     },
     "verification-input": {
         "changed_types": {"verification-record"},
-        "destination": "scored",
+        "destination": "final-reviewed",
         "invalidates": {"release-record"},
     },
     "verification-result": {
         "changed_types": {"verification-record"},
-        "destination": "scored",
+        "destination": "final-reviewed",
         "invalidates": {"release-record"},
     },
     "verification": {
         "changed_types": {"verification-record"},
-        "destination": "scored",
+        "destination": "final-reviewed",
         "invalidates": {"release-record"},
     },
     "delivery-intent": {
@@ -5700,6 +5797,19 @@ def _require_selected_change_artifact(
     event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     event = _CURRENT_EVENT_BY_ARTIFACT_TYPE.get(artifact_type)
+    if artifact_type == "review-record":
+        try:
+            final_id, _ = _event_artifact(
+                run, "accept-final-review", "review-record", event_artifacts
+            )
+        except RunStateError:
+            final_id = None
+        if (
+            final_id is not None
+            and current["artifact_index"].get(final_id, {}).get("derived_status")
+            == "accepted"
+        ):
+            event = "accept-final-review"
     if event is not None:
         selected_id, selected_envelope = _event_artifact(
             run, event, artifact_type, event_artifacts
@@ -5982,33 +6092,19 @@ def _current_event_artifact(
     return artifact_id, envelope, _artifact_payload_json(run, artifact_id)
 
 
-def _validate_final_evidence(
+def _validate_score_release_readiness(
     run: Path,
     current: dict[str, Any],
-    release_artifact_id: str,
     event_artifacts: dict[str, dict[str, Any]] | None = None,
-) -> list[str]:
+) -> tuple[str, dict[str, Any], dict[str, Any], str, dict[str, Any], dict[str, Any]]:
     resolution, _ = _resolution_payload(run, current["workflow_id"])
-    legacy_final_semantics = (
-        resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
-    )
-    candidate_id, candidate_envelope, candidate = _current_event_artifact(
+    legacy_final_semantics = resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
+    _, candidate_envelope, candidate = _current_event_artifact(
         run, current, "accept-candidate", "candidate-record", event_artifacts
     )
     candidate_digest = candidate_envelope["envelope_digest"]
-    candidate_revision = candidate.get("candidate_revision")
-    if not isinstance(candidate_revision, str) or not candidate_revision:
-        raise RunStateError("candidate revision is missing")
-    trials_id, _, trials = _current_event_artifact(
-        run, current, "complete-trials", "trial-pack", event_artifacts
-    )
-    if (
-        trials.get("candidate_digest") != candidate_digest
-        or trials.get("candidate_revision") != candidate_revision
-        or trials.get("status") != "pass"
-    ):
-        raise RunStateError("trial evidence is stale or failing")
-    review_id, review_envelope, review = _current_event_artifact(
+    candidate_revision = candidate["candidate_revision"]
+    review_id, _, review = _current_event_artifact(
         run, current, "accept-review", "review-record", event_artifacts
     )
     _validate_review_binding(run, current, review_id, event_artifacts)
@@ -6035,7 +6131,7 @@ def _validate_final_evidence(
             for item in findings
         )
     ):
-        raise RunStateError("final review is stale, invalid, or not ready")
+        raise RunStateError("pre-score review is stale, invalid, or not ready")
     conformance_id, conformance_envelope, conformance = _current_event_artifact(
         run,
         current,
@@ -6073,7 +6169,6 @@ def _validate_final_evidence(
     if (
         scorecard.get("candidate_digest") != candidate_digest
         or scorecard.get("candidate_revision") != candidate_revision
-        or scorecard.get("review_digest") != review_envelope["envelope_digest"]
         or not isinstance(categories, list)
         or [item.get("name") if isinstance(item, dict) else None for item in categories]
         != list(_SCORE_CATEGORIES)
@@ -6111,6 +6206,72 @@ def _validate_final_evidence(
             or not criterion_results_pass
         ):
             raise RunStateError("every target score and binary criterion must pass at 10")
+    return (
+        conformance_id, conformance_envelope, conformance,
+        scorecard_id, scorecard_envelope, scorecard,
+    )
+
+
+def _validate_final_evidence(
+    run: Path,
+    current: dict[str, Any],
+    release_artifact_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    legacy_final_semantics = (
+        resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
+    )
+    candidate_id, candidate_envelope, candidate = _current_event_artifact(
+        run, current, "accept-candidate", "candidate-record", event_artifacts
+    )
+    candidate_digest = candidate_envelope["envelope_digest"]
+    candidate_revision = candidate.get("candidate_revision")
+    if not isinstance(candidate_revision, str) or not candidate_revision:
+        raise RunStateError("candidate revision is missing")
+    trials_id, _, trials = _current_event_artifact(
+        run, current, "complete-trials", "trial-pack", event_artifacts
+    )
+    if (
+        trials.get("candidate_digest") != candidate_digest
+        or trials.get("candidate_revision") != candidate_revision
+        or trials.get("status") != "pass"
+    ):
+        raise RunStateError("trial evidence is stale or failing")
+    review_id, review_envelope, review = _current_event_artifact(
+        run, current, "accept-final-review", "review-record", event_artifacts
+    )
+    _validate_review_binding(
+        run, current, review_id, event_artifacts, final_review=True
+    )
+    findings = review.get("findings")
+    reject_material_severity = not legacy_final_semantics
+    if (
+        review.get("candidate_digest") != candidate_digest
+        or review.get("candidate_revision") != candidate_revision
+        or review.get("independent") is not True
+        or review.get("read_only") is not True
+        or review.get("valid") is not True
+        or review.get("fresh") is not True
+        or review.get("verdict") != "ready"
+        or not isinstance(findings, list)
+        or any(
+            isinstance(item, dict)
+            and (
+                item.get("release_blocking") is True
+                or (
+                    reject_material_severity
+                    and item.get("severity") in _MATERIAL_REVIEW_SEVERITIES
+                )
+            )
+            for item in findings
+        )
+    ):
+        raise RunStateError("final review is stale, invalid, or not ready")
+    (
+        conformance_id, conformance_envelope, conformance,
+        scorecard_id, scorecard_envelope, scorecard,
+    ) = _validate_score_release_readiness(run, current, event_artifacts)
     verification_id, verification_envelope, verification = _current_event_artifact(
         run, current, "accept-verification", "verification-record", event_artifacts
     )
