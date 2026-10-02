@@ -13,6 +13,7 @@ from scripts.validate import validate_repository
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
 IMPLEMENT = PLUGIN / "content" / "skills" / "implement" / "SKILL.md"
+REVIEW_LOOP = PLUGIN / "content" / "skills" / "review-loop" / "SKILL.md"
 SKILL_BUILDER = PLUGIN / "content" / "skills" / "skill-builder" / "SKILL.md"
 EVALUATION_RUBRIC = (
     PLUGIN
@@ -40,7 +41,7 @@ class ReviewContextContractTests(unittest.TestCase):
         return temporary
 
     def test_every_review_producer_has_the_same_hard_context_budget(self) -> None:
-        for path in (IMPLEMENT, SKILL_BUILDER, EVALUATION_RUBRIC):
+        for path in (IMPLEMENT, REVIEW_LOOP, SKILL_BUILDER, EVALUATION_RUBRIC):
             body = normalized(path)
             with self.subTest(path=path):
                 self.assertIn("aggregate authored review handoff", body)
@@ -77,7 +78,7 @@ class ReviewContextContractTests(unittest.TestCase):
             "terminal output",
             "transcripts",
         )
-        for path in (IMPLEMENT, SKILL_BUILDER, EVALUATION_RUBRIC):
+        for path in (IMPLEMENT, REVIEW_LOOP, SKILL_BUILDER, EVALUATION_RUBRIC):
             body = normalized(path)
             with self.subTest(path=path):
                 for field in required_fields:
@@ -137,6 +138,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_repository_validator_rejects_a_removed_handoff_limit(self) -> None:
         guarded_paths = (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"
@@ -177,6 +179,7 @@ class ReviewContextContractTests(unittest.TestCase):
         )
         guarded_paths = (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"
@@ -234,6 +237,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_repository_validator_rejects_appended_policy_contradictions(self) -> None:
         producer_paths = (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"
@@ -281,6 +285,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_repository_validator_rejects_removed_inherited_context_guards(self) -> None:
         producer_paths = (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"
@@ -353,6 +358,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_canonical_validation_preserves_review_markdown_structure(self) -> None:
         for relative_path in (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"
@@ -433,6 +439,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_review_contract_heading_must_be_live_top_level_markdown(self) -> None:
         guarded_paths = (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"
@@ -460,6 +467,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_review_contract_heading_requires_an_exact_column_zero_line(self) -> None:
         guarded_paths = (
             Path("plugins/expskill/content/skills/implement/SKILL.md"),
+            Path("plugins/expskill/content/skills/review-loop/SKILL.md"),
             Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
             Path(
                 "plugins/expskill/content/skills/skill-builder/"

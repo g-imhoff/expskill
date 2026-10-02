@@ -202,8 +202,10 @@ Invoke a skill directly when you know what you want:
   choice before structural or breaking changes.
 - `$review` adversarially inspects a user-defined code scope and saves an
   evidence-backed Markdown report with ratings, without fixes or fix advice.
-- `$review-loop` runs adversarial category reviewers, fixes each top issue,
-  and repeats until every score reaches 9 of 10 before a PR.
+- `$review-loop` runs independent category reviewers, keeps every material
+  finding in a blocker ledger, and repairs them. Its gate requires current
+  valid reviews, passing checks, every score at 9 of 10, and no open High or
+  Medium finding before a PR.
 - `$test` exercises already-implemented behavior through realistic composed
   product paths and reports revision-bound evidence without repairing production
   code.
@@ -284,7 +286,9 @@ owns optional transition selection; the individual skills do not silently open
 the whole pipeline.
 
 Correct checks its own repairs. When a repair needs a consequential choice,
-it explains a sound limited fix and its limitations, or offers Brainstorm.
+it explains the unresolved consequences and a sound limited fix if one exists.
+Known authorized structural solutions can hand off to Plan or Implement.
+Brainstorm is offered only for unresolved conceptual direction.
 
 Review runs through the invoking agent and leaves Implement's internal reviewer
 alone. Reports live in the installed Review skill's `tmp/reports/` directory,
