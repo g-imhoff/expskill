@@ -2923,6 +2923,7 @@ def _invalidate_semantic_dependents(
     changed: set[tuple[str, ...]],
     *,
     preserve_evidence: set[str] | None = None,
+    new_decisions: set[str] | None = None,
 ) -> None:
     """Propagate material meaning changes through the affected plan subgraph."""
     semantic_roots = {
@@ -3043,7 +3044,8 @@ def _invalidate_semantic_dependents(
                 record["record_version"] += 1
             record["fresh"] = False
             record["operation_receipt"] = None
-    for decision_id in decision_ids:
+    inserted_decisions = (new_decisions or set()) - explicit_ids
+    for decision_id in decision_ids - inserted_decisions:
         if decision_id in decisions:
             record = decisions[decision_id]
             if not record["stale"]:
@@ -3052,7 +3054,7 @@ def _invalidate_semantic_dependents(
             record["revalidation_required"] = False
             record["revalidation"] = None
             record["operation_receipt"] = None
-    for decision_id in revalidation_ids - decision_ids:
+    for decision_id in revalidation_ids - decision_ids - inserted_decisions:
         record = decisions[decision_id]
         if not record["stale"]:
             record["revalidation_required"] = True
@@ -3200,6 +3202,13 @@ def _apply_updates_locked(
         candidate,
         semantic_changes,
         preserve_evidence=preserved_evidence,
+        new_decisions={
+            decision_id for decision_id, record in candidate["decisions"].items()
+            if decision_id not in current["decisions"] and record.get("version") == 1
+            and record.get("confirmed_version") is None and record.get("stale") is False
+            and record.get("confirmation") is None and record.get("revalidation") is None
+            and not record.get("revalidation_required")
+        },
     )
     # Structural semantics impose a floor even when a caller supplies false
     # booleans.  Escalation is retained; lowering is rejected below.
