@@ -1042,10 +1042,13 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
                 record.setdefault("operation_receipt", None)
     projections = value.get("projections")
     if isinstance(projections, dict):
-        for record in projections.values():
+        for projection_id, record in projections.items():
             if isinstance(record, dict):
                 record.setdefault("decision_versions", {})
                 record.setdefault("operation_receipt", None)
+                if isinstance(record.get("presentation"), str):
+                    record["presentation"] = issue_projection_presentation(
+                        graph=value, projection_id=projection_id, text=record["presentation"])
     lifecycle = value.get("lifecycle")
     if lifecycle is None:
         lifecycle = {}
@@ -1143,6 +1146,49 @@ def _record_payload_digest(record: dict[str, Any]) -> str:
     return _canonical_digest(
         {key: item for key, item in record.items() if key != "operation_receipt"}
     )
+
+
+def _projection_source_digest(graph: dict[str, Any], projection: dict[str, Any]) -> str:
+    records: dict[str, Any] = {}
+    covers = _id_list(projection.get("covers"), "projection coverage", allow_empty=False)
+    versions = _mapping(projection.get("decision_versions"), "projection decision versions")
+    administrative = {"operation_receipt", "fresh", "stale", "confirmed_version", "evidence", "execution_required", "observed_at", "record_version"}
+    families = {family: _mapping(graph.get(family), family) for family in ("outcomes", "evidence", "decisions", "work", "proof")}
+    pending = [(family, record_id) for family, values in families.items() if family != "evidence" for record_id in values if record_id in covers]
+    visited: set[tuple[str, str]] = set()
+    links = {
+        "outcomes": {}, "evidence": {}, "decisions": {"based_on": "evidence"},
+        "work": {"covers": "outcomes", "requires": "work", "based_on": "evidence", "decisions": "decisions", "proof": "proof"},
+        "proof": {"covers": "outcomes", "required_by": "work"},
+    }
+    while pending:
+        family, record_id = pending.pop()
+        if (family, record_id) in visited:
+            continue
+        visited.add((family, record_id))
+        if record_id not in families[family]:
+            raise PlanGraphError("projection source references an unknown record")
+        record = _mapping(families[family][record_id], f"projection source {record_id}")
+        records.setdefault(family, {})[record_id] = {key: item for key, item in record.items() if key not in administrative}
+        for field, target_family in links[family].items():
+            pending.extend((target_family, target) for target in _id_list(record.get(field), f"projection source {field}"))
+    try:
+        return _canonical_digest({"covers": covers, "decision_versions": versions, "records": records})
+    except (TypeError, ValueError) as error:
+        raise PlanGraphError("malformed projection source meaning") from error
+
+
+def issue_projection_presentation(*, graph: dict[str, Any], projection_id: str, text: str) -> dict[str, str]:
+    _text(text, "projection presented wording")
+    projections = _mapping(graph.get("projections"), "projections")
+    if projection_id not in projections:
+        raise PlanGraphError("unknown projection presentation target")
+    projection = _mapping(projections[projection_id], "projection presentation target")
+    return {
+        "text": text,
+        "text_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "source_digest": _projection_source_digest(graph, projection),
+    }
 
 
 def _validate_operation_receipt(
@@ -1833,7 +1879,7 @@ def _validate_graph_inner(
         projection = _mapping(raw, f"projection {projection_id}")
         _only(
             projection,
-            {"covers", "version", "decision_versions", "presented", "confirmed", "stale",
+            {"covers", "version", "decision_versions", "presented", "confirmed", "stale", "presentation",
              "operation_receipt"},
             f"projection {projection_id}",
         )
@@ -1849,6 +1895,18 @@ def _validate_graph_inner(
         _boolean(projection.get("presented"), "projection presentation")
         _boolean(projection.get("confirmed"), "projection confirmation")
         _boolean(projection.get("stale"), "projection staleness")
+        presentation = projection.get("presentation")
+        if presentation is not None:
+            presented = _mapping(presentation, "projection presented wording")
+            if set(presented) != {"text", "text_digest", "source_digest"}:
+                raise PlanGraphError("projection presentation fields are incomplete")
+            text = _text(presented.get("text"), "projection presented wording")
+            if presented.get("text_digest") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+                raise PlanGraphError("projection presentation text digest mismatch")
+            if not isinstance(presented.get("source_digest"), str) or not _HEX_KEY.fullmatch(presented["source_digest"]):
+                raise PlanGraphError("projection presentation source digest is invalid")
+            if not projection["stale"] and presented["source_digest"] != _projection_source_digest(value, projection):
+                raise PlanGraphError("projection presentation graph meaning is stale")
         _validate_operation_receipt(
             projection.get("operation_receipt"),
             graph=value,
@@ -2003,7 +2061,7 @@ def _validate_graph(
         raise PlanGraphError("malformed Plan Graph") from error
 
 
-def _derive_validated(graph: dict[str, Any]) -> str:
+def _derive_validated(graph: dict[str, Any], *, require_projection_presentation: bool = True) -> str:
     if graph["lifecycle"]["state"] == "paused":
         return "paused"
     if graph["unresolved"]:
@@ -2041,6 +2099,8 @@ def _derive_validated(graph: dict[str, Any]) -> str:
         if projection["stale"]:
             return "stale"
         if not projection["presented"] or not projection["confirmed"]:
+            return "awaiting-user"
+        if require_projection_presentation and projection.get("presentation") is None:
             return "awaiting-user"
         covered_decisions.update(item for item in projection["covers"] if item in graph["decisions"])
         for decision_id, version in projection["decision_versions"].items():
@@ -2097,8 +2157,12 @@ def _read_current(transaction: _Transaction) -> dict[str, Any]:
         transaction.context.branch,
         provenance_resolver=_transaction_provenance_resolver(transaction),
     )
-    if graph["lifecycle"]["derived_state"] != _derive_validated(graph):
-        raise _CorruptGraph("stored derived lifecycle state is inconsistent")
+    derived = _derive_validated(graph)
+    if graph["lifecycle"]["derived_state"] != derived:
+        if any(record.get("presentation") is None for record in graph["projections"].values()) and graph["lifecycle"]["derived_state"] == _derive_validated(graph, require_projection_presentation=False):
+            graph["lifecycle"]["derived_state"] = derived
+        else:
+            raise _CorruptGraph("stored derived lifecycle state is inconsistent")
     return graph
 
 
@@ -2113,8 +2177,12 @@ def _read_previous(transaction: _Transaction) -> dict[str, Any]:
         transaction.context.branch,
         provenance_resolver=_transaction_provenance_resolver(transaction),
     )
-    if graph["lifecycle"]["derived_state"] != _derive_validated(graph):
-        raise _CorruptGraph("previous derived lifecycle state is inconsistent")
+    derived = _derive_validated(graph)
+    if graph["lifecycle"]["derived_state"] != derived:
+        if any(record.get("presentation") is None for record in graph["projections"].values()) and graph["lifecycle"]["derived_state"] == _derive_validated(graph, require_projection_presentation=False):
+            graph["lifecycle"]["derived_state"] = derived
+        else:
+            raise _CorruptGraph("previous derived lifecycle state is inconsistent")
     return graph
 
 
@@ -2384,7 +2452,7 @@ def _validate_typed_repairs(
             "refresh-proof": {"evidence", "fresh", "execution_required", "operation_receipt"},
             "refresh-proof-plan": {"fresh", "operation_receipt"},
             "regenerate-projection": {
-                "decision_versions", "presented", "confirmed", "stale", "operation_receipt",
+                "decision_versions", "presented", "confirmed", "stale", "presentation", "operation_receipt",
             },
             "reconfirm-projection": {"confirmed", "operation_receipt"},
             "refresh-audit": {
@@ -2452,11 +2520,12 @@ def _validate_typed_repairs(
                 raise PlanGraphError("proof refresh requires exact execution evidence")
         elif operation == "regenerate-projection":
             if (
-                previous_record.get("stale") is not True
+                (previous_record.get("stale") is not True and previous_record.get("presentation") is not None and previous_record.get("presented") is True)
                 or
                 record.get("stale")
                 or not record.get("presented")
                 or record.get("confirmed") is not False
+                or record.get("presentation") is None
             ):
                 raise PlanGraphError(
                     "projection regeneration must await explicit confirmation"
@@ -2468,6 +2537,8 @@ def _validate_typed_repairs(
                 or record.get("stale")
                 or not record.get("presented")
                 or not record.get("confirmed")
+                or previous_record.get("presentation") is None
+                or record.get("presentation") is None
             ):
                 raise PlanGraphError("projection reconfirmation is not current")
         elif operation == "refresh-audit":
@@ -2600,7 +2671,9 @@ def _invalidate_semantic_dependents(
                 proof_ids.add(proof_id); changed_again = True
         affected = outcome_ids | evidence_ids | decision_ids | work_ids | proof_ids
         for projection_id, record in graph["projections"].items():
-            if projection_id not in projection_ids and set(record["covers"]) & affected:
+            presentation = record.get("presentation")
+            changed_source = isinstance(presentation, dict) and presentation.get("source_digest") != _projection_source_digest(graph, record)
+            if projection_id not in projection_ids and (set(record["covers"]) & affected or changed_source):
                 projection_ids.add(projection_id)
                 changed_again = True
     preserved_evidence = preserve_evidence or set()
