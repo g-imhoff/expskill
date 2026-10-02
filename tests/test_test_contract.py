@@ -450,6 +450,12 @@ VALID_EVIDENCE_CONTRACT = {
 }
 
 
+_PACKAGED_EVIDENCE_CONTRACT = json.loads(EVIDENCE_CONTRACT.read_text(encoding="utf-8"))
+for _extension in ("output_predicates", "run_budgets", "recorded_execution"):
+    if _extension in _PACKAGED_EVIDENCE_CONTRACT:
+        VALID_EVIDENCE_CONTRACT[_extension] = copy.deepcopy(_PACKAGED_EVIDENCE_CONTRACT[_extension])
+
+
 def _canonical_sha256(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -3878,3 +3884,75 @@ class TestSkillContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_extended_evidence_declarations_remain_closed(tmp_path):
+    from scripts.validate import TEST_EVIDENCE_EXTENSIONS, _validate_test_evidence_contract
+
+    skill = tmp_path / "plugins" / "expskill" / "content" / "skills" / "test"
+    contract_path = skill / "references" / "evidence-contract.json"
+    contract_path.parent.mkdir(parents=True)
+    base = {key: copy.deepcopy(VALID_EVIDENCE_CONTRACT[key]) for key in ("schema_version", "terminal_states", "finding_kinds", "bundle", "receipt", "finding")}
+    complete = {**base, **copy.deepcopy(TEST_EVIDENCE_EXTENSIONS)}
+    contract_path.write_text(json.dumps(complete))
+    errors = []
+    _validate_test_evidence_contract(skill, errors)
+    assert errors == []
+    for extension, declaration in TEST_EVIDENCE_EXTENSIONS.items():
+        for field in declaration:
+            mutated = copy.deepcopy(complete)
+            del mutated[extension][field]
+            contract_path.write_text(json.dumps(mutated))
+            errors = []
+            _validate_test_evidence_contract(skill, errors)
+            assert any(extension in error and "closed declaration" in error for error in errors)
+            mutated = copy.deepcopy(complete)
+            mutated[extension][field] = {"unexpected": "substituted value"}
+            contract_path.write_text(json.dumps(mutated))
+            errors = []
+            _validate_test_evidence_contract(skill, errors)
+            assert any(extension in error and "closed declaration" in error for error in errors)
+        mutated = copy.deepcopy(complete)
+        mutated[extension]["unexpected"] = True
+        contract_path.write_text(json.dumps(mutated))
+        errors = []
+        _validate_test_evidence_contract(skill, errors)
+        assert any(extension in error and "closed declaration" in error for error in errors)
+        mutated = copy.deepcopy(complete)
+        del mutated[extension]
+        contract_path.write_text(json.dumps(mutated))
+        errors = []
+        _validate_test_evidence_contract(skill, errors)
+        assert any("keys must be exactly" in error for error in errors)
+
+
+def test_execution_budget_helper_is_required_only_by_complete_declared_contract(tmp_path):
+    from scripts.validate import TEST_EVIDENCE_EXTENSIONS, _validate_skills
+
+    shutil.copytree(ROOT / "plugins", tmp_path / "plugins")
+    skills = tmp_path / "plugins" / "expskill" / "content" / "skills"
+    contract_path = skills / "test" / "references" / "evidence-contract.json"
+    helper = skills / "test" / "scripts" / "execution_budget.py"
+    base = {key: copy.deepcopy(VALID_EVIDENCE_CONTRACT[key]) for key in ("schema_version", "terminal_states", "finding_kinds", "bundle", "receipt", "finding")}
+    contract_path.write_text(json.dumps(base))
+    helper.write_text("def budget(): return None\n")
+    errors = []
+    _validate_skills(skills, errors)
+    assert any("unexpected file 'scripts/execution_budget.py'" in error for error in errors)
+    contract_path.write_text(json.dumps({**base, **copy.deepcopy(TEST_EVIDENCE_EXTENSIONS)}))
+    errors = []
+    _validate_skills(skills, errors)
+    assert not any("execution_budget.py" in error or "test evidence contract" in error for error in errors)
+    helper.unlink()
+    errors = []
+    _validate_skills(skills, errors)
+    assert any("test execution budget helper" in error and "missing" in error for error in errors)
+    helper.write_text("")
+    errors = []
+    _validate_skills(skills, errors)
+    assert any("test execution budget helper" in error and "non-empty" in error for error in errors)
+    helper.unlink()
+    helper.symlink_to(skills / "test" / "scripts" / "freeze_charter.py")
+    errors = []
+    _validate_skills(skills, errors)
+    assert any("symlink" in error and "execution_budget.py" in error for error in errors)
