@@ -21,6 +21,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+
 
 PREPARATION_SCHEMA_VERSION = "test-charter-preparation.v1"
 CHARTER_SCHEMA_VERSION = "test-charter.v1"
@@ -183,9 +186,11 @@ def _string_array(
 
 
 def _validate_preparation(value: dict[str, object]) -> None:
-    if set(value) != PREPARATION_FIELDS:
+    scaled = value.get("schema_version") == "test-charter-preparation.v2"
+    expected = PREPARATION_FIELDS | {"execution_budget"} if scaled else PREPARATION_FIELDS
+    if set(value) != expected:
         _error("invalid-preparation", "charter preparation fields are not exact")
-    if value.get("schema_version") != PREPARATION_SCHEMA_VERSION:
+    if value.get("schema_version") not in {PREPARATION_SCHEMA_VERSION, "test-charter-preparation.v2"}:
         _error("invalid-preparation", "unsupported charter preparation schema")
     workflow_id = value.get("workflow_id")
     if workflow_id is not None:
@@ -228,6 +233,11 @@ def _validate_preparation(value: dict[str, object]) -> None:
             "invalid-preparation",
             "exactly one of material oracles or exemption grounding is required",
         )
+    if scaled:
+        try:
+            execution_budget.validate(value["execution_budget"], oracle_values)
+        except ValueError as error:
+            _error("invalid-budget", str(error))
 
 
 def _binding(repository: Path) -> tuple[str, str]:
@@ -305,6 +315,9 @@ def _freeze(
             "exemption_grounding_artifact_ids"
         ],
     }
+    if preparation["schema_version"] == "test-charter-preparation.v2":
+        charter["schema_version"] = "test-charter.v2"
+        charter["execution_budget"] = preparation["execution_budget"]
     ledger = {
         "schema_version": LEDGER_SCHEMA_VERSION,
         "run_id": root.name,

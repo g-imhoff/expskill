@@ -1,5 +1,19 @@
 {
   "schema_version": "test-evidence-contract.v1",
+  "run_budgets": {
+    "preparation_schema": "test-charter-preparation.v2",
+    "charter_schema": "test-charter.v2",
+    "default_actions": 8,
+    "default_usable_seconds": 780,
+    "hard_actions": 64,
+    "hard_waves": 16,
+    "actions_per_wave": 8,
+    "hard_usable_seconds": 3600,
+    "closed_fields": ["semantic_actions_max", "waves_max", "usable_budget_seconds", "rationale", "waves"],
+    "limits_encoding": "decimal strings",
+    "required_scope": "every material oracle required action occurs in the frozen wave plan",
+    "execution": "reject unplanned or reordered waves and bound child execution to the remaining bootstrap deadline"
+  },
   "terminal_states": [
     "PASS",
     "FAIL",
