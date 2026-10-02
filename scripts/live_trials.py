@@ -125,15 +125,27 @@ def runtime_version(command):
         return "unavailable"
 
 
-def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="read-only", live=False, cli="codex", infrastructure_retries=1, model=None, persistent=False, resume_from=None):
+def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="read-only", live=False, cli="codex", infrastructure_retries=1, model=None, persistent=False, resume_from=None, additional_write_dirs=None):
     if not live:
         raise RuntimeError("live actors require explicit opt-in")
-    if sandbox not in {"read-only", "workspace-write"} or timeout <= 0 or infrastructure_retries not in {0, 1}:
+    if sandbox not in {"read-only", "workspace-write", "danger-full-access"} or timeout <= 0 or infrastructure_retries not in {0, 1}:
         raise ValueError("invalid live actor configuration")
     cwd = Path(cwd).expanduser().resolve()
     state_home = Path(state_home).expanduser().resolve()
     command = [cli] if isinstance(cli, str) else list(cli)
     context = {"cwd": str(cwd), "state_home": str(state_home), "sandbox": sandbox, "cli": command}
+    if additional_write_dirs is not None and not isinstance(additional_write_dirs, (list, tuple)):
+        raise ValueError("invalid explicit actor capabilities")
+    write_dirs = []
+    for value in additional_write_dirs or []:
+        path = Path(value).expanduser().resolve(strict=True)
+        if not path.is_dir() or str(path) in write_dirs or path in {cwd, state_home}:
+            raise ValueError("invalid additional writable actor directory")
+        write_dirs.append(str(path))
+    if sandbox != "workspace-write" and write_dirs:
+        raise ValueError("explicit writable directories require workspace-write")
+    if write_dirs:
+        context["capabilities"] = {"additional_write_dirs": write_dirs}
     resumed_thread = None
     if type(persistent) is not bool:
         raise ValueError("invalid persistence configuration")
@@ -154,6 +166,8 @@ def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="re
     else:
         argv = command + ["exec"] + ([] if persistent else ["--ephemeral"]) + ["--ignore-user-config", "--json", "--color", "never", "-s", sandbox,
             "--add-dir", str(state_home), "-C", str(cwd), "-"]
+        for path in write_dirs:
+            argv[-1:-1] = ["--add-dir", path]
     if model is not None:
         argv[len(command) + 1:len(command) + 1] = ["--model", model]
     version = runtime_version(tuple(command))
