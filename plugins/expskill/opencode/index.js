@@ -506,28 +506,24 @@ function v2PackagePaths() {
   return { skillCandidates, policyCandidates, execPolicyCandidates };
 }
 
-function v2CompactSkill(contents) {
-  const lines = contents.split("\n");
-  if (lines.length === 0 || lines[0] !== "---") throw new Error("unslop skill frontmatter missing");
-  const end = lines.indexOf("---", 1);
-  if (end < 0) throw new Error("unslop skill frontmatter unclosed");
-  const body = lines.slice(end + 1).join("\n").trim();
-  const soulMarker = "\n## Adding soul\n";
-  const patternsMarker = "\n## Patterns to detect and fix\n";
-  const soulStart = body.indexOf(soulMarker);
-  const patternsStart = body.indexOf(patternsMarker);
-  if (soulStart < 0 || patternsStart < soulStart) throw new Error("unslop skill sections missing");
-  const introduction = body.slice(0, soulStart).trim();
-  const soulSection = body.slice(soulStart + soulMarker.length, patternsStart);
-  const soulNames = [...soulSection.matchAll(/^- \*\*([^*]+)\*\*/gm)].map((m) => m[1]);
-  if (soulNames.length === 0) throw new Error("unslop skill has no voice rules");
-  const rules = [...body.matchAll(/^(\d+)\. \*\*([^*]+)\*\*\s*(.*)$/gm)].map((m) => {
-    const sentences = m[3].trim().split(/(?<=[.!?])\s+/u);
-    const selected = sentences.length <= 1 ? sentences : [sentences[0], sentences[sentences.length - 1]];
-    return `${m[1]}. **${m[2]}** ${selected.join(" ")}`;
-  });
-  if (rules.length === 0) throw new Error("unslop skill has no numbered rules");
-  return [introduction, `## Adding soul\n\n${soulNames.join(" ")}`, `## Patterns to detect and fix\n\n${rules.join("\n")}`].join("\n\n");
+async function v2UnslopSkill() {
+  const { skillCandidates } = v2PackagePaths();
+  for (const candidate of skillCandidates) {
+    let contents;
+    try {
+      contents = await readFile(candidate, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = contents.split("\n");
+    const end = lines.indexOf("---", 1);
+    if (lines[0] !== "---" || end < 0) throw new Error("unslop skill frontmatter missing");
+    const description = lines.slice(1, end).find(line => line.startsWith("description: "))?.slice(13).trim();
+    const content = lines.slice(end + 1).join("\n").trim();
+    if (!description || !content) throw new Error("unslop skill content missing");
+    return { id: "expskill:unslop", name: "unslop", description, path: candidate, content };
+  }
+  throw new Error("unslop skill unavailable");
 }
 
 function v2RuntimePolicy(contents) {
@@ -544,12 +540,12 @@ function v2RuntimePolicy(contents) {
 
 async function v2UnslopBlock() {
   const { skillCandidates, policyCandidates } = v2PackagePaths();
-  const [skill, policyContents] = await Promise.all([
+  const [, policyContents] = await Promise.all([
     v2ReadFirst(skillCandidates),
     v2ReadFirst(policyCandidates),
   ]);
   const policy = v2RuntimePolicy(policyContents);
-  const payload = policy.scope + v2CompactSkill(skill);
+  const payload = policy.scope;
   const block = `${V2_UNSLPO_OPEN}\n${payload}\n${V2_UNSLPO_CLOSE}`;
   if (block.length > V2_UNSLPO_LIMIT) throw new Error("unslop block exceeds limit");
   return { block, compactionReminder: policy.compaction_reminder };
@@ -595,6 +591,12 @@ function v2IsExpSkillAgent(value) {
 }
 
 const ExpSkillSetup = async (ctx) => {
+  if (ctx?.skill?.transform) {
+    const skill = await v2UnslopSkill();
+    await ctx.skill.transform(editor => {
+      if (!editor.get(skill.id)) editor.add(skill);
+    });
+  }
   const authoring = await authoringBlock();
   if (ctx?.session?.hook) {
     for (const kind of ["context", "compaction", "generate"]) {
