@@ -2562,6 +2562,20 @@ def _invalidate_semantic_dependents(
     changed_again = True
     while changed_again:
         changed_again = False
+        affected = outcome_ids | evidence_ids | decision_ids | work_ids | proof_ids | projection_ids
+        edges = [(record["source"], record["targets"]) for record in graph["invalidations"]]
+        edges.extend((decision_id, record["invalidates"]) for decision_id, record in decisions.items())
+        families = (
+            (graph["evidence"], evidence_ids), (decisions, decision_ids),
+            (work, work_ids), (proof, proof_ids), (graph["projections"], projection_ids),
+        )
+        for source, targets in edges:
+            if source in affected:
+                for target in targets:
+                    for family, affected_ids in families:
+                        if target in family and target not in affected_ids:
+                            affected_ids.add(target)
+                            changed_again = True
         for decision_id, record in decisions.items():
             if decision_id not in decision_ids and set(record["based_on"]) & evidence_ids:
                 decision_ids.add(decision_id); changed_again = True
@@ -2570,6 +2584,7 @@ def _invalidate_semantic_dependents(
                 set(record["covers"]) & outcome_ids
                 or set(record["based_on"]) & evidence_ids
                 or set(record["decisions"]) & decision_ids
+                or set(record["requires"]) & work_ids
             ):
                 work_ids.add(work_id); changed_again = True
         for work_id in tuple(work_ids):
@@ -2582,6 +2597,11 @@ def _invalidate_semantic_dependents(
                 or set(record["required_by"]) & work_ids
             ):
                 proof_ids.add(proof_id); changed_again = True
+        affected = outcome_ids | evidence_ids | decision_ids | work_ids | proof_ids
+        for projection_id, record in graph["projections"].items():
+            if projection_id not in projection_ids and set(record["covers"]) & affected:
+                projection_ids.add(projection_id)
+                changed_again = True
     preserved_evidence = preserve_evidence or set()
     for evidence_id in evidence_ids:
         if evidence_id in graph["evidence"]:
