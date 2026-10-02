@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sys
@@ -9,6 +10,7 @@ import pytest
 
 from tests.design_state_test_support import passing_technical
 from tests.test_design_state_parallel_join import DIGEST, git, initialize
+from tests.test_design_state_parallel_join import load_helper as load_design_helper
 from tests.test_plan_design_join import load_helper as load_plan_helper
 
 
@@ -141,3 +143,62 @@ def test_discovery_rejects_unsafe_command_record_container(tmp_path: Path, kind:
         records.mkdir(mode=0o755)
     with pytest.raises(ValueError):
         module.discover_workflow(repository=repo, branch="expskill/design/ui", state_home=home)
+
+
+def test_amendment_recovers_before_checkpoint_then_uses_fresh_approval(tmp_path: Path):
+    module, repo, home, receipt, _ = initialize(tmp_path)
+    initial = candidate_checkpoint(module, repo, home, receipt)
+    approved, old_records, old_inventories = approve_candidate(module, repo, home, initial)
+    old_approval = old_records["approvals"]["A1"]
+    old_head = git(repo, "rev-parse", "HEAD")
+    old_brief = module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)["brief"]
+    (repo / "component.txt").write_text("corrected candidate\n", encoding="utf-8")
+    git(repo, "add", "component.txt")
+    git(repo, "commit", "--amend", "-m", "corrected design candidate")
+    corrected_head = git(repo, "rev-parse", "HEAD")
+    assert corrected_head != old_head
+    replacement = load_design_helper()
+    discovered = replacement.discover_workflow(repository=repo, branch="expskill/design/ui", state_home=home)
+    assert discovered["workflow_id"] == receipt["workflow_id"]
+    with pytest.raises(ValueError):
+        replacement.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)
+    checkpoint = replacement.checkpoint_candidate(
+        workflow_id=discovered["workflow_id"], expected_revision=discovered["revision"],
+        candidate_commit=corrected_head, state_home=home,
+    )
+    recovered = load_design_helper()
+    state = recovered.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)
+    assert state["brief"] == old_brief
+    assert all(not state[collection] for collection in ("components", "dependencies", "evidence", "approvals"))
+    assert state["invalidations"]["CheckoutForm"]["approval_id"] == "A1"
+    with pytest.raises(ValueError, match="current approvals required"):
+        deliver(recovered, home, checkpoint, old_inventories)
+    records, inventories = approval_records(recovered, repo, home, checkpoint, "corrected bytes explicitly approved")
+    assert records["approvals"]["A1"]["code_digest"] != old_approval["code_digest"]
+    replacement = load_design_helper()
+    current = replacement.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)
+    assert current["revision"] == checkpoint["revision"]
+    with pytest.raises(ValueError, match="current approvals required"):
+        deliver(replacement, home, checkpoint, inventories)
+    stale = copy.deepcopy(records)
+    stale["approvals"]["A1"] = old_approval
+    replayed = replacement.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=current["revision"], updates=stale, state_home=home)
+    with pytest.raises(ValueError, match="stale approval"):
+        deliver(replacement, home, replayed, inventories)
+    approved = replacement.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=replayed["revision"], updates=records, state_home=home)
+    persisted = load_design_helper()
+    result = deliver(persisted, home, approved, inventories)
+    assert result["candidate_commit"] == corrected_head
+    assert result["approval_digest"] == persisted.canonical_digest(records["approvals"])
+
+
+def test_routed_instructions_checkpoint_before_checks_and_approval():
+    root = Path(__file__).resolve().parents[1]
+    design = (root / "plugins/expskill/content/skills/design/SKILL.md").read_text(encoding="utf-8")
+    role = (root / "plugins/expskill/content/agents/expskill-designer.md").read_text(encoding="utf-8")
+    assert "checkpoint before recording checks or requesting approval" in design
+    assert "After an interruption between the Git commit and its checkpoint" in design
+    assert "Do not use predecessor recovery to undo a legitimate candidate amendment" in design
+    assert "checkpoint it before recording checks and requesting user approval" in role
+    assert "after approval and checkpoint" not in design
+    assert "After user approval, create" not in role
