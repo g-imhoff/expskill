@@ -489,6 +489,7 @@ class TransactionLayerTests(unittest.TestCase):
         template["projections"]["U2"] = {"covers": ["O1"], "version": 1,
             "decision_versions": {}, "presented": True, "confirmed": True, "stale": False,
             "presentation": "Configuration is validated."}
+        template["audit"] = {"breadth": True, "reason": "Changes ownership across configuration and startup callers"}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         self.assertEqual(receipt.state, "stale")
 
@@ -1340,8 +1341,61 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertFalse(graph["projections"]["U1"]["confirmed"])
         self.assertIsNone(graph["projections"]["U1"]["operation_receipt"])
 
+    def test_tiny_settled_serial_plan_needs_no_audit_for_external_grounding_or_rejected_alternative(self) -> None:
+        for mode in ("external", "alternative", "both"):
+            with self.subTest(mode=mode):
+                graph = _graph()
+                if mode in {"external", "both"}:
+                    graph["evidence"]["E2"] = {
+                        "kind": "external", "fact": "The chosen parser rejects unknown keys",
+                        "source": "https://example.invalid/parser/official-contract", "version": "1",
+                        "fresh": True, "supports": ["T1"], "limitations": ["Repository wiring is grounded separately"],
+                    }
+                    graph["work"]["T1"]["based_on"] = ["E1", "E2"]
+                if mode in {"alternative", "both"}:
+                    graph["decisions"]["D1"] = {
+                        "question": "Choose the validation seam", "choice": "Use the existing seam",
+                        "alternatives": [{"id": "A", "status": "selected", "reason": "Preserves the current caller contract"},
+                                         {"id": "B", "status": "rejected", "reason": "Duplicates validation in the caller"}],
+                        "based_on": ["E1"], "material": True, "version": 1, "confirmed_version": 1, "stale": False,
+                    }
+                    graph["work"]["T1"]["decisions"] = ["D1"]
+                    graph["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
+                home = self.root / f"tiny-{mode}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(receipt.state, "ready")
+                self.assertEqual(loaded["audit"]["classification"], "tiny")
+                self.assertFalse(loaded["audit"]["required"])
+                self.assertIsNone(loaded["audit"]["operation_receipt"])
+                self.assertEqual(loaded["work"]["T1"]["concurrency"], "serial")
+
+    def test_parallel_ownership_and_required_design_join_enforce_independent_audit_despite_tiny_claim(self) -> None:
+        for mode in ("parallel", "design-join"):
+            with self.subTest(mode=mode):
+                graph = self._three_node_graph()
+                graph["audit"] = {"classification": "tiny", "breadth": False, "complexity": False,
+                                  "high_consequence": False, "required": False}
+                if mode == "parallel":
+                    graph["work"]["T2"]["concurrency"] = "parallel-candidate"
+                    graph["work"]["T3"]["concurrency"] = "parallel-candidate"
+                else:
+                    graph["design_join"] = self.helper._empty_design_join()
+                    graph["design_join"].update(required=True, fresh=False)
+                home = self.root / f"complex-{mode}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertTrue(loaded["audit"]["required"])
+                self.assertTrue(loaded["audit"]["complexity"])
+                self.assertEqual(loaded["audit"]["classification"], "complex")
+                self.assertFalse(loaded["audit"]["fresh"])
+                self.assertNotEqual(receipt.state, "ready")
+                attempted = dict(loaded["audit"], fresh=True, independent=False, graph_revision=loaded["graph_revision"])
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "fresh and independent"):
+                    self._typed_update(receipt.workflow_id, loaded, "refresh-audit", ["audit"], attempted, home)
+
     def test_semantics_derived_audit_floor_and_resolved_findings_readiness(self) -> None:
-        template = _graph()
+        template = self._three_node_graph()
         template["evidence"]["E1"]["supports"] = ["D1", "T1"]
         template["decisions"]["D1"] = {
             "question": "Choose a boundary", "choice": "A",
@@ -1353,12 +1407,16 @@ class TransactionLayerTests(unittest.TestCase):
         }
         template["work"]["T1"]["decisions"] = ["D1"]
         template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
-        template["audit"] = {"classification": "tiny", "breadth": False,
-            "complexity": False, "high_consequence": False, "required": False}
+        template["work"]["T2"]["decisions"] = ["D1"]
+        template["work"]["T3"]["decisions"] = ["D1"]
+        template["audit"] = {"classification": "broad", "breadth": True,
+            "complexity": False, "high_consequence": False, "required": True,
+            "reason": "Changes validation ownership across producer and two independent consumer boundaries"}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         self.assertTrue(graph["audit"]["required"])
         self.assertTrue(graph["audit"]["breadth"])
+        self.assertEqual(graph["audit"]["reason"], template["audit"]["reason"])
         self.assertEqual(receipt.state, "stale")
 
         audited = json.loads(json.dumps(graph["audit"]))

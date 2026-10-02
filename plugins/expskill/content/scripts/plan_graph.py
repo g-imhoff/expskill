@@ -946,26 +946,13 @@ def _only(record: dict[str, Any], allowed: set[str], label: str) -> None:
 
 def _semantic_audit_floor(graph: dict[str, Any]) -> tuple[bool, bool, bool, str]:
     """Derive the non-downgradable audit floor from typed plan semantics."""
-    decisions = graph.get("decisions") if isinstance(graph.get("decisions"), dict) else {}
     work = graph.get("work") if isinstance(graph.get("work"), dict) else {}
     git = graph.get("git") if isinstance(graph.get("git"), dict) else {}
     lanes = git.get("lanes") if isinstance(git.get("lanes"), dict) else {}
     joins = git.get("joins") if isinstance(git.get("joins"), dict) else {}
     design_join = graph.get("design_join") if isinstance(graph.get("design_join"), dict) else {}
-    evidence = graph.get("evidence") if isinstance(graph.get("evidence"), dict) else {}
-
-    # These are meaning-bearing signals: a real alternatives decision or an
-    # external mechanism boundary broadens the plan.  Counts alone never do.
-    breadth = any(
-        isinstance(record, dict)
-        and record.get("material") is True
-        and isinstance(record.get("alternatives"), list)
-        and len(record["alternatives"]) >= 2
-        for record in decisions.values()
-    ) or any(
-        isinstance(record, dict) and record.get("kind") == "external"
-        for record in evidence.values()
-    )
+    supplied = graph.get("audit") if isinstance(graph.get("audit"), dict) else {}
+    breadth = supplied.get("breadth") is True
     # Explicit parallel ownership and an integration join create adversarially
     # relevant coordination consequences independent of plan size.
     complexity = design_join.get("required") is True or bool(joins) or bool(lanes) or any(
@@ -973,13 +960,12 @@ def _semantic_audit_floor(graph: dict[str, Any]) -> tuple[bool, bool, bool, str]
         and record.get("concurrency") in {"parallel-safe", "parallel-candidate"}
         for record in work.values()
     )
-    supplied = graph.get("audit") if isinstance(graph.get("audit"), dict) else {}
     # Consequence classifications are typed human/coordinator assertions.  They
     # may escalate the structural floor but validation never lets them lower it.
     high_consequence = supplied.get("high_consequence") is True
     reasons: list[str] = []
     if breadth:
-        reasons.append("material alternatives or external mechanism evidence")
+        reasons.append("declared consequential scope breadth")
     if complexity:
         reasons.append("parallel ownership or integration-join consequences")
     if high_consequence:
@@ -1074,7 +1060,7 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
         "breadth": breadth,
         "complexity": complexity,
         "high_consequence": consequence,
-        "reason": floor_reason,
+        "reason": supplied_audit.get("reason", floor_reason),
         "required": required,
         "graph_revision": 1,
         "record_version": 1,
