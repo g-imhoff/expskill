@@ -287,12 +287,25 @@ class PlanContractTests(unittest.TestCase):
                 self.assertIn(phrase, planner)
         validation = _numbered_workflow(self.body)[8]
         for phrase in ("fresh read-only conversation", "frozen graph locator and digest",
-                       "no inherited planner history", "one five-minute auditor call",
+                       "no inherited planner history", "one initial five-minute auditor call",
                        "inherited lifecycle allowance", "never certify your own audit as independent"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, validation)
         self.assertIn("research or auditor dispatch id", self.body.lower())
         self.assertIn("remaining allowance", self.body.lower())
+
+    def test_real_material_corrections_have_finite_fresh_independent_audit_capacity(self) -> None:
+        validation = _numbered_workflow(self.body)[8]
+        for phrase in ("one initial five-minute auditor call", "at most two fresh five-minute correction checks",
+                       "three calls and fifteen minutes", "actually corrected canonical graph",
+                       "fresh read-only conversation", "broader scope requires an explicitly named user-authorized extension",
+                       "retain every spent and outstanding call", "never attest that a correction was independently checked",
+                       "missing or stale evidence"):
+            self.assertIn(phrase, validation)
+        planner = (PLUGIN_ROOT / "content/agents/expskill-planner.md").read_text().lower()
+        for phrase in ("one initial audit", "at most two fresh correction checks", "retain spent and outstanding calls",
+                       "no speculative retry or replacement", "named user-authorized extension"):
+            self.assertIn(phrase, planner)
 
     def test_work_proof_and_parallelism_are_proportional_and_revision_bound(self) -> None:
         graph_step = _numbered_workflow(self.body)[7]
