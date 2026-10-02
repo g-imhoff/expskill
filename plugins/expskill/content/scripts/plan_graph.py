@@ -1197,7 +1197,7 @@ def _projection_source_digest(graph: dict[str, Any], projection: dict[str, Any])
     records: dict[str, Any] = {}
     covers = _id_list(projection.get("covers"), "projection coverage", allow_empty=False)
     versions = _mapping(projection.get("decision_versions"), "projection decision versions")
-    administrative = {"operation_receipt", "fresh", "stale", "confirmed_version", "evidence", "execution_required", "observed_at", "record_version"}
+    administrative = {"operation_receipt", "fresh", "stale", "confirmed_version", "confirmation", "evidence", "execution_required", "observed_at", "record_version"}
     families = {family: _mapping(graph.get(family), family) for family in ("outcomes", "evidence", "decisions", "work", "proof")}
     pending = [(family, record_id) for family, values in families.items() if family != "evidence" for record_id in values if record_id in covers]
     visited: set[tuple[str, str]] = set()
@@ -1234,6 +1234,59 @@ def issue_projection_presentation(*, graph: dict[str, Any], projection_id: str, 
         "text_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "source_digest": _projection_source_digest(graph, projection),
     }
+
+
+def _decision_meaning_digest(record: dict[str, Any]) -> str:
+    administrative = {"confirmed_version", "stale", "operation_receipt", "confirmation"}
+    return _canonical_digest({key: item for key, item in record.items() if key not in administrative})
+
+
+def issue_decision_confirmation(*, graph: dict[str, Any], decision_id: str, projection_id: str) -> dict[str, Any]:
+    decisions = _mapping(graph.get("decisions"), "decisions")
+    projections = _mapping(graph.get("projections"), "projections")
+    if decision_id not in decisions or projection_id not in projections:
+        raise PlanGraphError("unknown decision confirmation target")
+    record = copy.deepcopy(_mapping(decisions[decision_id], "decision confirmation target"))
+    projection = _mapping(projections[projection_id], "decision confirmation projection")
+    presentation = _validate_projection_presentation(projection.get("presentation"))
+    if (
+        projection.get("stale") or not projection.get("presented")
+        or decision_id not in projection.get("covers", [])
+        or projection.get("decision_versions", {}).get(decision_id) != record.get("version")
+        or presentation["source_digest"] != _projection_source_digest(graph, projection)
+    ):
+        raise PlanGraphError("decision confirmation requires a current presented decision version")
+    record["confirmed_version"] = record["version"]
+    record["stale"] = False
+    record["confirmation"] = {
+        "projection": projection_id,
+        "projection_version": projection["version"],
+        "decision_version": record["version"],
+        "decision_digest": _decision_meaning_digest(record),
+        "presentation": copy.deepcopy(presentation),
+        "trust": "coordinator-attestation",
+    }
+    return record
+
+
+def _validate_decision_confirmation(record: dict[str, Any]) -> None:
+    if record.get("confirmation") is None:
+        return
+    confirmation = _mapping(record["confirmation"], "decision confirmation")
+    if set(confirmation) != {"projection", "projection_version", "decision_version", "decision_digest", "presentation", "trust"}:
+        raise PlanGraphError("decision confirmation fields are incomplete")
+    _identifier(confirmation["projection"], "decision confirmation projection")
+    _integer(confirmation["projection_version"], "decision confirmation projection version", minimum=1)
+    version = _integer(confirmation["decision_version"], "decision confirmation version", minimum=1)
+    _validate_projection_presentation(confirmation["presentation"])
+    if confirmation["trust"] != "coordinator-attestation":
+        raise PlanGraphError("decision confirmation trust is invalid")
+    if not isinstance(confirmation["decision_digest"], str) or not _HEX_KEY.fullmatch(confirmation["decision_digest"]):
+        raise PlanGraphError("decision confirmation digest is invalid")
+    if not record["stale"] and record["confirmed_version"] == record["version"] and (
+        version != record["version"] or confirmation["decision_digest"] != _decision_meaning_digest(record)
+    ):
+        raise PlanGraphError("decision confirmation does not bind current meaning")
 
 
 def issue_projection_clarification(
@@ -1346,6 +1399,7 @@ def issue_operation_receipt(
     """Build the closed receipt a coordinator attaches to one typed mutation."""
     if operation not in {
         "refresh-evidence",
+        "confirm-decision",
         "reconfirm-decision",
         "refresh-proof",
         "refresh-proof-plan",
@@ -1732,6 +1786,7 @@ def _validate_graph_inner(
                 "invalidates",
                 "consequences",
                 "operation_receipt",
+                "confirmation",
             },
             f"decision {decision_id}",
         )
@@ -1764,8 +1819,9 @@ def _validate_graph_inner(
             target=("decisions", decision_id),
             record=record,
             record_version=version,
-            allowed_operations={"reconfirm-decision"},
+            allowed_operations={"confirm-decision", "reconfirm-decision"},
         )
+        _validate_decision_confirmation(record)
 
     proof = _mapping(value.get("proof"), "proof", allow_empty=False)
     proof_ids = set(proof)
@@ -2444,7 +2500,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
     for row in rows:
         update = _mapping(row, "update")
         operation = update.get("op")
-        typed = operation in {"refresh-evidence", "reconfirm-decision", "refresh-proof", "refresh-proof-plan",
+        typed = operation in {"refresh-evidence", "confirm-decision", "reconfirm-decision", "refresh-proof", "refresh-proof-plan",
                               "regenerate-projection", "reconfirm-projection", "clarify-projection", "refresh-audit", "resolve-finding", "record-design-join"}
         if operation != "set" and not typed:
             raise PlanGraphError("unsupported update operation")
@@ -2476,7 +2532,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         controlled_true = (
             (path[0] == "evidence" and path[-1] == "fresh" and update.get("value") is True)
             or (path[0] == "proof" and path[-1] == "fresh" and update.get("value") is True)
-            or (path[0] == "decisions" and path[-1] in {"confirmed_version", "stale"})
+            or (path[0] == "decisions" and path[-1] in {"confirmed_version", "stale", "confirmation"})
             or (
                 path[0] == "projections"
                 and path[-1] in {"version", "decision_versions", "presented", "confirmed", "stale"}
@@ -2488,7 +2544,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         if operation == "set" and controlled_true:
             raise PlanGraphError("readiness-enabling fields require a typed operation")
         if typed:
-            expected_family = {"refresh-evidence": "evidence", "reconfirm-decision": "decisions",
+            expected_family = {"refresh-evidence": "evidence", "confirm-decision": "decisions", "reconfirm-decision": "decisions",
                 "refresh-proof": "proof", "refresh-proof-plan": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections", "clarify-projection": "projections",
                 "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
             expected_length = 1 if expected_family in {"audit", "design_join"} else 2
@@ -2582,13 +2638,13 @@ def _validate_typed_repairs(
         expected_version = update.get("_record_version")
         actual_version = (
             record.get("version")
-            if operation in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
+            if operation in {"confirm-decision", "reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else record.get("record_version")
         )
         previous_version = (
             previous_record.get("version")
             if operation
-            in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
+            in {"confirm-decision", "reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else previous_record.get("record_version")
         )
         if expected_version != actual_version or expected_version != previous_version:
@@ -2598,7 +2654,8 @@ def _validate_typed_repairs(
                 "fact", "source", "revision", "version", "limitations", "fresh",
                 "supports", "observed_at", "operation_receipt",
             },
-            "reconfirm-decision": {"confirmed_version", "stale", "operation_receipt"},
+            "confirm-decision": {"confirmed_version", "confirmation", "operation_receipt"},
+            "reconfirm-decision": {"confirmed_version", "stale", "confirmation", "operation_receipt"},
             "refresh-proof": {"evidence", "fresh", "execution_required", "operation_receipt"},
             "refresh-proof-plan": {"fresh", "operation_receipt"},
             "regenerate-projection": {
@@ -2645,13 +2702,19 @@ def _validate_typed_repairs(
                 or not record.get("observed_at")
             ):
                 raise PlanGraphError("evidence refresh requires fresh timestamped evidence")
-        elif operation == "reconfirm-decision":
+        elif operation in {"confirm-decision", "reconfirm-decision"}:
             if (
-                previous_record.get("stale") is not True
+                (operation == "reconfirm-decision" and previous_record.get("stale") is not True)
+                or (operation == "confirm-decision" and (previous_record.get("stale") or previous_record.get("confirmed_version") is not None))
                 or record.get("confirmed_version") != record.get("version")
                 or record.get("stale")
             ):
-                raise PlanGraphError("decision reconfirmation is not current")
+                raise PlanGraphError("decision confirmation is not current")
+            if operation == "confirm-decision" or previous_record.get("confirmation") is not None:
+                confirmation = _mapping(record.get("confirmation"), "decision confirmation")
+                expected = issue_decision_confirmation(graph=graph, decision_id=path[1], projection_id=confirmation.get("projection"))
+                if confirmation != expected["confirmation"]:
+                    raise PlanGraphError("decision confirmation does not bind the retained current presentation")
         elif operation == "refresh-proof-plan":
             if (
                 previous_record.get("fresh") is not False
@@ -2943,6 +3006,13 @@ def _apply_updates_locked(
 
     candidate = copy.deepcopy(current)
     _apply_to_graph(candidate, normalized)
+    for decision_id, record in current["decisions"].items():
+        replacement = candidate["decisions"].get(decision_id, {})
+        if record.get("confirmation") != replacement.get("confirmation") and not any(
+            update.get("_typed") in {"confirm-decision", "reconfirm-decision"} and update["path"] == ["decisions", decision_id]
+            for update in normalized
+        ):
+            raise PlanGraphError("decision confirmation changes require a typed confirmation operation")
     for projection_id, record in current["projections"].items():
         replacement = candidate["projections"].get(projection_id, {})
         if record.get("clarifications", []) != replacement.get("clarifications", []) and not any(
