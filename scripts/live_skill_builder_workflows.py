@@ -58,7 +58,148 @@ def tree(path):
     return result
 
 
-def public_command_seen(probe, origin, helper, commands):
+def shell_calls(command):
+    script = command
+    for _ in range(2):
+        if not re.match(r"^\s*(?:/[^\s]+/)?(?:sh|bash|zsh)\s+-(?:lc|c)(?:\s|$)", script):
+            break
+        parts = shlex.split(script)
+        if len(parts) == 3 and Path(parts[0]).name in {"sh", "bash", "zsh"} and parts[1] in {"-c", "-lc"}:
+            script = parts[2]
+        else:
+            break
+    segments, start, index, quote, eligible, heredocs = [], 0, 0, None, True, []
+    while index < len(script):
+        char = script[index]
+        if char == "\\" and quote != "'":
+            index += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            elif quote == '"' and (char == "`" or script.startswith("$(", index)):
+                return []
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+        elif char == "`" or script.startswith("$(", index) or char in "(){}":
+            return []
+        elif char == "#" and (index == start or script[index - 1].isspace()):
+            end = script.find("\n", index)
+            script = script[:index] + script[end:] if end >= 0 else script[:index]
+            continue
+        elif script.startswith("<<", index):
+            match = re.match(r"<<(-?)[ \t]*(?:'([A-Za-z_][A-Za-z_0-9]*)'|\"([A-Za-z_][A-Za-z_0-9]*)\"|([A-Za-z_][A-Za-z_0-9]*))", script[index:])
+            if not match:
+                return []
+            heredocs.append((next(value for value in match.groups()[1:] if value), bool(match[1])))
+            index += len(match[0])
+            continue
+        elif char in ";\n&|":
+            if char == "&" and index > start and script[index - 1] in "><":
+                index += 1
+                continue
+            operator = script[index:index + 2] if script[index:index + 2] in {"&&", "||"} else char
+            if operator in {"|", "&"}:
+                return []
+            piece = script[start:index].strip()
+            if piece:
+                segments.append((piece, eligible))
+                eligible = operator in {";", "\n"}
+            index += len(operator)
+            if char == "\n" and heredocs:
+                for delimiter, tabs in heredocs:
+                    while index < len(script):
+                        end = script.find("\n", index)
+                        end = len(script) if end < 0 else end
+                        line = script[index:end]
+                        index = min(end + 1, len(script))
+                        if (line.lstrip("\t") if tabs else line) == delimiter:
+                            break
+                    else:
+                        return []
+                heredocs = []
+            start = index
+            continue
+        index += 1
+    if quote or heredocs:
+        return []
+    if script[start:].strip():
+        segments.append((script[start:].strip(), eligible))
+    calls = []
+    for piece, executes in segments:
+        lexer = shlex.shlex(piece, posix=True, punctuation_chars="<>")
+        lexer.whitespace_split, lexer.commenters = True, ""
+        words, parts, index = list(lexer), [], 0
+        while index < len(words):
+            if words[index] in {"<", ">", ">>", "<<", "<<-"}:
+                if index + 1 >= len(words):
+                    return []
+                if parts and parts[-1] in {"0", "1", "2"}:
+                    parts.pop()
+                index += 2
+            else:
+                parts.append(words[index])
+                index += 1
+        if parts and (parts[0] in {"if", "then", "else", "elif", "fi", "for", "while", "until", "case", "esac", "do", "done", "function", "select", "!", "exit", "return", "exec", "eval", "trap", "source", ".", "alias", "unalias", "builtin", "command", "set"} or re.match(r"[A-Za-z_][A-Za-z_0-9]*=", parts[0])):
+            return []
+        if executes and parts:
+            calls.append(parts)
+    return [(parts, len(segments) > 1) for parts in calls]
+
+
+def helper_call(parts, helper):
+    if len(parts) < 3 or Path(parts[1]) != helper:
+        return None
+    executable = shutil.which(parts[0]) if not Path(parts[0]).is_absolute() else parts[0]
+    if not executable or Path(executable).resolve() != Path(sys.executable).resolve():
+        return None
+    command, state_root, index = None, None, 2
+    while index < len(parts):
+        word = parts[index]
+        if word == "--state-root" and index + 1 < len(parts):
+            state_root = Path(parts[index + 1])
+            index += 2
+        elif word.startswith("--state-root="):
+            state_root = Path(word.split("=", 1)[1])
+            index += 1
+        elif word == "--yes":
+            index += 1
+        elif command is None and not word.startswith("-"):
+            command = word
+            index += 1
+        else:
+            return None
+    return command, state_root
+
+
+def receipt_proves_call(item, command, state_root, current, prior_sequence):
+    if current is None or state_root is None or not state_root.is_absolute():
+        return False
+    try:
+        result = json.loads(item.get("aggregated_output", item.get("stdout", "")))
+        if not isinstance(result, dict) or result.get("schema_version") != "skill-builder-operation.v1" or result.get("workflow_id") != current["workflow_id"]:
+            return False
+        sequence = result.get("sequence")
+        if type(sequence) is not int or not prior_sequence < sequence <= current["head_sequence"] or not re.fullmatch(r"[0-9a-f]{32}", result["workflow_id"]):
+            return False
+        receipt = json.loads((state_root / "live" / result["workflow_id"] / "receipts" / f"{sequence:08d}.json").read_text())
+        if receipt.get("workflow_id") != result["workflow_id"] or receipt.get("sequence") != sequence:
+            return False
+        unsigned = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+        if result.get("receipt_digest") != receipt.get("receipt_digest") or digest(canonical(unsigned)) != receipt.get("receipt_digest") or result.get("stage") != receipt.get("destination_stage"):
+            return False
+        operation = result.get("operation")
+        expected = {"initialize": "initialize", "retain": "retain-artifact", "invalidate": "invalidate", "finalize": "finalize"}
+        if command == "transition":
+            return operation == receipt["event"] and receipt["event"] not in {"initialize", "retain-artifact", "invalidate", "finalize"}
+        return operation == expected.get(command) == receipt["event"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def public_command_seen(probe, origin, helper, commands, *, state_root=None, current=None, prior_sequence=-1):
     observed = set()
     for event in origin["events"]:
         item = event.get("item", {})
@@ -67,11 +208,13 @@ def public_command_seen(probe, origin, helper, commands):
         if event.get("type") != "item.completed" or item.get("type") != "command_execution" or item.get("exit_code") != 0:
             continue
         try:
-            parts = probe.command_parts(item.get("command", ""))
-            if len(parts) >= 3 and Path(parts[1]) == helper and parts[2] in commands:
-                executable = shutil.which(parts[0]) if not Path(parts[0]).is_absolute() else parts[0]
-                if executable and Path(executable).resolve() == Path(sys.executable).resolve():
-                    observed.add(parts[2])
+            for parts, compound in shell_calls(item.get("command", "")):
+                call = helper_call(parts, helper)
+                if call is None or call[0] not in commands or state_root is not None and call[1] != state_root:
+                    continue
+                if compound and not receipt_proves_call(item, call[0], call[1], current, prior_sequence):
+                    continue
+                observed.add(call[0])
         except (ValueError, TypeError):
             pass
     if not set(commands) <= observed:
@@ -198,7 +341,7 @@ class Workflow:
                       f"Mode: {self.mode}. Controller input locator: {packet['path']}, SHA-256 {packet['sha256']}. "
                       "Synthetic user decisions are explicitly a simulation, not a real user event. No target score or desired verdict is supplied. "
                       "Author operational artifacts from actual evidence. Never import test fixtures, invent raw events, fill criteria with default success, or claim unobserved outcomes. "
-                      "Only the public helper may mutate its state. Invoke it directly as a tool command with JSON stdin redirected from an owned request file, so raw traces prove each public command. "
+                      "Only the public helper may mutate its state. Invoke it directly as a tool command with JSON stdin redirected from an owned request file, so raw traces prove each public command. Keep helper invocations unconditional, without shell loops, aliases, eval, traps, or pipelines. When the same tool command also prepares a request or cats redirected results, expose the helper's original operation JSON as its entire terminal output; that receipt must belong to this exact workflow and state root. "
                       "Do not delegate, commit, deliver, install, publish, or clean state. " + prompt)
             prompt += " Return exactly one JSON object with workflow_id as a string or null, stage as a string, and artifact_ids as an array of strings naming every newly created public artifact, including helper-generated resolution or invalidation records. An initialized workflow must return its actual workflow_id; the controller input names the existing active ID. Null is allowed only before initialization. Research-only replies instead name their scratch file locators as specified. No code fences or surrounding prose."
         before_candidate = None
@@ -248,11 +391,12 @@ class Workflow:
 
     def stage(self, role, prompt, expected, commands, *, read_only=False):
         prior_ids = set(self.current["artifact_index"]) if self.current else set()
+        prior_sequence = self.current["head_sequence"] if self.current else -1
         actor, origin, reply = self.actor(role, prompt, read_only=read_only)
-        public_command_seen(self.probe, origin, self.helper, commands)
         if self.workflow_id is None:
             self.workflow_id = reply["workflow_id"]
         self.refresh()
+        public_command_seen(self.probe, origin, self.helper, commands, state_root=self.state_root, current=self.current, prior_sequence=prior_sequence)
         if self.current["stage"] != expected or reply["stage"] != expected:
             raise WorkflowError(f"{role} stopped at public stage {self.current['stage']}; expected {expected}")
         new_ids = set(self.current["artifact_index"]) - prior_ids
