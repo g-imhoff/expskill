@@ -109,6 +109,7 @@ AGENTS_PATH = "content/agents"
 AGENT_CONTENT_PATH = "content/agents.json"
 POLICY_PATH = "content/policies/execution-policy.json"
 UNSLOP_RUNTIME_POLICY_PATH = "content/policies/unslop-runtime.json"
+AUTHORING_RUNTIME_POLICY_PATH = "content/policies/authoring-runtime.json"
 HELPER_PATH = "content/scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
 UNSLOP_HOOK_CONFIG_PATH = "codex/hooks/hooks.json"
@@ -639,12 +640,18 @@ EXPECTED_THIRD_PARTY_SOURCES = {
 }
 
 EXPECTED_UNSLOP_HOOKS = {
-    "description": "Apply Unslop to prose written by the root conversation.",
+    "description": "Load Unslop and inject authoring instructions at conversation start and after compaction.",
     "hooks": {
         "SessionStart": [
             {
                 "matcher": "^(startup|resume|clear|compact)$",
                 "hooks": [
+                    {
+                        "type": "command",
+                        "command": 'python3 "${PLUGIN_ROOT}/codex/hooks/inject_authoring.py"',
+                        "timeout": 3,
+                        "additionalContextLimit": 1000,
+                    },
                     {
                         "type": "command",
                         "command": 'python3 "${PLUGIN_ROOT}/codex/hooks/inject_unslop.py"',
@@ -1088,6 +1095,7 @@ def validate_repository(
             _validate_review_handoff_contract(plugin_root, errors)
             _validate_policy(plugin_root, errors)
             _validate_unslop_hook(plugin_root, errors)
+            _validate_authoring_runtime(plugin_root, errors)
             _validate_third_party_sources(plugin_root, errors)
             _validate_helper_and_package_layout(plugin_root, errors)
         _validate_public_readme(repository_root, errors)
@@ -2006,6 +2014,38 @@ def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
         errors.append("brainstorm catalog payload does not match the pinned upstream digest")
 
 
+def _validate_authoring_runtime(plugin_root: Path, errors: list[str]) -> None:
+    policy_path = _required_package_path(
+        plugin_root, AUTHORING_RUNTIME_POLICY_PATH, "authoring runtime policy", "file", errors,
+    )
+    policy = _load_json_object(policy_path, "authoring runtime policy", errors) if policy_path else None
+    if not isinstance(policy, dict) or set(policy) != {"schema_version", "instructions"}:
+        errors.append("authoring runtime policy must contain schema_version and instructions")
+        return
+    if policy.get("schema_version") != "authoring-runtime.v1":
+        errors.append("authoring runtime policy has an unsupported schema")
+    instructions = policy.get("instructions")
+    if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 1000:
+        errors.append("authoring runtime instructions must contain 1-1000 characters")
+        return
+    for relative in (
+        "codex/hooks/inject_authoring.py", "opencode/plugins/authoring.js", "hermes/__init__.py",
+    ):
+        path = _required_package_path(plugin_root, relative, "authoring runtime adapter", "file", errors)
+        if path is None:
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+            if "authoring-runtime.json" not in source:
+                errors.append(f"authoring runtime adapter does not load the shared policy: {relative}")
+            if instructions in source:
+                errors.append(f"authoring runtime adapter duplicates the shared instructions: {relative}")
+            if path.suffix == ".py":
+                ast.parse(source, filename=str(path))
+        except (OSError, UnicodeError, SyntaxError) as error:
+            errors.append(f"authoring runtime adapter is invalid: {relative}: {error}")
+
+
 def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     policy_path = _required_package_path(
         plugin_root,
@@ -2046,7 +2086,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     if hooks_root is None:
         return
 
-    expected_files = {"hooks.json", "inject_unslop.py"}
+    expected_files = {"hooks.json", "inject_unslop.py", "inject_authoring.py"}
     actual_files = {
         path.relative_to(hooks_root).as_posix()
         for path in hooks_root.rglob("*")
@@ -2055,7 +2095,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     }
     if actual_files != expected_files:
         errors.append(
-            "Unslop hook files must be exactly hooks.json and inject_unslop.py"
+            "Codex hook files must be exactly hooks.json, inject_unslop.py, and inject_authoring.py"
         )
 
     config_path = _required_package_path(
@@ -2208,8 +2248,7 @@ def _validate_public_third_party_derivations(
             b"machine-readable data, logs, identifiers, API names, quotations, citations, "
             b"source excerpts, approved copy, and project-required terminology exactly. "
             b"Higher-priority instructions and explicit user formatting or tone choices win. "
-            b"Before sending user-facing prose, perform the included self-audit. "
-            b"Never create documentation files or add code comments unless the user asked for them.\n\n"
+            b"Before sending user-facing prose, perform the included self-audit.\n\n"
             b"## Process\n",
             1,
         )
@@ -2951,6 +2990,7 @@ def _validate_codex_adapter(plugin_root: Path, errors: list[str]) -> None:
         "manifest.json",
         "hooks/hooks.json",
         "hooks/inject_unslop.py",
+        "hooks/inject_authoring.py",
         *(f"skill-adapters/{name}/agents/openai.yaml" for name in EXPECTED_SKILLS),
     }
     actual_files = {
@@ -3102,6 +3142,7 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
             "plugins/expskill/content/policies/execution-policy.json",
             "plugins/expskill/content/policies/skills.json",
             "plugins/expskill/content/policies/unslop-runtime.json",
+            "plugins/expskill/content/policies/authoring-runtime.json",
             "plugins/expskill/codex/agents.json",
             "scripts/artifact_contract.py",
             "scripts/build_codex_marketplace.py",
@@ -3148,6 +3189,7 @@ def _validate_codex_package(repository_root: Path, errors: list[str]) -> None:
             ("assets/execution-policy.json", "content/policies/execution-policy.json"),
             ("assets/skill-policies.json", "content/policies/skills.json"),
             ("assets/unslop-runtime.json", "content/policies/unslop-runtime.json"),
+            ("assets/authoring-runtime.json", "content/policies/authoring-runtime.json"),
         ):
             try:
                 if (artifact / relative).read_bytes() != (package_root / source_relative).read_bytes():
@@ -3271,7 +3313,7 @@ OPENCODE_READ_ONLY_GIT_RULE_ORDER = (
     ("git *<*", "deny"),
 )
 OPENCODE_READ_ONLY_GIT_RULES = dict(OPENCODE_READ_ONLY_GIT_RULE_ORDER)
-OPENCODE_PLUGINS = ("unslop.js", "execution-policy.js")
+OPENCODE_PLUGINS = ("authoring.js", "unslop.js", "execution-policy.js")
 OPENCODE_PACKAGE_EXPORTS = {".": "./index.js"}
 OPENCODE_PACKAGE_FILES = (
     "LICENSE",
@@ -4087,6 +4129,7 @@ def _validate_opencode_policy_asset(
 ) -> None:
     for source_relative, output_relative, label in (
         (POLICY_PATH, "assets/execution-policy.json", "execution policy"),
+        (AUTHORING_RUNTIME_POLICY_PATH, "assets/authoring-runtime.json", "authoring runtime policy"),
         (
             UNSLOP_RUNTIME_POLICY_PATH,
             "assets/unslop-runtime.json",

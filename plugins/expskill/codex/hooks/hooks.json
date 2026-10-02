@@ -1,10 +1,16 @@
 {
-  "description": "Apply Unslop to prose written by the root conversation.",
+  "description": "Load Unslop and inject authoring instructions at conversation start and after compaction.",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "^(startup|resume|clear|compact)$",
         "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/codex/hooks/inject_authoring.py\"",
+            "timeout": 3,
+            "additionalContextLimit": 1000
+          },
           {
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT}/codex/hooks/inject_unslop.py\"",

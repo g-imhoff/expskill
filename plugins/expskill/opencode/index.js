@@ -8,6 +8,7 @@ export { UnslopPlugin } from "./plugins/unslop.js";
 
 import { ExecutionPolicyPlugin } from "./plugins/execution-policy.js";
 import { UnslopPlugin } from "./plugins/unslop.js";
+import { AuthoringPlugin, authoringBlock } from "./plugins/authoring.js";
 
 const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_PATH = path.join(PACKAGE_ROOT, "catalog.json");
@@ -446,13 +447,22 @@ function addCatalog(config, catalog) {
 }
 
 export const ExpSkillPlugin = async (input, options) => {
-  const [unslop, executionPolicy] = await Promise.all([
+  const [unslop, executionPolicy, authoring] = await Promise.all([
     UnslopPlugin(input, options),
     ExecutionPolicyPlugin(input, options),
+    AuthoringPlugin(input, options),
   ]);
   return {
     ...unslop,
     ...executionPolicy,
+    "experimental.chat.system.transform": async (input, output) => {
+      await authoring["experimental.chat.system.transform"](input, output);
+      await unslop["experimental.chat.system.transform"](input, output);
+    },
+    "experimental.session.compacting": async (input, output) => {
+      await unslop["experimental.session.compacting"](input, output);
+      await authoring["experimental.session.compacting"](input, output);
+    },
     config: async (config) => {
       try {
         const catalog = await readCatalog();
@@ -585,6 +595,20 @@ function v2IsExpSkillAgent(value) {
 }
 
 const ExpSkillSetup = async (ctx) => {
+  const authoring = await authoringBlock();
+  if (ctx?.session?.hook) {
+    for (const kind of ["context", "compaction", "generate"]) {
+      await ctx.session.hook(kind, async (event) => {
+        if (Array.isArray(event?.system)) {
+          const present = event.system.some(entry =>
+            (typeof entry === "string" ? entry : entry?.text)?.includes(authoring));
+          if (!present) v2PushSystem(event.system, authoring);
+        } else if (Array.isArray(event?.context) && !event.context.includes(authoring)) {
+          event.context.push(authoring);
+        }
+      });
+    }
+  }
   try {
     try {
       const catalog = await readCatalog();
