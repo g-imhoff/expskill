@@ -27,7 +27,7 @@ Each reviewer tries to disprove the pinned change and returns this JSON shape, w
 
 Score is a 0-10 integer. 9 means ready for human review. 0 means broken. High means a critical correctness, security, authority, data-loss, or false-completion defect. Medium means a material missing behavior, unreliable gate, or regression. Low means a localized maintenance or clarity issue without a material behavior failure. Structural risks and missing evidence must be labelled in the rationale, never fabricated as confirmed defects. A high score cannot cancel a High or Medium finding.
 
-Fail closed. A missing reply, invalid JSON, wrong pin, incomplete finding fields, or inaccessible evidence makes that category's review invalid and score 0. Retry once within the remaining run allowance. An invalid review remains a blocker without a claimed quality verdict. Never manufacture a code fix from missing review evidence.
+Fail closed. A missing reply, invalid JSON, wrong pin, incomplete finding fields, or inaccessible evidence makes that category's review invalid with no quality score. Retry once within the remaining run allowance. An invalid review remains a blocker without a claimed quality verdict. Never manufacture a code fix from missing review evidence.
 
 ## Retain and fix the blocker ledger
 
