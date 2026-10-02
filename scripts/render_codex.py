@@ -126,7 +126,12 @@ def _quote(value: str) -> str:
 def render_agent(name: str, metadata: Mapping[str, Any], body: str) -> str:
     if metadata.get("name", name) != name:
         raise RenderError(f"Codex agent metadata name does not match {name!r}")
-    required = ("description", "model", "model_reasoning_effort", "sandbox_mode")
+    required = ("description", "model", "model_reasoning_effort")
+    if name in {"expskill-designer", "expskill-implementer"}:
+        if "sandbox_mode" in metadata:
+            raise RenderError(f"Codex agent {name!r} must inherit the parent sandbox")
+    else:
+        required += ("sandbox_mode",)
     for field in required:
         value = metadata.get(field)
         if not isinstance(value, str) or not value.strip():
@@ -136,12 +141,16 @@ def render_agent(name: str, metadata: Mapping[str, Any], body: str) -> str:
     body = body.rstrip("\n")
     if '"""' in body:
         raise RenderError(f"canonical agent body {name!r} contains unsupported TOML delimiter")
+    sandbox = (
+        f'sandbox_mode = {_quote(str(metadata["sandbox_mode"]))}\n'
+        if "sandbox_mode" in metadata else ""
+    )
     return (
         f'name = {_quote(name)}\n'
         f'description = {_quote(str(metadata["description"]))}\n'
         f'model = {_quote(str(metadata["model"]))}\n'
         f'model_reasoning_effort = {_quote(str(metadata["model_reasoning_effort"]))}\n'
-        f'sandbox_mode = {_quote(str(metadata["sandbox_mode"]))}\n'
+        f"{sandbox}"
         'developer_instructions = """\n'
         f"{body}\n"
         '"""\n'

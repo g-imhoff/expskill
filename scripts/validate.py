@@ -668,8 +668,8 @@ EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-5.6-luna", "max", None),
+    "expskill-implementer": ("gpt-5.6-luna", "max", None),
     "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
     "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
 }
@@ -736,7 +736,6 @@ REQUIRED_AGENT_FIELDS = (
     "description",
     "model",
     "model_reasoning_effort",
-    "sandbox_mode",
     "developer_instructions",
 )
 
@@ -754,6 +753,9 @@ AGENT_BOUNDARIES = {
         "one owned branch",
         "no delegation",
         "no scope expansion",
+        "parent-approved sandbox and approval policy",
+        "stop before production edits",
+        "never change sandbox settings",
     ),
     "expskill-planner": (
         "private plan graph",
@@ -766,6 +768,9 @@ AGENT_BOUNDARIES = {
         "one coherent local candidate commit",
         "do not write the plan graph",
         "do not delegate",
+        "parent-approved sandbox and approval policy",
+        "stop before production edits",
+        "never change sandbox settings",
     ),
     "expskill-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "read-only",
@@ -2876,6 +2881,8 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
         if not isinstance(metadata, dict):
             continue
         expected_fields = {"model", "model_reasoning_effort", "sandbox_mode", "source"}
+        if EXPECTED_AGENTS[expected_name][2] is None:
+            expected_fields.remove("sandbox_mode")
         if set(metadata) != expected_fields:
             errors.append(
                 f"Codex agent metadata {expected_name!r} must contain only technical fields"
@@ -2886,6 +2893,8 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
                 f"Codex agent metadata {expected_name!r} source must be {expected_source!r}"
             )
         expected_model, expected_effort, expected_sandbox = EXPECTED_AGENTS[expected_name]
+        if expected_sandbox is None and "sandbox_mode" in metadata:
+            errors.append(f"Codex agent metadata {expected_name!r} must inherit the parent sandbox")
         for field, expected_value in (
             ("model", expected_model),
             ("model_reasoning_effort", expected_effort),
@@ -3243,6 +3252,8 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
         )
 
     expected_model, expected_effort, expected_sandbox = EXPECTED_AGENTS[expected_name]
+    if expected_sandbox is None and "sandbox_mode" in profile:
+        errors.append(f"agent profile {expected_name!r} must inherit the parent sandbox")
     for field, expected_value in (
         ("model", expected_model),
         ("model_reasoning_effort", expected_effort),
