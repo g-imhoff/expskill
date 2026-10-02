@@ -9,7 +9,7 @@ description: Plan a sufficiently concrete direction through explicit $plan invoc
 `$plan` is a standalone, concept-read-only and source-read-only planning skill
 that the user can also run as one direct CLI conversation beside Design.
 The router relays its questions. Accept a
-completed Concept Brief or another sufficiently concrete direction. Preserve
+completed Concept Brief, a complete accepted specification, or another sufficiently concrete direction supplied directly. In parallel mode, accept the same immutable complete input locator and digest as Design. Preserve every accepted criterion and non-goal without requiring a Brainstorm-created file. Preserve
 settled conceptual decisions. Technical evidence may expose a contradiction,
 but planning must not repeat brainstorm, simulate brainstorm, or silently
 redesign the concept.
@@ -34,7 +34,7 @@ Follow this order:
 In routed parallel mode, work from the exact target checkout and baseline the
 user hands you. The router never starts you and you never run inside it.
 Remain the only Plan Graph writer. Return user questions to the
-router instead of asking them directly. Mark the optional typed Design join as
+router instead of asking them directly. Every return names the Plan workflow ID/revision, accepted input digest, status, stable pending question ID, and exact decision needed. Resume only with the answer bound to that question and owner, or the digest-bound Design result sent to the same session. On replacement after interruption, load and revalidate the existing canonical graph and retained decisions before continuing, never initialize another competing writer. Mark the optional typed Design join as
 required when production UI approval is part of the accepted outcome. The graph
 must remain `not-ready` while that receipt is absent or stale. When the
 router relays the Design conversation result, verify its frozen baseline, isolated

@@ -173,16 +173,28 @@ def _validate_brief(brief: object) -> None:
     if not isinstance(responsive, dict) or set(responsive) != {"compact", "intermediate", "wide"} or any(not isinstance(value, str) or not value.strip() for value in responsive.values()):
         raise ValueError("invalid responsive expectations")
     source = brief["source"]
-    if not isinstance(source, dict) or source.get("kind") not in {"plan-graph", "specification"}: raise ValueError("invalid design brief source")
+    if not isinstance(source, dict) or source.get("kind") not in {"plan-graph", "specification", "accepted-input"}: raise ValueError("invalid design brief source")
     if source["kind"] == "plan-graph":
         if set(source) != {"kind", "workflow_id", "revision", "digest"} or not ID_RE.fullmatch(str(source.get("workflow_id", ""))) or isinstance(source.get("revision"), bool) or not isinstance(source.get("revision"), int) or source["revision"] < 1:
             raise ValueError("invalid Plan Graph source")
-    else:
+    elif source["kind"] == "specification":
         if set(source) != {"kind", "path", "digest"} or not isinstance(source.get("path"), str) or not source["path"] or source["path"].startswith("/") or "\\" in source["path"] or any(part in {"", ".."} for part in source["path"].split("/")):
             raise ValueError("invalid specification source")
+    if source["kind"] == "accepted-input":
+        if set(source) != {"kind", "path", "digest", "decision_reference"} or not isinstance(source.get("path"), str) or not source["path"].startswith("/") or "\\" in source["path"] or any(part in {"", ".", ".."} for part in source["path"].split("/")[1:]) or not isinstance(source["decision_reference"], str) or not source["decision_reference"].strip(): raise ValueError("invalid accepted input source")
     if not DIGEST_RE.fullmatch(str(source.get("digest", ""))): raise ValueError("invalid design brief source digest")
     expected = canonical_digest({key: value for key, value in brief.items() if key != "digest"})
     if brief["digest"] != expected: raise ValueError("design brief digest mismatch")
+
+def _revalidate_brief_source(brief: dict, worktree: Path) -> None:
+    if not brief["confirmed"] or brief["source"]["kind"] == "plan-graph": return
+    source = brief["source"]
+    path = Path(source["path"]) if source["kind"] == "accepted-input" else worktree / source["path"]
+    _reject_links(path)
+    if not path.is_file(): raise ValueError("design brief source is unavailable")
+    if source["kind"] == "accepted-input" and path.stat().st_mode & 0o277: raise ValueError("accepted input must be private and read-only")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != source["digest"]: raise ValueError("design brief source digest mismatch")
+
 
 def _validate_candidate(candidate: object, state: dict) -> None:
     if candidate is None: return
@@ -361,6 +373,7 @@ def _revalidate(state: dict) -> None:
             raise ValueError("unrelated workspace bytes changed")
         actual["dirty_fingerprint"] = i["dirty_fingerprint"]
     if actual != i: raise ValueError("external workspace change")
+    _revalidate_brief_source(state["brief"], worktree)
 
 def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_home):
     if confirmed is not True: raise PermissionError("explicit design brief confirmation required")
@@ -374,12 +387,7 @@ def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_hom
         state = _load(root, workflow_id)
         _revalidate(state)
         if state["lifecycle"] == "delivered" or state["revision"] != expected_revision: raise ValueError("immutable or stale workflow")
-        source = candidate["source"]
-        if source["kind"] == "specification":
-            spec_path = Path(state["identity"]["worktree"]) / source["path"]
-            _reject_links(spec_path)
-            if spec_path.is_symlink() or not spec_path.is_file(): raise ValueError("design brief specification is unavailable")
-            if hashlib.sha256(spec_path.read_bytes()).hexdigest() != source["digest"]: raise ValueError("design brief specification digest mismatch")
+        _revalidate_brief_source(candidate, Path(state["identity"]["worktree"]))
         changed = state["brief"]["confirmed"] and state["brief"]["digest"] != candidate["digest"]
         if changed and state["candidate"] is not None: raise ValueError("cannot change design brief after candidate checkpoint")
         if state["brief"]["digest"] != candidate["digest"]:
