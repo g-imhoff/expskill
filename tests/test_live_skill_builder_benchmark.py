@@ -260,3 +260,33 @@ def test_shared_cli_command_retains_non_git_failure_and_uses_prepared_repository
     assert "--skip-git-repo-check" not in after["argv"]
     assert setup["repository"] == str(workspace)
     assert setup["history_present"] is False and setup["remotes"] == []
+
+
+def test_each_judge_prompt_specifies_the_current_validator_evidence_array(tmp_path):
+    driver = MockTransport(initially_correct=False)
+    report = run_probe(output_root=tmp_path / "probe", live=True, driver=driver)
+    assert report["outcome"] == "repair-observed"
+    stages = {"reviewer-before": "trial-before", "independent-grader": "trial-after", "independent-verifier": "verification"}
+    for role, stage in stages.items():
+        prompt = next(call["prompt"] for call in driver.calls if call["role"] == role)
+        assert "evidence_digests must be a nonempty JSON array of strings" in prompt
+        assert "Do not use a named object" in prompt
+        encoded = prompt.split("Required evidence_digests value: ", 1)[1]
+        evidence, _ = json.JSONDecoder().raw_decode(encoded)
+        observations = report["observations"][stage]
+        assert evidence == [observations["evidence"]["sha256"]]
+        judgment = dict(report["actors"][role]["bounded_judgment"], evidence_digests=evidence)
+        assert PROBE.validate_judgment({"final_text": json.dumps(judgment)}, observations["candidate_digest"], observations) == judgment
+
+
+@pytest.mark.parametrize("evidence", (
+    {"observations": "b" * 64},
+    {"observations": "b" * 64, "framework": "c" * 64},
+    [], ["c" * 64], ["b" * 64, "c" * 64], "b" * 64,
+))
+def test_judge_validator_keeps_rejecting_mapped_missing_or_unrelated_evidence(evidence):
+    observations = {"checks": [{"case_id": "two-lines", "passed": False}], "evidence": {"sha256": "b" * 64}}
+    judgment = {"candidate_digest": "a" * 64, "criterion_results": {"two-lines": False},
+                "grade": "fail", "reason": "Recorded count was incorrect.", "evidence_digests": evidence}
+    with pytest.raises(PROBE.ProbeError, match="does not bind current recorder evidence"):
+        PROBE.validate_judgment({"final_text": json.dumps(judgment)}, "a" * 64, observations)
