@@ -50,12 +50,15 @@ def successor_context(charter: dict[str, object], root: Path, seen: set[Path] | 
     if link is None:
         return {"actions_used": 0, "rerun_action_ids": []}
     _private_json(root / "bootstrap.json")
-    if not isinstance(link, dict) or set(link) != {"predecessor_root", "reason", "classification", "correction", "source_files"}:
+    fields = {"predecessor_root", "reason", "classification", "correction", "source_files"}
+    if isinstance(link, dict) and link.get("reason") == "test-side-commit":
+        fields.add("test_owned_paths")
+    if not isinstance(link, dict) or set(link) != fields:
         raise ValueError("successor binding fields are invalid")
     predecessor = Path(str(link["predecessor_root"]))
     if not predecessor.is_absolute() or predecessor.parent != root.parent or predecessor.is_symlink() or predecessor == root:
         raise ValueError("successor must retain a canonical predecessor in the same worktree")
-    if link["reason"] != "recovery" or link["classification"] not in {"test-system-defect", "environment-blocker"} or not isinstance(link["correction"], str) or not link["correction"].strip():
+    if link["reason"] not in {"recovery", "test-side-commit"} or link["classification"] not in {"test-system-defect", "environment-blocker", "test-side-commit"} or not isinstance(link["correction"], str) or not link["correction"].strip():
         raise ValueError("successor requires a classified recovery and correction")
     if retained_files(predecessor) != link["source_files"]:
         raise ValueError("retained predecessor evidence changed after succession")
@@ -65,8 +68,12 @@ def successor_context(charter: dict[str, object], root: Path, seen: set[Path] | 
     previous = _private_json(predecessor / "charter.json")
     ledger = _private_json(predecessor / "ledger.json")
     opening = _private_json(predecessor / "bootstrap.json")
-    if previous.get("repository") != charter.get("repository") or previous.get("branch") != charter.get("branch") or previous.get("head") != charter.get("head"):
-        raise ValueError("recovery successor must preserve repository, branch, and HEAD")
+    if previous.get("repository") != charter.get("repository") or previous.get("branch") != charter.get("branch"):
+        raise ValueError("successor must preserve repository and branch")
+    if link["reason"] == "recovery" and (previous.get("head") != charter.get("head") or link["classification"] == "test-side-commit"):
+        raise ValueError("recovery successor must preserve HEAD and classify the failed cause")
+    if link["reason"] == "test-side-commit" and (previous.get("head") == charter.get("head") or not isinstance(link["test_owned_paths"], list) or not link["test_owned_paths"] or bootstrap.get("head") != charter.get("head")):
+        raise ValueError("test-side commit successor must bind its changed HEAD and declared owned paths")
     if any(previous.get(field) != charter.get(field) for field in SCOPE_FIELDS) or for_charter(previous) != for_charter(charter):
         raise ValueError("successor cannot change accepted scope or reset the execution budget")
     if bootstrap.get("started_at") != opening.get("started_at"):
