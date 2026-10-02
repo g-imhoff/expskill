@@ -691,15 +691,21 @@ REVIEW_HANDOFF_CLAUSES = (
     "stop before dispatch or before sending a follow-up when the resulting total would "
     "exceed the limit.",
     "a real accepted specification file is referenced separately when it exists.",
-    "the exception applies only to a specification file that existed before review "
-    "dispatch.",
     "it does not permit a review-time summary, copy, or relabelled context package.",
     "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
     "or other repository content.",
     "do not attach binary or opaque review context.",
 )
+REVIEW_HANDOFF_EXCEPTION_CLAUSES = {
+    relative: "the exception applies only to a specification file that existed before review dispatch."
+    for relative in REVIEW_HANDOFF_PATHS
+}
+REVIEW_HANDOFF_EXCEPTION_CLAUSES["content/skills/implement/SKILL.md"] = (
+    "the exception applies only to the complete accepted graph snapshot preserved before production "
+    "edits or a specification file that existed before review dispatch."
+)
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "content/skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "content/skills/implement/SKILL.md": "b3888f46163bbc059218ec6e262bd496bb670b70b86bddc4c2e41e86d7ac4a87",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
@@ -722,7 +728,7 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
     "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
+    "expskill-spec": "1c3bc835b7dedd3f861a4e410fc362ae9755ab9d2be241397396ab4fba796d60",
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -1130,7 +1136,7 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
                 f"review handoff contract at {relative} must begin at a live top-level "
                 "Markdown heading"
             )
-        for clause in REVIEW_HANDOFF_CLAUSES:
+        for clause in (*REVIEW_HANDOFF_CLAUSES, REVIEW_HANDOFF_EXCEPTION_CLAUSES[relative]):
             if clause not in normalized:
                 errors.append(
                     f"review handoff contract at {relative} must include {clause!r}"

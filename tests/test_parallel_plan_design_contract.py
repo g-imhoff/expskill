@@ -12,7 +12,7 @@ PRESERVED_PROFILES = {
     "expskill-explorer.md": "5c5004325f030473c618ac634619eea57e4e2b2eef02459cc9fa2d746c9a7240",
     "expskill-implementer.md": "330ca9b92040e47ecf7a210e3987a1d2542ba2d79dc4915d8c49f1551937183c",
     "expskill-review.md": "c9c841cc2f68802b7e956ae737561461ebd5eed48726290efa6d7774d712b0b8",
-    "expskill-spec.md": "97e7b61c6a20ad801cc814da47d1a4aca22fe5f9d85b170178fe4eb20293aa5a",
+    "expskill-spec.md": "a45e888340a8265c63dda51456fca964e99ed4f2ebbd6b3e81bbacd95c61947f",
     "expskill-test-engineer.md": "7db7bea7f92597fd8cec6c474404531f7c8f09906d5abf5e3d56472c6355c985",
 }
 
