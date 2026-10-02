@@ -318,6 +318,15 @@ def _freeze(
     if preparation["schema_version"] == "test-charter-preparation.v2":
         charter["schema_version"] = "test-charter.v2"
         charter["execution_budget"] = preparation["execution_budget"]
+    try:
+        context = execution_budget.successor_context(charter, root)
+        required = {action for oracle in charter["material_oracles"] for action in oracle["required_action_ids"]} | set(context["rerun_action_ids"])
+        if int(context["actions_used"]) and int(context["actions_used"]) + len(required) + 1 > int(execution_budget.for_charter(charter)["semantic_actions_max"]):
+            raise ValueError("remaining cumulative allowance cannot cover complete scope and final repetition")
+        if (root / "bootstrap.json").exists() and execution_budget.remaining_seconds(charter, root) <= 0:
+            raise ValueError("original cumulative deadline has expired")
+    except (OSError, ValueError) as error:
+        _error("invalid-successor", str(error))
     ledger = {
         "schema_version": LEDGER_SCHEMA_VERSION,
         "run_id": root.name,
