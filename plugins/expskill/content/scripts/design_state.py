@@ -297,6 +297,17 @@ def _durable_write(root: Path, workflow: str, state: dict) -> None:
     with target.open("rb") as fh: os.fsync(fh.fileno())
     dfd = os.open(root, os.O_RDONLY); os.fsync(dfd); os.close(dfd)
 
+def _workflow_paths(root):
+    for path in root.iterdir():
+        if path.name == ".lock" or path.name.endswith((".previous", ".tmp", ".backup")): continue
+        if path.name == "records":
+            _reject_links(path)
+            if not path.is_dir() or path.stat().st_mode & 0o077: raise ValueError("unsafe command records")
+            continue
+        if not path.is_file(): raise ValueError("ambiguous state")
+        yield path
+
+
 def initialize_workflow(*, repository, branch, worktree, baseline, dirty_fingerprint, ui_contract, scope, state_home, invocation_mode="direct"):
     if invocation_mode not in {"direct", "routed"}: raise ValueError("invalid invocation mode")
     identity = _identity(repository, branch, worktree, baseline, dirty_fingerprint, ui_contract)
@@ -307,15 +318,13 @@ def initialize_workflow(*, repository, branch, worktree, baseline, dirty_fingerp
     elif "protected_digest" in scope:
         raise ValueError("protected digest requires an owned path scope")
     with _locked(Path(state_home)) as root:
-        for p in root.iterdir():
-            if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
-            if p.is_file():
-                try:
-                    old = _load(root, p.name)
-                    if old["identity"]["repository"] == identity["repository"] and old["identity"]["branch"] == branch: raise ValueError("active workflow exists")
-                except ValueError as exc:
-                    if "active workflow" in str(exc): raise
-                    raise ValueError("ambiguous state") from exc
+        for p in _workflow_paths(root):
+            try:
+                old = _load(root, p.name)
+                if old["lifecycle"] != "delivered" and old["identity"]["repository"] == identity["repository"] and old["identity"]["branch"] == branch: raise ValueError("active workflow exists")
+            except ValueError as exc:
+                if "active workflow" in str(exc): raise
+                raise ValueError("ambiguous state") from exc
         workflow = secrets.token_hex(16)
         state = {"schema_version":1,"workflow_id":workflow,"revision":0,"lifecycle":"active","identity":identity,"ui_contract":ui_contract,"scope":scope,"selected_rules":{},"seed_permission":{},"questions":{},"delivery":{"classifications":{"candidate":"component","review":"review","manifest":"manifest"},"candidate":None,"review":None,"manifest":None},"components":{},"dependencies":{},"evidence":{},"approvals":{},"invalidations":{},"candidate_payload":None,"review_evidence":None,"manifest":None,"brief":{"objective":"","requirements":[],"responsive_expectations":{},"non_goals":[],"source":None,"confirmed":False,"digest":None},"candidate":None,"invocation_mode":invocation_mode}
         _validate_domains(state)
@@ -326,7 +335,8 @@ def load_workflow(*, workflow_id, state_home, repository=None, branch=None, work
     with _locked(Path(state_home)) as root:
         raw = json.loads((root / workflow_id).read_text(encoding="utf-8"))
         if (not isinstance(raw.get("delivery"), dict) or set(raw["delivery"]) != {"classifications", "candidate", "review", "manifest"} or raw["delivery"].get("classifications") != {"candidate":"component","review":"review","manifest":"manifest"}): raise ValueError("legacy delivery shape")
-        state = _load(root, workflow_id); _revalidate(state)
+        state = _load(root, workflow_id)
+        if state["lifecycle"] != "delivered": _revalidate(state)
         if any(x is not None for x in (repository,branch,worktree,baseline,dirty_fingerprint,ui_contract)):
             expected = _identity(repository or state["identity"]["repository"], branch or state["identity"]["branch"], worktree or state["identity"]["worktree"], baseline or state["identity"]["baseline"], dirty_fingerprint or state["identity"]["dirty_fingerprint"], ui_contract or {"digest":state["identity"]["ui_contract_digest"]}, head=state["identity"]["head"])
             if expected != state["identity"]: raise ValueError("identity revalidation failed")
@@ -446,11 +456,9 @@ def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, st
 def discover_workflow(*, repository, branch, state_home):
     with _locked(Path(state_home)) as root:
         matches=[]
-        for p in root.iterdir():
-            if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
-            if not p.is_file(): raise ValueError("ambiguous state")
+        for p in _workflow_paths(root):
             state=_load(root,p.name)
-            if state["identity"]["repository"]==str(Path(repository).resolve()) and state["identity"]["branch"]==branch: matches.append(state)
+            if state["lifecycle"] != "delivered" and state["identity"]["repository"]==str(Path(repository).resolve()) and state["identity"]["branch"]==branch: matches.append(state)
         if len(matches)!=1: raise ValueError("ambiguous workflow")
         s=matches[0]; return {"workflow_id":s["workflow_id"],"revision":s["revision"],"lifecycle":s["lifecycle"]}
 
@@ -532,7 +540,8 @@ def recover_workflow(*,workflow_id,state_home):
             raise ValueError("unsafe current generation")
         if target.is_file() and not target.is_symlink():
             try:
-                current=_load(root, workflow_id); _revalidate(current)
+                current=_load(root, workflow_id)
+                if current["lifecycle"] != "delivered": _revalidate(current)
                 raise ValueError("current generation is valid")
             except ValueError as exc:
                 if "current generation is valid" in str(exc): raise

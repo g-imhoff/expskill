@@ -102,3 +102,18 @@ def test_parallel_input_and_answer_relay_preserve_phase_ownership():
         "Recovery never implies approval, resets a budget", "preference-first policy",
     ):
         assert clause.lower() in router.lower()
+
+
+def test_design_only_selection_runs_directly_without_starting_parallel_conversations():
+    router = " ".join(skill("use-expskill").split())
+    design = " ".join(skill("design").split())
+    assert "When technical planning is accepted and only UI approval remains" in router
+    assert "run Design in the invoking conversation with the default `direct` invocation mode" in router
+    assert "This deliberate selection is authorized by the explicit `$use-expskill` request" in router
+    assert "does not launch a separate CLI conversation" in router
+    assert "run direct Design when an explicitly invoked `$use-expskill` deliberately selects it" in design
+    assert "The router never starts those parallel CLI conversations" in design
+    assert "confirmed brief, technical gates, and explicit approval" in router
+    assert "When both are unresolved" in router
+    assert "two CLI conversations the user opens" in router
+    assert "The router never starts it." not in design
