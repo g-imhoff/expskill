@@ -381,7 +381,8 @@ class BrainstormContractTests(unittest.TestCase):
     def test_entrypoint_is_read_only_standalone_and_not_a_router(self) -> None:
         section = _markdown_section(self.contents, "## Boundaries and recovery").lower()
         for clause in (
-            "this skill is read-only except for one permitted write",
+            "this skill is read-only except for the confirmed concept brief and helper-owned private research accounting",
+            "write research state only through the packaged accounting helper",
             "never create, edit, or delete any other file",
             "never open or invoke another product skill",
             "never select or recommend a downstream skill",
