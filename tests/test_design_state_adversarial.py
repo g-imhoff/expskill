@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
 from unittest import mock
 
 
@@ -274,13 +274,15 @@ class DesignStateAdversarialTests(unittest.TestCase):
 
             valid_receipt, _, valid_home, valid_id = _start(module, root / "valid-delivery")
             valid = _valid_updates(("CheckoutForm",))
-            seeded = module.apply_updates(workflow_id=valid_id, expected_revision=valid_receipt["revision"], updates=valid, state_home=valid_home)
+            seeded = valid_receipt
             code_digest = valid["components"]["CheckoutForm"]["code_digest"]
             evidence_digest = valid["evidence"]["CheckoutForm-evidence"]["digest"]
             contract_digest = valid["components"]["CheckoutForm"]["contract_digest"]
             candidate = {"files": [{"path": "CheckoutForm.tsx", "digest": code_digest, "classification": "component"}]}
             review = {"files": [{"path": "CheckoutForm-review.json", "digest": evidence_digest, "classification": "review"}]}
             manifest = {"files": [{"path": "manifest.json", "digest": contract_digest, "classification": "manifest"}]}
+            prepare_delivery_fixture(module, valid_receipt, valid_home, valid_id, valid, (candidate, review, manifest))
+            seeded = module.apply_updates(workflow_id=valid_id, expected_revision=valid_receipt["revision"], updates=valid, state_home=valid_home)
             delivered = module.deliver_workflow(workflow_id=valid_id, expected_revision=seeded["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=valid_home)
             self.assertEqual(delivered["lifecycle"], "delivered")
             self.assertIn("candidate_digest", delivered)

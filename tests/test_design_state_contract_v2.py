@@ -11,13 +11,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
-DIGEST = "a" * 64
+DIGEST = hashlib.sha256(b"fixture-artifact").hexdigest()
 
 
 def _load(name: str = "design_state_contract_v2") -> object:
@@ -144,6 +144,7 @@ def _valid_records(component_names: tuple[str, ...] = ("CheckoutForm",)) -> dict
 
 def _seed_valid(module: object, receipt: dict, state_home: Path, workflow_id: str, component_names: tuple[str, ...] = ("CheckoutForm",)) -> dict:
     updates = _valid_records(component_names)
+    prepare_delivery_fixture(module, receipt, state_home, workflow_id, updates, _valid_layers())
     return module.apply_updates(
         workflow_id=workflow_id,
         expected_revision=receipt["revision"],
