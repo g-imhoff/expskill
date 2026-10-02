@@ -118,7 +118,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         self.assertGreaterEqual(handler["additionalContextLimit"], 4000)
         self.assertFalse(handler.get("async", False))
 
-    def test_session_start_hook_emits_scoped_unslop_developer_context(self) -> None:
+    def test_session_start_hook_requests_loading_unslop_without_inlining_rules(self) -> None:
         event = {
             "session_id": "test-session",
             "transcript_path": None,
@@ -144,32 +144,12 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         hook_output = output["hookSpecificOutput"]
         self.assertEqual(hook_output["hookEventName"], "SessionStart")
         context = hook_output["additionalContext"]
-        normalized_context = context.lower()
-        for phrase in (
-            "user-facing prose",
-            "commentary and final messages",
-            "code",
-            "commands",
-            "machine-readable data",
-            "logs",
-            "identifiers",
-            "API names",
-            "quotations",
-            "citations",
-            "source excerpts",
-            "project-required terminology",
-            "higher-priority instructions",
-            "self-audit",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase.lower(), normalized_context)
-        unslop_body = (SKILLS_ROOT / "unslop" / "SKILL.md").read_text(encoding="utf-8")
-        first_rule = next(
-            line.strip()
-            for line in unslop_body.splitlines()
-            if line.strip().startswith("1.")
-        )
-        self.assertIn(first_rule, context)
+        self.assertIn("Always load $expskill:unslop", context)
+        self.assertIn("at the start of the conversation", context)
+        self.assertIn("after each compaction", context)
+        self.assertIn("before writing user-facing prose", context)
+        self.assertNotIn("# Unslop", context)
+        self.assertLess(len(context), 500)
 
     def test_unslop_hook_stays_silent_for_subagents_and_unknown_sources(self) -> None:
         environment = dict(os.environ)
@@ -212,10 +192,14 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                     output["hookSpecificOutput"]["hookEventName"],
                     "SessionStart",
                 )
-                self.assertIn(
-                    "# Unslop",
-                    output["hookSpecificOutput"]["additionalContext"],
-                )
+                context = output["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("$expskill:unslop", context)
+                self.assertIn("before writing user-facing prose", context)
+                if source == "compact":
+                    self.assertIn("After this compaction, reload", context)
+                else:
+                    self.assertIn("at the start of the conversation", context)
+                self.assertNotIn("# Unslop", context)
 
     def test_upstream_snapshots_and_licenses_match_pinned_digests(self) -> None:
         lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
@@ -232,7 +216,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                     source["license_sha256"],
                 )
 
-    def test_public_unslop_is_the_upstream_copy_with_only_codex_frontmatter_adaptation(self) -> None:
+    def test_public_unslop_preserves_upstream_with_first_party_scope(self) -> None:
         source = (
             PLUGIN_ROOT
             / "content"
@@ -243,6 +227,19 @@ class ThirdPartySkillContractTests(unittest.TestCase):
             / "SKILL.md"
         ).read_text(encoding="utf-8")
         expected = source.replace("disable-model-invocation: true\n", "", 1)
+        expected = expected.replace(
+            "## Process\n",
+            "## Scope\n\n"
+            "Apply these rules to natural-language user-facing prose you author, "
+            "including commentary and final messages. Preserve code, commands, "
+            "machine-readable data, logs, identifiers, API names, quotations, citations, "
+            "source excerpts, approved copy, and project-required terminology exactly. "
+            "Higher-priority instructions and explicit user formatting or tone choices win. "
+            "Before sending user-facing prose, perform the included self-audit. "
+            "Never create documentation files or add code comments unless the user asked for them.\n\n"
+            "## Process\n",
+            1,
+        )
         actual = (SKILLS_ROOT / "unslop" / "SKILL.md").read_text(encoding="utf-8")
         self.assertEqual(actual, expected)
 

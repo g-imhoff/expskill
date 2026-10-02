@@ -7,57 +7,6 @@ const MARKER = "unslop-scope";
 const OPEN_MARKER = `<${MARKER}>`;
 const CLOSE_MARKER = `</${MARKER}>`;
 
-function skillBody(contents) {
-  const lines = contents.split("\n");
-  if (lines.length === 0 || lines[0] !== "---") {
-    throw new Error("Unslop skill is missing frontmatter");
-  }
-  const end = lines.indexOf("---", 1);
-  if (end < 0) {
-    throw new Error("Unslop skill frontmatter is not closed");
-  }
-  return lines.slice(end + 1).join("\n").trim();
-}
-
-function compactSkill(contents) {
-  const body = skillBody(contents);
-  const soulMarker = "\n## Adding soul\n";
-  const patternsMarker = "\n## Patterns to detect and fix\n";
-  const soulStart = body.indexOf(soulMarker);
-  const patternsStart = body.indexOf(patternsMarker);
-  if (soulStart < 0 || patternsStart < soulStart) {
-    throw new Error("Unslop skill is missing its compactable sections");
-  }
-
-  const introduction = body.slice(0, soulStart).trim();
-  const soulSection = body.slice(soulStart + soulMarker.length, patternsStart);
-  const soulNames = [...soulSection.matchAll(/^- \*\*([^*]+)\*\*/gm)].map(
-    (match) => match[1]
-  );
-  if (soulNames.length === 0) {
-    throw new Error("Unslop skill has no voice rules");
-  }
-
-  const rules = [...body.matchAll(/^(\d+)\. \*\*([^*]+)\*\*\s*(.*)$/gm)].map(
-    (match) => {
-      const sentences = match[3].trim().split(/(?<=[.!?])\s+/u);
-      const selected = sentences.length <= 1
-        ? sentences
-        : [sentences[0], sentences[sentences.length - 1]];
-      return `${match[1]}. **${match[2]}** ${selected.join(" ")}`;
-    }
-  );
-  if (rules.length === 0) {
-    throw new Error("Unslop skill has no numbered rules");
-  }
-
-  return [
-    introduction,
-    `## Adding soul\n\n${soulNames.join(" ")}`,
-    `## Patterns to detect and fix\n\n${rules.join("\n")}`,
-  ].join("\n\n");
-}
-
 function runtimePolicy(contents) {
   const payload = JSON.parse(contents);
   const keys = Object.keys(payload).sort();
@@ -75,10 +24,9 @@ function runtimePolicy(contents) {
   return payload;
 }
 
-function buildBlock(skillContents, policyContents) {
+function buildBlock(policyContents) {
   const policy = runtimePolicy(policyContents);
-  const payload = policy.scope + compactSkill(skillContents);
-  const block = `${OPEN_MARKER}\n${payload}\n${CLOSE_MARKER}`;
+  const block = `${OPEN_MARKER}\n${policy.scope}\n${CLOSE_MARKER}`;
   if (block.length > LIMIT) {
     throw new Error(`Unslop runtime instructions exceed ${LIMIT} characters`);
   }
@@ -136,11 +84,11 @@ export const UnslopPlugin = async () => {
         return;
       }
       try {
-        const [skill, policy] = await Promise.all([
+        const [, policy] = await Promise.all([
           readFirst(sources.skill),
           readFirst(sources.policy),
         ]);
-        const { block } = buildBlock(skill, policy);
+        const { block } = buildBlock(policy);
         if (system.length > 0 && typeof system[0] === "string") {
           system[0] += `\n\n${block}`;
         } else {

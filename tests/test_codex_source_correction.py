@@ -131,7 +131,9 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             set(policy),
             {"schema_version", "scope", "compaction_reminder"},
         )
-        self.assertIn("natural-language user-facing prose", policy["scope"])
+        self.assertIn("Always load $expskill:unslop", policy["scope"])
+        self.assertIn("after each compaction", policy["scope"])
+        self.assertIn("reload $expskill:unslop", policy["compaction_reminder"])
         for adapter in (
             PLUGIN_ROOT / "codex" / "hooks" / "inject_unslop.py",
             PLUGIN_ROOT / "opencode" / "plugins" / "unslop.js",
@@ -194,23 +196,27 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             output = build_codex_package(ROOT, Path(temporary) / "package")
             environment = dict(os.environ)
             environment.pop("PLUGIN_ROOT", None)
-            result = subprocess.run(
-                [sys.executable, str(output / "hooks" / "inject_unslop.py")],
-                input=json.dumps(
-                    {"hook_event_name": "SessionStart", "source": "startup"}
-                )
-                + "\n",
-                capture_output=True,
-                text=True,
-                env=environment,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            payload = json.loads(result.stdout)
+            skill = (output / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(
-                "additionalContext",
-                payload["hookSpecificOutput"],
+                "Never create documentation files or add code comments unless the user asked for them.",
+                skill,
             )
+            for source in ("startup", "compact"):
+                with self.subTest(source=source):
+                    result = subprocess.run(
+                        [sys.executable, str(output / "hooks" / "inject_unslop.py")],
+                        input=json.dumps({"hook_event_name": "SessionStart", "source": source}) + "\n",
+                        capture_output=True,
+                        text=True,
+                        env=environment,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+                    self.assertIn("$expskill:unslop", context)
+                    self.assertIn("reload" if source == "compact" else "Always load", context)
+                    self.assertNotIn("# Unslop", context)
+                    self.assertLess(len(context), 500)
 
 
 if __name__ == "__main__":

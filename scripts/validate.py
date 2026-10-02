@@ -2200,6 +2200,19 @@ def _validate_public_third_party_derivations(
             b"",
             1,
         )
+        expected_unslop = expected_unslop.replace(
+            b"## Process\n",
+            b"## Scope\n\n"
+            b"Apply these rules to natural-language user-facing prose you author, "
+            b"including commentary and final messages. Preserve code, commands, "
+            b"machine-readable data, logs, identifiers, API names, quotations, citations, "
+            b"source excerpts, approved copy, and project-required terminology exactly. "
+            b"Higher-priority instructions and explicit user formatting or tone choices win. "
+            b"Before sending user-facing prose, perform the included self-audit. "
+            b"Never create documentation files or add code comments unless the user asked for them.\n\n"
+            b"## Process\n",
+            1,
+        )
         if _without_shared_metadata_block(public_unslop) != expected_unslop:
             errors.append("public skill 'unslop' does not match its declared derived upstream copy")
 
