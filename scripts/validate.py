@@ -112,6 +112,7 @@ UNSLOP_RUNTIME_POLICY_PATH = "content/policies/unslop-runtime.json"
 AUTHORING_RUNTIME_POLICY_PATH = "content/policies/authoring-runtime.json"
 HELPER_PATH = "content/scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
+RESEARCH_BUDGET_HELPER_PATH = "content/scripts/research_budget.py"
 UNSLOP_HOOK_CONFIG_PATH = "codex/hooks/hooks.json"
 UNSLOP_HOOK_SCRIPT_PATH = "codex/hooks/inject_unslop.py"
 THIRD_PARTY_LOCK_PATH = "content/third-party/upstream-lock.json"
@@ -2870,6 +2871,12 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
     design_helper = plugin_root / design_helper_path
     if design_helper.is_symlink() or not design_helper.is_file() or design_helper.stat().st_size == 0:
         errors.append("design state helper must be a non-empty regular file")
+    research_helper = _required_package_path(plugin_root, RESEARCH_BUDGET_HELPER_PATH, "research budget helper", "file", errors)
+    research_matches = sorted(path.relative_to(plugin_root).as_posix() for path in plugin_root.rglob("research_budget.py") if path.is_file() or path.is_symlink())
+    if research_matches != [RESEARCH_BUDGET_HELPER_PATH]:
+        errors.append(f"research budget helper must exist only at {RESEARCH_BUDGET_HELPER_PATH}; found {', '.join(research_matches) or 'none'}")
+    if research_helper is not None and (research_helper.is_symlink() or not research_helper.is_file() or research_helper.stat().st_size == 0):
+        errors.append("research budget helper must be a non-empty regular file")
 
 
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:

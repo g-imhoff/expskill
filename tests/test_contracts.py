@@ -1065,6 +1065,28 @@ class ContractTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_research_budget_helper_is_unique_nonempty_and_package_owned(self) -> None:
+        for mutation in ("missing", "symlink", "empty", "duplicate"):
+            with self.subTest(mutation=mutation):
+                root = self.copy_repository()
+                plugin = root / "plugins" / "expskill"
+                helper = plugin / "content" / "scripts" / "research_budget.py"
+                if mutation == "missing":
+                    helper.unlink()
+                elif mutation == "symlink":
+                    target = root / "outside-research-budget.py"
+                    target.write_text("outside\n", encoding="utf-8")
+                    helper.unlink()
+                    helper.symlink_to(target)
+                elif mutation == "empty":
+                    helper.write_bytes(b"")
+                else:
+                    shadow = plugin / "content" / "duplicate" / "research_budget.py"
+                    shadow.parent.mkdir(parents=True, exist_ok=True)
+                    shadow.write_bytes(helper.read_bytes())
+                errors = validate_repository(root, include_opencode=False)
+                self.assertTrue(any("research budget helper" in error.lower() for error in errors), errors)
+
     def test_validation_aggregates_independent_errors(self) -> None:
         root = self.copy_repository()
         adapter = root / "plugins" / "expskill" / "codex" / "agents.json"

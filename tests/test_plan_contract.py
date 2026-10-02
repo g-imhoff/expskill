@@ -265,6 +265,16 @@ class PlanContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, research)
 
+    def test_research_accounting_has_explicit_private_write_and_continuity_scope(self) -> None:
+        self.assertIn("private research accounting through `../../scripts/research_budget.py`", self.body)
+        self.assertIn("original run identity", _numbered_workflow(self.body)[6])
+        private = _markdown_section(self.body, "Canonical private graph")
+        for phrase in ("research-budgets", "initial research branch", "graph workflow id as the run id", "stop new research", "unique `dispatch_id`", "retains its open interval", "coordinator attestations"):
+            self.assertIn(phrase, private)
+        planner = (PLUGIN_ROOT / "content/agents/expskill-planner.md").read_text().lower()
+        self.assertIn("private cumulative research accounting through research_budget.py", planner)
+        self.assertIn("never reset its allowance", planner)
+
     def test_work_proof_and_parallelism_are_proportional_and_revision_bound(self) -> None:
         graph_step = _numbered_workflow(self.body)[7]
         proof = _markdown_section(self.body, "Implementation, proof, and Git execution contract")
