@@ -1,0 +1,32 @@
+{
+  "name": "opencode-expskill",
+  "version": "0.1.2",
+  "description": "ExpSkill lifecycle skills, agents, commands, and hooks for OpenCode.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "index.js",
+    "agents.json",
+    "catalog.json",
+    "provenance.json",
+    "agents/",
+    "assets/",
+    "commands/",
+    "plugins/",
+    "scripts/",
+    "skills/",
+    "third-party/licenses/",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

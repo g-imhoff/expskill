@@ -13,7 +13,7 @@ from tests.test_plan_graph import minimal_graph
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "plugins" / "expskill" / "scripts" / "plan_graph.py"
+HELPER = ROOT / "plugins" / "expskill" / "content" / "scripts" / "plan_graph.py"
 DIGEST = "a" * 64
 BRANCH = "feature/config-validation"
 
