@@ -1,5 +1,6 @@
 {
   "schema_version": "test-evidence-contract.v1",
+  "recorded_execution": {"manifest_schema": "test-recorded-action.v1", "manifest_fields": ["schema_version", "entry", "command", "execution"], "entry_fields": ["action_id", "role", "ring", "action", "path", "expected", "oracle_ids", "artifact_ids"], "wave_schema": "test-recorded-wave.v1", "wave_fields": ["schema_version", "actions"], "wave_actions_max": 8, "record_schema": "test-execution-record.v1", "derived_fields": ["head", "actual", "status"], "pass_gate": "one matching recorder receipt per action, complete charter bytes and entry binding, raw digest and output predicate recomputation", "legacy_gate": "handwritten FAIL and BLOCKED evidence remains supported, handwritten PASS is rejected"},
   "output_predicates": {
     "modes": ["exact-text", "sha256", "json-fields", "exit-only"],
     "json_assertion_fields": ["path", "operator", "value"],

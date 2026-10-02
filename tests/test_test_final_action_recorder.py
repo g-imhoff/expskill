@@ -230,6 +230,148 @@ print('consumer-result=pass')
         )
         self.assertEqual(metadata["outcome"], "mismatch")
 
+    def test_ordinary_record_derives_ledger_observation_from_actual_execution(self) -> None:
+        self.write_spec()
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        execution["observation_path"] = "artifacts/changed.raw"
+        execution["metadata_path"] = "artifacts/changed.record.json"
+        entry = {
+            "action_id": "changed", "role": "check", "ring": "inner",
+            "action": "Run the consumer", "path": [], "expected": "The consumer passes.",
+            "oracle_ids": ["changed-outcome"], "artifact_ids": ["changed-raw", "changed-record"],
+        }
+        manifest = {"schema_version": "test-recorded-action.v1", "entry": entry,
+                    "command": [sys.executable, "product_action.py"], "execution": execution}
+        for name, value in (("action-spec.json", manifest), ("ledger.json", {
+            "schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []
+        })):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "action-spec.json")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        recorded = json.loads((self.run_root / "ledger.json").read_text())["entries"][0]
+        self.assertEqual(recorded["status"], "pass")
+        self.assertEqual(recorded["actual"], "exit=0 output=match teardown=pass integrity=pass")
+        self.assertEqual((self.run_root / "artifacts/changed.raw").read_bytes(), b"consumer-result=pass\n")
+        receipt = json.loads((self.run_root / "artifacts/changed.record.json").read_text())
+        self.assertEqual(receipt["entry"], recorded)
+        self.assertEqual(receipt["schema_version"], "test-execution-record.v1")
+        from tests.test_test_evidence_finalizer import write_draft, invoke_finalizer
+        write_draft(self.run_root)
+        draft_path = self.run_root / "draft.json"
+        draft = json.loads(draft_path.read_text())
+        draft["artifacts"] = [
+            {"artifact_id": "changed-raw", "kind": "log", "path": "artifacts/changed.raw"},
+            {"artifact_id": "changed-record", "kind": "log", "path": "artifacts/changed.record.json"},
+        ]
+        draft_path.write_text(json.dumps(draft))
+        draft_path.chmod(0o600)
+        metadata_path = self.run_root / "artifacts/changed.record.json"
+        original = metadata_path.read_bytes()
+        receipt["entry"]["oracle_ids"] = []
+        metadata_path.write_text(json.dumps(receipt))
+        tampered = invoke_finalizer(self.run_root)
+        self.assertNotEqual(tampered.returncode, 0, tampered.stdout)
+        metadata_path.write_bytes(original)
+        batch_entry = {
+            "action_id": "final-proof", "role": "check", "ring": "inner", "action": "Repeat the changed consumer",
+            "path": [], "expected": "Consumer passes", "actual": "exit=0 output=match teardown=pass integrity=pass",
+            "status": "pass", "oracle_ids": ["changed-outcome"], "artifact_ids": ["final-raw", "final-record"],
+        }
+        batch_path = self.run_root / "ledger-batch.json"
+        batch_path.write_text(json.dumps({"schema_version": "test-ledger-batch.v1", "entries": [batch_entry]}))
+        batch_path.chmod(0o600)
+        appender = RECORDER.with_name("append_ledger.py")
+        appended = subprocess.run([sys.executable, str(appender), "--root", str(self.run_root)], cwd=self.repository, capture_output=True, text=True)
+        self.assertEqual(appended.returncode, 0, appended.stderr)
+        draft["artifacts"].extend([
+            {"artifact_id": "final-raw", "kind": "log", "path": "final-observation.raw"},
+            {"artifact_id": "final-record", "kind": "log", "path": "final-action-metadata.json"},
+        ])
+        active = [rule["rule_id"] for rule in draft.pop("rule_applicability") if rule["status"] == "active"]
+        preparation = {"schema_version": "test-draft-preparation.v3", "draft_candidate": draft,
+                       "rule_disposition": "evaluate", "active_rule_conditions": [],
+                       "rule_assessment_groups": [{"rule_ids": active, "outcome": "satisfied", "evidence_action_ids": ["changed", "final-proof"]}]}
+        draft_path.unlink()
+        for name, value in (("draft-preparation.json", preparation), ("draft-final-delta.json", {"schema_version": "test-draft-final-delta.v2", "resolutions": []})):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        finalized = self.recorder("handoff", "--root", str(self.run_root), "--", sys.executable, "product_action.py")
+        self.assertEqual(finalized.returncode, 0, finalized.stdout)
+
+    def test_recorded_wave_runs_independent_argv_before_publishing_results(self) -> None:
+        script = self.repository / "parallel_action.py"
+        script.write_text("""import sys
+import time
+from pathlib import Path
+root = Path('.test-parallel')
+root.mkdir(exist_ok=True)
+(root / sys.argv[1]).write_text('ready')
+end = time.monotonic() + 3
+while not (root / sys.argv[2]).exists():
+    if time.monotonic() >= end:
+        raise SystemExit(7)
+    time.sleep(0.01)
+print('consumer-result=pass')
+""")
+        subprocess.run(["git", "add", "parallel_action.py"], cwd=self.repository, check=True)
+        subprocess.run(["git", "commit", "-m", "parallel fixture"], cwd=self.repository, check=True, stdout=subprocess.PIPE)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repository, text=True).strip()
+        charter_path = self.run_root / "charter.json"
+        charter = json.loads(charter_path.read_text())
+        charter["head"] = head
+        charter_path.write_text(json.dumps(charter))
+        self.write_spec()
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        actions = []
+        for index, action_id in enumerate(("changed", "neighbor")):
+            spec = dict(execution, observation_path=f"artifacts/{action_id}.raw", metadata_path=f"artifacts/{action_id}.json",
+                        integrity_paths=["parallel_action.py"], cleanup_absent_paths=[".test-parallel"] if index == 0 else [])
+            entry = {"action_id": action_id, "role": "check", "ring": "inner", "action": "Observe a parallel consumer",
+                     "path": [], "expected": "Consumer passes", "oracle_ids": ["changed-outcome"],
+                     "artifact_ids": [action_id + "-raw", action_id + "-record"]}
+            actions.append({"schema_version": "test-recorded-action.v1", "entry": entry, "execution": spec,
+                            "command": [sys.executable, "parallel_action.py", str(index), str(1 - index)]})
+        for name, value in (("wave.json", {"schema_version": "test-recorded-wave.v1", "actions": actions}),
+                            ("ledger.json", {"schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []})):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "wave.json")
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+        entries = json.loads((self.run_root / "ledger.json").read_text())["entries"]
+        self.assertEqual([entry["status"] for entry in entries], ["pass", "pass"])
+        self.assertFalse((self.repository / ".test-parallel").exists())
+
+    def test_ordinary_mismatch_is_derived_as_fail_and_handwritten_result_fields_are_rejected(self) -> None:
+        self.write_spec(output_predicate={"mode": "exact-text", "value": "unobserved success\n"})
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        entry = {"action_id": "changed", "role": "check", "ring": "inner", "action": "Run consumer", "path": [],
+                 "expected": "Expected response", "oracle_ids": ["changed-outcome"], "artifact_ids": ["raw", "record"]}
+        manifest = {"schema_version": "test-recorded-action.v1", "entry": entry,
+                    "command": [sys.executable, "product_action.py"], "execution": execution}
+        ledger_path = self.run_root / "ledger.json"
+        ledger_path.write_text(json.dumps({"schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []}))
+        ledger_path.chmod(0o600)
+        path = self.run_root / "action-spec.json"
+        entry["actual"] = "NOTRUN: expected success"
+        entry["status"] = "pass"
+        path.write_text(json.dumps(manifest))
+        path.chmod(0o600)
+        rejected = self.recorder("record", "--root", str(self.run_root), "--spec", "action-spec.json")
+        self.assertEqual(rejected.returncode, 2)
+        self.assertFalse((self.run_root / "final-observation.raw").exists())
+        del entry["actual"]
+        del entry["status"]
+        path.write_text(json.dumps(manifest))
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "action-spec.json")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        recorded = json.loads(ledger_path.read_text())["entries"][0]
+        self.assertEqual(recorded["status"], "fail")
+        self.assertEqual(recorded["actual"], "exit=0 output=mismatch teardown=pass integrity=pass")
+
     def test_json_predicate_accepts_stable_success_fields_with_variable_timing(self) -> None:
         module = _load_recorder_module()
         predicate = [
