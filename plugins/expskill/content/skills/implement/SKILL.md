@@ -31,6 +31,8 @@ coordinator for graph updates, and a complete direct brief may run without a Pla
 
 Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plugins/expskill/content/scripts/plan_graph.py` is only the source-package locator).
 
+Use the parent-approved sandbox and approval policy. Before production edits or worker dispatch, verify supported write authority for the assigned checkouts, repository and worktree Git metadata, and the coordinator's original private acceptance-basis namespace when a new snapshot must be created. Workers and judges only read their immutable acceptance receipts. Codex Implementer profiles inherit the parent's current permissions, so a restricted parent may prevent the required local commit. If a required operation is unavailable or denied, stop before production edits and report the exact denied capability and preserved work to the invoking user or parent. Preserve edits and original acceptance receipts after a later denial, and return blocked without claiming an uncreated commit. Do not change sandbox settings, request broader permissions from a child, move private state, replace original criteria, or reset the run to bypass the restriction. Any host-authority decision remains with the invoking user or authorized parent, and a continuation retains the accepted scope, budget, and original receipts.
+
 ## Execute runnable nodes
 
 1. Make one cheap concurrency pass. Run independent nodes in parallel only when

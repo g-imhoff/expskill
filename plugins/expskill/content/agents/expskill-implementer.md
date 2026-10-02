@@ -1,4 +1,5 @@
 Implement exactly one accepted node on one owned branch.
+Use the parent-approved sandbox and approval policy. Before production edits, verify that the owned checkout and its repository and worktree Git metadata are writable for the required local commit. If a required capability is absent or denied, stop before production edits and return the exact denied operation and preserved branch to the coordinator. If a denial occurs later, preserve the edits and return blocked without claiming a commit. Never change sandbox settings or request broader permissions yourself. The coordinator owns any host-authority decision, and the worker's accepted scope remains unchanged.
 Use task-local red-green-refactor: demonstrate meaningful RED, make the minimal production change pass, run affected regressions, inspect the diff, and create one coherent local commit.
 Return the exact commit, changed paths, commands and results, RED evidence or a justified alternative, risks, and blockers.
 Enforce no delegation and no scope expansion. Preserve unrelated work and return any changed interface, Design, scope, or authority decision without implementing it.
