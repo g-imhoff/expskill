@@ -7248,18 +7248,18 @@ def describe_command(command: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "schema_version": "skill-builder-cli-contract.v1",
         "operation": command,
-        "input": "one strict JSON object on stdin; duplicate keys and unknown fields are rejected",
+        "input": "one strict JSON object on stdin. Duplicate keys and unknown fields are rejected",
         "required_fields": required,
         "optional_fields": optional,
         "fields": fields,
         "required_flags": ["--yes"] if command == "cleanup" else [],
-        "option_order": "--state-root PATH and --yes may appear before or after the operation; request fields belong only in JSON stdin",
+        "option_order": "--state-root PATH and --yes may appear before or after the operation. Request fields belong only in JSON stdin",
         "usage": f"python3 /absolute/loaded-skill/scripts/run_state.py {command} [--state-root /absolute/isolated-state]" + (" --yes" if command == "cleanup" else "") + " < /absolute/request.json",
-        "description_usage": f"python3 /absolute/loaded-skill/scripts/run_state.py describe {command}; no stdin, state or target access",
+        "description_usage": f"python3 /absolute/loaded-skill/scripts/run_state.py describe {command}. No stdin, state or target access",
         "state_access": "target snapshot read" if command == "snapshot" else "validated private-state operation",
         "status_codes": {"success": 0, "domain_error": 1, "usage_error": 2},
-        "success_output": "one canonical JSON value; mutations bind their new receipt, load returns the validated index, discover returns its existing receipt locator, and snapshot returns the target manifest",
-        "failure_output": "error text on stderr; no success JSON; a failed gate never authorizes advancement",
+        "success_output": "one canonical JSON value. Mutations bind their new receipt, load returns the validated index, discover returns its existing receipt locator, and snapshot returns the target manifest",
+        "failure_output": "error text on stderr. No success JSON. A failed gate never authorizes advancement",
         "validation": "Field presence alone is insufficient. Nested payloads, current stage, receipt sequence, authority, digests and mode evidence remain subject to the existing domain validators and artifact contracts.",
         "bounds": {"cli_input_bytes": MAX_CLI_JSON_BYTES, "artifact_items": MAX_ARTIFACT_ITEMS, "artifact_bytes": MAX_ARTIFACT_BYTES},
     }
@@ -7278,7 +7278,7 @@ def describe_command(command: str) -> dict[str, Any]:
     if "workflow_id" in fields:
         fields["workflow_id"]["format"] = "32 lowercase hexadecimal characters from the initialize result"
     if "expected_sequence" in fields:
-        fields["expected_sequence"]["format"] = "nonnegative integer equal to current load.head_sequence; refresh after each successful mutation"
+        fields["expected_sequence"]["format"] = "nonnegative integer equal to current load.head_sequence. Refresh after each successful mutation"
     return result
 
 
@@ -7304,12 +7304,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Operate private Skill Builder run state. Use describe OPERATION or OPERATION --help for exact JSON request fields without reading or writing state. --state-root is for isolated tests only.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="request schemas (one strict JSON object on stdin):\n" + "\n".join(
-            f"  {command} request: required {', '.join(value['required_fields'])}; optional {', '.join(value['optional_fields']) or 'none'}"
+            f"  {command} request: required {', '.join(value['required_fields'])}. Optional {', '.join(value['optional_fields']) or 'none'}"
             for command, value in descriptions.items()
         ),
     )
     parser.add_argument("command", nargs="?", choices=(*CLI_OPERATIONS, "describe"))
-    parser.add_argument("operation", nargs="?", choices=tuple(CLI_OPERATIONS), help="operation to describe; valid only after describe")
+    parser.add_argument("operation", nargs="?", choices=tuple(CLI_OPERATIONS), help="operation to describe. Valid only after describe")
     parser.add_argument("--state-root", type=Path, help="explicit absolute isolated state root (tests only)")
     parser.add_argument("--yes", action="store_true", help="explicitly acknowledge destructive cleanup of the exact live run")
     parser.add_argument("-h", "--help", action="store_true", help="show generic help or the selected operation's exact request contract")
@@ -7324,7 +7324,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if args.command is None:
-        parser.error("an operation is required; use --help or describe")
+        parser.error("an operation is required. Use --help or describe")
     if args.command == "cleanup" and not args.yes:
         parser.error("cleanup requires --yes")
     try:
