@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import base64
 import json
 import os
 from pathlib import Path
@@ -192,3 +193,117 @@ def test_declared_wire_adapter_rejects_invalid_base64_before_state_access(tmp_pa
     assert result.returncode == 1
     assert field in result.stderr and "base64" in result.stderr
     assert not state_root.exists()
+
+
+def artifact_contract(cwd, state_root, artifact_type):
+    result = cli(cwd, state_root, "describe-artifact", artifact_type)
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)
+    assert value["schema_version"] == "skill-builder-artifact-contract.v1"
+    assert value["artifact_type"] == artifact_type
+    return value
+
+
+def test_artifact_catalog_and_focused_predicates_are_read_only_and_share_enforcement(tmp_path):
+    cwd = tmp_path / "external"
+    cwd.mkdir()
+    state_root = tmp_path / "no-state"
+    before = footprint(tmp_path)
+    result = cli(cwd, state_root, "describe-artifact")
+    assert result.returncode == 0, result.stderr
+    catalog = json.loads(result.stdout)
+    assert catalog["state_access"] == "none"
+    assert len(result.stdout.encode()) < 6000
+    spec = importlib.util.spec_from_file_location("artifact_description_helper", HELPER)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    assert set(catalog["artifact_types"]) == set(helper._PAYLOAD_REQUIRED_FIELDS)
+    for kind, versions in catalog["artifact_types"].items():
+        description = artifact_contract(cwd, state_root, kind)
+        assert description["schema_versions"] == versions
+        assert description["optional_fields"] == []
+        for version in versions:
+            assert set(description["required_fields_by_version"][version]) == helper._versioned_payload_fields(kind, version)
+        assert description["validator_source"]["function"] == "_validate_artifact_payload"
+        assert description["validator_source"]["sha256"] == helper.raw_digest(description["validator_source"]["source"].encode())
+        assert description["validator_source"]["source"] in inspect.getsource(helper._validate_artifact_payload)
+    research = artifact_contract(cwd, state_root, "research-pack")
+    assert '"evidence_budget"' in research["validator_source"]["source"]
+    assert '_exact_integer(lane["evidence_budget"]' in research["validator_source"]["source"]
+    assert '"direct_source"' in research["validator_source"]["source"]
+    assert "_exact_integer" in research["type_predicates"]
+    assert any("_validate_research_binding" in source["function"] for source in research["binding_predicates"])
+    assert footprint(tmp_path) == before
+    assert not state_root.exists()
+
+
+def test_described_early_artifacts_retain_and_advance_through_real_public_gates(tmp_path):
+    spec = importlib.util.spec_from_file_location("artifact_contract_state_fixtures", ROOT / "tests/test_skill_builder_state.py")
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    helper = fixtures.load_helper()
+    cwd = tmp_path / "external"
+    cwd.mkdir()
+    state_root = tmp_path / "state"
+    target = tmp_path / "target"
+    payload = {"host_identity": fixtures.host_identity(cwd), "target_identity": fixtures.target_identity(target), "mode": "create", "authority": fixtures.authority(),
+               "absence_evidence": {"searched": [str(target)], "exists": False}, "overlap_map": {"exact": [], "near_neighbours": []}}
+    initialized = cli(cwd, state_root, "initialize", payload=json.dumps(payload))
+    assert initialized.returncode == 0, initialized.stderr
+    workflow_id = json.loads(initialized.stdout)["workflow_id"]
+    for kind, event, stage in (("baseline-report", "capture-baseline", "baseline"), ("research-pack", "complete-research", "research"),
+                               ("evidence-sieve", "sieve-evidence", "sieve"), ("design-record", "accept-design", "design")):
+        description = artifact_contract(cwd, state_root, kind)
+        value = fixtures.stage_payload(helper, state_root, workflow_id, kind)
+        assert set(value) == set(description["required_fields_by_version"][value["schema_version"]])
+        current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+        files = {"record.json": helper.canonical_json_bytes(value)}
+        if kind == "research-pack":
+            source_bytes = b"offline synthetic source, not live research\n"
+            value["lanes"][0]["evidence_cards"] = [{"card_id": "offline-card", "claim": "offline claim", "technique": "offline technique", "direct_source": "offline source",
+                         "locator": "offline:source", "applicable_situation": "offline", "limitation": "synthetic fixture", "experiment": "offline experiment",
+                         "lane_id": value["lanes"][0]["lane_id"], "raw_source_digest": helper.raw_digest(source_bytes)}]
+            files["record.json"] = helper.canonical_json_bytes(value)
+            files["raw-source.txt"] = source_bytes
+            for invalid in ("extra-field", "wrong-budget", "wrong-model", "wrong-card-source"):
+                broken = json.loads(json.dumps(value))
+                lane = broken["lanes"][0]
+                if invalid == "extra-field":
+                    lane["unknown"] = "invalid"
+                elif invalid == "wrong-budget":
+                    lane["evidence_budget"] = {"maximum_primary_sources": 3}
+                elif invalid == "wrong-model":
+                    lane["model"] = "not-the-declared-model"
+                else:
+                    lane["evidence_cards"][0]["direct_source"] = {"title": "object is invalid"}
+                request = {"workflow_id": workflow_id, "expected_sequence": current["head_sequence"], "artifact_id": "invalid-research", "artifact_type": kind,
+                           "files_base64": {"record.json": base64.b64encode(helper.canonical_json_bytes(broken)).decode()}, "primary_path": "record.json",
+                           "producer": "offline-fixture", "input_bindings": fixtures.current_bindings(helper, state_root, workflow_id), "limitations": []}
+                rejected = cli(cwd, state_root, "retain", payload=json.dumps(request))
+                assert rejected.returncode == 1
+                assert "research" in rejected.stderr or "evidence" in rejected.stderr
+                assert helper.load_run(workflow_id=workflow_id, state_root=state_root) == current
+        if kind == "evidence-sieve":
+            value["decisions"] = [{"card_id": "offline-card", "decision": "experiment", "reason": "offline fixture", "deduplication_links": []}]
+            files["record.json"] = helper.canonical_json_bytes(value)
+        request = {"workflow_id": workflow_id, "expected_sequence": current["head_sequence"], "artifact_id": kind, "artifact_type": kind,
+                   "files_base64": {name: base64.b64encode(data).decode() for name, data in files.items()}, "primary_path": "record.json",
+                   "producer": "offline-fixture", "input_bindings": fixtures.current_bindings(helper, state_root, workflow_id), "limitations": []}
+        retained = cli(cwd, state_root, "retain", payload=json.dumps(request))
+        assert retained.returncode == 0, retained.stderr
+        receipt = json.loads(retained.stdout)
+        transitioned = cli(cwd, state_root, "transition", payload=json.dumps({"workflow_id": workflow_id, "expected_sequence": receipt["sequence"],
+                           "event": event, "destination_stage": stage, "artifact_ids": [kind]}))
+        assert transitioned.returncode == 0, transitioned.stderr
+        assert json.loads(transitioned.stdout)["stage"] == stage
+
+
+def test_unknown_artifact_description_fails_before_state_access(tmp_path):
+    cwd = tmp_path / "external"
+    cwd.mkdir()
+    state_root = tmp_path / "no-state"
+    before = footprint(tmp_path)
+    result = cli(cwd, state_root, "describe-artifact", "unknown-artifact")
+    assert result.returncode == 2
+    assert "unknown-artifact" in result.stderr
+    assert footprint(tmp_path) == before
