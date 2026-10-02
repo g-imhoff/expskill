@@ -699,7 +699,7 @@ REVIEW_HANDOFF_CLAUSES = (
     "do not attach binary or opaque review context.",
 )
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "content/skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "content/skills/implement/SKILL.md": "617061608dcf8c468cb712455ec120d1572b1be3df7a9e4daea3ff6511e383ea",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
@@ -721,8 +721,8 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "transcripts.",
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
-    "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
+    "expskill-review": "282892b800401e3f98ee7c08dcd70eed8b7f34b260f3520a7a16c91895fb9f03",
+    "expskill-spec": "8d98e6236e1642dd8356e6f65aaa336f893257bbacd27252acfb9920ff804b19",
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -2273,14 +2273,18 @@ def _validate_public_third_party_derivations(
             b"",
             1,
         )
-        body = engine[engine_end:].lstrip(b"\n")
-        body = body.replace(b"it; don't", b"it. Don't").replace(
-            b"report; ask",
-            b"report. Ask",
+        grill = _without_shared_metadata_block(public_grill)
+        clauses = (
+            b"Adapted from the pinned Matt Pocock Grill Me and Grilling sources.",
+            b"Run only on explicit invocation or explicit consent",
+            b"Ask at most three material questions per round",
+            b"Use at most six rounds for the current agreed scope.",
+            b"without claiming completion",
+            b"confirmed decision delta",
+            b"Do not implement, route to another lifecycle phase",
         )
-        expected_grill = frontmatter + b"\n" + body
-        if _without_shared_metadata_block(public_grill) != expected_grill:
-            errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
+        if not grill.startswith(b"---\nname: grill-me\n") or any(clause not in grill for clause in clauses):
+            errors.append("public skill 'grill-me' must retain attributed bounded decision behavior")
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:

@@ -250,10 +250,10 @@ class PlanContractTests(unittest.TestCase):
             self.assertIn(phrase, research)
         for phrase in (
             "broad research only",
-            "exactly three",
+            "one to three",
             "gpt-5.6-luna",
             "max reasoning",
-            "at most one fourth lane",
+            "at most one targeted follow-up",
             "no repository access",
             "preferred answer",
             "sibling output",

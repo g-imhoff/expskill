@@ -82,6 +82,25 @@ class ImplementContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.normalized)
 
+    def test_direct_criteria_oracle_and_causal_regressions_reach_every_judge(self) -> None:
+        for phrase in (
+            "before production edits",
+            "complete accepted criterion basis",
+            "never reconstruct missing criteria from the candidate",
+            "sole accepted-requirements exception",
+            "missing or incomplete basis makes the handoff invalid",
+            "acceptance oracle",
+            "test digest",
+            "observed failing assertion",
+            "cumulative regression obligations",
+            "alternating or recurring failures",
+        ):
+            self.assertIn(phrase, self.normalized)
+        for name in ("expskill-review", "expskill-spec"):
+            role = (PLUGIN / "content" / "agents" / f"{name}.md").read_text().lower()
+            for phrase in ("missing or truncated criteria", "material boundary counterexamples", "production baseline", "cumulative regression obligations"):
+                self.assertIn(phrase, role)
+
     def test_remote_and_protected_branch_boundary_is_closed(self) -> None:
         for phrase in (
             "exact non-protected target branch",

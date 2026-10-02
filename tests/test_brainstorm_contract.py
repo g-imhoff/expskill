@@ -334,7 +334,7 @@ class BrainstormContractTests(unittest.TestCase):
         exploration = _markdown_section(self.contents, "## Explore collaboratively").lower()
         shaping = _markdown_section(self.contents, "## Shape and stress").lower()
         self.assertIn(
-            "do not begin landscape research or exploratory techniques before explicit confirmation",
+            "do not begin landscape research or exploratory techniques before the user has explicitly supplied or confirmed the material understanding",
             understanding,
         )
         self.assertIn("landscape brief", research)
@@ -346,21 +346,17 @@ class BrainstormContractTests(unittest.TestCase):
     def test_research_controls_are_independent_and_complete(self) -> None:
         section = _markdown_section(self.contents, "## Research the landscape").lower()
         clauses = (
-            "spawn three independent `gpt-5.6-luna` research subagents at max reasoning as one logical burst",
-            "initiate all three before awaiting any result when three slots are available",
-            "use immediate capacity-limited waves when fewer slots are available",
-            "do no synthesis, technique work, or unrelated work between capacity-limited waves",
+            "scale research to the named uncertainties",
+            "use zero lanes",
+            "one lane for one bounded gap",
+            "two lanes for distinct alternatives",
+            "up to three independent `gpt-5.6-luna` research subagents at max reasoning",
             "never expose one lane's prompt or findings to another lane",
-            "a lane fails on a tool error or timeout",
-            "on no relevant credible evidence",
-            "on missing direct source links",
-            "on staying outside its bounded question after one corrective prompt",
+            "recoverable tool error alone does not invalidate useful evidence",
             "retry a failed lane once",
-            "after a second failure, stop and ask the user to choose",
-            "retry differently",
-            "continue with incomplete coverage",
-            "skip the missing research",
-            "do not start another automatic research burst later in the session",
+            "remaining evidence still covers the material questions",
+            "mark accepted missing coverage explicitly",
+            "within the same cumulative run budget",
         )
         for clause in clauses:
             self.assertIn(clause, section)
@@ -416,7 +412,7 @@ class BrainstormContractTests(unittest.TestCase):
         for phrase in (
             "complete transcript",
             "raw research",
-            "normally none",
+            "genuine empirical, feasibility, or execution uncertainties",
             "later technical design, execution, experimentation, or real-world evidence",
         ):
             self.assertIn(phrase, self.lowered)

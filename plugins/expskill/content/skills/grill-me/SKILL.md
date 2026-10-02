@@ -1,28 +1,22 @@
 ---
 name: grill-me
-description: A relentless interview to sharpen a plan or design.
+description: A bounded interview to sharpen material user-owned decisions in a plan or design.
 ---
 
-Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
+# Grill Me
 
-Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round: number each question and give your recommended answer. Then wait for the user's answers before the next round.
+Adapted from the pinned Matt Pocock Grill Me and Grilling sources. The vendored sources and licenses remain unchanged.
 
-Format a round like so:
+Run only on explicit invocation or explicit consent to the owning skill's offer. Resolve connected consequential user-owned choices. Finding facts is your job, never the user's. Inspect supplied context and safe available sources first. Use bounded fact exploration only when needed and within the run's remaining budget. A running exploration is an unsettled prerequisite, so only downstream questions wait.
 
-```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+Map a design tree containing only decisions that can change the accepted outcome, material scope, risk, authorization, or dependencies. Preserve settled answers. Do not manufacture branches for routine reversible engineering details, and record a safe inference for those details. Mark a genuinely material unknown as unresolved rather than guessing.
 
-➡️ <your recommended answer>
+Work the tree in rounds. The frontier contains decisions whose prerequisites are settled. Ask at most three material questions per round, ordered by consequence and dependency. A question that depends on another open question belongs to a later round. The user may request a larger round or choose to defer a decision with its consequences stated.
 
----
+Use clear numbered questions and feasible alternatives with their trade-offs. First let the user express their preference without a recommended answer when their own experience or priorities matter. Give a reasoned recommendation after their answer or when they ask the AI to lead. Do not describe an agent recommendation as a user decision.
 
-❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+After each round, update a compact decision delta with accepted answers, rejected alternatives and reasons, safe inferences, and unresolved material choices. Check whether the remaining questions can actually change the outcome. Prune irrelevant branches and keep explicitly deferred choices with their dependent work blocked.
 
-➡️ <your recommended answer>
-```
+Use at most six rounds for the current agreed scope. Then consolidate what is settled and offer a bounded extension only for named material unknowns. Do not restart the tree or force continuation. An early stop returns the decision delta and unresolved choices without claiming completion.
 
-Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
-
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), dispatch a sub-agent to find it. Don't ask the user for anything you could look up yourself. Don't block on it: a running exploration is an unsettled prerequisite, so only the questions downstream of it wait for the sub-agent to report. Ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
-
-The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
+Finish when all material prerequisites are answered or explicitly deferred and the user has confirmed the shared meaning. Ask for confirmation only if the current meaning has not already been explicitly confirmed. Return the confirmed decision delta to the owning skill, including deferred blockers. Do not implement, route to another lifecycle phase, or claim authorization for dependent work from silence.

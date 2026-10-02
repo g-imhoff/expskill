@@ -195,7 +195,9 @@ Invoke a skill directly when you know what you want:
   (test types to commands, canary versus full suite, human versus agent
   execution, routine post-setup path) without running routine tests.
 - `$implement` coordinates isolated TDD workers, independent review and spec
-  gates, corrections, local integration, and final whole-branch gates.
+  gates, corrections, local integration, and final whole-branch gates. Every judge
+  receives the complete accepted criteria. Independent expected outcomes and
+  prior regression obligations remain protected through corrections.
 - `$correct` repairs concrete bugs within the existing design and asks for a
   choice before structural or breaking changes.
 - `$review` adversarially inspects a user-defined code scope and saves an
@@ -209,7 +211,7 @@ Invoke a skill directly when you know what you want:
 - `$unslop` rewrites prose to remove common AI tells and remains directly
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
-  fact-grounded interview and mandatory final confirmation.
+  fact-grounded interview, at most three material questions per round, and confirmed shared meaning.
 - `$autonomous-run` acts as an AI user on your behalf. It launches one initial
   `$use-expskill` conversation and follows the workflow's instructions and
   conversation transitions to a review-ready draft PR.
