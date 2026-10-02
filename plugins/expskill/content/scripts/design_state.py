@@ -219,11 +219,12 @@ def _validate_domains(state: dict) -> None:
     for layer in ("candidate", "review", "manifest"):
             value=delivery[layer]
             if value is not None and (not isinstance(value, dict) or set(value) != {"inventory_digest", "files"}): raise ValueError("invalid delivery layer")
-    for collection, allowed in ((state["components"], {"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved"}), (state["dependencies"], {"id","digest","component_ids"}), (state["evidence"], {"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"}), (state["approvals"], {"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"})):
+    for collection, allowed in ((state["components"], {"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved","files"}), (state["dependencies"], {"id","digest","component_ids"}), (state["evidence"], {"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"}), (state["approvals"], {"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"})):
         if not isinstance(collection, dict): raise ValueError("invalid binding collection")
         for key, item in collection.items():
             if not isinstance(key, str) or not isinstance(item, dict) or set(item) - allowed: raise ValueError("unknown binding field")
             if item.get("id") != key: raise ValueError("binding id mismatch")
+            if collection is state["components"] and "files" in item: _component_inventory(item)
             if collection is state["components"] and "eligible" in item and not isinstance(item["eligible"], bool): raise ValueError("invalid component eligibility")
             for field in ("digest", "code_digest", "contract_digest"):
                 if field in item and not DIGEST_RE.fullmatch(str(item[field])): raise ValueError("invalid binding digest")
@@ -461,7 +462,7 @@ def apply_updates(*, workflow_id, expected_revision, updates, state_home):
             if k=="ui_contract" and (set(v)-{"digest","outcome"} or not isinstance(v.get("digest"),str) or not DIGEST_RE.fullmatch(v["digest"])): raise ValueError("invalid ui contract")
             if k=="scope" and set(v)-{"components","exclusions","owned_paths","protected_digest"}: raise ValueError("invalid scope")
             if k in {"components","dependencies","evidence","approvals"} and any(not isinstance(n,str) or not isinstance(x,dict) for n,x in v.items()): raise ValueError("typed binding required")
-            allowed = {"components":{"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved"},"dependencies":{"id","digest","component_ids"},"evidence":{"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"},"approvals":{"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"}}
+            allowed = {"components":{"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved","files"},"dependencies":{"id","digest","component_ids"},"evidence":{"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"},"approvals":{"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"}}
             if k in allowed:
                 for x in v.values():
                     if set(x) - allowed[k]: raise ValueError("unknown nested key")
@@ -549,6 +550,20 @@ def _inventory(value):
     paths=[x["path"] for x in value["files"]]
     if len(paths)!=len(set(paths)) or len({p.casefold() for p in paths})!=len(paths): raise ValueError("duplicate inventory path")
 
+def component_digest(files: list) -> str:
+    inventory = {"files": files}
+    _inventory(inventory)
+    if any(item["classification"] != "component" for item in files): raise ValueError("component file classification")
+    return canonical_digest({"files": sorted(files, key=lambda item: item["path"])})
+
+
+def _component_inventory(component: dict) -> list:
+    files = component.get("files")
+    if files is None: raise ValueError("legacy component requires exact file inventory")
+    if component.get("code_digest") != component_digest(files): raise ValueError("component inventory digest mismatch")
+    return files
+
+
 def _artifact_files(inventory: dict, worktree: Path) -> None:
     _inventory(inventory)
     for item in inventory["files"]:
@@ -621,6 +636,15 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
         if any(component.get("eligible") is False for component in s["components"].values()): raise ValueError("ineligible Design component")
         if s["invocation_mode"] == "routed" and s["candidate"] is None: raise ValueError("routed delivery requires candidate checkpoint")
         if not s["components"]: raise ValueError("current approvals required")
+        for x in (candidate_payload,review_evidence,manifest): _inventory(x)
+        union = {}
+        for component in s["components"].values():
+            for item in _component_inventory(component):
+                if item["path"] in union and union[item["path"]] != item: raise ValueError("conflicting component file ownership")
+                union[item["path"]] = item
+        expected_inventory = {"files": sorted(union.values(), key=lambda item: item["path"])}
+        _inventory(expected_inventory)
+        if sorted(candidate_payload["files"], key=lambda item: item["path"]) != expected_inventory["files"]: raise ValueError("candidate binding requires complete component file union")
         for x in (candidate_payload,review_evidence,manifest): _artifact_files(x, Path(s["identity"]["worktree"]))
         for name, comp in s["components"].items():
             aid=comp.get("approval_id"); approval=s["approvals"].get(aid, {})
@@ -639,8 +663,6 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
         if any(x["classification"]!="component" for x in candidate_payload["files"]): raise ValueError("candidate classification")
         if any(x["classification"]!="review" for x in review_evidence["files"]): raise ValueError("review classification")
         if any(x["classification"]!="manifest" for x in manifest["files"]): raise ValueError("manifest classification")
-        expected_codes={x.get("code_digest") for x in s["components"].values()}
-        if {x["digest"] for x in candidate_payload["files"]} != expected_codes: raise ValueError("candidate binding")
         evidence_digests={s["evidence"][eid].get("digest") for comp in s["components"].values() for eid in comp.get("evidence_ids", []) if s["evidence"].get(eid, {}).get("digest")}
         if evidence_digests and not {x["digest"] for x in review_evidence["files"]} <= evidence_digests: raise ValueError("review binding")
         def inv(x): return {"inventory_digest": hashlib.sha256(json.dumps(x, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "files": x["files"]}
