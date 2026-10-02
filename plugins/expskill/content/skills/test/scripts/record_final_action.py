@@ -328,6 +328,8 @@ def _git(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 def _validate_spec(
     repository: Path, root: Path, value: dict[str, object]
 ) -> dict[str, object]:
+    if (root / "successor.json").exists():
+        _error("closed-run", "product execution belongs to the allocated successor")
     if set(value) != SPEC_FIELDS:
         _error("invalid-spec-shape", "final-action.json fields are not exact")
     if value.get("schema_version") != SCHEMA_VERSION:

@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NoReturn
 
+import execution_budget
+
 
 USABLE_BUDGET_SECONDS = 780
 MAX_TEXT_FILES = 256
@@ -234,7 +236,7 @@ def _continue(repository: Path, arguments: argparse.Namespace) -> None:
         _error("invalid-run-root", "continuation requires the allocated absolute run root")
     _secure_directory(root, "run root")
     record = root / "bootstrap.json"
-    if record.is_symlink() or not record.is_file() or record.stat().st_size > 10_000:
+    if record.is_symlink() or not record.is_file() or record.stat().st_size > 2_000_000:
         _error("invalid-run-root", "continuation requires the retained bootstrap record")
     metadata = record.stat()
     if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
@@ -297,6 +299,33 @@ def _run(arguments: argparse.Namespace) -> None:
     branch = str(_git(repository, "branch", "--show-current")).strip()
     if not branch:
         _error("unnamed-branch", "Test requires a named branch")
+    successor = None
+    inherited_start = None
+    if arguments.successor_of is not None:
+        predecessor = Path(arguments.successor_of)
+        if not predecessor.is_absolute() or predecessor.parent != repository / ".test-evidence" or predecessor.is_symlink():
+            _error("invalid-successor", "use the exact allocated predecessor root in this worktree")
+        _secure_directory(predecessor, "predecessor run root")
+        if (predecessor / "successor.json").exists():
+            _error("already-closed", "predecessor already has a successor")
+        previous = execution_budget._private_json(predecessor / "charter.json")
+        opening = execution_budget._private_json(predecessor / "bootstrap.json")
+        ledger = execution_budget._private_json(predecessor / "ledger.json")
+        if previous.get("repository") != str(repository) or previous.get("run_id") != predecessor.name or previous.get("branch") != branch or previous.get("head") != str(_git(repository, "rev-parse", "HEAD")).strip():
+            _error("invalid-successor", "recovery requires the same repository, branch, and HEAD")
+        if arguments.recovery_kind not in {"test-system-defect", "environment-blocker"} or not arguments.correction or not arguments.correction.strip():
+            _error("invalid-successor", "classify the recovered cause and state its permitted correction")
+        entries = ledger.get("entries")
+        if not isinstance(entries, list) or not any(isinstance(entry, dict) and entry.get("status") == "fail" for entry in entries):
+            _error("invalid-successor", "recovery requires a retained failed action")
+        context = execution_budget.successor_context(previous, predecessor)
+        if int(context["actions_used"]) + len(entries) >= int(execution_budget.for_charter(previous)["semantic_actions_max"]) or execution_budget.remaining_seconds(previous, predecessor) <= 0:
+            _error("allowance-exhausted", "successor cannot reset the cumulative action or time allowance")
+        inherited_start = opening["started_at"]
+        successor = {"predecessor_root": str(predecessor), "reason": "recovery", "classification": arguments.recovery_kind,
+                     "correction": arguments.correction, "source_files": execution_budget.retained_files(predecessor)}
+    elif arguments.recovery_kind is not None or arguments.correction is not None:
+        _error("invalid-successor", "recovery details require --successor-of")
     root = _allocate_root(repository, now)
     payload = {
         "branch": branch,
@@ -307,6 +336,14 @@ def _run(arguments: argparse.Namespace) -> None:
         "run_id": root.name,
         "started_at": _timestamp(now),
     }
+    if successor is not None:
+        payload["started_at"] = inherited_start
+        payload["cutoff_at"] = _timestamp(datetime.fromisoformat(str(inherited_start).replace("Z", "+00:00")) + timedelta(seconds=int(execution_budget.for_charter(previous)["usable_budget_seconds"])))
+        payload["successor_created_at"] = _timestamp(now)
+        payload["successor"] = successor
+        descriptor = os.open(predecessor / "successor.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump({"root": str(root), "run_id": root.name}, output, sort_keys=True)
     descriptor = os.open(root / "bootstrap.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
         json.dump(payload, output, sort_keys=True, separators=(",", ":"))
@@ -337,6 +374,9 @@ def _run(arguments: argparse.Namespace) -> None:
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root")
+    parser.add_argument("--successor-of")
+    parser.add_argument("--recovery-kind", choices=("test-system-defect", "environment-blocker"))
+    parser.add_argument("--correction")
     parser.add_argument("--read-path", action="append", default=[])
     parser.add_argument("--start-line", type=int, default=1)
     parser.add_argument("--max-lines", type=int, default=200)
@@ -347,7 +387,7 @@ def main(arguments: list[str] | None = None) -> int:
     except BootstrapError as error:
         print(f"test_run_bootstrap_error={error.code} {error}", file=sys.stderr)
         return 2
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError) as error:
         print(
             f"test_run_bootstrap_error=runtime-error {type(error).__name__}: {error}",
             file=sys.stderr,

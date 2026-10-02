@@ -980,8 +980,12 @@ def validate_inputs(
             )
         if "budget" in locals():
             try:
-                execution_budget.validate_actions(budget, action_ids)
-            except ValueError as error:
+                execution_budget.validate_actions(budget, action_ids, root=root, charter=charter)
+                context = execution_budget.successor_context(charter, root)
+                missing = set(context["rerun_action_ids"]) - set(action_ids)
+                if missing:
+                    raise ValueError("successor has not rerun the complete previously selected action scope")
+            except (OSError, ValueError) as error:
                 _add(issues, "invalid-budget", "ledger.entries", str(error))
 
     if draft.get("schema_version") != DRAFT_SCHEMA_VERSION:
