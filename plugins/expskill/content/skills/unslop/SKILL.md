@@ -7,6 +7,10 @@ description: Cut AI tells from any writing. Must always apply.
 
 Edit text to remove AI patterns and add human voice.
 
+## Scope
+
+Apply these rules to natural-language user-facing prose you author, including commentary and final messages. Preserve code, commands, machine-readable data, logs, identifiers, API names, quotations, citations, source excerpts, approved copy, and project-required terminology exactly. Higher-priority instructions and explicit user formatting or tone choices win. Before sending user-facing prose, perform the included self-audit.
+
 ## Process
 
 1. Scan for the patterns below.
