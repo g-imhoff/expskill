@@ -295,6 +295,61 @@ import(%s).then(async (module) => {
     try { await unsafe['tool.execute.before']({ tool: 'task', sessionID: 'unsafe', callID: 'unsafe' }, { args: implementerArgs }); }
     catch (error) { blocked = String(error).includes('safe EXPSKILL_RUN_ID'); }
     assert('unsafe-run-identity-fails-closed', blocked);
+
+
+    const moduleURL = url.pathToFileURL(path.join(artifactRoot, 'plugins', 'execution-policy.js')).href;
+    const runScript = `import { ExecutionPolicyPlugin } from ${JSON.stringify(moduleURL)}; const hooks = await ExecutionPolicyPlugin({}); await hooks['tool.execute.before']({tool:'task',sessionID:'child',callID:'child'},{args:{subagent_type:'expskill-implementer'}}); await hooks['tool.execute.after']({tool:'task',sessionID:'child',callID:'child',args:{subagent_type:'expskill-implementer'}},{});`;
+    const statePath = (id) => path.join(runRoot, `${id}-implement.standard.json`);
+    const seed = async (id) => {
+      process.env.EXPSKILL_RUN_ID = id;
+      for (let index = 0; index < 2; index += 1) {
+        const hooks = await module.ExecutionPolicyPlugin({});
+        const input = { tool: 'task', sessionID: `${id}-${index}`, callID: `${id}-${index}` };
+        await hooks['tool.execute.before'](input, { args: implementerArgs });
+        await hooks['tool.execute.after']({ ...input, args: implementerArgs }, {});
+      }
+    };
+    const crash = (stage) => {
+      const injection = `import syncFS from 'node:fs'; const originalLink = syncFS.linkSync; syncFS.linkSync = (source, destination) => { if (${JSON.stringify(stage)} === 'before' && destination.endsWith('.lock')) process.kill(process.pid, 'SIGKILL'); originalLink(source, destination); if ((${JSON.stringify(stage)} === 'after' && destination.endsWith('.lock')) || (${JSON.stringify(stage)} === 'claim' && destination.includes('.claim.'))) process.kill(process.pid, 'SIGKILL'); }; const originalRename = syncFS.renameSync; syncFS.renameSync = (source, destination) => { originalRename(source, destination); if (${JSON.stringify(stage)} === 'counter') process.kill(process.pid, 'SIGKILL'); };`;
+      return child.spawnSync(process.execPath, ['--input-type=module', '-e', injection + runScript], { env: process.env });
+    };
+    for (const stage of ['before', 'after', 'counter']) {
+      const id = `audit-crash-${stage}`;
+      await seed(id);
+      const killed = crash(stage);
+      assert(`actual-process-death-${stage}`, killed.signal === 'SIGKILL');
+      const resumed = child.spawnSync(process.execPath, ['--input-type=module', '-e', runScript], { env: process.env });
+      assert(`same-run-resumes-after-${stage}`, resumed.status === 0);
+      const saved = JSON.parse(await fs.readFile(statePath(id), 'utf8'));
+      assert(`preserves-spend-after-${stage}`, saved.run_id === id && saved.calls === (stage === 'counter' ? 4 : 3));
+      const leftovers = (await fs.readdir(runRoot)).filter((name) => name.startsWith(`${id}-`) && (name.endsWith('.lock') || name.includes('.claim.') || name.includes('.owner-')));
+      assert(`cleans-obsolete-owner-claims-${stage}`, leftovers.length === 0);
+    }
+    await seed('audit-dead-claim');
+    assert('initial-lock-owner-dies', crash('after').signal === 'SIGKILL');
+    assert('recovery-claim-owner-dies', crash('claim').signal === 'SIGKILL');
+    const claimResume = child.spawnSync(process.execPath, ['--input-type=module', '-e', runScript], { env: process.env });
+    assert('recovers-dead-claim-before-using-new-lease', claimResume.status === 0);
+    assert('dead-claim-recovery-preserves-spend', JSON.parse(await fs.readFile(statePath('audit-dead-claim'), 'utf8')).calls === 3);
+
+    await seed('audit-concurrent-reapers');
+    assert('concurrent-fixture-owner-dies', crash('after').signal === 'SIGKILL');
+    const results = await Promise.all(Array.from({ length: 6 }, () => new Promise((resolve) => {
+      const worker = child.spawn(process.execPath, ['--input-type=module', '-e', runScript], { env: { ...process.env }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let errors = '';
+      worker.stderr.on('data', (data) => { errors += data; });
+      worker.on('exit', (code) => resolve({ code, errors }));
+    })));
+    assert('simultaneous-dead-owner-reapers-all-complete', results.every((result) => result.code === 0));
+    assert('concurrent-reapers-do-not-lose-counts', JSON.parse(await fs.readFile(statePath('audit-concurrent-reapers'), 'utf8')).calls === 8);
+
+    await seed('audit-live-owner');
+    const liveLock = `${statePath('audit-live-owner')}.lock`;
+    await fs.writeFile(liveLock, JSON.stringify({ schema_version: 'execution-run-lock.v1', token: 'a'.repeat(32), pid: process.pid, host: os.hostname(), resource: path.basename(liveLock), run_id: 'audit-live-owner', route: 'implement.standard' }), { mode: 0o600 });
+    const liveAttempt = child.spawnSync(process.execPath, ['--input-type=module', '-e', runScript], { env: process.env });
+    assert('live-owner-is-not-reaped', liveAttempt.status !== 0 && String(liveAttempt.stderr).includes('live ownership'));
+    assert('live-owner-counter-preserved', JSON.parse(await fs.readFile(statePath('audit-live-owner'), 'utf8')).calls === 2);
+    await fs.unlink(liveLock);
   } finally {
     delete process.env.EXPSKILL_RUN_ID;
     delete process.env.EXPSKILL_RUN_BUDGET_DIR;
