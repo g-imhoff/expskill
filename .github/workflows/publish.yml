@@ -1,0 +1,170 @@
+name: publish
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Repository contract
+        run: python3 scripts/validate.py
+      - name: Install test dependencies
+        run: python3 -m pip install pytest
+      - name: Host contract tests
+        run: >-
+          python3 -m pytest -q
+          tests/test_installer.py
+          tests/test_codex_source_correction.py
+          tests/test_content_host_layout.py
+          tests/test_hermes_contract.py
+          tests/test_hermes_package.py
+          tests/test_opencode_contract.py
+          tests/test_opencode_package.py
+
+  publish-codex-dist:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build codex marketplace
+        run: |
+          artifact_root="$(mktemp -d)/codex-marketplace"
+          python3 scripts/build_codex_marketplace.py "$artifact_root"
+          echo "ARTIFACT_ROOT=$artifact_root" >> "$GITHUB_ENV"
+      - name: Publish codex-dist branch and tag
+        # The Codex CLI installs a marketplace from git, so the built
+        # marketplace is published as the root of the orphan codex-dist branch.
+        # Install a release with its exact SHA (sort -u: ls-remote matches
+        # the branch and the tag, which point at the same commit):
+        #   sha="$(git ls-remote <url> codex-dist | cut -f1 | sort -u)"
+        #   codex plugin marketplace add <url> --ref "$sha"
+        #   codex plugin add expskill@expskill
+        run: |
+          set -e
+          work="$(mktemp -d)/dist"
+          git init -q "$work"
+          cp -r "$ARTIFACT_ROOT"/. "$work"/
+          git -C "$work" add -A
+          git -C "$work" -c user.email="ci@expskill" -c user.name="expskill-ci" \
+            commit -qm "codex dist ${{ github.ref_name }}"
+          sha="$(git -C "$work" rev-parse HEAD)"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$work" remote add origin "$remote"
+          git -C "$work" push --force origin "HEAD:refs/heads/codex-dist"
+          git -C "$work" push --force origin "HEAD:refs/tags/codex-dist"
+          {
+            echo "## Codex dist published"
+            echo ""
+            echo "Install with the Codex CLI:"
+            echo '```'
+            echo "sha=\"\$(git ls-remote https://github.com/${{ github.repository }}.git codex-dist | cut -f1 | sort -u)\""
+            echo "codex plugin marketplace add https://github.com/${{ github.repository }}.git --ref \"\$sha\""
+            echo "codex plugin add expskill@expskill"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-npm:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Build opencode package
+        run: |
+          artifact_root="$(mktemp -d)/opencode-expskill"
+          python3 scripts/build_opencode_package.py "$artifact_root"
+          echo "ARTIFACT_ROOT=$artifact_root" >> "$GITHUB_ENV"
+      - name: Skip already-published versions
+        id: version
+        run: |
+          version="$(python3 -c "import json; print(json.load(open('$ARTIFACT_ROOT/package.json'))['version'])")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "opencode-expskill@$version" version >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to npm
+        if: steps.version.outputs.publish == 'true'
+        # Requires a granular npm access token stored as the NPM_TOKEN secret.
+        run: npm publish "$ARTIFACT_ROOT" --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-hermes-dist:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build hermes package
+        run: |
+          artifact_root="$(mktemp -d)/hermes-expskill"
+          python3 scripts/build_hermes_package.py "$artifact_root"
+          echo "ARTIFACT_ROOT=$artifact_root" >> "$GITHUB_ENV"
+      - name: Publish hermes-dist branch and tag
+        # The Hermes CLI installs from git (no local paths), so the built
+        # artifact is published as the root of the orphan hermes-dist branch.
+        # Install a release with its exact SHA (sort -u: ls-remote matches
+        # the branch and the tag, which point at the same commit):
+        #   sha="$(git ls-remote <url> hermes-dist | cut -f1 | sort -u)"
+        #   hermes plugins install <url> --ref "$sha"
+        run: |
+          set -e
+          work="$(mktemp -d)/dist"
+          git init -q "$work"
+          cp -r "$ARTIFACT_ROOT"/. "$work"/
+          git -C "$work" add -A
+          git -C "$work" -c user.email="ci@expskill" -c user.name="expskill-ci" \
+            commit -qm "hermes dist ${{ github.ref_name }}"
+          sha="$(git -C "$work" rev-parse HEAD)"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$work" remote add origin "$remote"
+          git -C "$work" push --force origin "HEAD:refs/heads/hermes-dist"
+          git -C "$work" push --force origin "HEAD:refs/tags/hermes-dist"
+          {
+            echo "## Hermes dist published"
+            echo ""
+            echo "Install with the Hermes CLI:"
+            echo '```'
+            echo "sha=\"\$(git ls-remote https://github.com/${{ github.repository }}.git hermes-dist | cut -f1 | sort -u)\""
+            echo "hermes plugins install https://github.com/${{ github.repository }}.git --ref \"\$sha\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

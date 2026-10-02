@@ -7,7 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-SKILLS = PLUGIN / "skills"
+SKILLS = PLUGIN / "content" / "skills"
+ADAPTERS = PLUGIN / "codex" / "skill-adapters"
 RUNNER = SKILLS / "autonomous-run" / "SKILL.md"
 JARGON = re.compile(
     r"\b(?:quick|full|models?|caps?|scaffold|private[- ]marketplace|local plugin)\b",
@@ -18,25 +19,27 @@ JARGON = re.compile(
 # These checks cover the static package and delivery boundaries. Following
 # workflow transitions needs behavioral trials, not phrase checks.
 class AutonomousRunContractTests(unittest.TestCase):
-    def test_runner_has_only_the_small_direct_package(self) -> None:
+    def test_runner_has_one_canonical_body_and_one_codex_adapter(self) -> None:
         skill = SKILLS / "autonomous-run"
         self.assertTrue((skill / "SKILL.md").is_file())
-        self.assertTrue((skill / "agents" / "openai.yaml").is_file())
         observed_files = {
             path.relative_to(skill).as_posix()
             for path in skill.rglob("*")
             if path.is_file()
         }
-        self.assertEqual(observed_files, {"SKILL.md", "agents/openai.yaml"})
-        observed_dirs = {
-            path.relative_to(skill).as_posix()
-            for path in skill.rglob("*")
-            if path.is_dir()
-        }
-        self.assertEqual(observed_dirs, {"agents"})
+        self.assertEqual(observed_files, {"SKILL.md"})
+        adapter = ADAPTERS / "autonomous-run"
+        self.assertEqual(
+            {
+                path.relative_to(adapter).as_posix()
+                for path in adapter.rglob("*")
+                if path.is_file()
+            },
+            {"agents/openai.yaml"},
+        )
 
     def test_runner_is_explicit_only(self) -> None:
-        text = (SKILLS / "autonomous-run" / "agents" / "openai.yaml").read_text(
+        text = (ADAPTERS / "autonomous-run" / "agents" / "openai.yaml").read_text(
             encoding="utf-8"
         )
         self.assertIn("allow_implicit_invocation: false", text)

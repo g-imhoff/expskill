@@ -7,9 +7,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "plugins" / "expskill" / "skills" / "review-loop"
+PLUGIN = ROOT / "plugins" / "expskill"
+SKILL = PLUGIN / "content" / "skills" / "review-loop"
 BODY = SKILL / "SKILL.md"
-METADATA = SKILL / "agents" / "openai.yaml"
+METADATA = PLUGIN / "codex" / "skill-adapters" / "review-loop" / "agents" / "openai.yaml"
 JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
 
 
@@ -19,14 +20,23 @@ class ReviewLoopContractTests(unittest.TestCase):
         cls.raw = BODY.read_text(encoding="utf-8")
         cls.body = " ".join(cls.raw.lower().split())
 
-    def test_package_has_exact_files_and_no_symlinks(self) -> None:
+    def test_canonical_body_and_codex_adapter_have_exact_files(self) -> None:
         observed = {
             path.relative_to(SKILL).as_posix()
             for path in SKILL.rglob("*")
             if path.is_file()
         }
-        self.assertEqual(observed, {"SKILL.md", "agents/openai.yaml"})
+        self.assertEqual(observed, {"SKILL.md"})
         self.assertFalse(any(path.is_symlink() for path in SKILL.rglob("*")))
+        adapter = METADATA.parents[1]
+        self.assertEqual(
+            {
+                path.relative_to(adapter).as_posix()
+                for path in adapter.rglob("*")
+                if path.is_file()
+            },
+            {"agents/openai.yaml"},
+        )
 
     def test_frontmatter_names_the_skill(self) -> None:
         lines = self.raw.splitlines()
@@ -63,7 +73,7 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertIsNotNone(helper_path)
         self.assertTrue(
             (SKILL / helper_path.group()).samefile(
-                ROOT / "plugins" / "expskill" / "scripts" / "worktrees.py"
+                PLUGIN / "content" / "scripts" / "worktrees.py"
             )
         )
 

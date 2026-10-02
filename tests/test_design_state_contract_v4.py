@@ -14,7 +14,7 @@ from tests.design_state_test_support import TECHNICAL_GATE_NAMES, passing_techni
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "plugins" / "expskill" / "scripts" / "design_state.py"
+HELPER = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
 DIGEST = "a" * 64
 
 
