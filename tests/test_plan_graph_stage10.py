@@ -750,6 +750,52 @@ class TransactionLayerTests(unittest.TestCase):
             self.assertFalse(graph["proof"][f"P{number}"]["fresh"])
             self.assertFalse(graph["projections"][f"U{number}"]["confirmed"])
 
+    def test_crossed_proof_attachments_cannot_cover_unrelated_work_outcomes(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T1"]["proof"] = ["P2"]
+        graph["work"]["T2"]["proof"] = ["P1"]
+        graph["proof"]["P1"]["required_by"] = ["T2"]
+        graph["proof"]["P2"]["required_by"] = ["T1"]
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "work outcome lacks attached or downstream join proof"):
+            self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+
+    def test_shared_proof_can_cover_each_attached_work_outcome(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T2"]["proof"] = ["P1"]
+        graph["proof"]["P1"].update(covers=["O1", "O2"], required_by=["T1", "T2"])
+        del graph["proof"]["P2"]
+        graph["projections"]["U2"]["covers"] = ["T2", "P1"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.assertEqual(receipt.state, "ready")
+
+    def test_downstream_join_proof_can_cover_upstream_outcome(self) -> None:
+        graph = self._three_node_graph()
+        graph["outcomes"]["C1"] = {"kind": "constraint", "result": "Local validation remains compatible"}
+        graph["work"]["T1"]["covers"] = ["O1", "C1"]
+        graph["proof"]["P1"]["covers"] = ["C1"]
+        graph["work"]["T2"].update(kind="join", requires=["T1"], covers=["O1", "O2"])
+        graph["proof"]["P2"]["covers"] = ["O1", "O2"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.assertEqual(receipt.state, "ready")
+
+    def test_unrelated_join_cannot_supply_missing_upstream_proof(self) -> None:
+        graph = self._three_node_graph()
+        graph["proof"]["P1"]["covers"] = ["O2"]
+        graph["work"]["T2"].update(kind="join", covers=["O1", "O2"])
+        graph["proof"]["P2"]["covers"] = ["O1", "O2"]
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "work outcome lacks attached or downstream join proof"):
+            self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+
+    def test_transitive_join_proof_covers_outcome_after_intermediate_work(self) -> None:
+        graph = self._three_node_graph()
+        graph["outcomes"]["C1"] = {"kind": "constraint", "result": "Local validation remains compatible"}
+        graph["work"]["T1"]["covers"] = ["O1", "C1"]
+        graph["proof"]["P1"]["covers"] = ["C1"]
+        graph["work"]["T2"]["requires"] = ["T1"]
+        graph["work"]["T3"].update(kind="join", requires=["T2"], covers=["O1", "O3"])
+        graph["proof"]["P3"]["covers"] = ["O1", "O3"]
+        self.assertEqual(self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home).state, "ready")
+
     def test_explicit_invalidation_edges_propagate_across_record_families(self) -> None:
         graph = self._three_node_graph()
         graph["decisions"]["D1"] = {

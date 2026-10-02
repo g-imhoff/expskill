@@ -1857,6 +1857,24 @@ def _validate_graph_inner(
             allowed_operations={"refresh-proof", "refresh-proof-plan"},
         )
 
+    prerequisites: dict[str, set[str]] = {}
+
+    def ancestors(work_id: str) -> set[str]:
+        if work_id not in prerequisites:
+            prerequisites[work_id] = set(work[work_id]["requires"])
+            for prerequisite in work[work_id]["requires"]:
+                prerequisites[work_id].update(ancestors(prerequisite))
+        return prerequisites[work_id]
+
+    for work_id, work_record in work.items():
+        covered = {outcome for proof_id in work_record["proof"] for outcome in proof[proof_id]["covers"]}
+        for join_id, join_record in work.items():
+            if join_record["kind"] == "join" and work_id in ancestors(join_id):
+                joined = {outcome for proof_id in join_record["proof"] for outcome in proof[proof_id]["covers"]}
+                covered.update(joined & set(join_record["covers"]))
+        if not set(work_record["covers"]) <= covered:
+            raise PlanGraphError("work outcome lacks attached or downstream join proof")
+
     git = _mapping(value.get("git"), "Git topology")
     if set(git) != {"target", "lanes", "joins", "delivery"}:
         raise PlanGraphError("Git topology fields are incomplete")
