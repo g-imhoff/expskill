@@ -393,3 +393,121 @@ def test_verification_rejects_unobserved_or_substituted_command_claims(tmp_path,
         workflow.check_verification_origin({})
     events[:] = [{"type": "item.completed", "item": {"type": "command_execution", "command": command, "exit_code": 0, "aggregated_output": output}}]
     workflow.check_verification_origin({})
+
+
+def native_helper_fixture(tmp_path):
+    captured = json.loads((ROOT / "tests/fixtures/skill-builder/native-public-helper-v1.json").read_text())
+    root = tmp_path / "exact-state"
+    helper = tmp_path / "run_state.py"
+    current = captured["current"]
+    receipts = root / "live" / current["workflow_id"] / "receipts"
+    receipts.mkdir(parents=True)
+    for name, receipt in captured["receipts"].items():
+        (receipts / name).write_bytes(runner.canonical(receipt))
+    for event in captured["events"]:
+        event["item"]["command"] = event["item"]["command"].replace(captured["helper"], str(helper)).replace(captured["state_root"], str(root))
+    return captured, root, helper, current
+
+
+def test_captured_native_public_helper_calls_accept_global_flag_order_and_shell_preparation(tmp_path):
+    captured, root, helper, current = native_helper_fixture(tmp_path)
+    assert captured["origin"]["thread_id"] == "01a0fdcd-99f3-73e0-9568-d25a194b775b"
+    assert len(captured["events"]) == 5
+    runner.public_command_seen(probe, {"events": captured["events"]}, helper, ["initialize", "retain", "transition"], state_root=root, current=current)
+    for event in captured["events"]:
+        item = event["item"]
+        if item["aggregated_output"].startswith("error:"):
+            assert item["exit_code"] == 0
+            with pytest.raises(runner.WorkflowError, match="public helper commands"):
+                runner.public_command_seen(probe, {"events": [event]}, helper, ["retain" if "canonical JSON" in item["aggregated_output"] else "transition"], state_root=root, current=current)
+
+
+@pytest.mark.parametrize("syntax", ["echo", "literal-separator", "heredoc-data", "conditional", "conditional-newline", "if-block", "comment", "unexecuted-script", "after-exit", "after-exec", "alias", "environment"])
+def test_public_helper_parser_rejects_unexecuted_text_even_with_real_receipt_output(tmp_path, syntax):
+    captured, root, helper, current = native_helper_fixture(tmp_path)
+    event = next(event for event in captured["events"] if '"operation":"initialize"' in event["item"]["aggregated_output"])
+    argv = shlex.join([sys.executable, str(helper), "--state-root", str(root), "initialize"])
+    scripts = {"echo": "echo " + shlex.quote(argv), "literal-separator": "echo ';' " + argv,
+               "heredoc-data": "python3 - <<'DATA'\n" + argv + "\nDATA\ncat result.json",
+               "conditional": "false && " + argv + "; cat result.json",
+               "conditional-newline": "false &&\n" + argv + "; cat result.json",
+               "if-block": "if false; then " + argv + "; fi; cat result.json",
+               "comment": "true # " + argv,
+               "unexecuted-script": "printf %s " + shlex.quote(argv) + " > script.sh; cat result.json",
+               "after-exit": "cat result.json; exit 0; " + argv,
+               "after-exec": "exec cat result.json; " + argv,
+               "alias": "alias python3=echo; " + argv,
+               "environment": "PATH=/untrusted; " + argv}
+    event["item"]["command"] = shlex.join(["/usr/bin/zsh", "-lc", scripts[syntax]])
+    with pytest.raises(runner.WorkflowError, match="public helper commands"):
+        runner.public_command_seen(probe, {"events": [event]}, helper, ["initialize"], state_root=root, current=current)
+
+
+@pytest.mark.parametrize("fault", ["failed-terminal", "other-state", "other-workflow", "fabricated-receipt", "missing-receipt", "stale-receipt"])
+def test_compound_public_helper_success_requires_exact_validated_workflow_receipt(tmp_path, fault):
+    captured, root, helper, current = native_helper_fixture(tmp_path)
+    event = next(event for event in captured["events"] if '"operation":"initialize"' in event["item"]["aggregated_output"])
+    if fault == "failed-terminal":
+        event["item"]["exit_code"] = 1
+    elif fault == "other-state":
+        event["item"]["command"] = event["item"]["command"].replace(str(root), str(tmp_path / "unrelated-state"))
+    elif fault == "other-workflow":
+        result = json.loads(event["item"]["aggregated_output"])
+        result["workflow_id"] = "0" * 32
+        event["item"]["aggregated_output"] = runner.canonical(result).decode()
+    elif fault != "stale-receipt":
+        path = root / "live" / current["workflow_id"] / "receipts/00000000.json"
+        if fault == "missing-receipt":
+            path.unlink()
+        else:
+            receipt = json.loads(path.read_text())
+            receipt["destination_stage"] = "fabricated"
+            path.write_bytes(runner.canonical(receipt))
+    with pytest.raises(runner.WorkflowError, match="public helper commands"):
+        runner.public_command_seen(probe, {"events": [event]}, helper, ["initialize"], state_root=root, current=current, prior_sequence=current["head_sequence"] if fault == "stale-receipt" else -1)
+
+
+@pytest.mark.parametrize("arguments", [["initialize", "--state-root", "ROOT"], ["--state-root", "ROOT", "initialize"], ["--state-root=ROOT", "initialize"]])
+def test_public_helper_global_options_can_precede_or_follow_subcommand(tmp_path, arguments):
+    helper, root = tmp_path / "run_state.py", tmp_path / "exact-state"
+    arguments = [value.replace("ROOT", str(root)) for value in arguments]
+    event = {"type": "item.completed", "item": {"type": "command_execution", "command": shlex.join([sys.executable, str(helper), *arguments]), "exit_code": 0}}
+    runner.public_command_seen(probe, {"events": [event]}, helper, ["initialize"], state_root=root)
+
+
+def test_actual_public_cli_compound_baseline_and_masked_failure_are_bound_to_real_state(tmp_path):
+    workflow = offline_workflow(tmp_path)
+    root = workflow.state_root
+    events = []
+
+    def execute(command, payload):
+        request = workflow.workspace / (command + "-request.json")
+        output = workflow.workspace / (command + "-output.json")
+        runner.save(request, payload)
+        argv = [sys.executable, str(workflow.helper), "--state-root", str(root), command]
+        script = "python3 - <<'PREP'\nfrom pathlib import Path\nPath('prepared').write_text('metadata')\nPREP\n" + shlex.join(argv) + " < " + shlex.quote(str(request)) + " > " + shlex.quote(str(output)) + "\ncat " + shlex.quote(str(output))
+        result = driver.run_process_group(["/bin/sh", "-c", script], prompt="", cwd=workflow.workspace, env=None, timeout=30)
+        event = {"type": "item.completed", "item": {"type": "command_execution", "command": shlex.join(["/bin/sh", "-c", script]),
+                 "exit_code": result["exit_code"], "aggregated_output": result["stdout"] + result["stderr"]}}
+        events.append(event)
+        return result
+
+    started = json.loads(execute("initialize", {"host_identity": fixtures.host_identity(workflow.root), "target_identity": fixtures.target_identity(workflow.target),
+                  "mode": "create", "authority": fixtures.authority(), "absence_evidence": {"searched": [str(workflow.target)], "exists": False},
+                  "overlap_map": {"exact": [], "near_neighbours": []}, "owner_identity": "offline-captured-parser-test"})["stdout"])
+    workflow.workflow_id = started["workflow_id"]
+    current = workflow.refresh()
+    payload = fixtures.valid_create_baseline_payload(PublicCLI(workflow, "parser-test"), root, workflow.workflow_id)
+    retained = json.loads(execute("retain", {"workflow_id": workflow.workflow_id, "expected_sequence": current["head_sequence"], "artifact_id": "baseline",
+                  "artifact_type": "baseline-report", "files_base64": {"record.json": base64.b64encode(runner.canonical(payload)).decode()}, "primary_path": "record.json",
+                  "producer": "offline-captured-parser-test", "input_bindings": [{"artifact_id": "resolution", "digest": current["artifact_index"]["resolution"]["digest"]}], "limitations": []})["stdout"])
+    request = {"workflow_id": workflow.workflow_id, "expected_sequence": retained["sequence"], "event": "capture-baseline", "destination_stage": "baseline", "artifact_ids": ["baseline"]}
+    assert execute("transition", request)["exit_code"] == 0
+    current = workflow.refresh()
+    runner.public_command_seen(probe, {"events": events}, workflow.helper, ["initialize", "retain", "transition"], state_root=root, current=current)
+    request["expected_sequence"] = current["head_sequence"]
+    failed = execute("transition", request)
+    assert failed["exit_code"] == 0 and "event is not allowed from the current stage" in failed["stderr"]
+    assert workflow.refresh()["head_sequence"] == current["head_sequence"]
+    with pytest.raises(runner.WorkflowError, match="public helper commands"):
+        runner.public_command_seen(probe, {"events": [events[-1]]}, workflow.helper, ["transition"], state_root=root, current=current)
