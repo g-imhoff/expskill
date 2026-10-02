@@ -39,6 +39,21 @@ def valid_ui(repository):
     (repository / "styles.css").write_text("body { font-family: system-ui,sans-serif; margin: 1rem; } main { max-width: 32rem; } label { overflow-wrap: anywhere; } input:focus-visible { outline: 2px solid blue; } @media(prefers-color-scheme:dark) { body { color: white; background: #222; } }\n")
 
 
+def test_actual_public_helper_import_preserves_frozen_snapshot_inventory(tmp_path):
+    content = tmp_path / "framework"
+    scripts = content / "scripts"
+    scripts.mkdir(parents=True)
+    helper = scripts / "design_state.py"
+    shutil.copyfile(ROOT / "plugins/expskill/content/scripts/design_state.py", helper)
+    before = probe.freeze_framework(content)
+    command = "import importlib.util; spec=importlib.util.spec_from_file_location('frozen_design'," + repr(str(helper)) + "); value=importlib.util.module_from_spec(spec); spec.loader.exec_module(value); print('PUBLIC HELPER IMPORT COMPLETE')"
+    completed = subprocess.run([sys.executable, "-I", "-c", command], capture_output=True, text=True, timeout=10, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "PUBLIC HELPER IMPORT COMPLETE"
+    assert probe.tree_pin(content) == before
+    assert not (scripts / "__pycache__").exists()
+
+
 def offline_static_fixture(repository, output, browser, timeout_seconds=60):
     assert ">Send email notifications</label>" in (repository / "index.html").read_text()
     assert "min-width: 800px" not in (repository / "styles.css").read_text()
@@ -205,6 +220,18 @@ class ScriptedOwners:
             source = output / "python-runtime.json"
             source.chmod(0o600)
             source.write_text("{}")
+        if self.fault == "framework-changed" and name == "design-initial":
+            source = content / "skills/design/SKILL.md"
+            source.chmod(0o600)
+            source.write_text(source.read_text() + "\nACTUAL PROTECTED SOURCE MUTATION\n")
+        if self.fault == "framework-missing" and name == "design-initial":
+            source = content / "skills/design/SKILL.md"
+            source.parent.chmod(0o755)
+            source.unlink()
+        if self.fault == "framework-added" and name == "design-initial":
+            directory = content / "scripts"
+            directory.chmod(0o755)
+            (directory / ".lock").write_text("UNAUTHORIZED FROZEN SOURCE ADDITION")
         evidence_dir.mkdir(parents=True)
         events = [{"type": "thread.started", "thread_id": thread}, {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}]
         raw = evidence_dir / "events.jsonl"
@@ -290,7 +317,8 @@ def test_private_artifact_locator_rejects_traversal_and_symlink(tmp_path):
 
 
 @pytest.mark.parametrize("fault", [None, "screenshot", "record-output", "scope", "missing-state"])
-def test_synthetic_inventory_binding_verifier_preserves_byte_and_command_checks(tmp_path, fault):
+@pytest.mark.parametrize("bytecode_disabled", [False, True])
+def test_synthetic_inventory_binding_verifier_preserves_byte_and_command_checks(tmp_path, fault, bytecode_disabled):
     worktree, state = tmp_path / "worktree", tmp_path / "state"
     worktree.mkdir()
     (state / "records").mkdir(parents=True)
@@ -309,7 +337,7 @@ def test_synthetic_inventory_binding_verifier_preserves_byte_and_command_checks(
     probe.retain(worktree / "review/native-checks.json", proof)
     output = state / "records/fixture.output"
     output.write_bytes(probe.canonical(proof))
-    record = {"record_id": "fixture", "exit": 0, "command": "python3 native_checks.py native-checks --browser /browser --output review", "output_digest": probe.digest(output.read_bytes())}
+    record = {"record_id": "fixture", "exit": 0, "command": "python3 " + ("-B " if bytecode_disabled else "") + "native_checks.py native-checks --browser /browser --output review", "output_digest": probe.digest(output.read_bytes())}
     design = {"scope": {"owned_paths": probe.SOURCE_FILES + probe.review_paths()}, "evidence": {"E1": {"technical": {"results": [record]}}}}
     if fault == "screenshot":
         (worktree / "review" / observations[0]["screenshot"]).write_bytes(b"changed")
@@ -344,6 +372,13 @@ def test_offline_real_helper_flow_retains_answers_delivery_join_and_current_plan
     runtime_artifact = Path(runtime["artifact"]["path"])
     assert probe.digest(runtime_artifact.read_bytes()) == runtime["artifact"]["sha256"]
     assert all(runtime["executable"] in prompt and "For every Python helper command" in prompt for _, prompt, _ in owners.calls)
+    assert all(runtime["executable"] + " -B" in prompt for _, prompt, _ in owners.calls)
+    assert "-B" in runtime["check"]["argv"]
+    assert runtime["bytecode_writes"] == "disabled by required -B flag"
+    snapshot = report["framework_snapshot"]
+    manifest = json.loads(Path(snapshot["inventory"]["path"]).read_bytes())
+    assert manifest["framework_revision"] == revision
+    assert manifest["files"] == probe.tree_pin(Path(snapshot["root"]), ignore_locks=False)
     by_name = {name: configuration for name, _, configuration in owners.calls}
     for name in ("design-initial", "design-answer"):
         assert by_name[name]["sandbox"] == "danger-full-access"
@@ -412,6 +447,30 @@ def test_private_loader_accommodation_still_rejects_reader_product_or_state_edit
     assert owners.calls[-1][0] == "design-replacement"
     assert "host_integration" not in report["observations"]
     assert "changed" in report["failure"]["reason"]
+
+
+@pytest.mark.parametrize("fault,kind,path", [
+    ("framework-changed", "changed", "skills/design/SKILL.md"),
+    ("framework-missing", "missing", "skills/design/SKILL.md"),
+    ("framework-added", "added", "scripts/.lock"),
+])
+def test_actual_protected_snapshot_mutations_remain_blocking_with_exact_diagnostics(tmp_path, framework_source, monkeypatch, fault, kind, path):
+    repository, revision = framework_source
+    monkeypatch.setattr(probe, "native_checks", offline_static_fixture)
+    owners = ScriptedOwners(fault)
+    report = probe.run_probe(output_root=tmp_path / "run", repository=repository, revision=revision, driver=owners, live=True, browser=sys.executable)
+    assert report["outcome"] == "probe-blocked"
+    assert len(owners.calls) == 2
+    assert report["relay"] == []
+    assert "host_integration" not in report["observations"]
+    failure = report["observations"]["integrity_failure"]
+    assert failure["dispatch_id"] == "design-initial"
+    assert list(failure["changes"][kind]) == [path]
+    assert all(not value for name, value in failure["changes"].items() if name != kind)
+    assert path in report["failure"]["reason"]
+    if kind == "changed":
+        hashes = failure["changes"][kind][path]
+        assert hashes["expected"] != hashes["actual"]
 
 
 def test_interruption_keeps_reserved_dispatch_and_private_fixture(tmp_path, framework_source):

@@ -71,8 +71,25 @@ def private_file(path, root):
     return path
 
 
-def tree_pin(root):
-    return {str(path.relative_to(root)): "symlink:" + os.readlink(path) if path.is_symlink() else digest(path.read_bytes()) for path in sorted(root.rglob("*")) if (path.is_file() or path.is_symlink()) and path.name != ".lock"} if root.exists() else {}
+def tree_pin(root, *, ignore_locks=True):
+    return {str(path.relative_to(root)): "symlink:" + os.readlink(path) if path.is_symlink() else digest(path.read_bytes()) for path in sorted(root.rglob("*")) if (path.is_file() or path.is_symlink()) and (not ignore_locks or path.name != ".lock")} if root.exists() else {}
+
+
+def freeze_framework(content):
+    for path in content.rglob("*"):
+        if path.is_file():
+            path.chmod(0o444)
+    for path in sorted(content.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink():
+            path.chmod(0o555)
+    content.chmod(0o555)
+    return tree_pin(content, ignore_locks=False)
+
+
+def snapshot_changes(expected, actual):
+    return {"added": {path: actual[path] for path in sorted(actual.keys() - expected.keys())},
+        "changed": {path: {"expected": expected[path], "actual": actual[path]} for path in sorted(expected.keys() & actual.keys()) if expected[path] != actual[path]},
+        "missing": {path: expected[path] for path in sorted(expected.keys() - actual.keys())}}
 
 
 def browser_path():
@@ -89,7 +106,7 @@ def verify_python_runtime():
     executable = Path(sys.executable).absolute()
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise ProbeError("Current Python3 interpreter prerequisite is unavailable or not executable")
-    argv = [str(executable), "-I", "-c", "import json,sys; print(json.dumps({'major':sys.version_info.major,'version':sys.version}))"]
+    argv = [str(executable), "-I", "-B", "-c", "import json,sys; print(json.dumps({'major':sys.version_info.major,'version':sys.version}))"]
     try:
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
         result = json.loads(completed.stdout)
@@ -98,7 +115,7 @@ def verify_python_runtime():
     if completed.returncode != 0 or not isinstance(result, dict) or result.get("major") != 3:
         raise ProbeError("Current interpreter does not establish the Python3 prerequisite")
     return {"executable": str(executable), "resolved_executable": str(executable.resolve()), "sha256": digest(executable.read_bytes()),
-        "version": result["version"], "check": {"argv": argv, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+        "version": result["version"], "bytecode_writes": "disabled by required -B flag", "check": {"argv": argv, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
         "scope": "Host prerequisite observation before actor launch; actors must use this exact executable rather than an unverified interpreter alias."}
 
 
@@ -248,6 +265,8 @@ def verify_native_preview(design_state, worktree, state_root, browser):
     for evidence in design_state["evidence"].values():
         for result in evidence["technical"]["results"]:
             argv = shlex.split(result["command"])
+            if argv[1:2] == ["-B"]:
+                argv = argv[:1] + argv[2:]
             if len(argv) != 7 or argv[1:] != ["native_checks.py", "native-checks", "--browser", str(browser), "--output", "review"] or result["exit"] != 0:
                 continue
             output = private_file(state_root / "records" / (result["record_id"] + ".output"), state_root)
@@ -292,10 +311,9 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
     output = Path(output_root).resolve()
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     content = driver.snapshot(repository, revision, output / "framework-snapshot")
-    for path in content.rglob("*"):
-        if path.is_file():
-            path.chmod(0o444)
-    source_pin = tree_pin(content)
+    source_pin = freeze_framework(content)
+    source_manifest = retain(output / "framework-files.json", {"schema_version": "routed-framework-files.v1", "framework_revision": revision, "root": str(content), "files": source_pin})
+    Path(source_manifest["path"]).chmod(0o400)
     accepted = retain(output / "accepted-input.json", definition["accepted_input"])
     Path(accepted["path"]).chmod(0o400)
     case = retain(output / "frozen-case.json", definition)
@@ -317,6 +335,7 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
     design_root = state / "expskill/design"
     report = {"schema_version": "routed-plan-design-observation.v1", "outcome": "in-progress", "framework_revision": revision,
         "runner_sha256": digest(Path(__file__).read_bytes()), "frozen_case": case, "accepted_input": accepted,
+        "framework_snapshot": {"root": str(content), "inventory": source_manifest},
         "transport": "injected-offline-test" if injected else "retained-live-CLI", "actors": {}, "relay": [], "observations": {},
         "limits": {**definition["limits"], "actor_timeout_seconds": actor_timeout, "deadline_seconds": deadline_seconds},
         "claims": {"synthetic_answers_and_approval": True, "human_visual_approval": False, "autonomous_router_orchestration": False,
@@ -387,8 +406,15 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         report["actors"][name] = actor
         actor["elapsed_host_seconds"] = round(time.monotonic() - start, 3)
         persist()
-        if tree_pin(content) != source_pin or digest(Path(accepted["path"]).read_bytes()) != accepted["sha256"]:
-            raise ProbeError("Immutable framework or accepted input changed")
+        current_source = tree_pin(content, ignore_locks=False)
+        if current_source != source_pin:
+            changes = snapshot_changes(source_pin, current_source)
+            report["observations"]["integrity_failure"] = {"dispatch_id": name, "framework_snapshot": str(content), "changes": changes}
+            raise ProbeError("Frozen framework snapshot changed: " + json.dumps(changes, sort_keys=True))
+        current_input = digest(Path(accepted["path"]).read_bytes())
+        if current_input != accepted["sha256"]:
+            report["observations"]["integrity_failure"] = {"dispatch_id": name, "accepted_input": {"path": accepted["path"], "expected": accepted["sha256"], "actual": current_input}}
+            raise ProbeError("Immutable accepted input changed")
         if digest(Path(runtime_artifact["path"]).read_bytes()) != runtime_artifact["sha256"]:
             raise ProbeError("Verified interpreter prerequisite evidence changed")
         if (phase != "plan" or read_only) and {"graphs": tree_pin(plan_root), "audits": tree_pin(audit_root)} != before_plan:
@@ -432,7 +458,7 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         runtime_artifact = retain(output / "python-runtime.json", python_runtime)
         Path(runtime_artifact["path"]).chmod(0o400)
         report["python_runtime"] = {"artifact": runtime_artifact, **python_runtime}
-        runtime_instruction = f"For every Python helper command or snippet use the verified actual Python3 executable {shlex.quote(python_runtime['executable'])}. Do not rely on the unverified alias python. Runtime prerequisite evidence: {runtime_artifact['path']}, SHA-256 {runtime_artifact['sha256']}. Invoke the supplied executable directly with the helper path or -c/- arguments; do not choose a different interpreter alias."
+        runtime_instruction = f"For every Python helper command or snippet use the verified actual Python3 executable with bytecode writes disabled: {shlex.quote(python_runtime['executable'])} -B. Do not rely on the unverified alias python. Runtime prerequisite evidence: {runtime_artifact['path']}, SHA-256 {runtime_artifact['sha256']}. Invoke the supplied executable directly with -B followed by the helper path or -c/- arguments; do not choose a different interpreter alias or write caches into the frozen framework."
         selected_browser = Path(browser).resolve() if browser is not None else browser_path()
         report["browser"] = {"path": str(selected_browser), "sha256": digest(selected_browser.read_bytes())}
         plan_actor, plan = dispatch("plan-initial", "plan", common + f" Run $plan in routed parallel mode on branch trial/routed-ui, baseline {baseline}. Independently author a minimum complete graph with required Design join and current user presentation. Do not implement or audit yourself. Return graph_path, status awaiting-answer and question={{id,text,projection_id}} for its unconfirmed presentation. Retain it for later real Design and audit receipts.")
