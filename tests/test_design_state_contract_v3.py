@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +49,7 @@ def _start(module: object, root: Path) -> tuple[dict, Path, Path, str]:
     repo, head = _repo(root)
     state_home = root / "state"
     receipt = module.initialize_workflow(repository=repo, branch="feature/design", worktree=repo, baseline=head, dirty_fingerprint=_dirty(repo), ui_contract={"digest": DIGEST, "outcome": "checkout"}, scope={"components": ["CheckoutForm", "AccountCard"], "exclusions": ["route"]}, state_home=state_home)
+    receipt = confirm_fixture_workflow(module, receipt, state_home)
     return receipt, repo, state_home, str(receipt["workflow_id"])
 
 
@@ -66,6 +67,8 @@ def _records(names: tuple[str, ...] = ("CheckoutForm", "AccountCard"), suffix: s
         dependencies[dependency_id] = {"id": dependency_id, "digest": hashlib.sha256(f"{name}:dependency".encode()).hexdigest(), "component_ids": [name]}
         evidence[evidence_id] = {"id": evidence_id, "component_id": name, "digest": evidence_digest, "code_digest": code, "contract_digest": contract, "widths": ["compact", "intermediate", "wide"], "themes": ["light", "dark"], "states": ["default", "loading", "error"], "technical": passing_technical(evidence_digest, "component-check")}
         approvals[approval_id] = {"id": approval_id, "component_id": name, "code_digest": code, "contract_digest": contract, "evidence_ids": [evidence_id], "dependency_ids": [dependency_id], "decision": "approved"}
+    for collection in (components, evidence, approvals):
+        for item in collection.values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
     return {"components": components, "dependencies": dependencies, "evidence": evidence, "approvals": approvals}
 
 

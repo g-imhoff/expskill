@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 
-from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,8 @@ def _typed_updates(component_names: tuple[str, ...] = ("CheckoutForm",), code_su
             "dependency_ids": [dependency_id],
             "decision": "approved",
         }
+    for collection in (components, evidence, approvals):
+        for item in collection.values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
     return {"components": components, "dependencies": dependencies, "evidence": evidence, "approvals": approvals}
 
 
@@ -131,6 +133,7 @@ class DesignStateTests(unittest.TestCase):
         self.assertIn("workflow_id", receipt)
         self.assertIn("revision", receipt)
         workflow_id = str(receipt["workflow_id"])
+        receipt = confirm_fixture_workflow(module, receipt, state_home)
         return receipt, repository, state_home, workflow_id
 
     def test_public_operations_are_present_and_dependency_free(self) -> None:

@@ -207,7 +207,8 @@ def _validate_domains(state: dict) -> None:
         if not isinstance(item, dict) or set(item) != {"id", "reason"} or not all(isinstance(v, str) and v for v in item.values()): raise ValueError("invalid selected rule")
     if state["seed_permission"] and (set(state["seed_permission"]) != {"source", "version", "approved"} or not isinstance(state["seed_permission"].get("approved"), bool)): raise ValueError("invalid seed permission")
     for item in state["questions"].values():
-        if not isinstance(item, dict) or set(item) != {"id"}: raise ValueError("invalid question")
+        if not isinstance(item, dict) or set(item) not in ({"id"}, {"id", "material", "resolved", "decision_reference"}) or not isinstance(item.get("id"), str) or not item["id"]: raise ValueError("invalid question")
+        if "resolved" in item and (not isinstance(item["resolved"], bool) or not isinstance(item["material"], bool) or not isinstance(item["decision_reference"], str) or item["resolved"] and not item["decision_reference"].strip()): raise ValueError("invalid question resolution")
     for item in state["invalidations"].values():
         if not isinstance(item, dict) or set(item) != {"reason", "component_id", "approval_id"}: raise ValueError("invalid invalidation")
     delivery=state["delivery"]
@@ -223,6 +224,7 @@ def _validate_domains(state: dict) -> None:
         for key, item in collection.items():
             if not isinstance(key, str) or not isinstance(item, dict) or set(item) - allowed: raise ValueError("unknown binding field")
             if item.get("id") != key: raise ValueError("binding id mismatch")
+            if collection is state["components"] and "eligible" in item and not isinstance(item["eligible"], bool): raise ValueError("invalid component eligibility")
             for field in ("digest", "code_digest", "contract_digest"):
                 if field in item and not DIGEST_RE.fullmatch(str(item[field])): raise ValueError("invalid binding digest")
             if collection is state["evidence"] and not DIGEST_RE.fullmatch(str(item.get("digest", ""))): raise ValueError("missing evidence digest")
@@ -235,6 +237,7 @@ def _validate_domains(state: dict) -> None:
                 raise ValueError("binding does not match confirmed design brief")
     for approval_id, approval in state["approvals"].items():
         if approval.get("decision") == "approved" and approval_id not in state["invalidations"] and approval.get("component_id") not in state["invalidations"]:
+            if not state["brief"]["confirmed"]: raise ValueError("confirmed design brief required before approval")
             evidence_ids = approval.get("evidence_ids", [])
             if not isinstance(evidence_ids, list) or not evidence_ids:
                 raise ValueError("technical evidence required before approval")
@@ -613,6 +616,9 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
         s=_load(root,workflow_id)
         _revalidate(s)
         if s["lifecycle"]=="delivered" or s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
+        if not s["brief"]["confirmed"]: raise ValueError("confirmed design brief required for delivery")
+        if any(question.get("material", True) and not question.get("resolved", False) for question in s["questions"].values()): raise ValueError("unresolved material Design questions")
+        if any(component.get("eligible") is False for component in s["components"].values()): raise ValueError("ineligible Design component")
         if s["invocation_mode"] == "routed" and s["candidate"] is None: raise ValueError("routed delivery requires candidate checkpoint")
         if not s["components"]: raise ValueError("current approvals required")
         for x in (candidate_payload,review_evidence,manifest): _artifact_files(x, Path(s["identity"]["worktree"]))
