@@ -275,6 +275,8 @@ def _validate_inputs(
     ledger: dict[str, object],
     batch: dict[str, object],
 ) -> tuple[dict[str, object], int]:
+    if (root / "successor.json").exists():
+        _error("closed-run", "record evidence only in the allocated successor")
     expected_fields = CHARTER_FIELDS | {"execution_budget"} if charter.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS
     if set(charter) != expected_fields or charter.get("schema_version") not in {CHARTER_SCHEMA_VERSION, "test-charter.v2"}:
         _error("invalid-charter", "frozen charter fields or schema are invalid")
@@ -346,7 +348,7 @@ def _validate_inputs(
     if len(action_ids) > int(budget["semantic_actions_max"]):
         _error("action-budget-exceeded", "combined ledger exceeds the frozen action budget")
     try:
-        execution_budget.validate_actions(budget, action_ids)
+        execution_budget.validate_actions(budget, action_ids, root=root, charter=charter)
     except ValueError as error:
         _error("unplanned-action", str(error))
     return {
