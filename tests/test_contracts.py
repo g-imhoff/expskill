@@ -11,7 +11,7 @@ from pathlib import Path
 
 from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.validate import _validate_authored_skill_integrity, validate_repository
-from scripts.render_codex import render_agents
+from scripts.render_codex import RenderError, render_agents
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,8 +45,8 @@ EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
     "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-5.6-luna", "max", None),
+    "expskill-implementer": ("gpt-5.6-luna", "max", None),
     "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
     "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
 }
@@ -778,7 +778,7 @@ class ContractTests(unittest.TestCase):
                 self.assertTrue(any("version" in error for error in errors))
 
     def test_agent_profiles_match_exact_roster_and_required_fields(self) -> None:
-        observed: dict[str, tuple[str, str, str]] = {}
+        observed: dict[str, tuple[str, str, str | None]] = {}
         for relative, contents in sorted(render_agents(ROOT).items()):
             path = Path(relative)
             profile = tomllib.loads(contents)
@@ -787,7 +787,6 @@ class ContractTests(unittest.TestCase):
                 "description",
                 "model",
                 "model_reasoning_effort",
-                "sandbox_mode",
                 "developer_instructions",
             ):
                 self.assertIn(field, profile, path.name)
@@ -796,9 +795,62 @@ class ContractTests(unittest.TestCase):
             observed[profile["name"]] = (
                 profile["model"],
                 profile["model_reasoning_effort"],
-                profile["sandbox_mode"],
+                profile.get("sandbox_mode"),
             )
         self.assertEqual(observed, EXPECTED_AGENTS)
+
+    def test_commit_writers_preserve_parent_sandbox_authority(self) -> None:
+        rendered = render_agents(ROOT)
+        for name in ("expskill-designer", "expskill-implementer"):
+            with self.subTest(name=name):
+                profile = tomllib.loads(rendered[f"agents/{name}.toml"])
+                for field in ("sandbox_mode", "sandbox_workspace_write", "approval_policy", "permissions"):
+                    self.assertNotIn(field, profile)
+                self.assertEqual(profile["model"], "gpt-5.6-luna")
+                self.assertEqual(profile["model_reasoning_effort"], "max")
+                self.assertIn("parent-approved sandbox and approval policy", profile["developer_instructions"])
+                self.assertIn("stop before production edits", profile["developer_instructions"])
+                self.assertIn("Never change sandbox settings", profile["developer_instructions"])
+        self.assertEqual(tomllib.loads(rendered["agents/expskill-planner.toml"])["sandbox_mode"], "workspace-write")
+        for name in ("expskill-explorer", "expskill-review", "expskill-spec", "expskill-test-engineer"):
+            self.assertEqual(tomllib.loads(rendered[f"agents/{name}.toml"])["sandbox_mode"], "read-only")
+
+    def test_commit_writer_sandbox_overrides_are_rejected(self) -> None:
+        for name in ("expskill-designer", "expskill-implementer"):
+            for mode in ("read-only", "workspace-write", "danger-full-access"):
+                with self.subTest(name=name, mode=mode):
+                    root = self.copy_repository()
+                    path = root / "plugins/expskill/codex/agents.json"
+                    metadata = json.loads(path.read_text(encoding="utf-8"))
+                    metadata["agents"][name]["sandbox_mode"] = mode
+                    path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+                    errors = validate_repository(root, include_opencode=False)
+                    self.assertTrue(any(name in error and "sandbox" in error for error in errors), errors)
+                    with self.assertRaisesRegex(RenderError, "inherit the parent sandbox"):
+                        render_agents(root)
+
+    def test_required_nonwriter_sandbox_cannot_be_omitted(self) -> None:
+        for name in ("expskill-explorer", "expskill-planner", "expskill-review", "expskill-spec", "expskill-test-engineer"):
+            with self.subTest(name=name):
+                root = self.copy_repository()
+                path = root / "plugins/expskill/codex/agents.json"
+                metadata = json.loads(path.read_text(encoding="utf-8"))
+                metadata["agents"][name].pop("sandbox_mode")
+                path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+                errors = validate_repository(root, include_opencode=False)
+                self.assertTrue(any(name in error and "sandbox" in error for error in errors), errors)
+                with self.assertRaisesRegex(RenderError, "has no sandbox_mode"):
+                    render_agents(root)
+
+    def test_writer_coordinators_require_existing_host_capabilities(self) -> None:
+        design = (PHASE_ROOTS["design"] / "SKILL.md").read_text(encoding="utf-8")
+        implement = (PHASE_ROOTS["implement"] / "SKILL.md").read_text(encoding="utf-8")
+        for body in (design, implement):
+            self.assertIn("parent-approved sandbox and approval policy", body)
+            self.assertIn("stop before production edits", body)
+            self.assertIn("Do not change sandbox settings", body)
+        self.assertIn("original private Design state root", design)
+        self.assertIn("repository and worktree Git metadata", implement)
 
     def test_agent_instructions_state_the_required_boundaries(self) -> None:
         required_phrases = {

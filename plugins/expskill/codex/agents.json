@@ -4,7 +4,6 @@
     "expskill-designer": {
       "model": "gpt-5.6-luna",
       "model_reasoning_effort": "max",
-      "sandbox_mode": "workspace-write",
       "source": "../content/agents/expskill-designer.md"
     },
     "expskill-explorer": {
@@ -16,7 +15,6 @@
     "expskill-implementer": {
       "model": "gpt-5.6-luna",
       "model_reasoning_effort": "max",
-      "sandbox_mode": "workspace-write",
       "source": "../content/agents/expskill-implementer.md"
     },
     "expskill-planner": {
