@@ -65,10 +65,11 @@ class ScriptedOwners:
         design = probe.module(content / "scripts/design_state.py", "offline_routed_design")
         accepted = json.loads((output / "accepted-input.json").read_bytes())
         input_digest = probe.digest((output / "accepted-input.json").read_bytes())
-        root = state_home / "expskill"
+        canonical_state = output / "state"
+        root = canonical_state / "expskill"
         target = output / "repository"
         name = evidence_dir.name
-        self.calls.append((name, prompt, configuration))
+        self.calls.append((name, prompt, {**configuration, "cwd": str(cwd), "state_home": str(state_home)}))
         thread = resume_from["thread_ids"][0] if resume_from is not None else "offline-" + name
         if self.fault == "wrong-resume" and name == "plan-answer":
             thread = "offline-wrong-owner"
@@ -175,7 +176,11 @@ class ScriptedOwners:
             payload = {"phase": "design", "status": "delivered", "workflow_id": self.design_id, "revision": delivery["revision"], "delivery_receipt_path": str(path), "resolved_question_id": "design-approval"}
         elif name == "design-replacement":
             state = design.load_workflow(workflow_id=self.design_id, state_home=root)
-            payload = {"phase": "design", "status": "delivered", "workflow_id": self.design_id, "revision": state["revision"], "delivery_receipt_path": str(state_home / "outputs/design-delivery.json"), "replaced_thread_id": "offline-design-initial"}
+            payload = {"phase": "design", "status": "delivered", "workflow_id": self.design_id, "revision": state["revision"], "delivery_receipt_path": str(canonical_state / "outputs/design-delivery.json"), "replaced_thread_id": "offline-design-initial"}
+            if self.fault == "reader-source-write":
+                (Path(state["identity"]["worktree"]) / "styles.css").write_text("reader mutation")
+            if self.fault == "reader-state-write":
+                (root / "design" / self.design_id).write_text("{}")
         else:
             graph = json.loads(Path(self.audit_dispatch["dispatch"]["graph_snapshot"]["path"]).read_bytes())
             payload = {"input_digest": input_digest, "workflow_id": graph["workflow_id"], "revision": graph["graph_revision"], "graph_digest": self.audit_dispatch["dispatch"]["graph_digest"], "evidence": list(graph["evidence"]), "constraints": ["Offline scripted actor, not model judgment"], "findings": [], "limitations": ["Offline scripted actor, not model judgment"]}
@@ -286,6 +291,18 @@ def test_offline_real_helper_flow_retains_answers_delivery_join_and_current_plan
     assert report["observations"]["native_verification"]["passed"]
     assert report["observations"]["native_verification"]["kind"] == "offline-static-fixture-only"
     assert report["claims"]["human_visual_approval"] is False
+    by_name = {name: configuration for name, _, configuration in owners.calls}
+    for name in ("design-initial", "design-answer"):
+        assert by_name[name]["sandbox"] == "danger-full-access"
+        assert by_name[name]["additional_write_dirs"] == []
+    assert by_name["plan-initial"]["sandbox"] == "workspace-write"
+    assert by_name["plan-independent-audit"]["sandbox"] == "read-only"
+    reader = by_name["design-replacement"]
+    assert reader["sandbox"] == "workspace-write"
+    assert reader["cwd"] != report["fixture"]["design_worktree"]
+    assert reader["state_home"] != str(tmp_path / "run/state")
+    assert reader["additional_write_dirs"] == [tmp_path / "run/state/expskill/design"]
+    assert report["capability_scope"]["design_writer"]["filesystem_isolation"] is False
     records = report["observations"]["audit_result"]["records"]
     assert records["spent_calls"] == 1
     assert records["remaining"]["calls"] == 2
@@ -329,6 +346,19 @@ def test_owner_and_accepted_scope_mutations_stop_before_answer_relay(tmp_path, f
     assert len(owners.calls) == 1
     assert report["relay"] == []
     assert "host_integration" not in report["observations"]
+
+
+@pytest.mark.parametrize("fault", ["reader-source-write", "reader-state-write"])
+def test_private_loader_accommodation_still_rejects_reader_product_or_state_edits(tmp_path, framework_source, monkeypatch, fault):
+    repository, revision = framework_source
+    monkeypatch.setattr(probe, "native_checks", offline_static_fixture)
+    owners = ScriptedOwners(fault)
+    report = probe.run_probe(output_root=tmp_path / "run", repository=repository, revision=revision, driver=owners, live=True, browser=sys.executable)
+    assert report["outcome"] == "probe-blocked"
+    assert len(owners.calls) == 5
+    assert owners.calls[-1][0] == "design-replacement"
+    assert "host_integration" not in report["observations"]
+    assert "changed" in report["failure"]["reason"]
 
 
 def test_interruption_keeps_reserved_dispatch_and_private_fixture(tmp_path, framework_source):
