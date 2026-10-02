@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import binascii
 import hashlib
@@ -1074,6 +1075,18 @@ def _validate_criterion_evidence_map(evaluation: dict[str, Any], case_ids: set[s
         raise RunStateError("evaluation criterion evidence map omits frozen parameter or case coverage")
 
 
+def _versioned_payload_fields(artifact_type: str, schema_version: str) -> set[str]:
+    fields = set(_PAYLOAD_REQUIRED_FIELDS[artifact_type])
+    if artifact_type == "evaluation-pack" and schema_version == EVALUATION_SCHEMA:
+        fields.add("criterion_evidence_map")
+    if artifact_type == "candidate-record" and schema_version in {
+        HISTORICAL_CANDIDATE_SCHEMA,
+        CANDIDATE_SCHEMA,
+    }:
+        fields.add("loaded_skill_digest")
+    return fields
+
+
 def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
     """Apply the normative, versioned payload schema before accepting an artifact."""
     expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
@@ -1084,14 +1097,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         {expected_version} if isinstance(expected_version, str) else expected_version
     )
     schema_version = payload.get("schema_version")
-    versioned_fields = set(expected_fields)
-    if artifact_type == "evaluation-pack" and schema_version == EVALUATION_SCHEMA:
-        versioned_fields.add("criterion_evidence_map")
-    if artifact_type == "candidate-record" and schema_version in {
-        HISTORICAL_CANDIDATE_SCHEMA,
-        CANDIDATE_SCHEMA,
-    }:
-        versioned_fields.add("loaded_skill_digest")
+    versioned_fields = _versioned_payload_fields(artifact_type, schema_version)
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
@@ -7297,6 +7303,110 @@ def _decode_cli_fields(command: str, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _predicate_source(function: Any, selector: str | None = None, value: str | None = None) -> tuple[dict[str, Any], list[ast.AST]]:
+    lines, start = inspect.getsourcelines(function)
+    parsed = ast.parse("".join(lines)).body[0]
+    nodes = parsed.body
+    if selector is not None:
+        selected = []
+        for node in ast.walk(parsed):
+            if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+                continue
+            test = node.test
+            if isinstance(test.left, ast.Name) and test.left.id == selector and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq) and len(test.comparators) == 1 and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == value:
+                selected.append(node)
+        if len(selected) != 1:
+            raise RunStateError("authoritative artifact predicate is missing or ambiguous")
+        node = selected[0]
+        first, last = node.lineno, node.body[-1].end_lineno
+        nodes = node.body
+        source = "".join(lines[first - 1:last])
+    else:
+        first, last = 1, len(lines)
+        source = "".join(lines)
+    return {"function": function.__name__, "start_line": start + first - 1, "end_line": start + last - 1,
+            "source": source, "sha256": raw_digest(source.encode())}, nodes
+
+
+def _description_constant(value: Any) -> Any:
+    if isinstance(value, re.Pattern):
+        return {"pattern": value.pattern, "flags": value.flags}
+    if isinstance(value, dict):
+        return {str(key): _description_constant(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return [_description_constant(item) for item in sorted(value)]
+    if isinstance(value, (list, tuple)):
+        return [_description_constant(item) for item in value]
+    return value
+
+
+def describe_artifact(artifact_type: str | None = None) -> dict[str, Any]:
+    versions = {name: sorted([value] if isinstance(value, str) else value) for name, value in _PAYLOAD_SCHEMA_VERSIONS.items()}
+    if artifact_type is None:
+        return {"schema_version": "skill-builder-artifact-catalog.v1", "state_access": "none", "artifact_types": versions,
+                "helper_generated_record_types": sorted(_ARTIFACT_TYPES - set(versions)),
+                "usage": "python3 /absolute/loaded-skill/scripts/run_state.py describe-artifact TYPE"}
+    if artifact_type not in versions:
+        raise RunStateError(f"unknown authored artifact type: {artifact_type}")
+    predicate, nodes = _predicate_source(_validate_artifact_payload, "artifact_type", artifact_type)
+    predicates: dict[str, dict[str, Any]] = {}
+    constants: dict[str, Any] = {}
+    pending = list(nodes)
+    seen: set[str] = set()
+    while pending:
+        node = pending.pop()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id.isupper() and child.id in globals():
+                value = globals()[child.id]
+                if child.id == "_PAYLOAD_REQUIRED_FIELDS":
+                    value = {artifact_type: value[artifact_type]}
+                constants[child.id] = _description_constant(value)
+            if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Name):
+                continue
+            name = child.func.id
+            function = globals().get(name)
+            if name in seen or not name.startswith("_") or not inspect.isfunction(function) or function.__module__ != __name__:
+                continue
+            seen.add(name)
+            source, body = _predicate_source(function)
+            predicates[name] = source
+            pending.extend(body)
+    binding_predicates: dict[str, dict[str, Any]] = {}
+    transitions = {}
+    for event, types in _EVENT_ARTIFACT_TYPES.items():
+        if artifact_type not in types:
+            continue
+        source, body = _predicate_source(_validate_transition_semantics, "event", event)
+        transitions[event] = {"source": _STAGE_TRANSITIONS[event][0], "destination": _STAGE_TRANSITIONS[event][1], "artifact_types": list(types), "predicate": source}
+        for node in body:
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id.startswith("_validate"):
+                    function = globals()[child.func.id]
+                    binding_predicates[function.__name__] = _predicate_source(function)[0]
+    if artifact_type == "release-record":
+        binding_predicates["_validate_final_evidence"] = _predicate_source(_validate_final_evidence)[0]
+    for binding in list(binding_predicates.values()):
+        parsed = ast.parse(binding["source"])
+        for child in ast.walk(parsed):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id.startswith("_require"):
+                function = globals().get(child.func.id)
+                if inspect.isfunction(function) and function.__module__ == __name__:
+                    binding_predicates[function.__name__] = _predicate_source(function)[0]
+    return {
+        "schema_version": "skill-builder-artifact-contract.v1", "artifact_type": artifact_type, "state_access": "none",
+        "schema_versions": versions[artifact_type],
+        "required_fields_by_version": {version: sorted(_versioned_payload_fields(artifact_type, version)) for version in versions[artifact_type]},
+        "optional_fields": [], "additional_properties": False,
+        "contract_language": "Normative Python validation predicates from this exact helper source. This is not a portable JSON Schema or a semantic example.",
+        "versioned_field_rule": _predicate_source(_versioned_payload_fields)[0],
+        "validator_source": predicate, "type_predicates": predicates, "referenced_constants": constants,
+        "transitions": transitions, "binding_predicates": list(binding_predicates.values()),
+        "retention": "Author the primary JSON payload and retain its exact bytes through retain.files_base64 with producer, current input_bindings and limitations. Raw-source and other evidence digests must have matching retained bytes. The normal helper creates envelopes and manifests.",
+        "gate_rule": "A description does not validate, retain or accept an artifact. Current run versions, exact state, bindings, independence, authority and retained evidence remain enforced by the unchanged public retain and transition gates.",
+        "bounds": {"artifact_items": MAX_ARTIFACT_ITEMS, "artifact_bytes": MAX_ARTIFACT_BYTES, "json_bytes": MAX_JSON_BYTES},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     descriptions = {command: describe_command(command) for command in CLI_OPERATIONS}
     parser = argparse.ArgumentParser(
@@ -7308,14 +7418,21 @@ def main(argv: list[str] | None = None) -> int:
             for command, value in descriptions.items()
         ),
     )
-    parser.add_argument("command", nargs="?", choices=(*CLI_OPERATIONS, "describe"))
-    parser.add_argument("operation", nargs="?", choices=tuple(CLI_OPERATIONS), help="operation to describe. Valid only after describe")
+    parser.add_argument("command", nargs="?", choices=(*CLI_OPERATIONS, "describe", "describe-artifact"))
+    parser.add_argument("operation", nargs="?", help="operation after describe or authored artifact type after describe-artifact")
     parser.add_argument("--state-root", type=Path, help="explicit absolute isolated state root (tests only)")
     parser.add_argument("--yes", action="store_true", help="explicitly acknowledge destructive cleanup of the exact live run")
     parser.add_argument("-h", "--help", action="store_true", help="show generic help or the selected operation's exact request contract")
     args = parser.parse_args(argv)
+    if args.command == "describe-artifact":
+        if args.operation is not None and args.operation not in _PAYLOAD_SCHEMA_VERSIONS:
+            parser.error(f"artifact type: invalid choice: {args.operation}")
+        sys.stdout.buffer.write(canonical_json_bytes(describe_artifact(args.operation)))
+        return 0
+    if args.command == "describe" and args.operation is not None and args.operation not in CLI_OPERATIONS:
+        parser.error(f"operation: invalid choice: {args.operation}")
     if args.command != "describe" and args.operation is not None:
-        parser.error("only describe accepts an operation argument")
+        parser.error("only describe or describe-artifact accepts an operation argument")
     if args.command == "describe" or args.help and args.command:
         result = descriptions[args.operation] if args.command == "describe" and args.operation else descriptions[args.command] if args.command != "describe" else {"schema_version": "skill-builder-cli-catalog.v1", "state_access": "none", "operations": descriptions}
         sys.stdout.buffer.write(canonical_json_bytes(result))
