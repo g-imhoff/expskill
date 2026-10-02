@@ -33,7 +33,7 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def initialize(tmp_path: Path, invocation_mode: str = "routed"):
+def initialize(tmp_path: Path, invocation_mode: str = "routed", owned_paths=None):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-b", "expskill/design/ui")
@@ -44,6 +44,9 @@ def initialize(tmp_path: Path, invocation_mode: str = "routed"):
     git(repo, "commit", "-m", "baseline")
     baseline = git(repo, "rev-parse", "HEAD")
     module = load_helper()
+    scope = {"components": ["CheckoutForm"], "exclusions": ["routing"]}
+    if owned_paths is not None:
+        scope["owned_paths"] = owned_paths
     receipt = module.initialize_workflow(
         repository=repo,
         branch="expskill/design/ui",
@@ -51,7 +54,7 @@ def initialize(tmp_path: Path, invocation_mode: str = "routed"):
         baseline=baseline,
         dirty_fingerprint=hashlib.sha256(b"").hexdigest(),
         ui_contract={"digest": DIGEST, "outcome": "approved checkout UI"},
-        scope={"components": ["CheckoutForm"], "exclusions": ["routing"]},
+        scope=scope,
         invocation_mode=invocation_mode,
         state_home=tmp_path / "state",
     )
