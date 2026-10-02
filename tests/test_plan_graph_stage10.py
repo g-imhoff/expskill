@@ -1385,6 +1385,44 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertFalse(loaded["evidence"]["E1"]["fresh"])
         self.assertTrue(loaded["evidence"]["E2"]["fresh"])
 
+    def test_resume_normalizes_relative_absolute_and_anchored_repository_sources(self) -> None:
+        sources = ["config.py:24", "config.py:24:7", "config.py#L24-L30",
+                   str(self.repo / "config.py"), f"{self.repo / 'config.py'}:24"]
+        for number, source in enumerate(sources):
+            with self.subTest(source=source):
+                (self.repo / "config.py").write_text("CONFIG = {}\n", encoding="utf-8")
+                home = self.root / f"source-{number}"
+                graph = _graph()
+                graph["evidence"]["E1"]["source"] = source
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, receipt.revision, home)
+                (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+                resumed = self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(resumed.state, "stale")
+                self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+                self.assertEqual(loaded["evidence"]["E1"]["source"], source)
+
+    def test_repository_evidence_outside_repository_is_rejected(self) -> None:
+        for number, source in enumerate((str(self.root / "outside.py"), "../outside.py:12")):
+            with self.subTest(source=source):
+                graph = _graph()
+                graph["evidence"]["E1"]["source"] = source
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "outside repository"):
+                    self.helper.initialize_workflow(self.repo, BRANCH, graph, self.root / f"outside-source-{number}")
+
+    def test_resume_preserves_literal_filename_with_numeric_colon_suffix(self) -> None:
+        path = self.repo / "config.py:24"
+        path.write_text("CONFIG = {}\n", encoding="utf-8")
+        graph = _graph()
+        graph["evidence"]["E1"]["source"] = path.name
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        path.write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, self.state_home)
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+
     def test_receipt_schema_rejects_independent_mutants(self) -> None:
         required = {
             "workflow_id": None,
