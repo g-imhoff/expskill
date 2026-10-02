@@ -249,7 +249,12 @@ class ReviewLoopTrialTests(unittest.TestCase):
         self.assertIn("INVALID_VALUES", second["deliveries"]["input-semantics"]["original_final_text"])
         self.assertEqual(json.loads(second["deliveries"]["input-semantics"]["delivered_text"])["findings"], [])
         stale = json.loads(second["deliveries"]["scope-and-proof"]["delivered_text"])
-        self.assertNotEqual(stale["pin"], second["pin"])
+        original_stale = json.loads(second["deliveries"]["scope-and-proof"]["original_final_text"])
+        self.assertEqual(set(stale), set(original_stale))
+        self.assertEqual(stale["score"], original_stale["score"])
+        self.assertEqual(stale["findings"], original_stale["findings"])
+        self.assertIn(second["deliveries"]["scope-and-proof"]["previous_pin"], stale["evidence"])
+        self.assertNotIn(second["pin"], stale["evidence"])
         third = result["cycles"][2]
         self.assertEqual(set(json.loads(third["deliveries"]["scope-and-proof"]["delivered_text"])), {"category", "score"})
         self.assertEqual(third["coordinator_payload"]["decision"], "bounded-stop")

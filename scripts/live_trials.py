@@ -315,7 +315,7 @@ def deliver_peer(original, *, fault, cycle, pin, previous_pin):
         if fault == "omission":
             value.update(score=9, findings=[], top_issue="")
         elif fault == "stale":
-            value.update(pin=previous_pin, evidence=f"Candidate {previous_pin}", score=9, findings=[], top_issue="")
+            value.update(evidence=f"Candidate {previous_pin}")
         elif fault == "malformed":
             value = {"category": value.get("category", "input-semantics"), "score": 9}
         else:
