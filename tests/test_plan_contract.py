@@ -136,7 +136,7 @@ class PlanContractTests(unittest.TestCase):
         boundary = _markdown_section(self.body, "Boundary")
         stopping = _markdown_section(self.body, "Stop and downstream boundary")
         self.assertIn("standalone", boundary)
-        self.assertRegex(boundary, r"do not route, invoke, open, select, or recommend another skill")
+        self.assertRegex(boundary, r"do not route, invoke, open, select, or recommend another lifecycle skill")
         self.assertRegex(boundary, r"do not begin .*implementation")
         self.assertIn("emit no typed handoff", stopping)
 
