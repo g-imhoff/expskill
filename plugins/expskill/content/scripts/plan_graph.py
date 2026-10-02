@@ -1556,6 +1556,7 @@ def _validate_graph_inner(
         _text(record.get("observed_at"), "evidence timestamp")
         if record["kind"] == "repository":
             _text(record.get("revision"), "repository evidence revision")
+            _repository_source_paths(record["source"], context.repository if context is not None else Path(identity["repository"]))
         elif "version" in record:
             _text(record.get("version"), "external evidence version")
         elif "revision" in record:
@@ -2859,7 +2860,7 @@ def recover_workflow(
         stale_evidence = {
             evidence_id for evidence_id, record in recovered["evidence"].items()
             if record["kind"] == "repository"
-            and any(_path_related(record["source"], path) for path in changed_paths)
+            and any(_path_related(record["source"], path, transaction.context.repository) for path in changed_paths)
         }
         _invalidate_semantic_dependents(
             recovered,
@@ -2934,13 +2935,36 @@ def _changed_repository_paths(context: _RepoContext, baseline: str) -> set[str]:
     return changed
 
 
-def _path_related(source: str, changed: str) -> bool:
-    source_path = source.strip("/")
+def _repository_source_paths(source: str, repository: Path) -> set[str]:
+    root = repository.resolve()
+    literal = source.strip()
+    anchored = re.sub(r"(?::[1-9][0-9]*(?::[1-9][0-9]*)?(?:-[1-9][0-9]*)?|#L[1-9][0-9]*(?:-L?[1-9][0-9]*)?)$", "", literal)
+    paths: set[str] = set()
+    for candidate in {literal, anchored}:
+        if not candidate:
+            raise PlanGraphError("repository evidence source is empty")
+        path = Path(candidate)
+        absolute = Path(os.path.normpath(path if path.is_absolute() else root / path))
+        try:
+            resolved = absolute.resolve()
+        except (OSError, RuntimeError) as error:
+            raise PlanGraphError("repository evidence source cannot be resolved") from error
+        if not resolved.is_relative_to(root):
+            raise PlanGraphError("repository evidence source is outside repository")
+        paths.add(resolved.relative_to(root).as_posix())
+        if absolute.is_relative_to(root):
+            paths.add(absolute.relative_to(root).as_posix())
+    return paths
+
+
+def _path_related(source: str, changed: str, repository: Path) -> bool:
     changed_path = changed.strip("/")
-    return (
-        source_path == changed_path
+    return any(
+        source_path == "."
+        or source_path == changed_path
         or source_path.startswith(changed_path + "/")
         or changed_path.startswith(source_path + "/")
+        for source_path in _repository_source_paths(source, repository)
     )
 
 
@@ -2969,7 +2993,7 @@ def resume_workflow(
             evidence_id
             for evidence_id, evidence in candidate["evidence"].items()
             if evidence["kind"] == "repository"
-            and any(_path_related(evidence["source"], path) for path in changed)
+            and any(_path_related(evidence["source"], path, transaction.context.repository) for path in changed)
         }
         _invalidate_semantic_dependents(
             candidate,
