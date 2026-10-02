@@ -1193,11 +1193,16 @@ def _record_payload_digest(record: dict[str, Any]) -> str:
     )
 
 
-def _projection_source_digest(graph: dict[str, Any], projection: dict[str, Any]) -> str:
+def _projection_source_digest(graph: dict[str, Any], projection: dict[str, Any], *, digest_version: int | None = None) -> str:
     records: dict[str, Any] = {}
     covers = _id_list(projection.get("covers"), "projection coverage", allow_empty=False)
     versions = _mapping(projection.get("decision_versions"), "projection decision versions")
-    administrative = {"operation_receipt", "fresh", "stale", "confirmed_version", "confirmation", "evidence", "execution_required", "observed_at", "record_version"}
+    if digest_version is None:
+        presentation = projection.get("presentation")
+        digest_version = presentation.get("source_digest_version", 1) if isinstance(presentation, dict) else 2
+    if type(digest_version) is not int or digest_version not in {1, 2}:
+        raise PlanGraphError("projection source digest version is unsupported")
+    administrative = {"operation_receipt", "fresh", "stale", "confirmed_version", "confirmation", "revalidation_required", "revalidation", "evidence", "execution_required", "observed_at", "record_version"}
     families = {family: _mapping(graph.get(family), family) for family in ("outcomes", "evidence", "decisions", "work", "proof")}
     pending = [(family, record_id) for family, values in families.items() if family != "evidence" for record_id in values if record_id in covers]
     visited: set[tuple[str, str]] = set()
@@ -1214,7 +1219,10 @@ def _projection_source_digest(graph: dict[str, Any], projection: dict[str, Any])
         if record_id not in families[family]:
             raise PlanGraphError("projection source references an unknown record")
         record = _mapping(families[family][record_id], f"projection source {record_id}")
-        records.setdefault(family, {})[record_id] = {key: item for key, item in record.items() if key not in administrative}
+        records.setdefault(family, {})[record_id] = {
+            key: item for key, item in record.items()
+            if key not in administrative and not (digest_version == 2 and family == "evidence" and record.get("kind") == "repository" and key == "revision")
+        }
         for field, target_family in links[family].items():
             pending.extend((target_family, target) for target in _id_list(record.get(field), f"projection source {field}"))
     try:
@@ -1223,7 +1231,7 @@ def _projection_source_digest(graph: dict[str, Any], projection: dict[str, Any])
         raise PlanGraphError("malformed projection source meaning") from error
 
 
-def issue_projection_presentation(*, graph: dict[str, Any], projection_id: str, text: str) -> dict[str, str]:
+def issue_projection_presentation(*, graph: dict[str, Any], projection_id: str, text: str) -> dict[str, Any]:
     _text(text, "projection presented wording")
     projections = _mapping(graph.get("projections"), "projections")
     if projection_id not in projections:
@@ -1232,13 +1240,92 @@ def issue_projection_presentation(*, graph: dict[str, Any], projection_id: str, 
     return {
         "text": text,
         "text_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "source_digest": _projection_source_digest(graph, projection),
+        "source_digest": _projection_source_digest(graph, projection, digest_version=2),
+        "source_digest_version": 2,
     }
 
 
 def _decision_meaning_digest(record: dict[str, Any]) -> str:
-    administrative = {"confirmed_version", "stale", "operation_receipt", "confirmation"}
+    administrative = {"confirmed_version", "stale", "operation_receipt", "confirmation", "revalidation_required", "revalidation"}
     return _canonical_digest({key: item for key, item in record.items() if key not in administrative})
+
+
+def _decision_dependency_ids(graph: dict[str, Any], decision_id: str) -> tuple[set[str], set[str]]:
+    decision = graph["decisions"][decision_id]
+    work_ids = {work_id for work_id, record in graph["work"].items() if decision_id in record["decisions"]}
+    pending = list(work_ids)
+    while pending:
+        work_id = pending.pop()
+        for prerequisite in graph["work"][work_id]["requires"]:
+            if prerequisite not in work_ids:
+                work_ids.add(prerequisite)
+                pending.append(prerequisite)
+    evidence_ids = set(decision["based_on"])
+    for work_id in work_ids:
+        evidence_ids.update(graph["work"][work_id]["based_on"])
+    return work_ids, evidence_ids
+
+
+def _decision_dependency_digest(graph: dict[str, Any], decision_id: str) -> str:
+    work_ids, evidence_ids = _decision_dependency_ids(graph, decision_id)
+    return _canonical_digest({
+        "work": {work_id: graph["work"][work_id] for work_id in sorted(work_ids)},
+        "evidence": {
+            evidence_id: {key: item for key, item in graph["evidence"][evidence_id].items()
+                          if key not in {"operation_receipt", "observed_at", "record_version", "fresh"}}
+            for evidence_id in sorted(evidence_ids)
+        },
+        "source_fingerprints": {
+            evidence_id: graph["baseline"].get("evidence_fingerprints", {}).get(evidence_id)
+            for evidence_id in sorted(evidence_ids)
+        },
+    })
+
+
+def issue_decision_revalidation(*, graph: dict[str, Any], decision_id: str, classification: str, reason: str) -> dict[str, Any]:
+    if classification != "unchanged-meaning":
+        raise PlanGraphError("decision revalidation requires explicit unchanged-meaning classification")
+    _text(reason, "decision revalidation reason")
+    if decision_id not in _mapping(graph.get("decisions"), "decisions"):
+        raise PlanGraphError("unknown decision revalidation target")
+    record = copy.deepcopy(graph["decisions"][decision_id])
+    if record.get("stale") or record.get("revalidation_required") is not True:
+        raise PlanGraphError("decision revalidation requires an unchanged decision awaiting dependency checks")
+    _, evidence_ids = _decision_dependency_ids(graph, decision_id)
+    if any(not graph["evidence"][evidence_id]["fresh"] for evidence_id in evidence_ids):
+        raise PlanGraphError("decision revalidation requires refreshed dependency evidence")
+    record["revalidation_required"] = False
+    record["revalidation"] = {
+        "classification": classification,
+        "trust": "coordinator-attestation",
+        "reason": reason,
+        "decision_digest": _decision_meaning_digest(record),
+        "dependency_digest": _decision_dependency_digest(graph, decision_id),
+        "prior_graph_revision": graph["graph_revision"],
+    }
+    return record
+
+
+def _validate_decision_revalidation(graph: dict[str, Any], decision_id: str, record: dict[str, Any]) -> None:
+    _boolean(record.get("revalidation_required", False), "decision dependency revalidation")
+    if record.get("revalidation") is None:
+        return
+    revalidation = _mapping(record["revalidation"], "decision revalidation")
+    if set(revalidation) != {"classification", "trust", "reason", "decision_digest", "dependency_digest", "prior_graph_revision"}:
+        raise PlanGraphError("decision revalidation fields are incomplete")
+    if revalidation["classification"] != "unchanged-meaning" or revalidation["trust"] != "coordinator-attestation":
+        raise PlanGraphError("decision revalidation classification or trust is invalid")
+    _text(revalidation["reason"], "decision revalidation reason")
+    if _integer(revalidation["prior_graph_revision"], "decision revalidation prior revision", minimum=1) >= graph["graph_revision"]:
+        raise PlanGraphError("decision revalidation revision is not prior")
+    for field in ("decision_digest", "dependency_digest"):
+        if not isinstance(revalidation[field], str) or not _HEX_KEY.fullmatch(revalidation[field]):
+            raise PlanGraphError("decision revalidation digest is invalid")
+    if not record["stale"] and not record.get("revalidation_required") and (
+        revalidation["decision_digest"] != _decision_meaning_digest(record)
+        or revalidation["dependency_digest"] != _decision_dependency_digest(graph, decision_id)
+    ):
+        raise PlanGraphError("decision revalidation does not bind current meaning and dependencies")
 
 
 def issue_decision_confirmation(*, graph: dict[str, Any], decision_id: str, projection_id: str) -> dict[str, Any]:
@@ -1250,7 +1337,7 @@ def issue_decision_confirmation(*, graph: dict[str, Any], decision_id: str, proj
     projection = _mapping(projections[projection_id], "decision confirmation projection")
     presentation = _validate_projection_presentation(projection.get("presentation"))
     if (
-        projection.get("stale") or not projection.get("presented")
+        projection.get("stale") or not projection.get("presented") or record.get("revalidation_required")
         or decision_id not in projection.get("covers", [])
         or projection.get("decision_versions", {}).get(decision_id) != record.get("version")
         or presentation["source_digest"] != _projection_source_digest(graph, projection)
@@ -1304,6 +1391,11 @@ def issue_projection_clarification(
         raise PlanGraphError("wording clarification requires a current confirmed presentation")
     approved = _validate_projection_presentation(approved)
     presentation = issue_projection_presentation(graph=graph, projection_id=projection_id, text=text)
+    presentation["source_digest"] = _projection_source_digest(graph, record)
+    if "source_digest_version" in approved:
+        presentation["source_digest_version"] = approved["source_digest_version"]
+    else:
+        presentation.pop("source_digest_version")
     if approved.get("source_digest") != presentation["source_digest"]:
         raise PlanGraphError("wording clarification cannot change graph meaning")
     record["clarifications"] = _sequence(record.get("clarifications", []), "projection clarifications")
@@ -1320,8 +1412,11 @@ def issue_projection_clarification(
 
 def _validate_projection_presentation(presentation: object) -> dict[str, Any]:
     presented = _mapping(presentation, "projection presented wording")
-    if set(presented) != {"text", "text_digest", "source_digest"}:
+    if set(presented) not in ({"text", "text_digest", "source_digest"}, {"text", "text_digest", "source_digest", "source_digest_version"}):
         raise PlanGraphError("projection presentation fields are incomplete")
+    version = presented.get("source_digest_version", 1)
+    if type(version) is not int or version not in {1, 2}:
+        raise PlanGraphError("projection source digest version is unsupported")
     text = _text(presented.get("text"), "projection presented wording")
     if presented.get("text_digest") != hashlib.sha256(text.encode("utf-8")).hexdigest():
         raise PlanGraphError("projection presentation text digest mismatch")
@@ -1400,6 +1495,7 @@ def issue_operation_receipt(
     if operation not in {
         "refresh-evidence",
         "confirm-decision",
+        "revalidate-decision",
         "reconfirm-decision",
         "refresh-proof",
         "refresh-proof-plan",
@@ -1787,6 +1883,8 @@ def _validate_graph_inner(
                 "consequences",
                 "operation_receipt",
                 "confirmation",
+                "revalidation_required",
+                "revalidation",
             },
             f"decision {decision_id}",
         )
@@ -1819,9 +1917,10 @@ def _validate_graph_inner(
             target=("decisions", decision_id),
             record=record,
             record_version=version,
-            allowed_operations={"confirm-decision", "reconfirm-decision"},
+            allowed_operations={"confirm-decision", "reconfirm-decision", "revalidate-decision"},
         )
         _validate_decision_confirmation(record)
+        _validate_decision_revalidation(value, decision_id, record)
 
     proof = _mapping(value.get("proof"), "proof", allow_empty=False)
     proof_ids = set(proof)
@@ -2073,7 +2172,7 @@ def _validate_graph_inner(
                 raise PlanGraphError("projection clarification fields are incomplete")
             current_wording = _validate_projection_presentation(clarification["presentation"])
             approved_wording = _validate_projection_presentation(clarification["approved_presentation"])
-            if current_wording["source_digest"] != approved_wording["source_digest"]:
+            if current_wording["source_digest"] != approved_wording["source_digest"] or current_wording.get("source_digest_version", 1) != approved_wording.get("source_digest_version", 1):
                 raise PlanGraphError("wording clarification cannot change graph meaning")
             if clarification["classification"] != "unchanged-meaning" or clarification["trust"] != "coordinator-attestation":
                 raise PlanGraphError("wording clarification must retain its explicit classification and trust")
@@ -2254,7 +2353,7 @@ def _derive_validated(graph: dict[str, Any], *, require_projection_presentation:
     if any(not proof["fresh"] for proof in graph["proof"].values()):
         return "stale"
     for decision in graph["decisions"].values():
-        if decision["stale"]:
+        if decision["stale"] or decision.get("revalidation_required"):
             return "stale"
         if decision["material"] and decision["confirmed_version"] != decision["version"]:
             return "awaiting-user"
@@ -2500,7 +2599,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
     for row in rows:
         update = _mapping(row, "update")
         operation = update.get("op")
-        typed = operation in {"refresh-evidence", "confirm-decision", "reconfirm-decision", "refresh-proof", "refresh-proof-plan",
+        typed = operation in {"refresh-evidence", "confirm-decision", "reconfirm-decision", "revalidate-decision", "refresh-proof", "refresh-proof-plan",
                               "regenerate-projection", "reconfirm-projection", "clarify-projection", "refresh-audit", "resolve-finding", "record-design-join"}
         if operation != "set" and not typed:
             raise PlanGraphError("unsupported update operation")
@@ -2532,7 +2631,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         controlled_true = (
             (path[0] == "evidence" and path[-1] == "fresh" and update.get("value") is True)
             or (path[0] == "proof" and path[-1] == "fresh" and update.get("value") is True)
-            or (path[0] == "decisions" and path[-1] in {"confirmed_version", "stale", "confirmation"})
+            or (path[0] == "decisions" and path[-1] in {"confirmed_version", "stale", "confirmation", "revalidation_required", "revalidation"})
             or (
                 path[0] == "projections"
                 and path[-1] in {"version", "decision_versions", "presented", "confirmed", "stale"}
@@ -2544,7 +2643,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         if operation == "set" and controlled_true:
             raise PlanGraphError("readiness-enabling fields require a typed operation")
         if typed:
-            expected_family = {"refresh-evidence": "evidence", "confirm-decision": "decisions", "reconfirm-decision": "decisions",
+            expected_family = {"refresh-evidence": "evidence", "confirm-decision": "decisions", "reconfirm-decision": "decisions", "revalidate-decision": "decisions",
                 "refresh-proof": "proof", "refresh-proof-plan": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections", "clarify-projection": "projections",
                 "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
             expected_length = 1 if expected_family in {"audit", "design_join"} else 2
@@ -2638,13 +2737,13 @@ def _validate_typed_repairs(
         expected_version = update.get("_record_version")
         actual_version = (
             record.get("version")
-            if operation in {"confirm-decision", "reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
+            if operation in {"confirm-decision", "reconfirm-decision", "revalidate-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else record.get("record_version")
         )
         previous_version = (
             previous_record.get("version")
             if operation
-            in {"confirm-decision", "reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
+            in {"confirm-decision", "reconfirm-decision", "revalidate-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else previous_record.get("record_version")
         )
         if expected_version != actual_version or expected_version != previous_version:
@@ -2656,6 +2755,7 @@ def _validate_typed_repairs(
             },
             "confirm-decision": {"confirmed_version", "confirmation", "operation_receipt"},
             "reconfirm-decision": {"confirmed_version", "stale", "confirmation", "operation_receipt"},
+            "revalidate-decision": {"revalidation_required", "revalidation", "operation_receipt"},
             "refresh-proof": {"evidence", "fresh", "execution_required", "operation_receipt"},
             "refresh-proof-plan": {"fresh", "operation_receipt"},
             "regenerate-projection": {
@@ -2708,6 +2808,7 @@ def _validate_typed_repairs(
                 or (operation == "confirm-decision" and (previous_record.get("stale") or previous_record.get("confirmed_version") is not None))
                 or record.get("confirmed_version") != record.get("version")
                 or record.get("stale")
+                or record.get("revalidation_required")
             ):
                 raise PlanGraphError("decision confirmation is not current")
             if operation == "confirm-decision" or previous_record.get("confirmation") is not None:
@@ -2715,6 +2816,15 @@ def _validate_typed_repairs(
                 expected = issue_decision_confirmation(graph=graph, decision_id=path[1], projection_id=confirmation.get("projection"))
                 if confirmation != expected["confirmation"]:
                     raise PlanGraphError("decision confirmation does not bind the retained current presentation")
+        elif operation == "revalidate-decision":
+            revalidation = _mapping(record.get("revalidation"), "decision revalidation")
+            expected = issue_decision_revalidation(
+                graph=previous_graph, decision_id=path[1],
+                classification=revalidation.get("classification"),
+                reason=revalidation.get("reason"),
+            )
+            if record.get("revalidation_required") is not False or record.get("revalidation") != expected["revalidation"]:
+                raise PlanGraphError("decision revalidation does not bind current checked dependencies")
         elif operation == "refresh-proof-plan":
             if (
                 previous_record.get("fresh") is not False
@@ -2864,6 +2974,8 @@ def _invalidate_semantic_dependents(
     decisions = graph["decisions"]
     work = graph["work"]
     proof = graph["proof"]
+    revalidation_ids: set[str] = set()
+    explicit_ids: set[str] = set()
     changed_again = True
     while changed_again:
         changed_again = False
@@ -2878,13 +2990,20 @@ def _invalidate_semantic_dependents(
             if source in affected:
                 for target in targets:
                     for family, affected_ids in families:
-                        if target in family and target not in affected_ids:
+                        if target in family:
+                            if target not in affected_ids or target not in explicit_ids:
+                                changed_again = True
                             affected_ids.add(target)
-                            changed_again = True
+                            explicit_ids.add(target)
         for decision_id, record in decisions.items():
-            if decision_id not in decision_ids and set(record["based_on"]) & evidence_ids:
-                decision_ids.add(decision_id); changed_again = True
+            if set(record["based_on"]) & evidence_ids:
+                revalidation_ids.add(decision_id)
         for work_id, record in work.items():
+            if work_id not in explicit_ids and (
+                set(record["covers"] + record["based_on"] + record["decisions"] + record["requires"]) & explicit_ids
+            ):
+                explicit_ids.add(work_id)
+                changed_again = True
             if work_id not in work_ids and (
                 set(record["covers"]) & outcome_ids
                 or set(record["based_on"]) & evidence_ids
@@ -2894,9 +3013,11 @@ def _invalidate_semantic_dependents(
                 work_ids.add(work_id); changed_again = True
         for work_id in tuple(work_ids):
             for decision_id in work.get(work_id, {}).get("decisions", []):
-                if decision_id not in decision_ids:
-                    decision_ids.add(decision_id); changed_again = True
+                revalidation_ids.add(decision_id)
         for proof_id, record in proof.items():
+            if proof_id not in explicit_ids and set(record["covers"] + record["required_by"]) & explicit_ids:
+                explicit_ids.add(proof_id)
+                changed_again = True
             if proof_id not in proof_ids and (
                 set(record["covers"]) & outcome_ids
                 or set(record["required_by"]) & work_ids
@@ -2906,7 +3027,10 @@ def _invalidate_semantic_dependents(
         for projection_id, record in graph["projections"].items():
             presentation = record.get("presentation")
             changed_source = isinstance(presentation, dict) and presentation.get("source_digest") != _projection_source_digest(graph, record)
-            if projection_id not in projection_ids and (set(record["covers"]) & affected or changed_source):
+            if projection_id not in projection_ids and (
+                changed_source or set(record["covers"]) & explicit_ids
+                or (presentation is None and set(record["covers"]) & affected)
+            ):
                 projection_ids.add(projection_id)
                 changed_again = True
     preserved_evidence = preserve_evidence or set()
@@ -2925,6 +3049,13 @@ def _invalidate_semantic_dependents(
             if not record["stale"]:
                 record["version"] += 1
             record["stale"] = True
+            record["revalidation_required"] = False
+            record["revalidation"] = None
+            record["operation_receipt"] = None
+    for decision_id in revalidation_ids - decision_ids:
+        record = decisions[decision_id]
+        if not record["stale"]:
+            record["revalidation_required"] = True
             record["operation_receipt"] = None
     for proof_id in proof_ids:
         if proof_id in proof:
@@ -2935,7 +3066,9 @@ def _invalidate_semantic_dependents(
             record["operation_receipt"] = None
     affected = outcome_ids | evidence_ids | decision_ids | work_ids | proof_ids
     for projection_id, projection in graph["projections"].items():
-        if projection_id in projection_ids or set(projection["covers"]) & affected:
+        presentation = projection.get("presentation")
+        changed_source = isinstance(presentation, dict) and presentation.get("source_digest") != _projection_source_digest(graph, projection)
+        if projection_id in projection_ids or changed_source or (presentation is None and set(projection["covers"]) & affected):
             if not projection["stale"]:
                 projection["version"] += 1
             projection["stale"] = True
@@ -3013,6 +3146,11 @@ def _apply_updates_locked(
             for update in normalized
         ):
             raise PlanGraphError("decision confirmation changes require a typed confirmation operation")
+        if any(record.get(field) != replacement.get(field) for field in ("revalidation_required", "revalidation")) and not any(
+            update.get("_typed") == "revalidate-decision" and update["path"] == ["decisions", decision_id]
+            for update in normalized
+        ):
+            raise PlanGraphError("decision dependency checks require typed revalidation")
     for projection_id, record in current["projections"].items():
         replacement = candidate["projections"].get(projection_id, {})
         if record.get("clarifications", []) != replacement.get("clarifications", []) and not any(
