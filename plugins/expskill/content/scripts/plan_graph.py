@@ -1556,6 +1556,7 @@ def _validate_graph_inner(
         _text(record.get("observed_at"), "evidence timestamp")
         if record["kind"] == "repository":
             _text(record.get("revision"), "repository evidence revision")
+            _repository_source_paths(record["source"], context.repository if context is not None else Path(identity["repository"]))
         elif "version" in record:
             _text(record.get("version"), "external evidence version")
         elif "revision" in record:
@@ -2562,6 +2563,20 @@ def _invalidate_semantic_dependents(
     changed_again = True
     while changed_again:
         changed_again = False
+        affected = outcome_ids | evidence_ids | decision_ids | work_ids | proof_ids | projection_ids
+        edges = [(record["source"], record["targets"]) for record in graph["invalidations"]]
+        edges.extend((decision_id, record["invalidates"]) for decision_id, record in decisions.items())
+        families = (
+            (graph["evidence"], evidence_ids), (decisions, decision_ids),
+            (work, work_ids), (proof, proof_ids), (graph["projections"], projection_ids),
+        )
+        for source, targets in edges:
+            if source in affected:
+                for target in targets:
+                    for family, affected_ids in families:
+                        if target in family and target not in affected_ids:
+                            affected_ids.add(target)
+                            changed_again = True
         for decision_id, record in decisions.items():
             if decision_id not in decision_ids and set(record["based_on"]) & evidence_ids:
                 decision_ids.add(decision_id); changed_again = True
@@ -2570,6 +2585,7 @@ def _invalidate_semantic_dependents(
                 set(record["covers"]) & outcome_ids
                 or set(record["based_on"]) & evidence_ids
                 or set(record["decisions"]) & decision_ids
+                or set(record["requires"]) & work_ids
             ):
                 work_ids.add(work_id); changed_again = True
         for work_id in tuple(work_ids):
@@ -2582,6 +2598,11 @@ def _invalidate_semantic_dependents(
                 or set(record["required_by"]) & work_ids
             ):
                 proof_ids.add(proof_id); changed_again = True
+        affected = outcome_ids | evidence_ids | decision_ids | work_ids | proof_ids
+        for projection_id, record in graph["projections"].items():
+            if projection_id not in projection_ids and set(record["covers"]) & affected:
+                projection_ids.add(projection_id)
+                changed_again = True
     preserved_evidence = preserve_evidence or set()
     for evidence_id in evidence_ids:
         if evidence_id in graph["evidence"]:
@@ -2835,6 +2856,24 @@ def recover_workflow(
             raise PlanGraphError("current generation is valid; recovery is not applicable")
         recovered = copy.deepcopy(previous)
         recovered["graph_revision"] = previous["graph_revision"] + 2
+        changed_paths = _changed_repository_paths(transaction.context, recovered["baseline"]["repository_revision"])
+        stale_evidence = {
+            evidence_id for evidence_id, record in recovered["evidence"].items()
+            if record["kind"] == "repository"
+            and any(_path_related(record["source"], path, transaction.context.repository) for path in changed_paths)
+        }
+        _invalidate_semantic_dependents(
+            recovered,
+            {("projections", projection_id, "version") for projection_id in recovered["projections"]}
+            | {("evidence", evidence_id, "revision") for evidence_id in stale_evidence},
+        )
+        recovered["unresolved"].append({
+            "id": f"recovery-{recovered['graph_revision']}",
+            "kind": "recovery-reconciliation",
+            "material": True,
+            "question": "Reconcile the recovered plan with current user intent before confirming its projections.",
+            "reason": f"Recovered revision {previous['graph_revision']}; newer recorded intent may have been lost.",
+        })
         _finalize_graph(
             recovered,
             transaction.context,
@@ -2896,13 +2935,36 @@ def _changed_repository_paths(context: _RepoContext, baseline: str) -> set[str]:
     return changed
 
 
-def _path_related(source: str, changed: str) -> bool:
-    source_path = source.strip("/")
+def _repository_source_paths(source: str, repository: Path) -> set[str]:
+    root = repository.resolve()
+    literal = source.strip()
+    anchored = re.sub(r"(?::[1-9][0-9]*(?::[1-9][0-9]*)?(?:-[1-9][0-9]*)?|#L[1-9][0-9]*(?:-L?[1-9][0-9]*)?)$", "", literal)
+    paths: set[str] = set()
+    for candidate in {literal, anchored}:
+        if not candidate:
+            raise PlanGraphError("repository evidence source is empty")
+        path = Path(candidate)
+        absolute = Path(os.path.normpath(path if path.is_absolute() else root / path))
+        try:
+            resolved = absolute.resolve()
+        except (OSError, RuntimeError) as error:
+            raise PlanGraphError("repository evidence source cannot be resolved") from error
+        if not resolved.is_relative_to(root):
+            raise PlanGraphError("repository evidence source is outside repository")
+        paths.add(resolved.relative_to(root).as_posix())
+        if absolute.is_relative_to(root):
+            paths.add(absolute.relative_to(root).as_posix())
+    return paths
+
+
+def _path_related(source: str, changed: str, repository: Path) -> bool:
     changed_path = changed.strip("/")
-    return (
-        source_path == changed_path
+    return any(
+        source_path == "."
+        or source_path == changed_path
         or source_path.startswith(changed_path + "/")
         or changed_path.startswith(source_path + "/")
+        for source_path in _repository_source_paths(source, repository)
     )
 
 
@@ -2931,7 +2993,7 @@ def resume_workflow(
             evidence_id
             for evidence_id, evidence in candidate["evidence"].items()
             if evidence["kind"] == "repository"
-            and any(_path_related(evidence["source"], path) for path in changed)
+            and any(_path_related(evidence["source"], path, transaction.context.repository) for path in changed)
         }
         _invalidate_semantic_dependents(
             candidate,

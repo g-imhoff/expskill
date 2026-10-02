@@ -584,6 +584,54 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertGreater(ready.revision, refreshed.revision)
         self.assertEqual(changed.state, "stale")
 
+    def _three_node_graph(self) -> dict[str, object]:
+        graph = _graph()
+        for number in (2, 3):
+            outcome, evidence, work, proof, projection = (f"{prefix}{number}" for prefix in "OETPU")
+            graph["outcomes"][outcome] = {"kind": "outcome", "result": f"Consumer {number} works"}
+            graph["evidence"][evidence] = dict(graph["evidence"]["E1"],
+                source=f"consumer{number}.py", supports=[work])
+            graph["work"][work] = dict(graph["work"]["T1"], covers=[outcome],
+                based_on=[evidence], proof=[proof], repository_boundary=[f"consumer{number}.py"])
+            graph["proof"][proof] = json.loads(json.dumps(graph["proof"]["P1"]))
+            graph["proof"][proof].update(covers=[outcome], required_by=[work])
+            graph["projections"][projection] = dict(graph["projections"]["U1"], covers=[work, proof])
+        return graph
+
+    def test_producer_meaning_change_stales_transitive_consumer_proof_and_confirmation(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T2"]["requires"] = ["T1"]
+        graph["work"]["T3"]["requires"] = ["T2"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"],
+              "value": "Produce a materially different result contract"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        for number in (1, 2, 3):
+            self.assertFalse(graph["proof"][f"P{number}"]["fresh"])
+            self.assertFalse(graph["projections"][f"U{number}"]["confirmed"])
+
+    def test_explicit_invalidation_edges_propagate_across_record_families(self) -> None:
+        graph = self._three_node_graph()
+        graph["decisions"]["D1"] = {
+            "question": "Choose validation policy", "choice": "Strict validation",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": 1, "stale": False,
+            "invalidates": ["E2"], "consequences": []}
+        graph["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
+        graph["invalidations"] = [{"source": "P2", "targets": ["E3"]}]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["decisions", "D1", "choice"],
+              "value": "Compatibility validation"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        for number in (2, 3):
+            self.assertFalse(graph["evidence"][f"E{number}"]["fresh"])
+            self.assertFalse(graph["proof"][f"P{number}"]["fresh"])
+            self.assertFalse(graph["projections"][f"U{number}"]["confirmed"])
+
     def test_executed_proof_cannot_downgrade_to_an_unexecuted_plan(self) -> None:
         receipt = self._initialize()
         self.helper.apply_updates(
@@ -1275,6 +1323,44 @@ class TransactionLayerTests(unittest.TestCase):
             _graph()["work"]["T1"]["result"],
         )
 
+    def test_recovery_requires_reconciliation_and_fresh_projection_confirmation(self) -> None:
+        receipt = self._initialize()
+        second = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["outcomes", "O1", "result"],
+              "value": "Configuration is validated without coercion"}], self.state_home)
+        second.path.write_text("corrupt", encoding="utf-8")
+        recovered = self.helper.recover_workflow(self.repo, BRANCH, receipt.workflow_id, self.state_home)
+        self.assertEqual(recovered.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["unresolved"][0]["kind"], "recovery-reconciliation")
+        self.assertTrue(graph["projections"]["U1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertEqual(graph["outcomes"]["O1"]["result"], _graph()["outcomes"]["O1"]["result"])
+        cleared = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["unresolved"], "value": []}], self.state_home)
+        self.assertEqual(cleared.state, "stale")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        regenerated = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_recovery_stales_repository_evidence_changed_since_checkpoint(self) -> None:
+        receipt = self._initialize()
+        second = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Revised work"}], self.state_home)
+        (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        second.path.write_text("corrupt", encoding="utf-8")
+        self.helper.recover_workflow(self.repo, BRANCH, receipt.workflow_id, self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["evidence"]["E1"]["fresh"])
+
     def test_resume_is_one_revision_and_stales_only_relevant_repository_evidence(self) -> None:
         graph = _graph()
         graph["evidence"]["E2"] = {
@@ -1298,6 +1384,44 @@ class TransactionLayerTests(unittest.TestCase):
         loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         self.assertFalse(loaded["evidence"]["E1"]["fresh"])
         self.assertTrue(loaded["evidence"]["E2"]["fresh"])
+
+    def test_resume_normalizes_relative_absolute_and_anchored_repository_sources(self) -> None:
+        sources = ["config.py:24", "config.py:24:7", "config.py#L24-L30",
+                   str(self.repo / "config.py"), f"{self.repo / 'config.py'}:24"]
+        for number, source in enumerate(sources):
+            with self.subTest(source=source):
+                (self.repo / "config.py").write_text("CONFIG = {}\n", encoding="utf-8")
+                home = self.root / f"source-{number}"
+                graph = _graph()
+                graph["evidence"]["E1"]["source"] = source
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, receipt.revision, home)
+                (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+                resumed = self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(resumed.state, "stale")
+                self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+                self.assertEqual(loaded["evidence"]["E1"]["source"], source)
+
+    def test_repository_evidence_outside_repository_is_rejected(self) -> None:
+        for number, source in enumerate((str(self.root / "outside.py"), "../outside.py:12")):
+            with self.subTest(source=source):
+                graph = _graph()
+                graph["evidence"]["E1"]["source"] = source
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "outside repository"):
+                    self.helper.initialize_workflow(self.repo, BRANCH, graph, self.root / f"outside-source-{number}")
+
+    def test_resume_preserves_literal_filename_with_numeric_colon_suffix(self) -> None:
+        path = self.repo / "config.py:24"
+        path.write_text("CONFIG = {}\n", encoding="utf-8")
+        graph = _graph()
+        graph["evidence"]["E1"]["source"] = path.name
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        path.write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, self.state_home)
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(loaded["evidence"]["E1"]["fresh"])
 
     def test_receipt_schema_rejects_independent_mutants(self) -> None:
         required = {
