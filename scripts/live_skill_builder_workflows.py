@@ -423,7 +423,7 @@ class Workflow:
             commands = [shlex.join(["cat", source["path"]]) for source in sources.values()]
             research = role.startswith("research-")
             interface = ("You are only a delegated blind research lane, never the workflow owner. Do not access the public helper, shared workflow state, other actors, synthetic user decisions, candidate direction or acceptance cases. Read only the assigned immutable source resources, your own lane packet and your own scratch files; web sources remain available. Do not inspect parent directories or siblings. Use simple unconditional terminal commands or an owned Python 3 heredoc for scratch writes; no shell loops, pipelines or dynamic shell evaluation. " if research else
-                         f"Public helper: {self.helper}. Before an unfamiliar operation execute {shlex.join([sys.executable, str(self.helper), 'describe'])} OPERATION to obtain exact JSON fields without state access. Use supported CLI only, never private Python APIs or direct state edits. Use state root {self.state_root}; this is an isolated test workflow. Only the public helper may mutate its state. Invoke it directly as a tool command with JSON stdin redirected from an owned request file, so raw traces prove each public command. Keep helper invocations unconditional, without shell loops, aliases, eval, traps, or pipelines. When the same tool command also prepares a request or cats redirected results, expose the helper's original operation JSON as its entire terminal output; that receipt must belong to this exact workflow and state root. ")
+                         f"Public helper: {self.helper}. Before an unfamiliar operation execute {shlex.join([sys.executable, str(self.helper), 'describe'])} OPERATION to obtain exact JSON fields without state access. Before authoring an unfamiliar artifact execute {shlex.join([sys.executable, str(self.helper), 'describe-artifact'])} TYPE for focused authoritative nested payload and binding predicates, never semantic examples. Use supported CLI only, never private Python APIs or direct state edits. Use state root {self.state_root}; this is an isolated test workflow. Only the public helper may mutate its state. Invoke it directly as a tool command with JSON stdin redirected from an owned request file, so raw traces prove each public command. Keep helper invocations unconditional, without shell loops, aliases, eval, traps, or pipelines. When the same tool command also prepares a request or cats redirected results, expose the helper's original operation JSON as its entire terminal output; that receipt must belong to this exact workflow and state root. ")
             prompt = (f"Apply only the assigned Skill Builder stage using this immutable framework snapshot. First read these complete role-required sources or complete pinned relevant sections in separate tool operations: {json.dumps(commands)}. "
                       f"Available Python 3 interpreter: {sys.executable}; use that exact executable for local JSON preparation and any permitted helper command, never assume python exists. "
                       + interface + f"Scratch and candidate writes belong under {cwd}. "
@@ -485,10 +485,20 @@ class Workflow:
         self.persist()
         return actor, origin, reply
 
-    def stage(self, role, prompt, expected, commands, *, read_only=False):
+    def stage(self, role, prompt, expected, commands, *, read_only=False, expected_artifact_types=None):
         prior_ids = set(self.current["artifact_index"]) if self.current else set()
         prior_sequence = self.current["head_sequence"] if self.current else -1
-        actor, origin, reply = self.actor(role, prompt, read_only=read_only)
+        try:
+            actor, origin, reply = self.actor(role, prompt, read_only=read_only)
+        except (WorkflowError, self.probe.ProbeError, OSError, ValueError, KeyError, TypeError):
+            if self.workflow_id is not None:
+                try:
+                    state = self.refresh()
+                    self.observation["public_state_refresh_after_actor_failure"] = {"outcome": "refreshed", "stage": state["stage"], "head_sequence": state["head_sequence"]}
+                except (WorkflowError, self.probe.ProbeError, OSError, ValueError, KeyError, TypeError) as error:
+                    self.observation["public_state_refresh_after_actor_failure"] = {"outcome": "blocked", "reason": str(error)}
+                self.persist()
+            raise
         if self.workflow_id is None:
             self.workflow_id = reply["workflow_id"]
         self.refresh()
@@ -496,6 +506,10 @@ class Workflow:
         if self.current["stage"] != expected or reply["stage"] != expected:
             raise WorkflowError(f"{role} stopped at public stage {self.current['stage']}; expected {expected}")
         new_ids = set(self.current["artifact_index"]) - prior_ids
+        if expected_artifact_types is not None:
+            actual = [self.current["artifact_index"][artifact_id] for artifact_id in new_ids]
+            if sorted(record["type"] for record in actual) != sorted(expected_artifact_types) or any(record["derived_status"] != "accepted" for record in actual):
+                raise WorkflowError("Bounded actor stage did not accept exactly its owned artifact types")
         if set(reply["artifact_ids"]) != new_ids:
             raise WorkflowError("Actor reply omits or misattributes newly retained operational artifacts")
         for artifact_id in new_ids:
@@ -650,7 +664,11 @@ class Workflow:
                     self.retained_pins.append({"path": str(path), "sha256": digest(path.read_bytes())})
             evidence = save(self.root / "research-actors.json", research)
             self.retained_pins.append(evidence)
-            self.stage("synthesis-contract", f"Use only retained research lane evidence at {evidence['path']}. Complete stages 3–7 with a live-authored research pack, complete sieve, challenged alternatives, concrete contract, and explicitly synthetic frozen user decision/confirmation event. Retain the actual source bytes and bind all provenance. Advance through complete-research, sieve-evidence, accept-design, accept-contract, confirm-contract. No candidate edits.", "confirmed", ("retain", "transition"))
+            self.stage("normalize-research", f"Complete only stage 3 from the three retained blind lane results at {evidence['path']}. Normalize their independently authored cards without changing claims or raw observations. Retain their exact source evidence and real actor provenance in one research-pack, bind the unchanged baseline/snapshot, and accept complete-research. Stop at research. Do not sieve, design, draft a contract or edit a candidate.", "research", ("retain", "transition"), expected_artifact_types=("research-pack",))
+            self.stage("sieve-evidence", "Complete only stage 4 from the accepted research pack. Author one complete evidence-sieve with every card disposed as adopt, experiment or reject, reasons, deduplication, conflicts and retained dissent. Retain actual evidence and current bindings and accept sieve-evidence. Stop at sieve. No design, contract, confirmation or candidate work.", "sieve", ("retain", "transition"), expected_artifact_types=("evidence-sieve",))
+            self.stage("challenge-design", "Complete only stage 5 from accepted research and sieve and the explicitly synthetic frozen user decisions. Explore and challenge coherent alternatives, preserve conflicting evidence and rejected options, and record the frozen simulated decisions honestly. Retain one design-record and accept-design. Stop at design. Do not author or confirm a contract or edit a candidate.", "design", ("retain", "transition"), expected_artifact_types=("design-record",))
+            self.stage("author-contract", "Complete only stage 6. Author one concrete skill-contract from the accepted design, baseline, evidence and explicitly synthetic frozen user decisions, with all required behaviors, authority limits and exact evidence/user-decision bindings. Retain it and accept-contract. Stop at contract. Do not confirm it, freeze evaluation or edit a candidate.", "contract", ("retain", "transition"), expected_artifact_types=("skill-contract",))
+            self.stage("confirm-contract", "Complete only stage 7 in this explicitly synthetic benchmark. Independently read the current exact contract and frozen synthetic user-decision event. Check whether that frozen event actually authorizes this exact contract, retaining the real event bytes and exact digest. Author a user-confirmation-record only if the simulated decision permits it, name its synthetic origin and never claim actual user approval. Retain and accept confirm-contract only when valid. Stop at confirmed. Do not alter the contract, freeze evaluation or edit a candidate.", "confirmed", ("retain", "transition"), expected_artifact_types=("user-confirmation-record",))
             self.stage("freeze-evaluation", "Perform stage 8. Author the complete selective 100-criterion evidence map, scoring parameters and all frozen cases using the actual request/setup packets. Cover every criterion/parameter/case with relevant evidence. Keep validation and hidden expectations away from implementers/trial agents. Retain evaluation-pack.v2 and accept freeze-evaluation before any candidate work.", "evaluation", ("retain", "transition"))
             evaluation = self.accepted("evaluation-pack")[3]
             identifiers = set(re.findall(r"^\|\s*((?:TR|SC|WF|CO|OU|SA|RE|CP|CE|TE)(?:10|[1-9]))\s*\|", Path(self.sources["rubric"]["path"]).read_text(), re.M))
@@ -752,8 +770,8 @@ def run_workflows(*, output_root, repository=ROOT, framework_revision, live=Fals
               "python3": {"executable": sys.executable, "version": sys.version},
               "budgets": {"maximum_actor_attempts": maximum_actor_attempts, "deadline_seconds": deadline_seconds, "actor_timeout": actor_timeout, "research_timeout": research_timeout,
                           "maximum_repairs_per_mode": maximum_repairs, "maximum_concurrent_native_actors": 1,
-                          "planned_actor_calls_without_infrastructure_retries": 50 + 32 * maximum_repairs,
-                          "planned_fresh_contexts": 44 + 26 * maximum_repairs,
+                          "planned_actor_calls_without_infrastructure_retries": 58 + 32 * maximum_repairs,
+                          "planned_fresh_contexts": 52 + 26 * maximum_repairs,
                           "planned_same_context_continuations": 6 + 6 * maximum_repairs}, "workflows": []}
     for mode in definition["modes"]:
         try:
