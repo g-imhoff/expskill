@@ -32,6 +32,12 @@ class ProbeError(RuntimeError):
     pass
 
 
+class ActorBlocked(ProbeError):
+    def __init__(self, failure):
+        self.failure = failure
+        super().__init__(failure["reason"])
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
@@ -77,6 +83,23 @@ def browser_path():
         if path.is_file() and os.access(path, os.X_OK):
             return path.resolve()
     raise ProbeError("Native browser unavailable; no installation or substitute proof is authorized")
+
+
+def verify_python_runtime():
+    executable = Path(sys.executable).absolute()
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ProbeError("Current Python3 interpreter prerequisite is unavailable or not executable")
+    argv = [str(executable), "-I", "-c", "import json,sys; print(json.dumps({'major':sys.version_info.major,'version':sys.version}))"]
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+        result = json.loads(completed.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+        raise ProbeError("Current Python3 interpreter prerequisite failed: " + str(error)) from error
+    if completed.returncode != 0 or not isinstance(result, dict) or result.get("major") != 3:
+        raise ProbeError("Current interpreter does not establish the Python3 prerequisite")
+    return {"executable": str(executable), "resolved_executable": str(executable.resolve()), "sha256": digest(executable.read_bytes()),
+        "version": result["version"], "check": {"argv": argv, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+        "scope": "Host prerequisite observation before actor launch; actors must use this exact executable rather than an unverified interpreter alias."}
 
 
 def review_paths():
@@ -320,6 +343,8 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         return value
 
     def read_plan(payload):
+        if not isinstance(payload.get("graph_path"), str) or not payload["graph_path"]:
+            raise ProbeError("Plan handoff lacks a canonical graph locator")
         path = private_file(payload["graph_path"], plan_root)
         if path.name != "current.yaml":
             raise ProbeError("Plan returned a noncanonical graph locator")
@@ -354,7 +379,7 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         start = time.monotonic()
         report["actors"][name] = {"outcome": "reserved", "thread_ids": [], "timeout_seconds": allowance}
         persist()
-        actor = driver.run_actor(prompt=prompt, cwd=actor_cwd,
+        actor = driver.run_actor(prompt=runtime_instruction + "\n" + prompt, cwd=actor_cwd,
             state_home=actor_state, evidence_dir=output / "actors" / name, timeout=allowance,
             sandbox=actor_sandbox, live=True, cli=cli, infrastructure_retries=0,
             persistent=not read_only, resume_from=resume,
@@ -364,6 +389,8 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         persist()
         if tree_pin(content) != source_pin or digest(Path(accepted["path"]).read_bytes()) != accepted["sha256"]:
             raise ProbeError("Immutable framework or accepted input changed")
+        if digest(Path(runtime_artifact["path"]).read_bytes()) != runtime_artifact["sha256"]:
+            raise ProbeError("Verified interpreter prerequisite evidence changed")
         if (phase != "plan" or read_only) and {"graphs": tree_pin(plan_root), "audits": tree_pin(audit_root)} != before_plan:
             raise ProbeError("A non-Plan owner changed canonical Plan state")
         if (phase != "design" or read_only) and tree_pin(design_root) != before_design:
@@ -384,12 +411,28 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
             raise ProbeError("Actor final message is not JSON") from error
         if not isinstance(payload, dict) or payload.get("input_digest") != accepted["sha256"]:
             raise ProbeError("Actor did not bind the immutable accepted input")
+        if payload.get("status") == "blocked":
+            actor_failure = payload.get("failure")
+            reason = actor_failure
+            if isinstance(actor_failure, dict):
+                reason = actor_failure.get("message") or actor_failure.get("reason")
+            if not isinstance(reason, str) or not reason:
+                reason = json.dumps(actor_failure, ensure_ascii=False) if actor_failure is not None else "Actor reported blocked without a failure description"
+            raise ActorBlocked({"type": "ActorBlocked", "reason": reason, "dispatch_id": name, "phase": phase,
+                "thread_id": actor["thread_ids"][0], "actor_failure": actor_failure, "workflow_id": payload.get("workflow_id"),
+                "revision": payload.get("revision"), "last_saved_workflow_revision": payload.get("last_saved_workflow_revision", payload.get("revision")),
+                "canonical_locator": payload.get("canonical_locator", payload.get("graph_path")), "payload": payload})
         return actor, payload
 
     common = f"Synthetic authorized development-validation case, not real human approval. Complete accepted input {accepted['path']}, byte digest {accepted['sha256']}. Framework snapshot {content}. Read your exact skill and skills/unslop/SKILL.md. No delegation, nested CLI, external network, publication, new dependency, push, framework edits, or private-state JSON edits. Use public helper operations. On a failed required operation stop immediately and return blocked JSON with the actual failure and last saved workflow revision; never run proof after a failed commit or checkpoint. Preserve all criteria, non-goals and saved decisions. Return strict JSON input_digest, phase, status, workflow_id, revision, and canonical locator. Relay material questions, never infer approval. Both Git identities must be {IDENTITY}. Before EVERY commit, run git var GIT_AUTHOR_IDENT and git var GIT_COMMITTER_IDENT in the actual checkout and correct conflicting overrides. After committing verify saved identities with git show -s --format='%an <%ae> | %cn <%ce>' HEAD. No AI trailers."
     try:
         if any(not callable(getattr(plan_helper, name, None)) for name in ("reserve_plan_audit", "record_plan_audit_result", "apply_plan_audit_result", "load_plan_audits")):
             raise ProbeError("Framework revision lacks required durable Plan audit operations")
+        python_runtime = verify_python_runtime()
+        runtime_artifact = retain(output / "python-runtime.json", python_runtime)
+        Path(runtime_artifact["path"]).chmod(0o400)
+        report["python_runtime"] = {"artifact": runtime_artifact, **python_runtime}
+        runtime_instruction = f"For every Python helper command or snippet use the verified actual Python3 executable {shlex.quote(python_runtime['executable'])}. Do not rely on the unverified alias python. Runtime prerequisite evidence: {runtime_artifact['path']}, SHA-256 {runtime_artifact['sha256']}. Invoke the supplied executable directly with the helper path or -c/- arguments; do not choose a different interpreter alias."
         selected_browser = Path(browser).resolve() if browser is not None else browser_path()
         report["browser"] = {"path": str(selected_browser), "sha256": digest(selected_browser.read_bytes())}
         plan_actor, plan = dispatch("plan-initial", "plan", common + f" Run $plan in routed parallel mode on branch trial/routed-ui, baseline {baseline}. Independently author a minimum complete graph with required Design join and current user presentation. Do not implement or audit yourself. Return graph_path, status awaiting-answer and question={{id,text,projection_id}} for its unconfirmed presentation. Retain it for later real Design and audit receipts.")
@@ -504,6 +547,9 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
             raise ProbeError("Unrelated bytes, independent oracle or receipt changed")
         report["observations"]["current_plan"] = {"path": str(graph_path), "sha256": digest(graph_path.read_bytes()), "workflow_id": graph["workflow_id"], "revision": graph["graph_revision"], "derived_state": "ready", "head": candidate}
         report["outcome"] = "offline-protocol-observed" if injected else "routed-protocol-observed"
+    except ActorBlocked as error:
+        report["outcome"] = "probe-blocked"
+        report["failure"] = error.failure
     except Exception as error:
         report["outcome"] = "probe-blocked"
         report["failure"] = {"type": type(error).__name__, "reason": str(error)}
