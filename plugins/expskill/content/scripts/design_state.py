@@ -1,6 +1,6 @@
 """Strict dependency-free private state for the route-neutral Design phase."""
 from __future__ import annotations
-import fcntl, hashlib, json, os, re, secrets, shlex, subprocess, sys, threading
+import ast, fcntl, hashlib, inspect, json, os, re, secrets, shlex, subprocess, sys, threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -17,6 +17,11 @@ LEGACY_KEYSETS = {
 TOOLING_GATES = {"format", "lint", "type", "build"}
 BEHAVIOR_GATES = {"runtime", "responsive", "accessibility", "interaction", "reduced_motion"}
 TECHNICAL_GATES = TOOLING_GATES | BEHAVIOR_GATES
+UI_CONTRACT_FIELDS = {"digest", "outcome"}
+SCOPE_FIELDS = {"components", "exclusions", "owned_paths", "protected_digest"}
+BRIEF_INPUT_FIELDS = {"objective", "requirements", "responsive_expectations", "non_goals", "source"}
+BRIEF_FIELDS = BRIEF_INPUT_FIELDS | {"confirmed", "digest"}
+TECHNICAL_FIELDS = {"status", "results", "gates"}
 
 def _thread_lock(key: str):
     with _THREAD_GUARD: return _THREAD_LOCKS.setdefault(key, threading.RLock())
@@ -104,7 +109,7 @@ def _upgrade_legacy_state(state: object) -> object:
     return state
 
 def _validate_technical(technical: object) -> bool:
-    if not isinstance(technical, dict) or set(technical) != {"status", "results", "gates"}:
+    if not isinstance(technical, dict) or set(technical) != TECHNICAL_FIELDS:
         raise ValueError("invalid technical evidence")
     if technical["status"] not in {"pass", "fail"} or not isinstance(technical["results"], list) or not technical["results"]:
         raise ValueError("invalid technical status")
@@ -157,7 +162,7 @@ def _validate_technical(technical: object) -> bool:
     return derived_pass
 
 def _validate_brief(brief: object) -> None:
-    if not isinstance(brief, dict) or set(brief) != {"objective", "requirements", "responsive_expectations", "non_goals", "source", "confirmed", "digest"}:
+    if not isinstance(brief, dict) or set(brief) != BRIEF_FIELDS:
         raise ValueError("invalid design brief")
     if not isinstance(brief["confirmed"], bool): raise ValueError("invalid design brief confirmation")
     if not brief["confirmed"]:
@@ -210,9 +215,9 @@ def _validate_domains(state: dict) -> None:
     _validate_brief(state["brief"])
     _validate_candidate(state["candidate"], state)
     if state["invocation_mode"] == "direct" and state["candidate"] is not None: raise ValueError("direct Design workflow cannot contain a candidate checkpoint")
-    if set(state["ui_contract"]) - {"digest", "outcome"} or not DIGEST_RE.fullmatch(str(state["ui_contract"].get("digest", ""))): raise ValueError("invalid ui contract")
+    if set(state["ui_contract"]) - UI_CONTRACT_FIELDS or not DIGEST_RE.fullmatch(str(state["ui_contract"].get("digest", ""))): raise ValueError("invalid ui contract")
     scope=state["scope"]
-    if scope and (set(scope) - {"components", "exclusions", "owned_paths", "protected_digest"} or not isinstance(scope.get("components", []), list) or not isinstance(scope.get("exclusions", []), list)): raise ValueError("invalid scope")
+    if scope and (set(scope) - SCOPE_FIELDS or not isinstance(scope.get("components", []), list) or not isinstance(scope.get("exclusions", []), list)): raise ValueError("invalid scope")
     owned_paths = _owned_paths(scope, Path(state["identity"]["worktree"]), inspect_workspace=state["lifecycle"] != "delivered")
     if owned_paths and not DIGEST_RE.fullmatch(str(scope.get("protected_digest", ""))): raise ValueError("missing protected workspace digest")
     for item in state["selected_rules"].values():
@@ -388,7 +393,7 @@ def _revalidate(state: dict) -> None:
 
 def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_home):
     if confirmed is not True: raise PermissionError("explicit design brief confirmation required")
-    if not isinstance(brief, dict) or set(brief) != {"objective", "requirements", "responsive_expectations", "non_goals", "source"}:
+    if not isinstance(brief, dict) or set(brief) != BRIEF_INPUT_FIELDS:
         raise ValueError("invalid design brief")
     candidate = dict(brief)
     candidate["confirmed"] = True
@@ -476,8 +481,8 @@ def apply_updates(*, workflow_id, expected_revision, updates, state_home):
             raise ValueError("owned path scope cannot change silently")
         for k,v in updates.items():
             if not isinstance(v,dict): raise ValueError("typed update required")
-            if k=="ui_contract" and (set(v)-{"digest","outcome"} or not isinstance(v.get("digest"),str) or not DIGEST_RE.fullmatch(v["digest"])): raise ValueError("invalid ui contract")
-            if k=="scope" and set(v)-{"components","exclusions","owned_paths","protected_digest"}: raise ValueError("invalid scope")
+            if k=="ui_contract" and (set(v)-UI_CONTRACT_FIELDS or not isinstance(v.get("digest"),str) or not DIGEST_RE.fullmatch(v["digest"])): raise ValueError("invalid ui contract")
+            if k=="scope" and set(v)-SCOPE_FIELDS: raise ValueError("invalid scope")
             if k in {"components","dependencies","evidence","approvals"} and any(not isinstance(n,str) or not isinstance(x,dict) for n,x in v.items()): raise ValueError("typed binding required")
             allowed = {"components":{"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved","files"},"dependencies":{"id","digest","component_ids"},"evidence":{"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"},"approvals":{"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"}}
             if k in allowed:
@@ -697,14 +702,114 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
                 result["candidate_commit"]=s["candidate"]["commit"]
         return result
 
+def _cli_operations():
+    return {"initialize": initialize_workflow, "discover": discover_workflow, "load": load_workflow,
+            "confirm-brief": confirm_brief, "checkpoint-candidate": checkpoint_candidate,
+            "record-check": record_check, "apply": apply_updates, "pause": pause_workflow,
+            "resume": resume_workflow, "recover": recover_workflow, "discard": discard_workflow,
+            "deliver": deliver_workflow}
+
+
+def _domain_predicates(selectors):
+    source = inspect.getsource(_validate_domains)
+    statements = ast.parse(source).body[0].body
+    return [ast.get_source_segment(source, statement) for statement in statements
+            if any(isinstance(node, ast.Constant) and node.value in selectors
+                   or isinstance(node, ast.Name) and node.id in selectors
+                   for node in ast.walk(statement) if isinstance(node, (ast.Constant, ast.Name)))]
+
+
+def _schema_definitions():
+    return {
+        "ui-contract": (["digest"], sorted(UI_CONTRACT_FIELDS - {"digest"}), ("ui_contract",), ()),
+        "scope": ([], sorted(SCOPE_FIELDS), ("scope", "owned_paths"), (_owned_paths,)),
+        "brief": (sorted(BRIEF_INPUT_FIELDS), [], (), (_validate_brief,)),
+        "technical-evidence": (sorted(TECHNICAL_FIELDS), [], (), (_validate_technical, _recorded_results)),
+        "components": (None, None, ("components",), (_component_inventory, component_digest, _inventory)),
+        "dependencies": (None, None, ("dependencies",), ()),
+        "evidence": (None, None, ("evidence",), (_validate_technical, _recorded_results)),
+        "approvals": (None, None, ("approvals",), (_approval_attestation, _validate_technical)),
+        "inventory": (["files"], [], (), (_inventory, _artifact_files)),
+        "updates": ([], None, (), (apply_updates,)),
+    }
+
+
+def _describe_schema(name):
+    definitions = _schema_definitions()
+    if name is None:
+        return {"schema_version": "design-schema-catalog.v1", "schemas": sorted(definitions),
+                "authority": "Source descriptions only. No state, target, approval or operation authority is granted."}
+    if name not in definitions:
+        raise ValueError("unknown Design schema")
+    required, optional, selectors, validators = definitions[name]
+    result = {"schema_version": "design-schema-description.v1", "name": name,
+              "format": "Authoritative Python validation predicates, not portable JSON Schema or semantic examples.",
+              "predicates": _domain_predicates(selectors) if selectors else [],
+              "validators": {function.__name__: inspect.getsource(function) for function in validators},
+              "digest_format": DIGEST_RE.pattern, "identity_format": ID_RE.pattern}
+    if required is not None:
+        result["required_fields"] = required
+    if optional is not None:
+        result["optional_fields"] = optional
+    if name == "brief":
+        result["helper_generated_fields"] = sorted(BRIEF_FIELDS - BRIEF_INPUT_FIELDS)
+        result["digest_serialization"] = inspect.getsource(canonical_digest)
+    if name in {"technical-evidence", "evidence", "approvals"}:
+        result["gate_names"] = sorted(TECHNICAL_GATES)
+        result["tooling_gates"] = sorted(TOOLING_GATES)
+        result["behavior_gates"] = sorted(BEHAVIOR_GATES)
+    return result
+
+
+def _describe_operation(operation):
+    operations = _cli_operations()
+    interface = {"input": "One JSON object on stdin, at most 1048576 characters.",
+                 "state_option": "For isolated tests only, OPERATION --state-home PATH. State home is supplied by the CLI, never an authored payload field.",
+                 "exit_statuses": {"0": "Operation or description completed. A description does not execute an operation.",
+                                   "1": "Operation input or domain validation failed.", "2": "Unknown command, invalid argument layout or excessive input."}}
+    if operation is None:
+        return {"schema_version": "design-operation-catalog.v1", "operations": sorted(operations),
+                "descriptions": ["describe OPERATION", "OPERATION --help", "describe-schema NAME"], **interface}
+    if operation not in operations:
+        raise ValueError("unknown Design operation")
+    function = operations[operation]
+    fields = inspect.signature(function).parameters
+    required = [name for name, field in fields.items()
+                if name != "state_home" and field.default is inspect.Parameter.empty]
+    optional = {name: field.default for name, field in fields.items()
+                if name != "state_home" and field.default is not inspect.Parameter.empty}
+    schemas = {"initialize": ("ui-contract", "scope"), "load": ("ui-contract",),
+               "confirm-brief": ("brief",), "record-check": ("inventory",),
+               "apply": ("updates",), "deliver": ("inventory", "approvals", "technical-evidence")}.get(operation, ())
+    return {"schema_version": "design-operation-description.v1", "operation": operation,
+            "required_fields": required, "optional_fields": optional,
+            "schemas": {name: _describe_schema(name) for name in schemas},
+            "operation_predicates": inspect.getsource(function), **interface}
+
+
 def _cli():
-    if len(sys.argv)>1 and sys.argv[1] == "--help":
-        print("initialize discover load confirm-brief checkpoint-candidate record-check apply pause resume recover discard deliver")
+    operations = _cli_operations()
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print(" ".join(operations) + " describe describe-schema")
         return 0
-    if len(sys.argv)<2 or len(sys.argv)>4 or (len(sys.argv)>2 and sys.argv[2] != "--state-home"): return 2
+    if args and (args[0] in {"describe", "describe-schema"} or len(args) == 2 and args[1] == "--help"):
+        if len(args) > 2:
+            return 2
+        try:
+            if args[0] == "describe-schema":
+                result = _describe_schema(args[1] if len(args) == 2 else None)
+            else:
+                operation = args[0] if args[-1] == "--help" else args[1] if len(args) == 2 else None
+                result = _describe_operation(operation)
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if len(args) not in {1, 3} or (len(args) == 3 and args[1] != "--state-home"): return 2
     command=sys.argv[1]
-    allowed={"initialize","discover","load","confirm-brief","checkpoint-candidate","apply","pause","resume","recover","discard","record-check","deliver"}
-    if command not in allowed: return 2
+    if command not in operations: return 2
     raw=sys.stdin.read(1024*1024+1)
     if len(raw)>1024*1024: return 2
     try:
@@ -712,18 +817,7 @@ def _cli():
         if not isinstance(payload,dict): raise ValueError()
         home=Path(sys.argv[3]) if len(sys.argv)==4 else Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state"))) / "expskill"
         if len(sys.argv)==4: payload.pop("state_home",None)
-        if command=="initialize": result=initialize_workflow(state_home=home,**payload)
-        elif command=="discover": result=discover_workflow(state_home=home,**payload)
-        elif command=="load": result=load_workflow(state_home=home,**payload)
-        elif command=="confirm-brief": result=confirm_brief(state_home=home,**payload)
-        elif command=="checkpoint-candidate": result=checkpoint_candidate(state_home=home,**payload)
-        elif command=="record-check": result=record_check(state_home=home,**payload)
-        elif command=="apply": result=apply_updates(state_home=home,**payload)
-        elif command=="pause": result=pause_workflow(state_home=home,**payload)
-        elif command=="resume": result=resume_workflow(state_home=home,**payload)
-        elif command=="recover": result=recover_workflow(state_home=home,**payload)
-        elif command=="discard": result=discard_workflow(state_home=home,**payload)
-        else: result=deliver_workflow(state_home=home,**payload)
+        result=operations[command](state_home=home,**payload)
         digest=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
         base={"schema_version":1,"operation":command,"workflow_id":result.get("workflow_id"),"revision":result.get("revision",0),"lifecycle":result.get("lifecycle","active"),"identity":result.get("identity",{}),"state_digest":digest}
         if command=="record-check":
