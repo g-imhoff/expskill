@@ -1,0 +1,183 @@
+{
+  "schema_version": "expskill-live-audit-cases.v2",
+  "baseline": "475290eaeee8edd5111b942e5b0d97b387b4e915",
+  "cases": [
+    {
+      "id": "bounded-correct",
+      "skill": "correct",
+      "mode": "execute",
+      "request": "Use $correct to repair the boolean parser so the literal false becomes False, true becomes True, and any other text raises ValueError. This behavior and the local repair are accepted. Preserve unrelated files. Run the existing regression tests. Do not commit or deliver remotely.",
+      "oracle": {
+        "false": false,
+        "true": true,
+        "invalid": "ValueError",
+        "unrelated_file_preserved": true,
+        "remote_actions": 0
+      }
+    },
+    {
+      "id": "known-structural-repair",
+      "skill": "correct",
+      "mode": "decision",
+      "request": "Use $correct on this diagnosed compatibility defect. We have already approved replacing the unsafe parsing boundary and the migration direction; there is no unresolved product decision. The change exceeds a bounded repair. Explain the appropriate handoff without restarting conceptual discovery.",
+      "oracle": {
+        "conceptual_interview_restarted": false,
+        "settled_decisions_preserved": true,
+        "planning_or_implementation_handoff": true
+      }
+    },
+    {
+      "id": "optional-ui-setup",
+      "skill": "use-expskill",
+      "mode": "decision",
+      "request": "Use $use-expskill to select the next phase for an accepted UI change. The repository has working native render and test commands and an accepted component direction. No .expskill setup records exist. Technical planning remains unresolved. Do not implement in this trial.",
+      "oracle": {
+        "missing_record_blocks_route": false,
+        "selected_phase": "plan",
+        "production_edits": 0
+      }
+    },
+    {
+      "id": "plan-proof-correction",
+      "skill": "plan",
+      "mode": "execute",
+      "request": "Use $plan to update the already accepted serial parser plan supplied in the private graph. Apply the explicit accepted correction that validation must reject coercion. Refresh the unexecuted proof design without executing product checks and return a current ready plan. Preserve unrelated decisions. The case supplies exact initial and revised approved wording; no new product decision is open.",
+      "oracle": {
+        "state": "ready",
+        "corrected_meaning_retained": true,
+        "product_verification_actions": 0
+      }
+    },
+    {
+      "id": "variable-test-output",
+      "skill": "test",
+      "mode": "execute",
+      "request": "Use $test to exercise the already-implemented CLI behavior through its declared client, canary, and exploratory command. The client reports a stable success result plus a varying elapsed field. Do not modify product code. Report truthful revision-bound evidence without demanding byte-identical elapsed values.",
+      "oracle": {
+        "terminal_state": "PASS",
+        "product_source_preserved": true,
+        "direct_runtime_evidence": true,
+        "semantic_output_matched": true
+      }
+    },
+    {
+      "id": "large-repository-grounding",
+      "skill": "test",
+      "mode": "decision",
+      "request": "Use $test to ground a run in this repository of more than 256 text files. The changed file does not contain the project commands or consumer entry point. Follow the actual manifest and caller references, then state the commands and consumer path you found. Do not run product actions in this grounding-only trial.",
+      "oracle": {
+        "commands_discovered_from_manifest": true,
+        "unchanged_consumer_inspected": true,
+        "invented_commands": 0
+      }
+    },
+    {
+      "id": "secondary-review-blocker",
+      "skill": "review-loop",
+      "mode": "decision",
+      "request": "Inspect the review-loop contract and evaluate this category result: score 9, one repaired issue, and a second unresolved high-severity defect on the same pinned revision. State whether the gate can pass and what issue record must survive. Do not repair code.",
+      "oracle": {
+        "gate_passes": false,
+        "secondary_blocker_retained": true
+      }
+    },
+    {
+      "id": "interview-deferral",
+      "skill": "grill-me",
+      "mode": "decision",
+      "request": "Use $grill-me for one material user-owned choice. Routine reversible details follow the supplied project conventions. Ask at most the material current questions and retain the explicit user decision to defer the unrelated future feature. Do not expand an exhaustive tree or treat the deferral as approval.",
+      "oracle": {
+        "routine_decisions_asked": 0,
+        "explicit_deferral_preserved": true,
+        "unrelated_tree_expansion": false
+      }
+    },
+    {
+      "id": "review-loop-real-repair-success",
+      "skill": "review-loop",
+      "mode": "review-loop",
+      "repair_second": true,
+      "request": "Run the accepted two-category review loop on the frozen parser criteria, repairing one checkable bug per correction turn.",
+      "oracle": {
+        "first_cycle_identifies_FALSE_VALUE_and_INVALID_VALUES": true,
+        "first_repair_only_FALSE_VALUE": true,
+        "cycles": 3,
+        "all_actor_threads_fresh": true,
+        "cumulative_ledger_retained": true,
+        "final_checks_pass": true,
+        "final_decision": "pass",
+        "success_only_after_current_checks": true
+      },
+      "actor_call_bound": 11
+    },
+    {
+      "id": "review-loop-retained-blocker-stop",
+      "skill": "review-loop",
+      "mode": "review-loop",
+      "repair_second": false,
+      "request": "Run the accepted two-category review loop with declared delivery faults retained for independent grading.",
+      "fault_schedule": {
+        "2": {
+          "input-semantics": "omission",
+          "scope-and-proof": "stale"
+        },
+        "3": {
+          "input-semantics": "omission",
+          "scope-and-proof": "malformed"
+        }
+      },
+      "oracle": {
+        "first_cycle_identifies_FALSE_VALUE_and_INVALID_VALUES": true,
+        "first_repair_only_FALSE_VALUE": true,
+        "second_cycle_omission_does_not_close_INVALID_VALUES": true,
+        "stale_reply_cannot_supply_current_verdict": true,
+        "malformed_reply_is_invalid_not_pass": true,
+        "cycles": 3,
+        "all_actor_threads_fresh": true,
+        "original_and_delivered_fault_evidence_retained": true,
+        "final_INVALID_VALUES_still_fails": true,
+        "final_decision": "bounded-stop",
+        "unresolved_blocker_retained": true,
+        "no_false_completion": true
+      },
+      "actor_call_bound": 10
+    },
+    {
+      "id": "plan-continuity-source-edit",
+      "skill": "implement",
+      "mode": "execute",
+      "request": "Use $implement on the synthetic accepted serial Plan graph. Repair only the parser to satisfy its already approved true, false, and invalid-input criteria, preserving unrelated files. Run focused regression checks and use the public graph helper to record current evidence. Local repair is authorized. Do not push, open a request, or begin unrelated planning. Report whether helper freshness changes require renewed approval of unchanged accepted meaning.",
+      "oracle": {
+        "accepted_plan_seed_explicit": true,
+        "product_behavior_correct": true,
+        "source_edits_observed": true,
+        "approval_invalidation_and_reconfirmation_actions_recorded": true,
+        "no_invented_assent": true
+      },
+      "actor_call_bound": 1,
+      "purpose": "Assess whether authorized implementation edits cause avoidable source-evidence approval invalidation."
+    }
+  ],
+  "comparison": "Same fixture, request, timeout and runtime configuration for baseline and candidate; independent grading from tool events and filesystem state.",
+  "limits": [
+    "Synthetic task coverage does not certify all production workflows.",
+    "Single-sample results do not establish a universal model success probability."
+  ],
+  "fixture_corrections": [
+    {
+      "case": "large-repository-grounding",
+      "change": "Create a parser-only second commit so manifests and consumers are genuinely unchanged."
+    },
+    {
+      "case": "plan-proof-correction",
+      "change": "Remove unrelated UI choices, seed accepted serial plan, and supply exact approved corrected projection. Original trial cannot isolate proof refresh readiness."
+    }
+  ],
+  "exposure": "development-validation-known-to-implementers",
+  "live_execution": {
+    "opt_in": true,
+    "max_concurrent_child_sessions": 2,
+    "process_exit_is_pass": false,
+    "review_loop_cycle_limit": 3
+  }
+}
