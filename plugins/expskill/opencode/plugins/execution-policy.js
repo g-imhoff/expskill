@@ -501,9 +501,12 @@ async function actualTaskCaller(ctx, input) {
       timer = setTimeout(() => reject(new Error("execution-policy caller lookup timed out")), 3000);
     })]);
     if (!Array.isArray(response?.data)) throw new Error("execution-policy caller history is unavailable");
-    const matches = response.data.filter((message) => message?.info?.role === "assistant" && message.info.sessionID === input.sessionID && message.parts?.some((part) => part?.type === "tool" && part.tool === input.tool && part.sessionID === input.sessionID && part.callID === input.callID));
-    if (matches.length !== 1) throw new Error("execution-policy requires one actual caller tool part");
-    const info = matches[0].info;
+    const assistants = response.data.filter((message) => message?.info?.role === "assistant" && message.info.sessionID === input.sessionID);
+    const matches = assistants.filter((message) => Array.isArray(message.parts) && message.parts.some((part) => part?.type === "tool" && part.tool === input.tool && part.sessionID === input.sessionID && part.callID === input.callID));
+    if (matches.length > 1) throw new Error("execution-policy caller tool part is ambiguous");
+    const active = assistants.filter((message) => Number.isSafeInteger(message.info.time?.created) && message.info.time.created >= 0 && message.info.time.completed === undefined);
+    if (matches.length === 0 && active.length !== 1) throw new Error("execution-policy requires one active host assistant caller");
+    const info = (matches[0] || active[0]).info;
     const agent = info.agent || info.mode;
     if (typeof agent !== "string" || typeof info.path?.cwd !== "string") throw new Error("execution-policy caller identity is incomplete");
     return {agent, cwd: fs.realpathSync(info.path.cwd)};
@@ -620,6 +623,9 @@ export const ExecutionPolicyPlugin = async (_ctx) => {
       if (!TASK_TOOLS.has(input?.tool)) {
         return;
       }
+      const agent = requestedAgent(output?.args);
+      const evidenceClaim = typeof output?.args?.prompt === "string" && output.args.prompt.startsWith("EXPSKILL_PLAN_EVIDENCE ");
+      if (!isExpSkillAgent(agent) && !evidenceClaim) return;
       const caller = await actualTaskCaller(_ctx, input);
       if (caller?.agent === policy.service.caller_profile) {
         hookCall(input);
@@ -627,7 +633,6 @@ export const ExecutionPolicyPlugin = async (_ctx) => {
         return;
       }
       if (output?.args?.prompt?.startsWith("EXPSKILL_PLAN_EVIDENCE ")) throw new Error("execution-policy evidence dispatch requires the actual planner caller");
-      const agent = requestedAgent(output?.args);
       if (!isExpSkillAgent(agent)) {
         return;
       }
