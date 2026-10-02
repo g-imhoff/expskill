@@ -31,6 +31,14 @@ coordinator for graph updates, and a complete direct brief may run without a Pla
 
 Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plugins/expskill/content/scripts/plan_graph.py` is only the source-package locator).
 
+## Budget and review reuse
+
+Before any worker launch, count N unfinished accepted nodes and preflight at least `3N + 2` calls for one implementer and two judges per node plus the final two whole-branch judges. Include already spent calls, known optional research, retries, and correction allowances in the same run total. Respect the remaining host and run limits, including the standard 30-call implementation limit. Reserve the final two judge calls throughout the run. If the required work cannot fit, stop before production edits with the exact shortfall and a bounded execution option, never omit a gate or silently reset the counters.
+
+The launching coordinator keeps one cumulative run identifier and call, retry, elapsed-time, and in-flight totals across nodes, corrections, phase changes, resumed turns, and child conversations. Count each actual call once and reconcile child counts without double-counting. A new conversation or changed pin does not start a new budget. Recheck the remaining allowance before every dispatch. Host route-local limits are additional restrictions, not proof that this cumulative budget was enforced. With OpenCode, propagate one `EXPSKILL_RUN_ID` into every controlled conversation so observed profile-route dispatch counts and elapsed time persist across sessions and process restarts. This enforces only calls observed by that host hook. Generic agents and other providers still require the coordinator's reconciled totals, and must not be described as mechanically enforced. Never change the run identifier merely to reset spent calls. A bounded batch can finish only its accepted subset, with remaining work and spent calls carried forward, never claim the whole request complete.
+
+Reuse a valid review only when candidate and base pins, complete accepted criterion basis, review scope, evidence inputs, and reviewer independence are unchanged. Retain the original verdict and provenance. A review agent must not have implemented or edited the candidate and must not see a sibling judge's conclusion. Any changed input requires a new review of affected criteria. Whole-branch review may reuse a node verdict only when its complete scope and inputs actually coincide, never merely because the scores agree.
+
 ## Execute runnable nodes
 
 1. Make one cheap concurrency pass. Run independent nodes in parallel only when

@@ -101,6 +101,19 @@ class ImplementContractTests(unittest.TestCase):
             for phrase in ("missing or truncated criteria", "material boundary counterexamples", "production baseline", "cumulative regression obligations"):
                 self.assertIn(phrase, role)
 
+    def test_run_budget_reserves_required_judges_and_reuses_only_identical_inputs(self) -> None:
+        for phrase in (
+            "3n + 2",
+            "standard 30-call implementation limit",
+            "reserve the final two judge calls",
+            "same run total",
+            "changed pin does not start a new budget",
+            "never omit a gate or silently reset",
+            "reviewer independence are unchanged",
+            "must not have implemented or edited the candidate",
+        ):
+            self.assertIn(phrase, self.normalized)
+
     def test_remote_and_protected_branch_boundary_is_closed(self) -> None:
         for phrase in (
             "exact non-protected target branch",
