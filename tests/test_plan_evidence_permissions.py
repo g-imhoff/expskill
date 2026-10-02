@@ -21,17 +21,18 @@ class PlanEvidencePermissionsTests(unittest.TestCase):
     reserve = audit_tests.PlanAuditRecordsTests.reserve
     history = audit_tests.PlanAuditRecordsTests.history
     change_negative = audit_tests.PlanAuditRecordsTests.change_negative
-    def run_hook(self, purpose, ledger, dispatch_id, revision, *, agent='expskill-explorer', caller='expskill-planner', extra=None, repeat=False):
+    def run_hook(self, purpose, ledger, dispatch_id, revision, *, agent='expskill-explorer', caller='expskill-planner', extra=None, repeat=False, history=None, typed=True):
         envelope = {'schema_version': 'plan-evidence-dispatch.v1', 'purpose': purpose,
                     'ledger': str(ledger), 'dispatch_id': dispatch_id, 'reservation_revision': revision}
         args = {'subagent_type': agent, 'description': 'Bounded evidence service',
-                'prompt': 'EXPSKILL_PLAN_EVIDENCE ' + json.dumps(envelope) + '\nInspect only the reserved evidence brief.'}
+                'prompt': ('EXPSKILL_PLAN_EVIDENCE ' + json.dumps(envelope) + '\nInspect only the reserved evidence brief.') if typed else 'Inspect the assigned brief.'}
         args.update(extra or {})
         script = r'''
 const module = await import(process.env.HOOK);
 const args = JSON.parse(process.env.ARGS);
 const input = {tool:'task',sessionID:'planner-session',callID:'actual-call'};
-const client = {session:{messages:async () => ({data:[{info:{role:'assistant',agent:process.env.CALLER,sessionID:input.sessionID,path:{cwd:process.env.REPO}},parts:[{type:'tool',tool:'task',sessionID:input.sessionID,callID:input.callID}]}]})}};
+const data = process.env.HISTORY ? JSON.parse(process.env.HISTORY) : [{info:{role:'assistant',agent:process.env.CALLER,sessionID:input.sessionID,path:{cwd:process.env.REPO}},parts:[{type:'tool',tool:'task',sessionID:input.sessionID,callID:input.callID}]}];
+const client = {session:{messages:async () => {if(data==='unavailable') throw new Error('unrelated caller lookup should not run'); return {data};}}};
 let outcome;
 try {
  const hooks = await module.ExecutionPolicyPlugin({client});
@@ -47,6 +48,8 @@ console.log(JSON.stringify(outcome));
         env = os.environ.copy()
         env.update(HOOK=HOOK.as_uri(), EXPSKILL_HOME=str(ROOT), ARGS=json.dumps(args), CALLER=caller,
                    REPO=str(self.repo), REPEAT=str(repeat).lower())
+        if history is not None:
+            env['HISTORY'] = json.dumps(history)
         completed = subprocess.run([shutil.which('node'), '--input-type=module', '-e', script],
                                    text=True, capture_output=True, env=env, timeout=15)
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -156,3 +159,39 @@ console.log(JSON.stringify(outcome));
                 errors = []
                 _validate_opencode_agent_spec(Path(temporary), errors)
                 self.assertTrue(any('scoped explorer service' in error for error in errors), errors)
+
+    def active_caller(self, **changes):
+        info = {'role':'assistant','agent':'expskill-planner','sessionID':'planner-session',
+                'path':{'cwd':str(self.repo)},'time':{'created':123}}
+        info.update(changes)
+        return {'info':info,'parts':[]}
+
+    def test_current_tool_part_can_be_pending_without_blocking_reserved_audit(self):
+        graph = self.start()
+        reserved = self.reserve(graph)
+        accounting = reserved['accounting']
+        result = self.run_hook('plan-audit', accounting['locator'], 'first', accounting['revision'],
+                               history=[self.active_caller()])
+        self.assertTrue(result['allowed'], result)
+        self.assertIn(reserved['dispatch']['graph_snapshot']['path'], result['args']['prompt'])
+
+    def test_active_caller_fallback_rejects_wrong_session_user_completed_and_ambiguous_history(self):
+        graph = self.start()
+        accounting = self.reserve(graph)['accounting']
+        histories = ([self.active_caller(sessionID='another-session')],
+                     [self.active_caller(role='user')],
+                     [self.active_caller(time={'created':123,'completed':124})],
+                     [self.active_caller(), self.active_caller()])
+        for history in histories:
+            result = self.run_hook('plan-audit', accounting['locator'], 'first', accounting['revision'], history=history)
+            self.assertFalse(result['allowed'], result)
+        self.assertEqual(self.history()['spent_calls'], 1)
+
+    def test_unrelated_host_task_does_not_depend_on_current_tool_part(self):
+        result = self.run_hook('research', self.root / 'unused', 'unused', 1,
+                               agent='general', typed=False, history='unavailable')
+        self.assertTrue(result['allowed'], result)
+        permissions = json.loads((ROOT / 'plugins/expskill/opencode/agents.json').read_text())
+        rules = permissions['agents']['expskill-planner']['permission']['task']
+        effective = next(action for pattern, action in reversed(list(rules.items())) if pattern in ('*','general'))
+        self.assertEqual(effective, 'deny')
