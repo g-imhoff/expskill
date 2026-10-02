@@ -284,6 +284,9 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
     baseline = fixture(driver, target, definition)
     worktrees = module(content / "scripts/worktrees.py", "routed_probe_worktrees")
     design_tree = worktrees.create_worktree(target, baseline, "routed-probe", "design", state)
+    design_git_common = Path(driver.git(design_tree.path, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve(strict=True)
+    if design_git_common != (target / ".git").resolve(strict=True):
+        raise ProbeError("Design Git metadata is outside the disposable fixture")
     plan_helper = module(content / "scripts/plan_graph.py", "routed_probe_plan")
     design_helper = module(content / "scripts/design_state.py", "routed_probe_design")
     plan_root = state / "expskill/plan-graphs"
@@ -295,7 +298,12 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         "limits": {**definition["limits"], "actor_timeout_seconds": actor_timeout, "deadline_seconds": deadline_seconds},
         "claims": {"synthetic_answers_and_approval": True, "human_visual_approval": False, "autonomous_router_orchestration": False,
             "scope": "Harness schedules owners and executes authorized exact integration. Actors perform public helper operations. One known synthetic case, not production certification."},
-        "fixture": {"repository": str(target), "design_worktree": str(design_tree.path), "design_branch": design_tree.branch, "baseline": baseline}}
+        "fixture": {"repository": str(target), "design_worktree": str(design_tree.path), "design_branch": design_tree.branch, "baseline": baseline, "git_common_dir": str(design_git_common)},
+        "capability_scope": {"design_writer": {"sandbox": "danger-full-access", "filesystem_isolation": False,
+            "purpose": "Matches the authorized host context for disposable candidate Git mutations and native loopback preview. Role ownership, external-network prohibition and unrelated-write prohibition are instructions; the harness checks exact source/state integrity, not whole-host filesystem isolation."},
+            "plan_writer": {"sandbox": "workspace-write"},
+            "independent_plan_auditor": {"sandbox": "read-only"},
+            "design_recovery_reader": {"sandbox": "workspace-write", "product_read_only": "instruction policy plus exact worktree/HEAD/state checks", "additional_write_dirs": [str(design_root)], "purpose": "Public historical loader needs its private namespace lock; no Git mutation, proof command, approval or delivery is authorized."}}}
     deadline = time.monotonic() + deadline_seconds
     original_target = {name: digest((target / name).read_bytes()) for name in list(definition["fixture_files"]) + ["native_checks.py"]}
 
@@ -328,13 +336,29 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         before_plan, before_design = {"graphs": tree_pin(plan_root), "audits": tree_pin(audit_root)}, tree_pin(design_root)
         before_target = {path: digest((target / path).read_bytes()) for path in original_target}
         before_head, before_status = driver.git(target, "rev-parse", "HEAD"), driver.git(target, "status", "--porcelain")
+        before_design_head = driver.git(design_tree.path, "rev-parse", "HEAD")
+        before_design_tree = tree_pin(design_tree.path)
+        before_design_status = driver.git(design_tree.path, "status", "--porcelain", "--untracked-files=all")
+        recovery_reader = read_only and phase == "design"
+        actor_cwd = design_tree.path if phase == "design" else target
+        actor_state = state
+        actor_sandbox = "read-only" if read_only else "danger-full-access" if phase == "design" else "workspace-write"
+        if recovery_reader:
+            if driver.git(design_tree.path, "diff", "--name-only", "HEAD") or driver.git(design_tree.path, "diff", "--cached", "--name-only"):
+                raise ProbeError("Recovery reader requires a clean tracked candidate")
+            actor_cwd = state / "recovery-reader"
+            actor_cwd.mkdir(mode=0o700)
+            driver.git(actor_cwd, "init", "-b", "trial/recovery-reader")
+            actor_state = actor_cwd / "state"
+            actor_sandbox = "workspace-write"
         start = time.monotonic()
         report["actors"][name] = {"outcome": "reserved", "thread_ids": [], "timeout_seconds": allowance}
         persist()
-        actor = driver.run_actor(prompt=prompt, cwd=design_tree.path if phase == "design" else target,
-            state_home=state, evidence_dir=output / "actors" / name, timeout=allowance,
-            sandbox="read-only" if read_only else "workspace-write", live=True, cli=cli, infrastructure_retries=0,
-            persistent=not read_only, resume_from=resume)
+        actor = driver.run_actor(prompt=prompt, cwd=actor_cwd,
+            state_home=actor_state, evidence_dir=output / "actors" / name, timeout=allowance,
+            sandbox=actor_sandbox, live=True, cli=cli, infrastructure_retries=0,
+            persistent=not read_only, resume_from=resume,
+            additional_write_dirs=[design_root] if recovery_reader else [])
         report["actors"][name] = actor
         actor["elapsed_host_seconds"] = round(time.monotonic() - start, 3)
         persist()
@@ -344,6 +368,8 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
             raise ProbeError("A non-Plan owner changed canonical Plan state")
         if (phase != "design" or read_only) and tree_pin(design_root) != before_design:
             raise ProbeError("A non-Design owner changed canonical Design state")
+        if (phase != "design" or read_only) and (driver.git(design_tree.path, "rev-parse", "HEAD") != before_design_head or tree_pin(design_tree.path) != before_design_tree or driver.git(design_tree.path, "status", "--porcelain", "--untracked-files=all") != before_design_status):
+            raise ProbeError("A non-Design writer changed the candidate worktree or HEAD")
         if driver.git(target, "rev-parse", "HEAD") != before_head or driver.git(target, "status", "--porcelain") != before_status or {path: digest((target / path).read_bytes()) for path in original_target} != before_target:
             raise ProbeError("An actor changed the integration target")
         if actor["outcome"] != "completed-ungraded" or len(actor["thread_ids"]) != 1:
@@ -360,7 +386,7 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
             raise ProbeError("Actor did not bind the immutable accepted input")
         return actor, payload
 
-    common = f"Synthetic authorized development-validation case, not real human approval. Complete accepted input {accepted['path']}, byte digest {accepted['sha256']}. Framework snapshot {content}. Read your exact skill and skills/unslop/SKILL.md. No delegation, nested CLI, external network, publication, new dependency, push, framework edits, or private-state JSON edits. Use public helper operations. Preserve all criteria, non-goals and saved decisions. Return strict JSON input_digest, phase, status, workflow_id, revision, and canonical locator. Relay material questions, never infer approval. Both Git identities must be {IDENTITY}. Before EVERY commit, run git var GIT_AUTHOR_IDENT and git var GIT_COMMITTER_IDENT in the actual checkout and correct conflicting overrides. After committing verify saved identities with git show -s --format='%an <%ae> | %cn <%ce>' HEAD. No AI trailers."
+    common = f"Synthetic authorized development-validation case, not real human approval. Complete accepted input {accepted['path']}, byte digest {accepted['sha256']}. Framework snapshot {content}. Read your exact skill and skills/unslop/SKILL.md. No delegation, nested CLI, external network, publication, new dependency, push, framework edits, or private-state JSON edits. Use public helper operations. On a failed required operation stop immediately and return blocked JSON with the actual failure and last saved workflow revision; never run proof after a failed commit or checkpoint. Preserve all criteria, non-goals and saved decisions. Return strict JSON input_digest, phase, status, workflow_id, revision, and canonical locator. Relay material questions, never infer approval. Both Git identities must be {IDENTITY}. Before EVERY commit, run git var GIT_AUTHOR_IDENT and git var GIT_COMMITTER_IDENT in the actual checkout and correct conflicting overrides. After committing verify saved identities with git show -s --format='%an <%ae> | %cn <%ce>' HEAD. No AI trailers."
     try:
         if any(not callable(getattr(plan_helper, name, None)) for name in ("reserve_plan_audit", "record_plan_audit_result", "apply_plan_audit_result", "load_plan_audits")):
             raise ProbeError("Framework revision lacks required durable Plan audit operations")
@@ -421,7 +447,7 @@ def run_probe(*, output_root, revision, repository=ROOT, case_path=DEFAULT_CASE,
         if any(item["provenance"]["decision_reference"] != design_answer["decision_reference"] for item in design_state["approvals"].values()):
             raise ProbeError("Approval lacks the synthetic answer provenance")
         report["observations"]["delivery"] = {"receipt": {"path": str(receipt_path), "sha256": digest(receipt_bytes)}, "candidate_commit": candidate, "state_revision": design_state["revision"]}
-        _, recovered = dispatch("design-replacement", "design", common + f" Fresh read-only handoff recovery replaces completed thread {design_actor['thread_ids'][0]}. Load delivered immutable workflow {delivery['workflow_id']} through its helper and validate original receipt {receipt_path} against commit {candidate}, brief and artifacts. Never initialize, rewrite, approve or deliver again. Return input_digest, phase, status delivered, workflow_id, revision, delivery_receipt_path, replaced_thread_id.", read_only=True)
+        _, recovered = dispatch("design-replacement", "design", common + f" Fresh handoff recovery replaces completed thread {design_actor['thread_ids'][0]}. You have a non-product cwd and private namespace write access solely for the public loader lock; product read-only is an instruction obligation that the harness checks byte for byte. Load delivered immutable workflow {delivery['workflow_id']} through load_workflow with explicit state_home {state / 'expskill'}; XDG_STATE_HOME for this reader is separate. Validate original receipt {receipt_path} against immutable commit {candidate} in worktree {design_tree.path}, brief and artifacts. No product or state-record edits, Git mutation, proof commands, initialization, rewrite, approval or redelivery. Return input_digest, phase, status delivered, workflow_id, revision, delivery_receipt_path, replaced_thread_id.", read_only=True)
         if recovered.get("replaced_thread_id") != design_actor["thread_ids"][0] or recovered.get("workflow_id") != delivery["workflow_id"] or Path(recovered["delivery_receipt_path"]) != receipt_path or receipt_path.read_bytes() != receipt_bytes:
             raise ProbeError("Replacement did not preserve original handoff")
         audit_dispatch_id = "routed-probe-audit-1"

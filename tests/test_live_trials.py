@@ -103,6 +103,51 @@ class LiveActorTests(unittest.TestCase):
                 evidence_dir=self.root / "resumed", live=True, persistent=True, resume_from=initial)
         self.assertEqual(resumed["outcome"], "protocol-invalid")
 
+    def test_explicit_private_namespace_capability_is_retained_only_when_requested(self):
+        git_common = self.root / "fixture.git"
+        git_common.mkdir()
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events("retained-thread"), "stderr": "", "exit_code": 0, "timed_out": False}):
+            initial = self.actor(live=True, persistent=True, sandbox="workspace-write", additional_write_dirs=[git_common])
+            resumed = trials.run_actor(prompt="Continue same approved fixture scope.", cwd=self.root, state_home=self.root / "state",
+                evidence_dir=self.root / "resumed", live=True, persistent=True, sandbox="workspace-write", resume_from=initial,
+                additional_write_dirs=[git_common])
+        self.assertEqual(initial["argv"][:2], ["codex", "exec"])
+        self.assertEqual(initial["argv"].count("--add-dir"), 2)
+        self.assertIn(str(git_common), initial["argv"])
+        self.assertEqual(resumed["argv"], ["codex", "exec", "resume", "--ignore-user-config", "--json", "retained-thread", "-"])
+        self.assertEqual(resumed["transport"]["context"]["capabilities"], {"additional_write_dirs": [str(git_common)]})
+        for changes in ({"additional_write_dirs": []},):
+            with self.subTest(changes=changes), mock.patch.object(trials, "run_process_group") as process:
+                arguments = {"prompt": "Answer.", "cwd": self.root, "state_home": self.root / "state", "evidence_dir": self.root / "rejected",
+                    "live": True, "persistent": True, "sandbox": "workspace-write", "resume_from": initial,
+                    "additional_write_dirs": [git_common], **changes}
+                with self.assertRaises(ValueError):
+                    trials.run_actor(**arguments)
+                process.assert_not_called()
+
+    def test_read_only_actor_cannot_gain_explicit_writable_capability(self):
+        extra = self.root / "extra"
+        extra.mkdir()
+        for changes in ({"additional_write_dirs": [extra]},):
+            with self.subTest(changes=changes), mock.patch.object(trials, "run_process_group") as process:
+                with self.assertRaisesRegex(ValueError, "workspace-write"):
+                    self.actor(live=True, **changes)
+                process.assert_not_called()
+
+    def test_explicit_design_host_sandbox_does_not_change_defaults_and_is_resume_bound(self):
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events("design-thread"), "stderr": "", "exit_code": 0, "timed_out": False}):
+            design = self.actor(live=True, persistent=True, sandbox="danger-full-access")
+        self.assertEqual(design["runtime"]["sandbox"], "danger-full-access")
+        with mock.patch.object(trials, "run_process_group") as process:
+            with self.assertRaises(ValueError):
+                trials.run_actor(prompt="Continue.", cwd=self.root, state_home=self.root / "state", evidence_dir=self.root / "resume",
+                    live=True, persistent=True, sandbox="workspace-write", resume_from=design)
+            process.assert_not_called()
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events(), "stderr": "", "exit_code": 0, "timed_out": False}):
+            default = trials.run_actor(prompt="Read.", cwd=self.root, state_home=self.root / "state", evidence_dir=self.root / "default", live=True)
+        self.assertEqual(default["runtime"]["sandbox"], "read-only")
+        self.assertNotIn("capabilities", default["transport"]["context"])
+
     def test_infrastructure_retry_retains_original_and_retry_raw_evidence(self):
         first = {"stdout": json.dumps({"type": "error", "message": "HTTP 502 upstream failed"}) + "\n", "stderr": "", "exit_code": 1, "timed_out": False}
         second = {"stdout": events("offline-retry"), "stderr": "", "exit_code": 0, "timed_out": False}
