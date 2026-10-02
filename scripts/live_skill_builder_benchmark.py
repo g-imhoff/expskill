@@ -406,6 +406,13 @@ def run_probe(*, output_root, live=False, inject_defect=False, driver_path=DEFAU
     def judge(role, package, observations):
         pin = manifest(package)["digest"]
         prompt = f"You are a fresh independent read-only bounded {role}. Inspect the candidate at {package}, digest {pin}. Frozen functional criteria: {contract['path']}, SHA-256 {contract['sha256']}. Recorder observations: {observations['evidence']['path']}, SHA-256 {observations['evidence']['sha256']}. Self-inspect source and original raw actor events under {output_root / 'actors'} and execute checks as needed. No desired grade is supplied. Grade only the three named command criteria, not all 100 Skill Builder criteria or full Builder completion. Return only JSON with candidate_digest, criterion_results (each frozen case ID maps to a boolean), grade (pass or fail), evidence_digests, and reason. Do not edit source or delegate."
+        prompt += (
+            " evidence_digests must be a nonempty JSON array of strings, containing only the exact SHA-256 of the current recorder observations above. "
+            f"Required evidence_digests value: {json.dumps([observations['evidence']['sha256']])}. "
+            "Do not use a named object or include framework, contract, candidate, or raw-event hashes in evidence_digests. "
+            "Discuss other inspected evidence in reason, which must be a nonempty string. "
+            "Return one JSON object without code fences or surrounding prose."
+        )
         if role == "independent-verifier":
             commands = [shlex.join([sys.executable, str(package / "scripts/count_lines.py"), str(fixture_root / f"{case['case_id']}.txt")]) for case in cases]
             prompt += f" Independently execute each exact verification command in a separate tool operation without loops or batches: {json.dumps(commands)}."
