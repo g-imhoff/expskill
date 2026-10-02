@@ -60,11 +60,9 @@ Do not apply any setup requirement to an eligible `$correct` repair that
 restores accepted UI behavior without redesign. Direct `$setup-design` and
 `$setup-test` remain independently usable.
 
-When only one of technical planning or production UI
-approval is unresolved, select its normal standalone skill. When both are
-unresolved, use the `parallel-plan-design` execution-policy route. The user talks
-to Plan and Design directly in two CLI conversations the user opens. The
-router never opens them and never spawns subagents or background runs here.
+When only technical planning is unresolved, select standalone Plan. When technical planning is accepted and only UI approval remains, run Design in the invoking conversation with the default `direct` invocation mode. This deliberate selection is authorized by the explicit `$use-expskill` request and does not launch a separate CLI conversation or require another skill invocation. Preserve the complete accepted criteria and non-goals in its confirmed brief, bind the exact repository baseline and owned file scope, and require Design's confirmed brief, technical gates, and explicit approval before its direct delivery. Resolve its helper relative to the loaded Design skill as it instructs. Direct Design returns its summary and stable review entry without a candidate commit.
+
+When both are unresolved, use the `parallel-plan-design` execution-policy route. The user talks to Plan and Design directly in two CLI conversations the user opens. The router never opens them and never spawns subagents or background runs here.
 Ask the user to start both before waiting for either result. Both work from the
 same exact repository baseline and complete accepted input. Use a saved Concept Brief, an existing accepted specification, or the already-settled direct request with all accepted criteria, constraints, negative behavior, and non-goals. Do not invoke Brainstorm to materialize settled intent. Before launch, bind an existing file by exact path and digest, or copy the complete accepted direct input into one private read-only `accepted-input.json` outside the repository. Record its byte digest and the original user decision reference. This is a faithful input snapshot, never a new proposal, summary that drops criteria, or repository planning document. Both conversations receive the same immutable input locator and digest. The Plan conversation
 reads the unchanged target checkout and is the
