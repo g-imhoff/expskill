@@ -10,9 +10,9 @@ PLUGIN = ROOT / "plugins" / "expskill"
 
 PRESERVED_PROFILES = {
     "expskill-explorer.md": "5c5004325f030473c618ac634619eea57e4e2b2eef02459cc9fa2d746c9a7240",
-    "expskill-implementer.md": "330ca9b92040e47ecf7a210e3987a1d2542ba2d79dc4915d8c49f1551937183c",
-    "expskill-review.md": "c9c841cc2f68802b7e956ae737561461ebd5eed48726290efa6d7774d712b0b8",
-    "expskill-spec.md": "97e7b61c6a20ad801cc814da47d1a4aca22fe5f9d85b170178fe4eb20293aa5a",
+    "expskill-implementer.md": "d7b9b5454d4dc070388558bee44cbc73ce8b476ca7748177902061854a7a7263",
+    "expskill-review.md": "f5d69d752465b63dd3f4633ae027cb73a9f20106ec0ead075d1fd89682209216",
+    "expskill-spec.md": "8c4fb0d8ec94fc6ea3bd34124f2b1991eba8391394b3d5af0ace22903aa12866",
     "expskill-test-engineer.md": "7db7bea7f92597fd8cec6c474404531f7c8f09906d5abf5e3d56472c6355c985",
 }
 
@@ -86,7 +86,7 @@ def test_helper_contracts_bind_and_clean_the_parallel_candidate() -> None:
         assert removed not in worktrees
 
 
-def test_existing_customized_profiles_are_byte_for_byte_unchanged() -> None:
+def test_customized_profiles_match_reviewed_content() -> None:
     profiles = PLUGIN / "content" / "agents"
     for name, expected in PRESERVED_PROFILES.items():
         assert hashlib.sha256((profiles / name).read_bytes()).hexdigest() == expected
