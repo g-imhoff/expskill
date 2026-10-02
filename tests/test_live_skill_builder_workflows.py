@@ -56,7 +56,7 @@ class PublicCLI:
         return operation
 
 
-def offline_workflow(tmp_path, mode="create", transport=None):
+def offline_workflow(tmp_path, mode="create", transport=None, budget=None):
     definition = json.loads(runner.FIXTURE.read_text())
     definition["cases"] = [dict(case, case_id=f"case-{index}", partition=partition)
                            for index, (case, partition) in enumerate(zip(definition["cases"][:3],
@@ -67,7 +67,7 @@ def offline_workflow(tmp_path, mode="create", transport=None):
     sources = {name: {"path": str(base / path), "sha256": runner.digest((base / path).read_bytes())} for name, path in runner.SOURCES.items()}
     return runner.Workflow(driver=transport or driver, probe=probe, root=tmp_path / mode, helper=base / "scripts/run_state.py",
                            sources=sources, definition=definition, definition_evidence=evidence, mode=mode,
-                           budget=runner.Budget(64, 240, 30), cli="unused-no-model")
+                           budget=budget or runner.Budget(64, 240, 30), cli="unused-no-model")
 
 
 class ScriptedTransport:
@@ -76,6 +76,10 @@ class ScriptedTransport:
 
     def run_actor(self, *, prompt, cwd, state_home, evidence_dir, timeout, sandbox, live, cli, infrastructure_retries,
                   model=None, persistent=False, resume_from=None):
+        if not hasattr(self, "observed_calls"):
+            self.observed_calls = []
+        self.observed_calls.append({"prompt": prompt, "timeout": timeout, "infrastructure_retries": infrastructure_retries,
+                                    "role": Path(evidence_dir).name, "model": model})
         workflow = self.workflow
         role = Path(evidence_dir).name
         public = PublicCLI(workflow, role)
@@ -90,14 +94,14 @@ class ScriptedTransport:
                        {"type": "item.completed", "item": {"type": "command_execution", "command": shlex.join(argv), **result}}]
             reply = result["stdout"].strip()
         else:
-            for name in ("skill", "contracts", "rubric"):
-                events.append({"type": "item.completed", "item": {"type": "command_execution", "command": shlex.join(["cat", workflow.sources[name]["path"]]), "exit_code": 0}})
+            for source in workflow.role_sources(role).values():
+                events.append({"type": "item.completed", "item": {"type": "command_execution", "command": shlex.join(["cat", source["path"]]), "exit_code": 0}})
             before = set(workflow.current["artifact_index"]) if workflow.current else set()
             if role.startswith("research-"):
                 path = Path(cwd) / "offline-synthetic-research.json"
                 runner.save(path, {"origin": "scripted offline fixture; no live research", "question": role})
                 events.append({"type": "item.completed", "item": {"type": "web_search", "origin": "scripted offline fixture"}})
-                reply = json.dumps({"workflow_id": workflow.workflow_id, "stage": "baseline", "artifact_ids": [str(path)]})
+                reply = json.dumps({"workflow_id": None, "stage": "research-only", "artifact_ids": [str(path)]})
             else:
                 self.advance(public, role)
                 current = public.load_run(workflow_id=workflow.workflow_id)
@@ -291,6 +295,11 @@ def test_candidate_and_blind_research_packets_exclude_frozen_cases(tmp_path):
     research = json.loads(Path(workflow.actor_packet("research-0")["path"]).read_text())
     assert [case["case_id"] for case in candidate["cases"]] == ["case-1"]
     assert "cases" not in research and "actor_evidence_root" not in research
+    assert set(research) == {"role", "stage", "blind", "question", "maximum_primary_sources", "source_contract"}
+    assert research["blind"] is True
+    assert research["stage"] == "research-only"
+    assert "public-state" not in json.dumps(research)
+    assert "synthetic-user-decisions" not in json.dumps(research)
     decisions = json.loads(Path(candidate["synthetic_decisions"]["path"]).read_text())
     assert "cases" not in decisions
 
@@ -308,7 +317,85 @@ def test_budget_and_explicit_opt_in_reject_before_transport(tmp_path):
         runner.run_workflows(output_root=tmp_path / "never", framework_revision="0" * 40)
     with pytest.raises(runner.WorkflowError, match="ceilings"):
         runner.run_workflows(output_root=tmp_path / "never", framework_revision="0" * 40, live=True, maximum_actor_attempts=129)
+    with pytest.raises(runner.WorkflowError, match="hard ceilings"):
+        runner.run_workflows(output_root=tmp_path / "never", framework_revision="0" * 40, live=True, research_timeout=481)
     assert not (tmp_path / "never").exists()
+
+
+def test_role_source_requirements_preserve_owner_and_judge_reads_without_leaf_rubric(tmp_path):
+    workflow = offline_workflow(tmp_path)
+    for role in ("resolve-baseline", "synthesis-contract", "candidate-author", "trial-assessment-0", "verification-1", "finalize-1"):
+        assert set(workflow.role_sources(role)) == {"skill", "contracts"}
+    for role in ("freeze-evaluation", "pre-review-0", "scoring-0", "final-review-1", "invalidate-repair-1"):
+        assert set(workflow.role_sources(role)) == {"skill", "contracts", "rubric"}
+    research = workflow.role_sources("research-1")
+    assert set(research) == {"skill", "research-contracts"}
+    excerpt = research["research-contracts"]
+    parent = workflow.sources["contracts"]
+    assert excerpt["parent"] == parent
+    lines = Path(parent["path"]).read_bytes().splitlines(keepends=True)
+    sections = excerpt["sections"]
+    assert [section["heading"] for section in sections] == ["## Canonical digest serialization", "### Research pack"]
+    selected = [b"".join(lines[section["start_line"] - 1:section["end_line"]]) for section in sections]
+    assert [runner.digest(content) for content in selected] == [section["sha256"] for section in sections]
+    assert Path(excerpt["path"]).read_bytes() == b"\n".join(selected)
+    assert runner.digest(Path(excerpt["path"]).read_bytes()) == excerpt["sha256"]
+
+
+def test_blind_research_native_trace_rejects_actual_shared_load_from_v2():
+    value = json.loads((ROOT / "tests/fixtures/skill-builder/native-research-state-read-v2.json").read_text())
+    with pytest.raises(runner.WorkflowError, match="blind research"):
+        runner.require_blind_research_origin({"events": value["events"]}, helper=Path(value["helper"]),
+                                            state_root=Path(value["state_root"]), root=Path(value["root"]),
+                                            scratch=Path(value["scratch"]), sources={})
+
+
+@pytest.mark.parametrize("command", ["cat ../research-0/cards.json", "ls ..", "cat /private/workflow/actors/research-0/reply.json"])
+def test_blind_research_native_trace_rejects_parent_and_sibling_reads(command):
+    origin = {"events": [{"type": "item.completed", "item": {"type": "command_execution", "command": command, "exit_code": 0}}]}
+    with pytest.raises(runner.WorkflowError, match="blind research"):
+        runner.require_blind_research_origin(origin, helper=Path("/framework/helper.py"), state_root=Path("/private/workflow/actor-state/public-state"),
+                                            root=Path("/private/workflow"), scratch=Path("/private/workflow/actor-workspaces/research-1"), sources={})
+
+
+def test_blind_research_native_trace_accepts_its_pinned_sources_and_owned_cards(tmp_path):
+    scratch = tmp_path / "workflow/actor-workspaces/research-1"
+    scratch.mkdir(parents=True)
+    source = tmp_path / "framework/source"
+    source.parent.mkdir()
+    source.write_text("complete bounded source")
+    commands = [shlex.join(["cat", str(source)]), "python3 - <<'PY'\nfrom pathlib import Path\nPath('cards.json').write_text('{\"hostile_example\": \"../outside/input\", \"reference_path\": \"/etc/passwd\"}')\nPY", "shasum -a 256 cards.json"]
+    origin = {"events": [{"type": "item.completed", "item": {"type": "command_execution", "command": command, "exit_code": 0}} for command in commands]}
+    runner.require_blind_research_origin(origin, helper=tmp_path / "framework/helper.py", state_root=tmp_path / "workflow/actor-state/public-state",
+                                        root=tmp_path / "workflow", scratch=scratch, sources={"bounded": {"path": str(source)}})
+
+
+def test_research_prompt_caps_and_actual_scoped_reads_keep_owner_state_unpublished(tmp_path):
+    transport = ScriptedTransport()
+    budget = runner.Budget(96, 7200, 240, 480)
+    workflow = offline_workflow(tmp_path, transport=transport, budget=budget)
+    transport.workflow = workflow
+    workflow.stage("resolve-baseline", "Capture the baseline.", "baseline", ("initialize", "retain", "transition"))
+    before = workflow.public("load", {"workflow_id": workflow.workflow_id})
+    actor, origin, reply = workflow.actor("research-0", "Return only independently researched evidence cards.", model="gpt-5.6-luna")
+    call = transport.observed_calls[-1]
+    assert call["timeout"] == 480
+    assert transport.observed_calls[0]["timeout"] == 240
+    assert call["infrastructure_retries"] == 1
+    assert str(workflow.helper) not in call["prompt"]
+    assert str(workflow.state_root) not in call["prompt"]
+    assert str(workflow.decisions["path"]) not in call["prompt"]
+    assert workflow.sources["rubric"]["path"] not in call["prompt"]
+    assert workflow.sources["contracts"]["path"] not in call["prompt"]
+    assert sys.executable in call["prompt"]
+    assert "workflow_id=null" in call["prompt"]
+    assert reply["workflow_id"] is None and reply["stage"] == "research-only"
+    assert workflow.public("load", {"workflow_id": workflow.workflow_id}) == before
+    assert not (workflow.root / "research-actors.json").exists()
+    assert budget.calls == 2
+    assert workflow.observation["actors"][-1]["stage_timeout_seconds"] == 480
+    assert workflow.observation["actors"][-1]["effective_attempt_timeout_seconds"] == 480
+    probe.require_framework_reads(origin, workflow.role_sources("research-0"))
 
 
 def test_retained_controller_packet_tampering_blocks_next_actor(tmp_path):
