@@ -1236,6 +1236,47 @@ def issue_projection_presentation(*, graph: dict[str, Any], projection_id: str, 
     }
 
 
+def issue_projection_clarification(
+    *, graph: dict[str, Any], projection_id: str, text: str, classification: str, reason: str
+) -> dict[str, Any]:
+    if classification != "unchanged-meaning":
+        raise PlanGraphError("wording clarification requires explicit unchanged-meaning classification")
+    _text(reason, "wording clarification reason")
+    projections = _mapping(graph.get("projections"), "projections")
+    if projection_id not in projections:
+        raise PlanGraphError("unknown projection clarification target")
+    record = copy.deepcopy(_mapping(projections[projection_id], "projection clarification target"))
+    approved = record.get("presentation")
+    if not record.get("confirmed") or record.get("stale") or not record.get("presented") or approved is None:
+        raise PlanGraphError("wording clarification requires a current confirmed presentation")
+    approved = _validate_projection_presentation(approved)
+    presentation = issue_projection_presentation(graph=graph, projection_id=projection_id, text=text)
+    if approved.get("source_digest") != presentation["source_digest"]:
+        raise PlanGraphError("wording clarification cannot change graph meaning")
+    record["clarifications"] = _sequence(record.get("clarifications", []), "projection clarifications")
+    record["clarifications"].append({
+        "presentation": presentation,
+        "approved_presentation": copy.deepcopy(approved),
+        "classification": classification,
+        "trust": "coordinator-attestation",
+        "reason": reason,
+        "prior_graph_revision": _integer(graph.get("graph_revision"), "clarification prior graph revision", minimum=1),
+    })
+    return record
+
+
+def _validate_projection_presentation(presentation: object) -> dict[str, Any]:
+    presented = _mapping(presentation, "projection presented wording")
+    if set(presented) != {"text", "text_digest", "source_digest"}:
+        raise PlanGraphError("projection presentation fields are incomplete")
+    text = _text(presented.get("text"), "projection presented wording")
+    if presented.get("text_digest") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+        raise PlanGraphError("projection presentation text digest mismatch")
+    if not isinstance(presented.get("source_digest"), str) or not _HEX_KEY.fullmatch(presented["source_digest"]):
+        raise PlanGraphError("projection presentation source digest is invalid")
+    return presented
+
+
 def _validate_operation_receipt(
     receipt: object,
     *,
@@ -1310,6 +1351,7 @@ def issue_operation_receipt(
         "refresh-proof-plan",
         "regenerate-projection",
         "reconfirm-projection",
+        "clarify-projection",
         "refresh-audit",
         "resolve-finding",
         "record-design-join",
@@ -1948,7 +1990,7 @@ def _validate_graph_inner(
         projection = _mapping(raw, f"projection {projection_id}")
         _only(
             projection,
-            {"covers", "version", "decision_versions", "presented", "confirmed", "stale", "presentation",
+            {"covers", "version", "decision_versions", "presented", "confirmed", "stale", "presentation", "clarifications",
              "operation_receipt"},
             f"projection {projection_id}",
         )
@@ -1966,23 +2008,29 @@ def _validate_graph_inner(
         _boolean(projection.get("stale"), "projection staleness")
         presentation = projection.get("presentation")
         if presentation is not None:
-            presented = _mapping(presentation, "projection presented wording")
-            if set(presented) != {"text", "text_digest", "source_digest"}:
-                raise PlanGraphError("projection presentation fields are incomplete")
-            text = _text(presented.get("text"), "projection presented wording")
-            if presented.get("text_digest") != hashlib.sha256(text.encode("utf-8")).hexdigest():
-                raise PlanGraphError("projection presentation text digest mismatch")
-            if not isinstance(presented.get("source_digest"), str) or not _HEX_KEY.fullmatch(presented["source_digest"]):
-                raise PlanGraphError("projection presentation source digest is invalid")
+            presented = _validate_projection_presentation(presentation)
             if not projection["stale"] and presented["source_digest"] != _projection_source_digest(value, projection):
                 raise PlanGraphError("projection presentation graph meaning is stale")
+        for raw_clarification in _sequence(projection.get("clarifications", []), "projection clarifications"):
+            clarification = _mapping(raw_clarification, "projection clarification")
+            if set(clarification) != {"presentation", "approved_presentation", "classification", "trust", "reason", "prior_graph_revision"}:
+                raise PlanGraphError("projection clarification fields are incomplete")
+            current_wording = _validate_projection_presentation(clarification["presentation"])
+            approved_wording = _validate_projection_presentation(clarification["approved_presentation"])
+            if current_wording["source_digest"] != approved_wording["source_digest"]:
+                raise PlanGraphError("wording clarification cannot change graph meaning")
+            if clarification["classification"] != "unchanged-meaning" or clarification["trust"] != "coordinator-attestation":
+                raise PlanGraphError("wording clarification must retain its explicit classification and trust")
+            _text(clarification["reason"], "wording clarification reason")
+            if _integer(clarification["prior_graph_revision"], "clarification prior graph revision", minimum=1) >= value["graph_revision"]:
+                raise PlanGraphError("wording clarification revision is not prior")
         _validate_operation_receipt(
             projection.get("operation_receipt"),
             graph=value,
             target=("projections", projection_id),
             record=projection,
             record_version=projection_version,
-            allowed_operations={"regenerate-projection", "reconfirm-projection"},
+            allowed_operations={"regenerate-projection", "reconfirm-projection", "clarify-projection"},
         )
 
     all_records = set(evidence) | set(decisions) | work_ids | proof_ids | set(projections)
@@ -2397,7 +2445,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
         update = _mapping(row, "update")
         operation = update.get("op")
         typed = operation in {"refresh-evidence", "reconfirm-decision", "refresh-proof", "refresh-proof-plan",
-                              "regenerate-projection", "reconfirm-projection", "refresh-audit", "resolve-finding", "record-design-join"}
+                              "regenerate-projection", "reconfirm-projection", "clarify-projection", "refresh-audit", "resolve-finding", "record-design-join"}
         if operation != "set" and not typed:
             raise PlanGraphError("unsupported update operation")
         expected_fields = (
@@ -2441,7 +2489,7 @@ def _validated_updates(updates: object) -> tuple[list[dict[str, Any]], tuple[tup
             raise PlanGraphError("readiness-enabling fields require a typed operation")
         if typed:
             expected_family = {"refresh-evidence": "evidence", "reconfirm-decision": "decisions",
-                "refresh-proof": "proof", "refresh-proof-plan": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections",
+                "refresh-proof": "proof", "refresh-proof-plan": "proof", "regenerate-projection": "projections", "reconfirm-projection": "projections", "clarify-projection": "projections",
                 "refresh-audit": "audit", "resolve-finding": "audit", "record-design-join": "design_join"}[operation]
             expected_length = 1 if expected_family in {"audit", "design_join"} else 2
             if path[0] != expected_family or len(path) != expected_length:
@@ -2534,13 +2582,13 @@ def _validate_typed_repairs(
         expected_version = update.get("_record_version")
         actual_version = (
             record.get("version")
-            if operation in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection"}
+            if operation in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else record.get("record_version")
         )
         previous_version = (
             previous_record.get("version")
             if operation
-            in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection"}
+            in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else previous_record.get("record_version")
         )
         if expected_version != actual_version or expected_version != previous_version:
@@ -2557,6 +2605,7 @@ def _validate_typed_repairs(
                 "decision_versions", "presented", "confirmed", "stale", "presentation", "operation_receipt",
             },
             "reconfirm-projection": {"confirmed", "operation_receipt"},
+            "clarify-projection": {"clarifications", "operation_receipt"},
             "refresh-audit": {
                 "classification", "breadth", "complexity", "high_consequence", "reason",
                 "required", "graph_revision", "evidence", "independent", "constraints",
@@ -2643,6 +2692,25 @@ def _validate_typed_repairs(
                 or record.get("presentation") is None
             ):
                 raise PlanGraphError("projection reconfirmation is not current")
+        elif operation == "clarify-projection":
+            history = _sequence(record.get("clarifications", []), "projection clarifications", allow_empty=False)
+            previous_history = _sequence(previous_record.get("clarifications", []), "projection clarifications")
+            if (
+                not previous_record.get("confirmed") or previous_record.get("stale")
+                or not previous_record.get("presented") or previous_record.get("presentation") is None
+                or record.get("stale") or not record.get("confirmed")
+                or len(history) != len(previous_history) + 1 or history[:-1] != previous_history
+            ):
+                raise PlanGraphError("wording clarification requires a current confirmation and one appended history record")
+            clarification = _mapping(history[-1], "projection clarification")
+            prior_presentation = previous_record["presentation"]
+            if (
+                clarification.get("approved_presentation") != prior_presentation
+                or clarification.get("prior_graph_revision") != prior_revision
+                or clarification.get("presentation", {}).get("source_digest") != prior_presentation["source_digest"]
+                or prior_presentation["source_digest"] != _projection_source_digest(graph, record)
+            ):
+                raise PlanGraphError("wording clarification cannot change graph meaning or its retained approval")
         elif operation == "refresh-audit":
             if graph["audit"].get("required") and (
                 not graph["audit"].get("fresh")
@@ -2875,6 +2943,13 @@ def _apply_updates_locked(
 
     candidate = copy.deepcopy(current)
     _apply_to_graph(candidate, normalized)
+    for projection_id, record in current["projections"].items():
+        replacement = candidate["projections"].get(projection_id, {})
+        if record.get("clarifications", []) != replacement.get("clarifications", []) and not any(
+            update.get("_typed") == "clarify-projection" and update["path"] == ["projections", projection_id]
+            for update in normalized
+        ):
+            raise PlanGraphError("clarification history changes require the typed wording operation")
     for proof_id, record in candidate["proof"].items():
         previous_record = current["proof"].get(proof_id, {})
         was_executed = previous_record.get("execution_required", bool(previous_record.get("evidence")))
