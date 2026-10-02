@@ -8,6 +8,7 @@ import base64
 import binascii
 import hashlib
 import fcntl
+import inspect
 import json
 import os
 import re
@@ -1642,29 +1643,24 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("invalidated artifact identifiers are not deterministic")
 
 
+_IDENTITY_REQUEST_PROPERTIES = {
+    "host_identity": ("kind", "canonical_id", "locator", "discovery_evidence"),
+    "target_identity": ("requested", "canonical", "name", "invocation_token", "locator"),
+    "authority": ("reads", "writes", "delegation", "candidate_effects", "delivery_effects"),
+}
+
+
 def _identity_records(
     host_identity: object, target_identity: object, authority: object
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     host = _nonempty_mapping(host_identity, "host identity")
     target = _nonempty_mapping(target_identity, "target identity")
     granted = _nonempty_mapping(authority, "authority")
-    if set(host) != {"kind", "canonical_id", "locator", "discovery_evidence"}:
+    if set(host) != set(_IDENTITY_REQUEST_PROPERTIES["host_identity"]):
         raise RunStateError("host identity schema is incomplete")
-    if set(target) != {
-        "requested",
-        "canonical",
-        "name",
-        "invocation_token",
-        "locator",
-    }:
+    if set(target) != set(_IDENTITY_REQUEST_PROPERTIES["target_identity"]):
         raise RunStateError("target identity schema is incomplete")
-    if set(granted) != {
-        "reads",
-        "writes",
-        "delegation",
-        "candidate_effects",
-        "delivery_effects",
-    }:
+    if set(granted) != set(_IDENTITY_REQUEST_PROPERTIES["authority"]):
         raise RunStateError("authority schema is incomplete")
     if any(not isinstance(host[field], str) or not host[field] for field in ("kind", "canonical_id", "locator")):
         raise RunStateError("host identity contains empty text")
@@ -7196,158 +7192,159 @@ def _cli_json() -> dict[str, Any]:
     return value
 
 
+CLI_OPERATIONS = {
+    "initialize": initialize_run,
+    "discover": discover_run,
+    "load": load_run,
+    "snapshot": snapshot_target,
+    "retain": retain_artifact,
+    "transition": transition_run,
+    "invalidate": invalidate_run,
+    "pause": pause_run,
+    "resume": resume_run,
+    "recover": recover_run,
+    "finalize": finalize_run,
+    "deliver": record_delivery,
+    "cleanup-authority": record_cleanup_authority,
+    "cleanup": cleanup_run,
+    "activate-next": activate_next_target,
+}
+_CLI_ENCODED_FIELDS = {
+    "retain": {"files": ("files_base64", "mapping")},
+    "deliver": {
+        "authority_event": ("authority_event_base64", "bytes"),
+        "evidence_files": ("evidence_files_base64", "mapping"),
+    },
+    "cleanup-authority": {"authority_event": ("authority_event_base64", "bytes")},
+}
+_CLI_FLAG_PARAMETERS = {"state_root", "acknowledge_cleanup"}
+
+
+def describe_command(command: str) -> dict[str, Any]:
+    if command not in CLI_OPERATIONS:
+        raise RunStateError(f"unknown CLI operation: {command}")
+    encoded = _CLI_ENCODED_FIELDS.get(command, {})
+    fields: dict[str, dict[str, Any]] = {}
+    required: list[str] = []
+    optional: list[str] = []
+    for name, parameter in inspect.signature(CLI_OPERATIONS[command]).parameters.items():
+        if name.startswith("_") or name in _CLI_FLAG_PARAMETERS:
+            continue
+        wire_name = encoded[name][0] if name in encoded else name
+        is_required = parameter.default is inspect.Parameter.empty or name in encoded
+        entry: dict[str, Any] = {"required": is_required, "type": str(parameter.annotation)}
+        if name in encoded:
+            entry["type"] = "object of strings" if encoded[name][1] == "mapping" else "string"
+            entry["encoding"] = "strict base64 values keyed by run-relative path" if encoded[name][1] == "mapping" else "strict base64 encoding of exact raw bytes"
+        elif command == "snapshot":
+            entry["type"] = "string (absolute target path)"
+        if not is_required:
+            entry["default"] = parameter.default
+        if name in _IDENTITY_REQUEST_PROPERTIES:
+            entry["required_properties"] = list(_IDENTITY_REQUEST_PROPERTIES[name])
+            entry["additional_properties"] = False
+        fields[wire_name] = entry
+        (required if is_required else optional).append(wire_name)
+    result: dict[str, Any] = {
+        "schema_version": "skill-builder-cli-contract.v1",
+        "operation": command,
+        "input": "one strict JSON object on stdin; duplicate keys and unknown fields are rejected",
+        "required_fields": required,
+        "optional_fields": optional,
+        "fields": fields,
+        "required_flags": ["--yes"] if command == "cleanup" else [],
+        "option_order": "--state-root PATH and --yes may appear before or after the operation; request fields belong only in JSON stdin",
+        "usage": f"python3 /absolute/loaded-skill/scripts/run_state.py {command} [--state-root /absolute/isolated-state]" + (" --yes" if command == "cleanup" else "") + " < /absolute/request.json",
+        "description_usage": f"python3 /absolute/loaded-skill/scripts/run_state.py describe {command}; no stdin, state or target access",
+        "state_access": "target snapshot read" if command == "snapshot" else "validated private-state operation",
+        "status_codes": {"success": 0, "domain_error": 1, "usage_error": 2},
+        "success_output": "one canonical JSON value; mutations bind their new receipt, load returns the validated index, discover returns its existing receipt locator, and snapshot returns the target manifest",
+        "failure_output": "error text on stderr; no success JSON; a failed gate never authorizes advancement",
+        "validation": "Field presence alone is insufficient. Nested payloads, current stage, receipt sequence, authority, digests and mode evidence remain subject to the existing domain validators and artifact contracts.",
+        "bounds": {"cli_input_bytes": MAX_CLI_JSON_BYTES, "artifact_items": MAX_ARTIFACT_ITEMS, "artifact_bytes": MAX_ARTIFACT_BYTES},
+    }
+    if command in {"initialize", "activate-next"}:
+        result["mode_requirements"] = {"create": ["absence_evidence", "overlap_map"], "improve": ["target_manifest"]}
+        result["mode_values"] = ["create", "improve"]
+    if command == "transition":
+        result["transitions"] = {
+            event: {"source": source, "destination": destination, "artifact_types": list(_EVENT_ARTIFACT_TYPES[event])}
+            for event, (source, destination) in _STAGE_TRANSITIONS.items()
+        }
+    if command == "invalidate":
+        result["change_kinds"] = {name: rule["destination"] for name, rule in _INVALIDATION_RULES.items()}
+    if command == "retain":
+        result["artifact_types"] = sorted(_ARTIFACT_TYPES)
+    if "workflow_id" in fields:
+        fields["workflow_id"]["format"] = "32 lowercase hexadecimal characters from the initialize result"
+    if "expected_sequence" in fields:
+        fields["expected_sequence"]["format"] = "nonnegative integer equal to current load.head_sequence; refresh after each successful mutation"
+    return result
+
+
+def _decode_cli_fields(command: str, payload: dict[str, Any]) -> dict[str, Any]:
+    for name, (wire_name, kind) in _CLI_ENCODED_FIELDS.get(command, {}).items():
+        encoded = payload.pop(wire_name)
+        if kind == "mapping":
+            if not isinstance(encoded, dict) or any(not isinstance(path, str) or not isinstance(value, str) for path, value in encoded.items()):
+                raise RunStateError(f"{command} requires a {wire_name} object of base64 strings")
+        elif not isinstance(encoded, str):
+            raise RunStateError(f"{command} requires a {wire_name} base64 string")
+        try:
+            payload[name] = {path: base64.b64decode(value, validate=True) for path, value in encoded.items()} if kind == "mapping" else base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise RunStateError(f"{command} {wire_name} contains invalid base64") from error
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
+    descriptions = {command: describe_command(command) for command in CLI_OPERATIONS}
     parser = argparse.ArgumentParser(
-        description=(
-            "Operate private Skill Builder run state. JSON payloads are read from "
-            "stdin. --state-root is for isolated tests only. Raw retain payloads "
-            f"are bounded to {MAX_ARTIFACT_ITEMS} items and {MAX_ARTIFACT_BYTES} bytes."
-        ),
+        add_help=False,
+        description="Operate private Skill Builder run state. Use describe OPERATION or OPERATION --help for exact JSON request fields without reading or writing state. --state-root is for isolated tests only.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "request schemas (one strict JSON object on stdin):\n"
-            "  initialize request: host_identity, target_identity, mode, authority, "
-            "and mode evidence, with an optional queue\n"
-            "  retain request: workflow_id, expected_sequence, artifact_id, "
-            "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
-            "  transition request: workflow_id, expected_sequence, event, "
-            "destination_stage, artifact_ids, and optional authority_event_digest\n"
-            "  deliver request: workflow_id, expected_sequence, delivery, "
-            "authority_event_digest, authority_event_base64, evidence_files_base64\n"
-            "  cleanup-authority request: workflow_id, expected_sequence, "
-            "authority_event_digest, authority_event_base64, actor\n"
-            "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
-            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence"
+        epilog="request schemas (one strict JSON object on stdin):\n" + "\n".join(
+            f"  {command} request: required {', '.join(value['required_fields'])}; optional {', '.join(value['optional_fields']) or 'none'}"
+            for command, value in descriptions.items()
         ),
     )
-    parser.add_argument(
-        "command",
-        choices=(
-            "initialize",
-            "discover",
-            "load",
-            "snapshot",
-            "retain",
-            "transition",
-            "invalidate",
-            "pause",
-            "resume",
-            "recover",
-            "finalize",
-            "deliver",
-            "cleanup-authority",
-            "cleanup",
-            "activate-next",
-        ),
-    )
-    parser.add_argument(
-        "--state-root",
-        type=Path,
-        help="explicit absolute isolated state root (tests only)",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="explicitly acknowledge destructive cleanup of the exact live run",
-    )
+    parser.add_argument("command", nargs="?", choices=(*CLI_OPERATIONS, "describe"))
+    parser.add_argument("operation", nargs="?", choices=tuple(CLI_OPERATIONS), help="operation to describe; valid only after describe")
+    parser.add_argument("--state-root", type=Path, help="explicit absolute isolated state root (tests only)")
+    parser.add_argument("--yes", action="store_true", help="explicitly acknowledge destructive cleanup of the exact live run")
+    parser.add_argument("-h", "--help", action="store_true", help="show generic help or the selected operation's exact request contract")
     args = parser.parse_args(argv)
+    if args.command != "describe" and args.operation is not None:
+        parser.error("only describe accepts an operation argument")
+    if args.command == "describe" or args.help and args.command:
+        result = descriptions[args.operation] if args.command == "describe" and args.operation else descriptions[args.command] if args.command != "describe" else {"schema_version": "skill-builder-cli-catalog.v1", "state_access": "none", "operations": descriptions}
+        sys.stdout.buffer.write(canonical_json_bytes(result))
+        return 0
+    if args.help:
+        parser.print_help()
+        return 0
+    if args.command is None:
+        parser.error("an operation is required; use --help or describe")
     if args.command == "cleanup" and not args.yes:
         parser.error("cleanup requires --yes")
     try:
         payload = _cli_json()
-        state_root = args.state_root
-        if args.command == "initialize":
-            result = initialize_run(state_root=state_root, **payload)
-        elif args.command == "discover":
-            result = discover_run(state_root=state_root, **payload)
-        elif args.command == "load":
-            result = load_run(state_root=state_root, **payload)
-        elif args.command == "snapshot":
-            if set(payload) != {"target"} or not isinstance(payload["target"], str):
+        description = descriptions[args.command]
+        unknown = set(payload) - set(description["fields"])
+        if unknown:
+            raise RunStateError("unsupported request fields: " + ", ".join(sorted(unknown)))
+        missing = set(description["required_fields"]) - set(payload)
+        if missing:
+            raise RunStateError("missing required request fields: " + ", ".join(sorted(missing)))
+        payload = _decode_cli_fields(args.command, payload)
+        if args.command == "snapshot":
+            if not isinstance(payload["target"], str):
                 raise RunStateError("snapshot requires one target path")
-            result = snapshot_target(Path(payload["target"]))
-        elif args.command == "retain":
-            encoded = payload.pop("files_base64", None)
-            if not isinstance(encoded, dict) or any(
-                not isinstance(name, str) or not isinstance(value, str)
-                for name, value in encoded.items()
-            ):
-                raise RunStateError("retain requires a files_base64 object")
-            files: dict[str, bytes] = {}
-            for name, value in encoded.items():
-                try:
-                    files[name] = base64.b64decode(value, validate=True)
-                except (ValueError, binascii.Error) as error:
-                    raise RunStateError("retained artifact contains invalid base64") from error
-            result = retain_artifact(state_root=state_root, files=files, **payload)
-        elif args.command == "transition":
-            result = transition_run(state_root=state_root, **payload)
-        elif args.command == "invalidate":
-            result = invalidate_run(state_root=state_root, **payload)
-        elif args.command == "pause":
-            result = pause_run(state_root=state_root, **payload)
-        elif args.command == "resume":
-            result = resume_run(state_root=state_root, **payload)
-        elif args.command == "recover":
-            result = recover_run(state_root=state_root, **payload)
-        elif args.command == "finalize":
-            result = finalize_run(state_root=state_root, **payload)
-        elif args.command == "deliver":
-            encoded_authority = payload.pop("authority_event_base64", None)
-            encoded_evidence = payload.pop("evidence_files_base64", None)
-            if not isinstance(encoded_authority, str) or not isinstance(
-                encoded_evidence, dict
-            ) or any(
-                not isinstance(name, str) or not isinstance(value, str)
-                for name, value in encoded_evidence.items()
-            ):
-                raise RunStateError(
-                    "deliver requires authority_event_base64 and an "
-                    "evidence_files_base64 object"
-                )
-            try:
-                authority_event = base64.b64decode(
-                    encoded_authority, validate=True
-                )
-                evidence_files = {
-                    name: base64.b64decode(value, validate=True)
-                    for name, value in encoded_evidence.items()
-                }
-            except (ValueError, binascii.Error) as error:
-                raise RunStateError("delivery evidence contains invalid base64") from error
-            result = record_delivery(
-                state_root=state_root,
-                authority_event=authority_event,
-                evidence_files=evidence_files,
-                **payload,
-            )
-        elif args.command == "cleanup-authority":
-            encoded_authority = payload.pop("authority_event_base64", None)
-            if not isinstance(encoded_authority, str):
-                raise RunStateError(
-                    "cleanup-authority requires authority_event_base64"
-                )
-            try:
-                authority_event = base64.b64decode(
-                    encoded_authority, validate=True
-                )
-            except (ValueError, binascii.Error) as error:
-                raise RunStateError(
-                    "cleanup-authority event contains invalid base64"
-                ) from error
-            result = record_cleanup_authority(
-                state_root=state_root,
-                authority_event=authority_event,
-                **payload,
-            )
-        elif args.command == "activate-next":
-            result = activate_next_target(state_root=state_root, **payload)
+            result = CLI_OPERATIONS[args.command](Path(payload["target"]))
         else:
-            result = cleanup_run(
-                state_root=state_root,
-                acknowledge_cleanup=True,
-                **payload,
-            )
+            if args.command == "cleanup":
+                payload["acknowledge_cleanup"] = True
+            result = CLI_OPERATIONS[args.command](state_root=args.state_root, **payload)
         sys.stdout.buffer.write(canonical_json_bytes(result))
         return 0
     except (RunStateError, TypeError, KeyError, OSError) as error:
