@@ -1238,10 +1238,10 @@ class ContractTests(unittest.TestCase):
         self.assertFalse((PLUGIN_ROOT / "content" / "scripts" / "read_only_agent.py").exists())
         self.assertFalse((ROOT / "tests" / "test_read_only_agent.py").exists())
 
-    def test_repository_docs_describe_context_free_named_agent_isolation(self) -> None:
+    def test_shipped_skills_describe_context_free_named_agent_isolation(self) -> None:
         for relative_path in (
-            "docs/specs/2026-08-09-expskill-design.md",
-            "docs/plans/2026-08-09-expskill-implementation.md",
+            "plugins/expskill/content/skills/implement/SKILL.md",
+            "plugins/expskill/content/skills/skill-builder/SKILL.md",
         ):
             body = (ROOT / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
