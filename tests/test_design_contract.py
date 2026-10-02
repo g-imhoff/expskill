@@ -246,3 +246,19 @@ class DesignContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_native_preview_and_local_fallback_preserve_explicit_hosted_obligations():
+    body = _body(DESIGN / "SKILL.md")
+    reference = (DESIGN / "references" / "yodea-preview.md").read_text()
+    for clause in (
+        "Use the project's native stack",
+        "Do not introduce React, Vite, or another framework only to satisfy a preview host",
+        "publication is forbidden, unavailable, incompatible",
+        "It does not complete a separately requested hosted-publication obligation",
+        "exact launch command",
+        "transfer the exact artifacts before removing the worktree",
+    ):
+        assert clause in body
+    assert "use native local review" in reference
+    assert "on every Design run" not in reference
