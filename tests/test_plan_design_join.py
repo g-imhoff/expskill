@@ -75,29 +75,8 @@ def required_graph() -> dict[str, object]:
 def refresh_audit(module, repo: Path, state_home: Path, graph: dict) -> None:
     audit = copy.deepcopy(graph["audit"])
     audit.update(fresh=True, independent=True, graph_revision=graph["graph_revision"])
-    receipt = module.issue_operation_receipt(
-        operation="refresh-audit",
-        workflow_id=graph["workflow_id"],
-        prior_graph_revision=graph["graph_revision"],
-        target=["audit"],
-        record_version=audit["record_version"],
-        value=audit,
-    )
-    module.apply_updates(
-        repo,
-        BRANCH,
-        graph["workflow_id"],
-        graph["graph_revision"],
-        [{
-            "op": "refresh-audit",
-            "path": ["audit"],
-            "value": audit,
-            "prior_graph_revision": graph["graph_revision"],
-            "record_version": audit["record_version"],
-            "receipt": receipt,
-        }],
-        state_home,
-    )
+    from tests.plan_audit_fixture import refresh_audit as fixture_refresh
+    fixture_refresh(module, repo, BRANCH, graph, audit, state_home)
 
 
 def join_update(module, graph: dict, candidate: str, **overrides):
@@ -208,7 +187,11 @@ def test_required_design_join_blocks_until_current_approved_receipt(tmp_path: Pa
         [join_update(module, graph, candidate)],
         state_home,
     )
-    assert result.state == "ready"
+    assert result.state == "stale"
+    joined = module.load_workflow(repo, BRANCH, state_home)
+    refresh_audit(module, repo, state_home, joined)
+    assert module.load_workflow(repo, BRANCH, state_home)["lifecycle"]["derived_state"] == "ready"
+    assert module.load_plan_audits(repo, BRANCH, joined["workflow_id"], state_home)["spent_calls"] == 2
 
 
 def test_wording_clarification_preserves_decision_audit_and_design_join(tmp_path: Path) -> None:
@@ -229,6 +212,8 @@ def test_wording_clarification_preserves_decision_audit_and_design_join(tmp_path
     graph = module.load_workflow(repo, BRANCH, state_home)
     module.apply_updates(repo, BRANCH, graph["workflow_id"], graph["graph_revision"],
         [join_update(module, graph, design_commit(repo, baseline))], state_home)
+    joined = module.load_workflow(repo, BRANCH, state_home)
+    refresh_audit(module, repo, state_home, joined)
     before = module.load_workflow(repo, BRANCH, state_home)
     record = module.issue_projection_clarification(graph=before, projection_id="U1",
         text="Invalid configuration is rejected before startup; valid configuration remains compatible.",
@@ -369,10 +354,18 @@ def test_integrated_design_candidate_survives_isolated_branch_cleanup(tmp_path: 
         state_home,
     )
 
+    joined = module.load_workflow(repo, BRANCH, state_home)
+    refresh_audit(module, repo, state_home, joined)
+    before = module.load_workflow(repo, BRANCH, state_home)
     git(repo, "merge", "--ff-only", candidate)
     git(repo, "branch", "-d", "expskill/design/ui")
 
     loaded = module.load_workflow(repo, BRANCH, state_home)
+    assert loaded["audit"]["fresh"] is True
+    assert loaded["lifecycle"]["derived_state"] == "ready"
+    history = module.load_plan_audits(repo, BRANCH, loaded["workflow_id"], state_home)
+    assert history["spent_calls"] == 2
+    assert loaded["audit"] == before["audit"]
     assert loaded["design_join"]["fresh"] is True
     assert loaded["design_join"]["receipt"]["candidate_commit"] == candidate
 

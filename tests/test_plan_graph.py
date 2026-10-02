@@ -409,6 +409,9 @@ class PlanGraphRuntimeTests(unittest.TestCase):
         *,
         state_home: Path | None = None,
     ) -> object:
+        if operation == "refresh-audit" and value.get("independent"):
+            from tests.plan_audit_fixture import refresh_audit
+            return refresh_audit(self.helper, self.repo, "feature/config-validation", graph, value, state_home or self.state_home)
         version_field = (
             "version"
             if operation
