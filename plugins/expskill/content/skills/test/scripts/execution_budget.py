@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +14,89 @@ HARD_ACTIONS = 64
 HARD_WAVES = 16
 HARD_SECONDS = 3600
 FIELDS = {"semantic_actions_max", "waves_max", "usable_budget_seconds", "rationale", "waves"}
+SCOPE_FIELDS = ("workflow_id", "accepted_behavior", "scope", "material_oracles", "exemption_grounding_artifact_ids")
+
+
+def _private_json(path: Path) -> dict[str, object]:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077 or metadata.st_size > 2_000_000:
+        raise ValueError("successor evidence must be a bounded private owned file")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("successor evidence must be an object")
+    return value
+
+
+def retained_files(root: Path) -> dict[str, str]:
+    files = {}
+    for path in sorted(root.rglob("*")):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("successor history cannot contain symlinks")
+        if path.is_file() and path != root / "successor.json":
+            if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise ValueError("successor history must remain private and owned")
+            files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
+
+
+def successor_context(charter: dict[str, object], root: Path, seen: set[Path] | None = None) -> dict[str, object]:
+    seen = set() if seen is None else seen
+    if root in seen or len(seen) >= HARD_ACTIONS:
+        raise ValueError("successor history is cyclic or exceeds the bounded chain")
+    seen.add(root)
+    bootstrap = json.loads((root / "bootstrap.json").read_text()) if (root / "bootstrap.json").is_file() else {}
+    link = bootstrap.get("successor")
+    if link is None:
+        return {"actions_used": 0, "rerun_action_ids": []}
+    _private_json(root / "bootstrap.json")
+    fields = {"predecessor_root", "reason", "classification", "correction", "source_files"}
+    if isinstance(link, dict) and link.get("reason") == "test-side-commit":
+        fields.add("test_owned_paths")
+    if not isinstance(link, dict) or set(link) != fields:
+        raise ValueError("successor binding fields are invalid")
+    predecessor = Path(str(link["predecessor_root"]))
+    if not predecessor.is_absolute() or predecessor.parent != root.parent or predecessor.is_symlink() or predecessor == root:
+        raise ValueError("successor must retain a canonical predecessor in the same worktree")
+    if link["reason"] not in {"recovery", "test-side-commit"} or link["classification"] not in {"test-system-defect", "environment-blocker", "test-side-commit"} or not isinstance(link["correction"], str) or not link["correction"].strip():
+        raise ValueError("successor requires a classified recovery and correction")
+    if retained_files(predecessor) != link["source_files"]:
+        raise ValueError("retained predecessor evidence changed after succession")
+    closure = _private_json(predecessor / "successor.json")
+    if closure != {"root": str(root), "run_id": root.name}:
+        raise ValueError("predecessor closure does not bind this successor")
+    previous = _private_json(predecessor / "charter.json")
+    ledger = _private_json(predecessor / "ledger.json")
+    opening = _private_json(predecessor / "bootstrap.json")
+    if previous.get("repository") != charter.get("repository") or previous.get("branch") != charter.get("branch"):
+        raise ValueError("successor must preserve repository and branch")
+    if link["reason"] == "recovery" and (previous.get("head") != charter.get("head") or link["classification"] == "test-side-commit"):
+        raise ValueError("recovery successor must preserve HEAD and classify the failed cause")
+    if link["reason"] == "test-side-commit" and (previous.get("head") == charter.get("head") or not isinstance(link["test_owned_paths"], list) or not link["test_owned_paths"] or bootstrap.get("head") != charter.get("head")):
+        raise ValueError("test-side commit successor must bind its changed HEAD and declared owned paths")
+    if any(previous.get(field) != charter.get(field) for field in SCOPE_FIELDS) or for_charter(previous) != for_charter(charter):
+        raise ValueError("successor cannot change accepted scope or reset the execution budget")
+    if bootstrap.get("started_at") != opening.get("started_at"):
+        raise ValueError("successor cannot reset the original start time")
+    entries = ledger.get("entries")
+    if ledger.get("run_id") != predecessor.name or not isinstance(entries, list) or any(not isinstance(entry, dict) or not isinstance(entry.get("action_id"), str) for entry in entries):
+        raise ValueError("retained predecessor ledger is invalid")
+    prior = successor_context(previous, predecessor, seen)
+    final_records = 0
+    if (predecessor / "final-action.json").exists():
+        specification = _private_json(predecessor / "final-action.json")
+        metadata_path = Path(str(specification.get("metadata_path", "")))
+        if metadata_path.is_absolute() or not metadata_path.parts or ".." in metadata_path.parts:
+            raise ValueError("retained final-action metadata path is invalid")
+        if (predecessor / metadata_path).exists():
+            final_records = int(_private_json(predecessor / metadata_path).get("schema_version") == "test-final-action-record.v1")
+            if final_records and (predecessor / "draft.json").exists():
+                draft = _private_json(predecessor / "draft.json")
+                identifiers = {item.get("artifact_id") for item in draft.get("artifacts", []) if isinstance(item, dict) and item.get("path") == metadata_path.as_posix()}
+                if any(identifiers & set(entry.get("artifact_ids", [])) for entry in entries):
+                    final_records = 0
+    return {"actions_used": int(prior["actions_used"]) + len(entries) + final_records,
+            "rerun_action_ids": sorted(set(prior["rerun_action_ids"]) | {entry["action_id"] for entry in entries})}
 
 
 def _decimal(value: object, name: str, minimum: int, maximum: int) -> int:
@@ -66,8 +152,9 @@ def for_charter(charter: dict[str, object]) -> dict[str, object]:
     return validate(charter.get("execution_budget"), charter.get("material_oracles"))
 
 
-def validate_actions(budget: dict[str, object], action_ids: list[str]) -> None:
-    if len(action_ids) > int(budget["semantic_actions_max"]):
+def validate_actions(budget: dict[str, object], action_ids: list[str], *, root: Path | None = None, charter: dict[str, object] | None = None) -> None:
+    consumed = int(successor_context(charter, root)["actions_used"]) if root is not None and charter is not None else 0
+    if consumed + len(action_ids) > int(budget["semantic_actions_max"]):
         raise ValueError("executed actions exceed the frozen action budget")
     order = {action: index for index, wave in enumerate(budget["waves"]) for action in wave}
     if order:
@@ -80,6 +167,7 @@ def validate_actions(budget: dict[str, object], action_ids: list[str]) -> None:
 
 def remaining_seconds(charter: dict[str, object], root: Path) -> float:
     budget = for_charter(charter)
+    successor_context(charter, root)
     record = root / "bootstrap.json"
     if record.is_file() and not record.is_symlink():
         payload = json.loads(record.read_text(encoding="utf-8"))
