@@ -92,6 +92,7 @@ def _graph() -> dict[str, object]:
                 "presented": True,
                 "confirmed": True,
                 "stale": False,
+                "presentation": "Validate configuration, accepting valid input and rejecting invalid input through configuration tests.",
             }
         },
         "invalidations": [],
@@ -486,7 +487,8 @@ class TransactionLayerTests(unittest.TestCase):
         template["work"]["T1"]["decisions"] = ["D1"]
         template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
         template["projections"]["U2"] = {"covers": ["O1"], "version": 1,
-            "decision_versions": {}, "presented": True, "confirmed": True, "stale": False}
+            "decision_versions": {}, "presented": True, "confirmed": True, "stale": False,
+            "presentation": "Configuration is validated."}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         self.assertEqual(receipt.state, "stale")
 
@@ -520,6 +522,10 @@ class TransactionLayerTests(unittest.TestCase):
         projection = json.loads(json.dumps(stale_graph["projections"]["U1"]))
         projection.update(stale=False, presented=True, confirmed=False,
                           decision_versions={"D1": decision["version"]})
+        presentation_graph = json.loads(json.dumps(stale_graph))
+        presentation_graph["projections"]["U1"] = projection
+        projection["presentation"] = self.helper.issue_projection_presentation(
+            graph=presentation_graph, projection_id="U1", text="Validate at the revised configuration boundary and prove its behavior.")
 
         def typed(operation: str, path: list[str], value: dict[str, object]) -> dict[str, object]:
             version = value["version"] if operation in {"reconfirm-decision", "regenerate-projection"} else value["record_version"]
@@ -576,6 +582,8 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertEqual(graph["proof"]["P1"]["evidence"], [])
         self.assertFalse(graph["proof"]["P1"]["execution_required"])
         projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        projection["presentation"] = self.helper.issue_projection_presentation(
+            graph=graph, projection_id="U1", text="Validate configuration without coercion and prove that behavior.")
         self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         confirmed = dict(graph["projections"]["U1"], confirmed=True)
@@ -583,6 +591,135 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertEqual(ready.state, "ready")
         self.assertGreater(ready.revision, refreshed.revision)
         self.assertEqual(changed.state, "stale")
+
+    def test_initial_projection_retains_exact_presented_words_and_digests(self) -> None:
+        graph = _graph()
+        wording = "Validate configuration without coercion. Preserve valid input."
+        graph["projections"]["U1"]["presentation"] = wording
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        stored = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        presentation = stored["projections"]["U1"]["presentation"]
+        self.assertEqual(receipt.state, "ready")
+        self.assertEqual(presentation["text"], wording)
+        self.assertEqual(presentation["text_digest"], hashlib.sha256(wording.encode("utf-8")).hexdigest())
+        self.assertEqual(presentation["source_digest"], self.helper.issue_projection_presentation(
+            graph=stored, projection_id="U1", text=wording)["source_digest"])
+
+    def test_projection_confirmation_cannot_change_presented_words(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"]["presentation"] = "Validate configuration."
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["projections", "U1", "presented"], "value": False}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        wording = "Validate configuration and preserve valid inputs."
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text=wording))
+        regenerated = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        substituted = dict(graph["projections"]["U1"], confirmed=True,
+            presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text="Accept every input."))
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "outside its authority"):
+            self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], substituted)
+        confirmed = dict(graph["projections"]["U1"], confirmed=True)
+        final = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], confirmed)
+        stored = self.helper.load_workflow(self.repo, BRANCH, self.state_home)["projections"]["U1"]
+        self.assertEqual(final.state, "ready")
+        self.assertEqual(stored["presentation"]["text"], wording)
+        self.assertEqual(stored["operation_receipt"]["value_digest"], self.helper._record_payload_digest(stored))
+
+    def test_fresh_draft_projection_can_be_presented_then_confirmed(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"].update(presented=False, confirmed=False)
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.assertEqual(receipt.state, "awaiting-user")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(loaded["projections"]["U1"], presented=True)
+        presented = self._typed_update(receipt.workflow_id, loaded, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(presented.state, "awaiting-user")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(loaded["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, loaded, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_projection_rejects_presentation_bound_to_superseded_graph_meaning(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"]["presentation"] = "Validate configuration."
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Accept malformed configuration"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        old_presentation = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "graph meaning is stale"):
+            self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], old_presentation)
+
+    def test_legacy_ready_projection_requires_real_presentation_and_confirmation(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"]["presentation"] = "Validate configuration."
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        legacy = json.loads(receipt.path.read_text(encoding="utf-8"))
+        del legacy["projections"]["U1"]["presentation"]
+        receipt.path.write_text(json.dumps(legacy), encoding="utf-8")
+        before = receipt.path.read_bytes()
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(loaded["lifecycle"]["derived_state"], "awaiting-user")
+        self.assertNotIn("presentation", loaded["projections"]["U1"])
+        self.assertEqual(before, receipt.path.read_bytes())
+        projection = dict(loaded["projections"]["U1"], presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(
+                graph=loaded, projection_id="U1", text="Validate configuration and preserve valid inputs."))
+        regenerated = self._typed_update(receipt.workflow_id, loaded, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(loaded["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, loaded, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_projection_wording_edits_revoke_confirmation_and_detect_digest_tampering(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        revised = self.helper.issue_projection_presentation(
+            graph=graph, projection_id="U1", text="Reject invalid configuration and preserve valid input.")
+        changed = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["projections", "U1", "presentation"], "value": revised}], self.state_home)
+        stored = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(changed.state, "stale")
+        self.assertFalse(stored["projections"]["U1"]["confirmed"])
+        self.assertEqual(stored["projections"]["U1"]["version"], 2)
+        stored["projections"]["U1"]["presentation"]["text"] = "Silently accept invalid configuration."
+        changed.path.write_text(json.dumps(stored), encoding="utf-8")
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "text digest mismatch"):
+            self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+
+    def test_projection_digest_binds_referenced_outcomes_and_evidence(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        original = self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text="Validate configuration.")
+        for family, record_id, field in (("outcomes", "O1", "result"), ("evidence", "E1", "fact")):
+            with self.subTest(family=family):
+                changed = json.loads(json.dumps(graph))
+                changed[family][record_id][field] = "Materially different accepted meaning"
+                revised = self.helper.issue_projection_presentation(graph=changed, projection_id="U1", text=original["text"])
+                self.assertEqual(original["text_digest"], revised["text_digest"])
+                self.assertNotEqual(original["source_digest"], revised["source_digest"])
+        self.assertEqual(receipt.state, "ready")
+
+    def test_proof_freshness_change_preserves_valid_dependency_presentation_binding(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T2"]["requires"] = ["T1"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        changed = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["proof", "P1", "fresh"], "value": False}], self.state_home)
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(changed.state, "stale")
+        self.assertTrue(loaded["projections"]["U2"]["confirmed"])
+        self.assertEqual(loaded["projections"]["U2"]["presentation"]["source_digest"],
+            self.helper.issue_projection_presentation(graph=loaded, projection_id="U2", text="Consumer 2 works.")["source_digest"])
 
     def _three_node_graph(self) -> dict[str, object]:
         graph = _graph()
@@ -595,7 +732,8 @@ class TransactionLayerTests(unittest.TestCase):
                 based_on=[evidence], proof=[proof], repository_boundary=[f"consumer{number}.py"])
             graph["proof"][proof] = json.loads(json.dumps(graph["proof"]["P1"]))
             graph["proof"][proof].update(covers=[outcome], required_by=[work])
-            graph["projections"][projection] = dict(graph["projections"]["U1"], covers=[work, proof])
+            graph["projections"][projection] = dict(graph["projections"]["U1"], covers=[work, proof],
+                presentation=f"Consumer {number} works and has planned configuration proof.")
         return graph
 
     def test_producer_meaning_change_stales_transitive_consumer_proof_and_confirmation(self) -> None:
@@ -1343,6 +1481,8 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertEqual(cleared.state, "stale")
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        projection["presentation"] = self.helper.issue_projection_presentation(
+            graph=graph, projection_id="U1", text="Validate configuration and prove the recovered plan's behavior.")
         regenerated = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
         self.assertEqual(regenerated.state, "awaiting-user")
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
