@@ -184,6 +184,9 @@ class TransactionLayerTests(unittest.TestCase):
         value: dict[str, object],
         home: Path | None = None,
     ) -> object:
+        if operation == "refresh-audit" and value.get("independent"):
+            from tests.plan_audit_fixture import refresh_audit
+            return refresh_audit(self.helper, self.repo, BRANCH, graph, value, home or self.state_home)
         version_field = (
             "version"
             if operation
@@ -546,10 +549,12 @@ class TransactionLayerTests(unittest.TestCase):
             self.repo, BRANCH, receipt.workflow_id, stale.revision,
             [typed("revalidate-decision", ["decisions", "D1"], decision),
              typed("refresh-proof", ["proof", "P1"], proof),
-             typed("refresh-audit", ["audit"], audit),
              typed("regenerate-projection", ["projections", "U1"], projection)],
             self.state_home,
         )
+        inspected_graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        inspected_audit = dict(inspected_graph["audit"], fresh=True, independent=True, graph_revision=inspected_graph["graph_revision"])
+        repaired = self._typed_update(receipt.workflow_id, inspected_graph, "refresh-audit", ["audit"], inspected_audit)
         self.assertEqual(repaired.state, "awaiting-user")
         regenerated = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         confirmed = json.loads(json.dumps(regenerated["projections"]["U1"]))
@@ -1592,22 +1597,28 @@ class TransactionLayerTests(unittest.TestCase):
                    "ok='rejected' in negative and ('malformed' in negative or 'unknown' in negative); "
                    "print(json.dumps({'pid':os.getpid(),'open':not ok,'negative':negative}))")
 
+        from tests.plan_audit_fixture import artifact, result_for
+        accepted_input = artifact(self.root / "audit-accepted-input.json", {"kind": "test-only accepted foundation", "graph": template})
+
         def inspect_and_record():
             graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
-            frozen = self.root / f"audit-graph-{graph['graph_revision']}.json"
-            frozen.write_text(json.dumps(graph), encoding="utf-8")
-            frozen.chmod(0o400)
-            result = subprocess.run([sys.executable, "-c", program, str(frozen)], capture_output=True, text=True, check=False)
+            dispatch_id = f"negative-check-{len(observations) + 1}"
+            reservation = self.helper.reserve_plan_audit(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                dispatch_id, accepted_input, "initial" if not observations else "correction", "Check actual canonical negative behavior", self.state_home)
+            frozen = reservation["dispatch"]["graph_snapshot"]["path"]
+            result = subprocess.run([sys.executable, "-c", program, frozen], capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             observation = json.loads(result.stdout)
             observations.append(observation)
-            finding = {"id": "missing-negative", "severity": "high", "evidence": ["E1"],
+            finding = {"id": "missing-negative", "severity": "high", "description": "Negative proof omits rejected malformed or unknown input", "evidence": ["E1"],
                 "disposition": "open" if observation["open"] else "resolved"}
             resolutions = [] if observation["open"] else [{"finding_id": "missing-negative", "disposition": "resolved", "evidence": ["E1"]}]
-            audit = dict(graph["audit"], fresh=True, independent=True, graph_revision=graph["graph_revision"],
-                findings=[finding], resolutions=resolutions,
-                constraints=graph["audit"]["constraints"] + [f"test-only read-only subprocess {observation['pid']}"])
-            return self._typed_update(receipt.workflow_id, graph, "refresh-audit", ["audit"], audit)
+            output = artifact(self.root / f"{dispatch_id}-actual-output.json", observation)
+            self.helper.bind_plan_audit_actor(self.repo, BRANCH, receipt.workflow_id, dispatch_id, f"subprocess-{observation['pid']}", self.state_home)
+            bound_result = result_for(reservation["dispatch"], output, findings=[finding], resolutions=resolutions,
+                actor=f"subprocess-{observation['pid']}", constraints=["Test-only independent read-only Python process, no live AI model"])
+            self.helper.record_plan_audit_result(self.repo, BRANCH, receipt.workflow_id, dispatch_id, bound_result, self.state_home)
+            return self.helper.apply_plan_audit_result(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"], dispatch_id, self.state_home)
 
         self.assertEqual(inspect_and_record().state, "stale")
         self.assertTrue(observations[0]["open"])
@@ -1689,8 +1700,24 @@ class TransactionLayerTests(unittest.TestCase):
         resolved["resolutions"] = [{"finding_id": "F1", "disposition": "resolved",
                                      "evidence": ["E1"]}]
         resolved["graph_revision"] = open_graph["graph_revision"]
-        ready = self._typed_update(
-            receipt.workflow_id, open_graph, "resolve-finding", ["audit"], resolved)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "fresh independent correction"):
+            self._typed_update(receipt.workflow_id, open_graph, "resolve-finding", ["audit"], resolved)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, open_graph["graph_revision"],
+            [{"op": "set", "path": ["proof", "P1", "planned_method", "negative"],
+              "value": "Malformed configuration is rejected with a reason after ownership repair"}], self.state_home)
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, corrected, "refresh-proof-plan", ["proof", "P1"], dict(corrected["proof"]["P1"], fresh=True))
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        resolved = dict(corrected["audit"], fresh=True, independent=True, graph_revision=corrected["graph_revision"],
+            findings=resolved["findings"], resolutions=resolved["resolutions"])
+        checked = self._typed_update(receipt.workflow_id, corrected, "refresh-audit", ["audit"], resolved)
+        self.assertEqual(checked.state, "stale")
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(corrected["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=corrected, projection_id="U1", text="Prove rejected malformed configuration after ownership repair."))
+        self._typed_update(receipt.workflow_id, corrected, "regenerate-projection", ["projections", "U1"], projection)
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        ready = self._typed_update(receipt.workflow_id, corrected, "reconfirm-projection", ["projections", "U1"], dict(corrected["projections"]["U1"], confirmed=True))
         self.assertEqual(ready.state, "ready")
 
         lowered = json.loads(json.dumps(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["audit"]))

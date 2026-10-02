@@ -182,7 +182,7 @@ class PlanContractTests(unittest.TestCase):
         boundary = _markdown_section(self.body, "Boundary")
         branch_step = _numbered_workflow(self.body)[0]
         stopping = _markdown_section(self.body, "Stop and downstream boundary")
-        for phrase in ("source-read-only", "concept-read-only", "private graph operations through the helper"):
+        for phrase in ("source-read-only", "concept-read-only", "private graph and auditor-record operations through the helper"):
             self.assertIn(phrase, boundary)
         self.assertRegex(boundary, r"writes no production code, tests, executable configuration, or repository planning document")
         self.assertIn("explicit user confirmation", branch_step)
@@ -365,6 +365,18 @@ class PlanContractTests(unittest.TestCase):
                 self.assertIn(phrase, execution)
         for forbidden in ("plan creates task worktrees", "plan commits", "plan pushes"):
             self.assertNotIn(forbidden, self.normalized)
+
+    def test_auditor_dispatch_results_and_allowance_have_durable_public_recovery(self) -> None:
+        private = _markdown_section(self.body, "Canonical private graph")
+        for phrase in ("plan-audits", "reserve_plan_audit", "bind_plan_audit_actor", "record_plan_audit_result",
+                       "apply_plan_audit_result", "load_plan_audits", "close_plan_audit_dispatch", "extend_plan_audit_budget",
+                       "before dispatch", "before graph attachment", "retained finding descriptions", "never relaunch",
+                       "legacy audits", "cannot restore independent freshness", "coordinator attestations"):
+            self.assertIn(phrase, private)
+        role = (PLUGIN_ROOT / "content" / "agents" / "expskill-planner.md").read_text(encoding="utf-8").lower()
+        for phrase in ("private plan graph and durable auditor records", "reserve_plan_audit before launch",
+                       "record_plan_audit_result before apply_plan_audit_result", "load_plan_audits after pause or replacement"):
+            self.assertIn(phrase, role)
 
     def test_persistence_readiness_audit_pause_and_discard_are_explicit(self) -> None:
         graph = _markdown_section(self.body, "Canonical private graph")
