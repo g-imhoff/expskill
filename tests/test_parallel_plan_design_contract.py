@@ -10,7 +10,7 @@ PLUGIN = ROOT / "plugins" / "expskill"
 
 PRESERVED_PROFILES = {
     "expskill-explorer.md": "5c5004325f030473c618ac634619eea57e4e2b2eef02459cc9fa2d746c9a7240",
-    "expskill-implementer.md": "330ca9b92040e47ecf7a210e3987a1d2542ba2d79dc4915d8c49f1551937183c",
+    "expskill-implementer.md": "12c0209359c5c9930348c39ecebb14579e0a04fd06ecdea9e1dfdccc12fa3d2b",
     "expskill-review.md": "c9c841cc2f68802b7e956ae737561461ebd5eed48726290efa6d7774d712b0b8",
     "expskill-spec.md": "78fe8c77bad2e6c65bcc193f9b10e9f7a3aa690de6985722a98b15e599191639",
     "expskill-test-engineer.md": "7db7bea7f92597fd8cec6c474404531f7c8f09906d5abf5e3d56472c6355c985",
