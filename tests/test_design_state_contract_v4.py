@@ -68,7 +68,7 @@ def _layers(records: dict[str, dict]) -> tuple[dict, dict, dict]:
     component = records["components"]["CheckoutForm"]
     evidence = records["evidence"]["E1"]
     return (
-        {"files": [{"path": "components/CheckoutForm.tsx", "digest": component["code_digest"], "classification": "component"}]},
+        {"files": component.get("files", [{"path": "components/CheckoutForm.tsx", "digest": component["code_digest"], "classification": "component"}])},
         {"files": [{"path": "evidence/E1.json", "digest": evidence["digest"], "classification": "review"}]},
         {"files": [{"path": "contracts/CheckoutForm.json", "digest": component["contract_digest"], "classification": "manifest"}]},
     )
@@ -374,3 +374,25 @@ def test_normal_updates_block_ineligible_and_unresolved_material_delivery(tmp_pa
     question.update(resolved=True, decision_reference="user confirmed existing scope")
     current = module.apply_updates(workflow_id=workflow, expected_revision=current["revision"], updates={**records, "components": {"CheckoutForm": component}, "questions": {"scope": question}, "delivery": _delivery(candidate, review, manifest)}, state_home=home)
     assert module.deliver_workflow(workflow_id=workflow, expected_revision=current["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)["brief_digest"] == FIXTURE_BRIEF_DIGEST
+
+
+def test_multifile_component_delivery_binds_complete_supporting_file_union(tmp_path):
+    import pytest
+
+    module = _load("design_state_multifile")
+    receipt, _, home, workflow = _start(module, tmp_path)
+    records = _records()
+    files = [{"path": path, "digest": hashlib.sha256(path.encode()).hexdigest(), "classification": "component"} for path in ("components/CheckoutForm.tsx", "components/CheckoutForm.css", "components/index.ts", "components/CheckoutForm.test.tsx", "assets/checkout.svg")]
+    records["components"]["CheckoutForm"]["files"] = files
+    records["components"]["CheckoutForm"]["code_digest"] = module.component_digest(files)
+    candidate, review, manifest = _layers(records)
+    prepare_delivery_fixture(module, receipt, home, workflow, records, (candidate, review, manifest))
+    current = module.apply_updates(workflow_id=workflow, expected_revision=receipt["revision"], updates={**records, "delivery": _delivery(candidate, review, manifest)}, state_home=home)
+    for omitted in candidate["files"]:
+        incomplete = {"files": [item for item in candidate["files"] if item != omitted]}
+        with pytest.raises(ValueError, match="complete component file union"):
+            module.deliver_workflow(workflow_id=workflow, expected_revision=current["revision"], candidate_payload=incomplete, review_evidence=review, manifest=manifest, state_home=home)
+    component = records["components"]["CheckoutForm"]
+    assert component["code_digest"] == module.component_digest(list(reversed(component["files"])))
+    assert len(component["files"]) == 5
+    assert module.deliver_workflow(workflow_id=workflow, expected_revision=current["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)["lifecycle"] == "delivered"

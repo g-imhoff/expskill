@@ -91,7 +91,7 @@ def _digest(value: object) -> str:
 def _layers(records: dict[str, dict]) -> tuple[dict, dict, dict]:
     components = records["components"]
     evidence = records["evidence"]
-    candidate = {"files": sorted([{"path": f"components/{name}.tsx", "digest": value["code_digest"], "classification": "component"} for name, value in components.items()], key=lambda item: item["path"])}
+    candidate = {"files": sorted([item for name, value in components.items() for item in value.get("files", [{"path": f"components/{name}.tsx", "digest": value["code_digest"], "classification": "component"}])], key=lambda item: item["path"])}
     review = {"files": sorted([{"path": f"evidence/{eid}.json", "digest": value["digest"], "classification": "review"} for eid, value in evidence.items()], key=lambda item: item["path"])}
     manifest = {"files": sorted([{"path": f"contracts/{name}.json", "digest": value["contract_digest"], "classification": "manifest"} for name, value in components.items()], key=lambda item: item["path"])}
     return candidate, review, manifest
