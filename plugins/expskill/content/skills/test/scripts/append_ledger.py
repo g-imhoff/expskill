@@ -21,6 +21,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+
 
 BATCH_SCHEMA_VERSION = "test-ledger-batch.v1"
 BATCH_FILENAME = "ledger-batch.json"
@@ -272,8 +275,13 @@ def _validate_inputs(
     ledger: dict[str, object],
     batch: dict[str, object],
 ) -> tuple[dict[str, object], int]:
-    if set(charter) != CHARTER_FIELDS or charter.get("schema_version") != CHARTER_SCHEMA_VERSION:
+    expected_fields = CHARTER_FIELDS | {"execution_budget"} if charter.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS
+    if set(charter) != expected_fields or charter.get("schema_version") not in {CHARTER_SCHEMA_VERSION, "test-charter.v2"}:
         _error("invalid-charter", "frozen charter fields or schema are invalid")
+    try:
+        budget = execution_budget.for_charter(charter)
+    except ValueError as error:
+        _error("invalid-budget", str(error))
     head = charter.get("head")
     branch = charter.get("branch")
     if (
@@ -335,8 +343,12 @@ def _validate_inputs(
     action_ids = [entry["action_id"] for entry in (*existing, *appended)]
     if len(action_ids) != len(set(action_ids)):
         _error("duplicate-action-id", "combined ledger action IDs must be unique")
-    if len(action_ids) > MAX_SEMANTIC_ACTIONS:
-        _error("action-budget-exceeded", "combined ledger exceeds eight actions")
+    if len(action_ids) > int(budget["semantic_actions_max"]):
+        _error("action-budget-exceeded", "combined ledger exceeds the frozen action budget")
+    try:
+        execution_budget.validate_actions(budget, action_ids)
+    except ValueError as error:
+        _error("unplanned-action", str(error))
     return {
         "schema_version": LEDGER_SCHEMA_VERSION,
         "run_id": root.name,

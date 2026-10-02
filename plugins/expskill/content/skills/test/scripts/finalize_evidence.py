@@ -24,6 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 HEAD_RE = re.compile(r"[0-9a-f]{40,64}\Z")
@@ -846,7 +849,8 @@ def validate_inputs(
             "contract.finding_kinds",
             "packaged finding kinds differ from the fixed authoring protocol",
         )
-    charter = _closed_object_fields(charter_value, CHARTER_FIELDS, "charter", issues)
+    charter_fields = CHARTER_FIELDS | {"execution_budget"} if isinstance(charter_value, dict) and charter_value.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS
+    charter = _closed_object_fields(charter_value, charter_fields, "charter", issues)
     ledger_fields = (
         DIRECT_LEDGER_FIELDS
         if isinstance(ledger_value, dict)
@@ -858,8 +862,14 @@ def validate_inputs(
     if charter is None or ledger is None or draft is None:
         return sorted(set(issues))
 
-    if charter.get("schema_version") != CHARTER_SCHEMA_VERSION:
+    if charter.get("schema_version") not in {CHARTER_SCHEMA_VERSION, "test-charter.v2"}:
         _add(issues, "unknown-state", "charter.schema_version", "unsupported charter schema version")
+    action_limit = MAX_SEMANTIC_ACTIONS
+    try:
+        budget = execution_budget.for_charter(charter)
+        action_limit = int(budget["semantic_actions_max"])
+    except ValueError as error:
+        _add(issues, "invalid-budget", "charter.execution_budget", str(error))
     run_id = _nonempty_string(charter.get("run_id"), "charter.run_id", issues)
     if run_id is not None and RUN_ID_RE.fullmatch(run_id) is None:
         _add(issues, "invalid-run-id", "charter.run_id", "run ID contains unsafe characters")
@@ -960,13 +970,18 @@ def validate_inputs(
                 action_ids.append(action_id)
         if len(action_ids) != len(set(action_ids)):
             _add(issues, "duplicate-id", "ledger.entries", "action IDs must be unique")
-        if len(entries) > MAX_SEMANTIC_ACTIONS:
+        if len(entries) > action_limit:
             _add(
                 issues,
                 "action-budget-exceeded",
                 "ledger.entries",
-                f"at most {MAX_SEMANTIC_ACTIONS} semantic actions are allowed",
+                f"at most {action_limit} semantic actions are allowed",
             )
+        if "budget" in locals():
+            try:
+                execution_budget.validate_actions(budget, action_ids)
+            except ValueError as error:
+                _add(issues, "invalid-budget", "ledger.entries", str(error))
 
     if draft.get("schema_version") != DRAFT_SCHEMA_VERSION:
         _add(issues, "unknown-state", "draft.schema_version", "unsupported draft schema version")
@@ -2798,7 +2813,7 @@ def _load_composition_charter_binding(
             "charter.json",
             "composition charter must be a JSON object",
         )
-    if value.get("schema_version") != CHARTER_SCHEMA_VERSION:
+    if value.get("schema_version") not in {CHARTER_SCHEMA_VERSION, "test-charter.v2"}:
         raise FinalizerError(
             "invalid-charter-binding",
             "charter.schema_version",

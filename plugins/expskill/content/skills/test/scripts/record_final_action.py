@@ -27,6 +27,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+
 
 SCHEMA_VERSION = "test-final-action.v2"
 HANDOFF_MODE = "compose-record-finalize with one root argument"
@@ -54,7 +57,7 @@ CHARTER_FIELDS = {
     "exemption_grounding_artifact_ids",
 }
 PREDICATE_FIELDS = {"mode", "value"}
-OUTPUT_MODES = {"exact-text", "sha256"}
+OUTPUT_MODES = {"exact-text", "sha256", "json-fields", "exit-only"}
 HEAD_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
@@ -144,12 +147,16 @@ def _read_charter_identity(repository: Path, root: Path) -> tuple[str, str]:
         _error("invalid-charter", f"cannot decode frozen charter: {error}")
     if (
         not isinstance(value, dict)
-        or set(value) != CHARTER_FIELDS
-        or value.get("schema_version") != "test-charter.v1"
+        or set(value) != (CHARTER_FIELDS | {"execution_budget"} if value.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS)
+        or value.get("schema_version") not in {"test-charter.v1", "test-charter.v2"}
         or value.get("run_id") != root.name
         or value.get("repository") != str(repository)
     ):
         _error("invalid-charter", "frozen charter shape or root binding is invalid")
+    try:
+        execution_budget.for_charter(value)
+    except ValueError as error:
+        _error("invalid-budget", str(error))
     head = value.get("head")
     branch = value.get("branch")
     if not isinstance(head, str) or HEAD_RE.fullmatch(head) is None:
@@ -355,8 +362,14 @@ def _validate_spec(
         _error("invalid-predicate", "output_predicate fields are not exact")
     mode = predicate.get("mode")
     expected_output = predicate.get("value")
-    if mode not in OUTPUT_MODES or not isinstance(expected_output, str):
+    if mode not in OUTPUT_MODES:
         _error("invalid-predicate", "output predicate mode or value is invalid")
+    if mode == "json-fields":
+        _validate_json_assertions(expected_output)
+    elif not isinstance(expected_output, str):
+        _error("invalid-predicate", "text and exit predicates require a string value")
+    if mode == "exit-only" and expected_output != "":
+        _error("invalid-predicate", "exit-only value must be empty")
     if mode == "sha256" and not SHA256_RE.fullmatch(expected_output):
         _error("invalid-predicate", "sha256 predicate must be lowercase hexadecimal")
 
@@ -684,9 +697,90 @@ def _remove_created_path(path: Path) -> tuple[str, str]:
     return ("pass", "removed test-created state") if not os.path.lexists(path) else ("fail", "path remained after cleanup")
 
 
-def _output_matches(raw: bytes, mode: str, expected: str) -> bool:
+def _validate_json_assertions(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 64:
+        _error("invalid-predicate", "json-fields requires one to 64 assertions")
+    for assertion in value:
+        if not isinstance(assertion, dict) or set(assertion) != {"path", "operator", "value"}:
+            _error("invalid-predicate", "JSON assertion fields are not exact")
+        path = assertion["path"]
+        if not isinstance(path, list) or not 1 <= len(path) <= 16 or any(not isinstance(part, str) or not part or "\x00" in part for part in path):
+            _error("invalid-predicate", "JSON assertion path must contain one to sixteen literal keys")
+        operator = assertion["operator"]
+        expected = assertion["value"]
+        if not isinstance(operator, str):
+            _error("invalid-predicate", "JSON assertion operator must be a string")
+        if operator == "equals":
+            if expected is not None and not isinstance(expected, (str, bool)):
+                _error("invalid-predicate", "equals accepts a string, boolean, or null")
+        elif operator in {"integer-equals", "length-equals"}:
+            pattern = r"-?(?:0|[1-9][0-9]{0,17})" if operator == "integer-equals" else r"(?:0|[1-9][0-9]{0,17})"
+            if not isinstance(expected, str) or re.fullmatch(pattern, expected) is None:
+                _error("invalid-predicate", "numeric comparisons require bounded decimal strings")
+        elif operator == "type":
+            if not isinstance(expected, str) or expected not in {"object", "array", "string", "number", "integer", "boolean", "null"}:
+                _error("invalid-predicate", "JSON type assertion is invalid")
+        elif operator == "exists":
+            if not isinstance(expected, bool):
+                _error("invalid-predicate", "exists requires a boolean")
+        else:
+            _error("invalid-predicate", "unsupported JSON assertion operator")
+    return value
+
+
+def _json_matches(raw: bytes, assertions: object) -> bool:
+    try:
+        assertions = _validate_json_assertions(assertions)
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_reject_number)
+    except (RecorderError, ValueError, UnicodeDecodeError, RecursionError):
+        return False
+    missing = object()
+    for assertion in assertions:
+        actual = payload
+        for part in assertion["path"]:
+            if isinstance(actual, dict):
+                actual = actual.get(part, missing)
+            elif isinstance(actual, list) and part.isascii() and part.isdecimal() and len(part) <= 8 and int(part) < len(actual):
+                actual = actual[int(part)]
+            else:
+                actual = missing
+                break
+        operator = assertion["operator"]
+        expected = assertion["value"]
+        if operator == "exists":
+            matched = (actual is not missing) is expected
+        elif actual is missing:
+            matched = False
+        elif operator == "equals":
+            matched = type(actual) is type(expected) and actual == expected
+        elif operator == "integer-equals":
+            matched = type(actual) is int and actual == int(expected)
+        elif operator == "length-equals":
+            matched = isinstance(actual, (str, list, dict)) and len(actual) == int(expected)
+        else:
+            matched = {
+                "object": type(actual) is dict,
+                "array": type(actual) is list,
+                "string": type(actual) is str,
+                "number": type(actual) in {int, float},
+                "integer": type(actual) is int,
+                "boolean": type(actual) is bool,
+                "null": actual is None,
+            }[expected]
+        if not matched:
+            return False
+    return True
+
+
+def _output_matches(raw: bytes, mode: str, expected: object) -> bool:
+    if mode == "exit-only":
+        return expected == ""
+    if mode == "json-fields":
+        return _json_matches(raw, expected)
     if mode == "sha256":
         return hashlib.sha256(raw).hexdigest() == expected
+    if mode != "exact-text":
+        return False
     try:
         return raw.decode("utf-8") == expected
     except UnicodeDecodeError:
@@ -713,12 +807,17 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
             label="metadata_path",
         )
         protected = _snapshot_run_root(root)
+        charter = json.loads((root / CHARTER_FILENAME).read_text(encoding="utf-8"))
+        remaining = execution_budget.remaining_seconds(charter, root)
+        if remaining <= 0:
+            _error("deadline-exhausted", "frozen run deadline expired before execution")
         completed = subprocess.run(
             command,
             cwd=repository,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
+            timeout=remaining,
         )
         output = completed.stdout
         _verify_run_root_unchanged(root, protected)
@@ -761,7 +860,7 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
             and not worktree.stdout.strip()
         ) else "fail"
         predicate_match = completed.returncode == values["expected_exit"] and _output_matches(
-            output, str(values["predicate_mode"]), str(values["predicate_value"])
+            output, str(values["predicate_mode"]), values["predicate_value"]
         )
         matched = predicate_match and teardown_status == "pass" and integrity_status == "pass"
         metadata = {

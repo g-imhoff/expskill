@@ -230,6 +230,54 @@ print('consumer-result=pass')
         )
         self.assertEqual(metadata["outcome"], "mismatch")
 
+    def test_json_predicate_accepts_stable_success_fields_with_variable_timing(self) -> None:
+        module = _load_recorder_module()
+        predicate = [
+            {"path": ["status"], "operator": "equals", "value": "pass"},
+            {"path": ["checks"], "operator": "integer-equals", "value": "3"},
+        ]
+        self.assertTrue(module._output_matches(b'{"status":"pass","checks":3,"elapsed":0.12,"run_id":"one"}', "json-fields", predicate))
+        self.assertTrue(module._output_matches(b'{"status":"pass","checks":3,"elapsed":8.91,"run_id":"two"}', "json-fields", predicate))
+        self.assertFalse(module._output_matches(b'{"status":"fail","checks":3,"elapsed":0.12}', "json-fields", predicate))
+
+    def test_json_predicate_rejects_missing_duplicate_and_wrongly_typed_fields(self) -> None:
+        module = _load_recorder_module()
+        predicate = [{"path": ["checks"], "operator": "integer-equals", "value": "3"}]
+        for output in (b'{}', b'{"checks":"3"}', b'{"checks":true}', b'{"checks":3,"checks":0}', b'{"checks":NaN}'):
+            with self.subTest(output=output):
+                self.assertFalse(module._output_matches(output, "json-fields", predicate))
+
+    def test_json_predicate_is_validated_without_regex_or_executable_expressions(self) -> None:
+        self.write_spec(output_predicate={"mode": "json-fields", "value": [{"path": ["status"], "operator": "equals", "value": "pass"}]})
+        validated = self.recorder("validate", "--root", str(self.run_root))
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        self.write_spec(output_predicate={"mode": "json-fields", "value": [{"path": ["status"], "operator": "regex", "value": ".*"}]})
+        rejected = self.recorder("validate", "--root", str(self.run_root))
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("invalid-predicate", rejected.stderr)
+
+    def test_exit_only_predicate_keeps_the_exact_exit_condition(self) -> None:
+        self.write_spec(output_predicate={"mode": "exit-only", "value": ""})
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "product_action.py")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_real_variable_json_command_matches_without_transcribing_output(self) -> None:
+        (self.repository / "json_action.py").write_text(
+            "import json, secrets, time\nprint(json.dumps({'status': 'pass', 'elapsed': time.monotonic(), 'run_id': secrets.token_hex(8)}))\n"
+        )
+        self.write_spec(
+            output_predicate={"mode": "json-fields", "value": [{"path": ["status"], "operator": "equals", "value": "pass"}]},
+            cleanup_absent_paths=[],
+        )
+
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "json_action.py")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads((self.run_root / "final-observation.raw").read_text())
+        self.assertEqual(observation["status"], "pass")
+        self.assertIsInstance(observation["elapsed"], float)
+        self.assertEqual(len(observation["run_id"]), 16)
+
     def test_validation_rejects_a_dirty_integrity_path_before_product_execution(
         self,
     ) -> None:
