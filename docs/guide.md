@@ -188,7 +188,7 @@ Invoke a skill directly when you know what you want:
 
 - `$brainstorm` explores uncertainty without writing production code.
 - `$plan` produces an ordered, reviewable implementation-and-proof design with observable criteria, behavior, planned tests, and verification intent.
-- `$design` creates grounded production-intended UI components and publishes a Yodea preview for responsive, stateful review after blocking quality gates pass. Preview links accompany approval requests, handoffs, and PR descriptions and stay available through PR review.
+- `$design` creates grounded production-intended UI components and uses the project’s native specimen for responsive, stateful review after blocking quality gates pass. A compatible authorized hosted preview is preferred, with a reproducible local review surface when hosting is unavailable or forbidden. The review entry, candidate identity, and any hosting limitation accompany approvals, handoffs, and PR descriptions.
 - `$setup-design` establishes or records one reusable, project-native
   isolated design-sketch method without approving feature sketches.
 - `$setup-test` establishes or records the project's test-method matrix
