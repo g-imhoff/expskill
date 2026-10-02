@@ -66,6 +66,20 @@ class AutonomousRunContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, body)
 
+    def test_invoking_agent_owns_delivery_and_cumulative_run_budget(self) -> None:
+        body = RUNNER.read_text(encoding="utf-8")
+        for phrase in (
+            "You are the delivery actor in this invoking conversation",
+            "router never pushes or creates the PR",
+            "Verify the returned URL, head, base, and draft state",
+            "one cumulative run identifier",
+            "never resets this allowance",
+            "3N + 2",
+            "independent reviewer provenance are unchanged",
+        ):
+            self.assertIn(phrase, body)
+        self.assertNotIn("required even if the workflow used", body)
+
     def test_runner_prose_passes_package_hygiene(self) -> None:
         body = RUNNER.read_text(encoding="utf-8")
         self.assertNotIn("\N{EM DASH}", body)
