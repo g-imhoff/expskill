@@ -156,7 +156,7 @@ class ImplementContractTests(unittest.TestCase):
 
     def test_three_runtime_profiles_have_the_accepted_boundaries(self) -> None:
         expected = {
-            "expskill-implementer": ("workspace-write", "red-green-refactor"),
+            "expskill-implementer": (None, "red-green-refactor"),
             "expskill-review": ("read-only", "ready or not ready"),
             "expskill-spec": ("read-only", "criterion-by-criterion evidence"),
         }
@@ -164,7 +164,10 @@ class ImplementContractTests(unittest.TestCase):
             with self.subTest(profile=name):
                 profile = tomllib.loads(render_agents(ROOT)[f"agents/{name}.toml"])
                 self.assertEqual(profile["name"], name)
-                self.assertEqual(profile["sandbox_mode"], sandbox)
+                self.assertEqual(profile.get("sandbox_mode"), sandbox)
+                if sandbox is None:
+                    self.assertNotIn("sandbox_mode", profile)
+                    self.assertIn("parent-approved sandbox and approval policy", profile["developer_instructions"])
                 self.assertIn(boundary, profile["developer_instructions"].lower())
                 self.assertRegex(profile["developer_instructions"].lower(), r"\bno delegation\b|\bdo not delegate\b")
 
