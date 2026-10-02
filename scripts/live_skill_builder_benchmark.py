@@ -73,6 +73,32 @@ def load_driver(path):
     return module
 
 
+def initialize_workspace(driver, workspace, remaining):
+    workspace = Path(workspace).resolve()
+    if (workspace / ".git").exists():
+        raise ProbeError("Disposable actor workspace already contains Git metadata")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    commands = (
+        ["git", "init", "--quiet", "--template=", "."],
+        ["git", "rev-parse", "--show-toplevel"],
+        ["git", "rev-parse", "--verify", "HEAD"],
+        ["git", "remote"],
+    )
+    checks = []
+    for argv in commands:
+        result = driver.run_process_group(argv, prompt="", cwd=workspace, env=env, timeout=min(15, remaining()))
+        checks.append({"argv": argv, **result})
+    initialized, top_level, head, remotes = checks
+    if any(check["timed_out"] for check in checks) or initialized["exit_code"] != 0 or top_level["exit_code"] != 0:
+        raise ProbeError("Could not initialize and verify the disposable Git workspace")
+    if not (workspace / ".git").is_dir() or Path(top_level["stdout"].strip()).resolve() != workspace:
+        raise ProbeError("Actor workspace did not receive its own local Git repository")
+    if head["exit_code"] != 128 or head["stdout"].strip() or remotes["exit_code"] != 0 or remotes["stdout"].strip():
+        raise ProbeError("Disposable Git workspace unexpectedly has history or remotes")
+    return {"repository": str(workspace), "history_present": False, "remotes": [], "checks": checks,
+            "origin": "Host-created empty local Git repository; no commits or remotes"}
+
+
 def manifest(package, *, require_files=True):
     files = {}
     for path in sorted(package.rglob("*")):
@@ -297,6 +323,7 @@ def run_probe(*, output_root, live=False, inject_defect=False, driver_path=DEFAU
                           "actor_timeout_seconds": actor_timeout, "deadline_seconds": deadline_seconds,
                           "retry_reservation": "Each dispatch reserves two attempt timeouts within its remaining deadline."},
               "fault_injection": {"requested": bool(inject_defect), "applied": False}, "actors": {}, "observations": {},
+              "workspace_prerequisites": {},
               "outcome": "in-progress"}
     deadline = time.monotonic() + deadline_seconds
     seen_threads = set()
@@ -394,6 +421,8 @@ def run_probe(*, output_root, live=False, inject_defect=False, driver_path=DEFAU
     try:
         original = output_root / "workspaces" / "original" / "candidate"
         original.mkdir(parents=True)
+        report["workspace_prerequisites"]["original"] = initialize_workspace(driver, original.parent, remaining)
+        persist()
         prompt = f"Create exactly the two-file skill candidate in {original} for this frozen contract: {contract['path']}, SHA-256 {contract['sha256']}. Read the contract before editing. Write SKILL.md with appropriate frontmatter and scripts/count_lines.py. Use only standard-library dependencies. Add no code comments, other documentation, commits, or delegation. Do not begin the complete lifecycle workflow. This is a bounded candidate-author stage and does not ask for full Skill Builder completion."
         call("candidate-author", prompt, original, writer=True)
         report["candidate_authored"] = manifest(original)
@@ -416,6 +445,8 @@ def run_probe(*, output_root, live=False, inject_defect=False, driver_path=DEFAU
         judge("reviewer-before", original, first)
         repaired = output_root / "workspaces" / "repaired" / "candidate"
         shutil.copytree(original, repaired)
+        report["workspace_prerequisites"]["repaired"] = initialize_workspace(driver, repaired.parent, remaining)
+        persist()
         skill_pin = manifest(repaired)["files"]["SKILL.md"]
         prompt = f"Repair only scripts/count_lines.py in {repaired}. Preserve SKILL.md exactly. Frozen contract: {contract['path']}, SHA-256 {contract['sha256']}. Actual first failing observations: {first['evidence']['path']}, SHA-256 {first['evidence']['sha256']}. Independent pre-repair review: {output_root / 'actors/reviewer-before/actor.json'}. Inspect those artifacts and correct the observed failure. Do not modify frozen inputs, add files, delegate, commit, or claim full Builder completion."
         call("repair-author", prompt, repaired, writer=True)

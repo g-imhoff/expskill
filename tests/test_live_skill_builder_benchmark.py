@@ -202,3 +202,61 @@ def test_exact_command_origin_accepts_shell_wrapper_and_rejects_echo_or_other_ca
     assert PROBE.helper_invocation(exact + " ; true", package) is None
     argv[1] = str(tmp_path / "other-candidate/scripts/count_lines.py")
     assert PROBE.helper_invocation(shlex.join(argv), package) is None
+
+
+def test_both_actor_workspaces_are_local_git_repositories_without_history_or_remotes(tmp_path):
+    class GitRequiredTransport(MockTransport):
+        def run_actor(self, *, cwd, **options):
+            result = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True, capture_output=True)
+            if result.returncode or Path(result.stdout.strip()) != cwd:
+                raise PROBE.ProbeError("Actor working directory lacks its isolated Git repository")
+            assert (cwd / ".git").is_dir()
+            assert subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=cwd, capture_output=True).returncode != 0
+            assert subprocess.check_output(["git", "remote"], cwd=cwd, text=True) == ""
+            return super().run_actor(cwd=cwd, **options)
+
+    report = run_probe(output_root=tmp_path / "probe", live=True, driver=GitRequiredTransport(), inject_defect=True)
+    assert report["outcome"] == "repair-observed"
+    assert set(report["workspace_prerequisites"]) == {"original", "repaired"}
+
+
+def test_shared_cli_command_retains_non_git_failure_and_uses_prepared_repository(tmp_path):
+    driver_path = Path(os.environ.get("EXPSKILL_SHARED_LIVE_DRIVER", PROBE.DEFAULT_DRIVER))
+    if not driver_path.is_file():
+        pytest.skip("Shared live driver prerequisite has not been integrated")
+    driver = PROBE.load_driver(driver_path)
+    cli = tmp_path / "offline_git_prerequisite_cli.py"
+    cli.write_text(
+        "import json\nfrom pathlib import Path\nimport subprocess\nimport sys\n"
+        "args = sys.argv[1:]\n"
+        "if args == ['--version']:\n    print('offline-git-prerequisite-cli')\n    raise SystemExit(0)\n"
+        "assert args[0] == 'exec' and '--skip-git-repo-check' not in args\n"
+        "cwd = Path(args[args.index('-C') + 1])\n"
+        "assert cwd == Path.cwd()\n"
+        "result = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=cwd, capture_output=True, text=True)\n"
+        "if result.returncode or Path(result.stdout.strip()) != cwd:\n"
+        "    print('Not inside a trusted directory and --skip-git-repo-check was not specified.', file=sys.stderr)\n"
+        "    raise SystemExit(1)\n"
+        "assert (cwd / '.git').is_dir()\n"
+        "assert subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=cwd, capture_output=True).returncode != 0\n"
+        "assert subprocess.check_output(['git', 'remote'], cwd=cwd, text=True) == ''\n"
+        "print(json.dumps({'type': 'thread.started', 'thread_id': 'offline-prerequisite-context'}))\n"
+        "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Offline prerequisite satisfied; no model was called.'}}))\n"
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    options = {"prompt": "Offline transport prerequisite test.", "cwd": workspace,
+               "state_home": tmp_path / "state", "timeout": 5, "live": True,
+               "cli": [sys.executable, str(cli)], "infrastructure_retries": 0}
+    before = driver.run_actor(evidence_dir=tmp_path / "before", **options)
+    assert before["outcome"] == "protocol-invalid"
+    assert before["thread_ids"] == []
+    assert "Not inside a trusted directory" in Path(before["attempts"][0]["stderr"]).read_text()
+    setup = PROBE.initialize_workspace(driver, workspace, lambda: 15)
+    after = driver.run_actor(evidence_dir=tmp_path / "after", **options)
+    assert after["outcome"] == "completed-ungraded"
+    assert after["thread_ids"] == ["offline-prerequisite-context"]
+    assert after["argv"][after["argv"].index("-C") + 1] == str(workspace)
+    assert "--skip-git-repo-check" not in after["argv"]
+    assert setup["repository"] == str(workspace)
+    assert setup["history_present"] is False and setup["remotes"] == []
