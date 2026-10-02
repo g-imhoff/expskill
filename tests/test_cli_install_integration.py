@@ -14,7 +14,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -164,15 +166,21 @@ class CliInstallIntegrationTests(unittest.TestCase):
                 15,
             )
 
-            # Codex plugins do not register agent profiles: copy the seven
-            # TOML profiles shipped inside the installed plugin into the
-            # Codex agents directory, exactly as the README documents.
             agents_root = codex_home / "agents"
-            agents_root.mkdir(parents=True, exist_ok=True)
             packaged_agents = sorted(installed_path.glob("agents/*.toml"))
             self.assertEqual(len(packaged_agents), len(AGENTS))
-            for profile in packaged_agents:
-                shutil.copy2(profile, agents_root / profile.name)
+            installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+            delimiter = 'python3 - "$installed" "${CODEX_HOME:-$HOME/.codex}" <<\'PY\' ||\n'
+            materializer = installer.split(delimiter, 1)[1].split("\nPY\n", 1)[0]
+            installed_profiles = subprocess.run(
+                [sys.executable, "-", json.dumps(plugin), str(codex_home)],
+                input=materializer, text=True, capture_output=True,
+                env={**os.environ, **env}, timeout=30,
+            )
+            self.assertEqual(installed_profiles.returncode, 0, installed_profiles.stderr)
+            profile = tomllib.loads((agents_root / "expskill-planner.toml").read_text())
+            self.assertEqual(profile["sandbox_workspace_write"], {"writable_roots": [str(state_home / "expskill")]})
+            self.assertNotIn("sandbox_workspace_write", tomllib.loads((installed_path / "agents/expskill-planner.toml").read_text()))
             for name in AGENTS:
                 with self.subTest(agent=name):
                     link = agents_root / f"{name}.toml"

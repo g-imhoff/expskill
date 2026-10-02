@@ -90,7 +90,7 @@ class InstallerTests(unittest.TestCase):
                     "CALL_LOG": str(self.log), "PACKAGE": str(self.package),
                     "DIST_SHA": SHA, "INSTALLER_SOURCE": str(INSTALLER)}
         for key in ("CODEX_HOME", "FAIL_STEP", "FAIL_COMMAND", "GIT_RESULT", "CODEX_RESULT",
-                    "CODEX_MARKETPLACES", "OPENCODE_PLUGINS", "BASH_ENV"):
+                    "CODEX_MARKETPLACES", "OPENCODE_PLUGINS", "BASH_ENV", "XDG_STATE_HOME"):
             self.env.pop(key, None)
 
     def commands(self, *names):
@@ -233,7 +233,13 @@ class InstallerTests(unittest.TestCase):
         for role in ROLES:
             destination = agents / f"expskill-{role}.toml"
             self.assertFalse(destination.is_symlink())
-            self.assertEqual(destination.read_text(), f"# {role}\n")
+            if role == "planner":
+                import tomllib
+                profile = tomllib.loads(destination.read_text())
+                self.assertEqual(profile["sandbox_workspace_write"]["writable_roots"], [str(self.home / ".local/state/expskill")])
+                self.assertTrue(destination.read_text().startswith("# planner\n"))
+            else:
+                self.assertEqual(destination.read_text(), f"# {role}\n")
         backups = list(agents.glob("expskill-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / edited.name).read_text(), "local customization\n")
@@ -486,3 +492,89 @@ class InstallerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PlannerStateAuthorityTests(unittest.TestCase):
+    commands = InstallerTests.commands
+    codex_commands = InstallerTests.codex_commands
+    run_installer = InstallerTests.run_installer
+
+    def setUp(self):
+        InstallerTests.setUp(self)
+        self.env.pop('XDG_STATE_HOME', None)
+        self.codex_commands()
+        from scripts.render_codex import render_agents
+        for name, content in render_agents(ROOT).items():
+            (self.package / name).write_text(content)
+
+    def planner(self):
+        import tomllib
+        return tomllib.loads((self.home / '.codex/agents/expskill-planner.toml').read_text())
+
+    def test_installer_materializes_only_planner_private_root_and_keeps_public_profiles_portable(self):
+        result = self.run_installer('1\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.home / '.local/state/expskill'
+        self.assertEqual(self.planner()['sandbox_workspace_write'], {'writable_roots':[str(state)]})
+        self.assertEqual(state.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.planner()['sandbox_mode'], 'workspace-write')
+        self.assertEqual(self.planner()['model'], 'gpt-5.6-luna')
+        self.assertEqual(self.planner()['model_reasoning_effort'], 'max')
+        for role in ROLES:
+            original = (self.package / 'agents' / f'expskill-{role}.toml').read_bytes()
+            self.assertNotIn(str(self.home).encode(), original)
+            if role != 'planner':
+                self.assertEqual((self.home / '.codex/agents' / f'expskill-{role}.toml').read_bytes(), original)
+
+    def test_configured_xdg_root_has_no_fallback_and_rerun_retains_original_state(self):
+        first = self.root / 'first state'
+        result = self.run_installer('1\n', XDG_STATE_HOME=str(first))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.planner()['sandbox_workspace_write']['writable_roots'], [str(first / 'expskill')])
+        marker = first / 'expskill/original-workflow'
+        marker.write_bytes(b'original accepted state')
+        second = self.root / 'second state'
+        result = self.run_installer('1\n', XDG_STATE_HOME=str(second))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.planner()['sandbox_workspace_write']['writable_roots'], [str(second / 'expskill')])
+        self.assertEqual(marker.read_bytes(), b'original accepted state')
+        self.assertFalse((self.home / '.local/state').exists())
+        backups = list((self.home / '.codex/agents').glob('expskill-backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertIn(str(first / 'expskill'), (backups[0] / 'expskill-planner.toml').read_text())
+
+    def test_unsafe_roots_reject_before_profile_replacement(self):
+        external = self.root / 'external'
+        external.mkdir()
+        linked = self.root / 'linked'
+        linked.symlink_to(external, target_is_directory=True)
+        repository = self.root / 'repository'
+        repository.mkdir()
+        (repository / '.git').mkdir()
+        (repository / '.git/HEAD').write_text('ref: refs/heads/main\n')
+        (repository / '.git/objects').mkdir()
+        for configured in ('relative-state', str(linked), str(repository / 'state')):
+            result = self.run_installer('1\n', XDG_STATE_HOME=configured)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse((self.home / '.codex/agents').exists())
+            self.assertFalse((external / 'expskill').exists())
+
+    def test_existing_nonprivate_root_is_not_chmodded_or_replaced(self):
+        state = self.root / 'configured'
+        private = state / 'expskill'
+        private.mkdir(parents=True, mode=0o755)
+        private.chmod(0o755)
+        marker = private / 'retained'
+        marker.write_text('retained private state')
+        result = self.run_installer('1\n', XDG_STATE_HOME=str(state))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(private.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(marker.read_text(), 'retained private state')
+        self.assertFalse((self.home / '.codex/agents').exists())
+
+    def test_portable_package_cannot_supply_an_unrelated_private_grant(self):
+        profile = self.package / 'agents/expskill-planner.toml'
+        profile.write_text(profile.read_text() + '\n[sandbox_workspace_write]\nwritable_roots = ["/unrelated"]\n')
+        result = self.run_installer('1\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('portable packaged planner', result.stderr)
+        self.assertFalse((self.home / '.codex/agents').exists())
