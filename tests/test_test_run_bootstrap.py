@@ -65,9 +65,9 @@ class TestRunBootstrapTests(unittest.TestCase):
         if evidence.is_dir():
             evidence.chmod(0o700)
 
-    def bootstrap(self, *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    def bootstrap(self, *arguments: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(BOOTSTRAP)],
+            [sys.executable, str(BOOTSTRAP), *arguments],
             cwd=self.repository if cwd is None else cwd,
             text=True,
             stdout=subprocess.PIPE,
@@ -146,6 +146,47 @@ class TestRunBootstrapTests(unittest.TestCase):
         self.assertNotEqual(self.payload(first)["root"], self.payload(second)["root"])
         evidence = self.repository / ".test-evidence"
         self.assertEqual(len([path for path in evidence.iterdir() if path.is_dir()]), 2)
+
+    def test_large_repository_can_continue_grounding_in_the_allocated_root(self) -> None:
+        for index in range(257):
+            (self.repository / f"file-{index:03}.txt").write_text(f"caller {index}\n")
+        opened = self.bootstrap()
+        root = self.payload(opened)["root"]
+
+        continued = self.bootstrap("--root", root, "--read-path", "file-256.txt")
+
+        self.assertEqual(continued.returncode, 0, continued.stderr)
+        self.assertIn("FIRST_PARTY_CONTENTS_SKIPPED", opened.stdout)
+        self.assertIn("caller 256", continued.stdout)
+        self.assertIn("FIRST_PARTY_FILE_BEGIN=file-256.txt", continued.stdout)
+        self.assertEqual(len(list(Path(root).parent.iterdir())), 1)
+
+    def test_continuation_pages_large_files_without_unbounded_output(self) -> None:
+        (self.repository / "large.txt").write_text("first\n" + "later\n" * 400_000)
+        opened = self.bootstrap()
+
+        continued = self.bootstrap(
+            "--root", self.payload(opened)["root"], "--read-path", "large.txt",
+            "--start-line", "2", "--max-lines", "3",
+        )
+
+        self.assertEqual(continued.returncode, 0, continued.stderr)
+        self.assertEqual(continued.stdout.count("later\n"), 3)
+        self.assertIn("FIRST_PARTY_FILE_LINES=2:4", continued.stdout)
+
+    def test_continuation_rejects_escaping_paths_and_revision_drift(self) -> None:
+        opened = self.bootstrap()
+        root = self.payload(opened)["root"]
+        escaped = self.bootstrap("--root", root, "--read-path", "../outside.txt")
+        self.assertNotEqual(escaped.returncode, 0)
+        self.assertIn("invalid-read-path", escaped.stderr)
+        subprocess.run(
+            ["git", "checkout", "-b", "feature/moved"], cwd=self.repository,
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        moved = self.bootstrap("--root", root, "--read-path", "product.txt")
+        self.assertNotEqual(moved.returncode, 0)
+        self.assertIn("revision-drift", moved.stderr)
 
     def test_rejects_invocation_outside_the_repository_root(self) -> None:
         child = self.repository / "child"
