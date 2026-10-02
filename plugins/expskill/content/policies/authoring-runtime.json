@@ -1,0 +1,4 @@
+{
+  "schema_version": "authoring-runtime.v1",
+  "instructions": "Never create documentation files or add code comments unless the user asked for them."
+}
