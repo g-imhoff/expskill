@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +72,7 @@ def _records(names: tuple[str, ...] = ("CheckoutForm", "AccountCard"), suffix: s
 def _seed(module: object, receipt: dict, state_home: Path, workflow_id: str, names: tuple[str, ...] = ("CheckoutForm", "AccountCard"), suffix: str = "") -> tuple[dict, dict]:
     records = _records(names, suffix)
     candidate, review, manifest = _layers(records)
+    prepare_delivery_fixture(module, receipt, state_home, workflow_id, records, (candidate, review, manifest))
     records["selected_rules"] = {"responsive": {"id": "responsive", "reason": "actual pressure"}}
     records["seed_permission"] = {"source": "project-owned", "version": "current", "approved": True}
     records["questions"] = {}
@@ -230,7 +231,9 @@ class DesignStateContractV3Tests(unittest.TestCase):
             refreshed["evidence"]["CheckoutForm-evidence"] = changed
             refreshed["approvals"]["CheckoutForm-approval"]["code_digest"] = refreshed["components"]["CheckoutForm"]["code_digest"]
             refreshed_layers = _layers(refreshed)
-            refreshed_receipt = module.apply_updates(workflow_id=workflow_id, expected_revision=stale["revision"], updates={"components": {"CheckoutForm": refreshed["components"]["CheckoutForm"].copy()}, "evidence": {"CheckoutForm-evidence": changed}, "dependencies": {"CheckoutForm-dependency": refreshed["dependencies"]["CheckoutForm-dependency"]}, "approvals": {"CheckoutForm-approval": refreshed["approvals"]["CheckoutForm-approval"]}, "delivery": _expected_delivery(*refreshed_layers)}, state_home=state_home)
+            prepare_delivery_fixture(module, stale, state_home, workflow_id, refreshed, refreshed_layers)
+            changed = refreshed["evidence"]["CheckoutForm-evidence"]
+            refreshed_receipt = module.apply_updates(workflow_id=workflow_id, expected_revision=stale["revision"], updates={**{key: refreshed[key] for key in ("components", "evidence", "dependencies", "approvals")}, "delivery": _expected_delivery(*refreshed_layers)}, state_home=state_home)
             refreshed_state = module.load_workflow(workflow_id=workflow_id, state_home=state_home)
             self.assertNotIn("CheckoutForm", refreshed_state["invalidations"])
             self.assertNotIn("AccountCard", refreshed_state["invalidations"])
