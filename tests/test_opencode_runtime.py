@@ -51,10 +51,9 @@ import(%s).then(async (module) => {
   const payload = match?.[1] ?? '';
   const completeBlock = `<unslop-scope>\n${payload}\n</unslop-scope>`;
   assert('under-limit', completeBlock.length <= 5000);
-  const numberedRules = [...payload.matchAll(/^(\d+)\. \*\*[^*]+\*\*/gm)].map((entry) => Number(entry[1]));
-  assert('all-numbered-rules', JSON.stringify(numberedRules) === JSON.stringify(Array.from({ length: 31 }, (_, index) => index + 1)));
-  assert('terminal-rule-complete', payload.endsWith('The fancier synonym is rarely clearer.'));
-  assert('self-audit-preserved', payload.includes('What makes this obviously AI generated?') && payload.includes('Fix remaining tells.'));
+  assert('load-skill-at-start', payload.includes('Always load $expskill:unslop at the start of the conversation'));
+  assert('load-skill-after-compaction', payload.includes('after each compaction, before writing user-facing prose'));
+  assert('compact-load-instruction', completeBlock.length < 500 && !payload.includes('# Unslop'));
 
   const firstSnapshot = JSON.stringify(firstOutput.system);
   await transform({ sessionID: 's1' }, firstOutput);
@@ -68,7 +67,10 @@ import(%s).then(async (module) => {
 
   const context = { context: [] };
   await compacting({}, context);
-  assert('compacting', context.context.length === 1 && context.context[0].includes('Preserve the Unslop prose-style rules'));
+  assert('compacting', context.context.length === 1 && context.context[0].includes('After this compaction, reload $expskill:unslop before writing user-facing prose'));
+  const afterCompaction = { system: ['compacted request instructions'] };
+  await transform({ sessionID: 's1' }, afterCompaction);
+  assert('reload-after-compaction', afterCompaction.system[0].includes('Always load $expskill:unslop'));
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
@@ -1040,13 +1042,14 @@ class OpencodeRuntimeTests(unittest.TestCase):
             "ok:exact-module-export-keys",
             "ok:well-formed-marker",
             "ok:under-limit",
-            "ok:all-numbered-rules",
-            "ok:terminal-rule-complete",
-            "ok:self-audit-preserved",
+            "ok:load-skill-at-start",
+            "ok:load-skill-after-compaction",
+            "ok:compact-load-instruction",
             "ok:dedup-current-output",
             "ok:inject-fresh-request",
             "ok:one-block-per-output",
             "ok:compacting",
+            "ok:reload-after-compaction",
         ):
             self.assertIn(token, result.stdout)
 

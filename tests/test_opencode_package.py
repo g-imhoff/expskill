@@ -1931,8 +1931,18 @@ await hooks["experimental.chat.system.transform"]({ sessionID: "packed" }, outpu
 if (!output.system[0].includes("<unslop-scope>")) {
   throw new Error("installed UnslopPlugin could not load its packaged skill");
 }
-if (!output.system[0].includes("Never create documentation files or add code comments unless the user asked for them.")) {
-  throw new Error("installed UnslopPlugin omitted the unsolicited documentation and comments rule");
+if (!output.system[0].includes("Always load $expskill:unslop") || output.system[0].includes("# Unslop")) {
+  throw new Error("installed UnslopPlugin did not inject the skill loading instruction");
+}
+const { readFile } = await import("node:fs/promises");
+const skill = await readFile(new URL("./skills/unslop/SKILL.md", import.meta.resolve("opencode-expskill")), "utf8");
+if (!skill.includes("Never create documentation files or add code comments unless the user asked for them.")) {
+  throw new Error("installed Unslop skill omitted the unsolicited documentation and comments rule");
+}
+const context = { context: [] };
+await hooks["experimental.session.compacting"]({ sessionID: "packed" }, context);
+if (!context.context[0]?.includes("reload $expskill:unslop")) {
+  throw new Error("installed UnslopPlugin omitted the compaction reload instruction");
 }
 console.log(JSON.stringify(names));
 """
