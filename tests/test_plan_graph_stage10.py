@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -811,6 +812,91 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertTrue(graph["decisions"]["D4"]["stale"])
         self.assertNotEqual(graph["decisions"]["D4"]["version"], graph["decisions"]["D4"]["confirmed_version"])
         self.assertNotEqual(graph["lifecycle"]["derived_state"], "ready")
+
+    def test_original_accepted_basis_survives_source_and_execution_rotations_unchanged(self) -> None:
+        receipt = self._initialize()
+        original = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        basis = self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        basis_path = Path(basis["path"])
+        basis_digest = basis["digest"]
+        self.assertNotEqual(basis_path.parent, receipt.path.parent)
+        self.assertEqual(self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home), basis)
+        (self.repo / "config.py").write_text("CONFIG = {'implemented': True}\n", encoding="utf-8")
+        self._git("add", "config.py")
+        self._git("commit", "-m", "authorized implementation")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"],
+            dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD"), observed_at="2026-10-02T14:00:00Z"))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        command = [sys.executable, "-c", "import config; assert config.CONFIG['implemented'] is True"]
+        result = subprocess.run(command, cwd=self.repo, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proof = dict(graph["proof"]["P1"], fresh=True, evidence=[{
+            "workflow_id": receipt.workflow_id, "graph_revision": graph["graph_revision"],
+            "node": "T1", "branch": BRANCH, "commit": self._git("rev-parse", "HEAD"),
+            "check": shlex.join(command), "result": {"status": "pass", "exit_code": result.returncode},
+        }])
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof", ["proof", "P1"], proof)
+        current = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        previous = json.loads(receipt.previous_path.read_text(encoding="utf-8"))
+        self.assertGreater(current["graph_revision"], original["graph_revision"] + 1)
+        self.assertGreater(previous["graph_revision"], original["graph_revision"])
+        self.assertTrue(current["proof"]["P1"]["execution_required"])
+        self.assertEqual(hashlib.sha256(basis_path.read_bytes()).hexdigest(), basis_digest)
+        self.assertEqual(json.loads(basis_path.read_text(encoding="utf-8")), original)
+        self.assertEqual(self.helper.load_acceptance_basis(basis_path, basis_digest), original)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "already frozen"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, current["graph_revision"], self.state_home)
+        self.helper.discard_workflow(self.repo, BRANCH, receipt.workflow_id, current["graph_revision"], True, self.state_home)
+        self.assertFalse(receipt.path.exists())
+        self.assertEqual(self.helper.load_acceptance_basis(basis_path, basis_digest), original)
+
+    def test_acceptance_freeze_rejects_wrong_identity_stale_revision_and_changed_or_unconfirmed_grounding(self) -> None:
+        receipt = self._initialize()
+        for workflow_id, revision in (("0" * 32, receipt.revision), (receipt.workflow_id, receipt.revision + 1)):
+            with self.subTest(workflow_id=workflow_id, revision=revision), self.assertRaises(self.helper.PlanGraphError):
+                self.helper.freeze_acceptance_basis(self.repo, BRANCH, workflow_id, revision, self.state_home)
+        self.assertFalse((self.state_home / "acceptance-bases").exists())
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["projections", "U1", "confirmed"], "value": False}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "current ready"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"], self.state_home)
+        home = self.root / "changed-before-freeze"
+        ready = self._initialize(home)
+        (self.repo / "config.py").write_text("CONFIG = {'edited_before_freeze': True}\n", encoding="utf-8")
+        with self.assertRaises(self.helper.RevisionConflict):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, ready.workflow_id, ready.revision, home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "current ready"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, ready.workflow_id, graph["graph_revision"], home)
+        self.assertFalse((home / "acceptance-bases").exists())
+
+    def test_acceptance_cli_export_is_complete_and_detects_changed_bytes_or_symlink_substitution(self) -> None:
+        receipt = self._initialize()
+        exported = subprocess.run([sys.executable, str(HELPER), "freeze-acceptance", "--repo", str(self.repo),
+                                   "--branch", BRANCH, "--workflow-id", receipt.workflow_id, "--revision", str(receipt.revision),
+                                   "--state-home", str(self.state_home)], capture_output=True, text=True, check=False)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        basis = json.loads(exported.stdout)
+        self.assertEqual(basis["schema_version"], "plan-acceptance-basis-receipt.v1")
+        path = Path(basis["path"])
+        original_bytes = path.read_bytes()
+        original = self.helper.load_acceptance_basis(path, basis["digest"])
+        self.assertEqual(original, self.helper.load_workflow(self.repo, BRANCH, self.state_home))
+        self.assertEqual(basis["graph_digest"], self.helper._canonical_digest(original))
+        path.write_bytes(original_bytes + b"\n")
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "retained digest"):
+            self.helper.load_acceptance_basis(path, basis["digest"])
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "bytes were altered"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        self.assertEqual(path.read_bytes(), original_bytes + b"\n")
+        path.unlink()
+        path.symlink_to(receipt.path)
+        with self.assertRaises(self.helper.PlanGraphError):
+            self.helper.load_acceptance_basis(path, basis["digest"])
+        with self.assertRaises(self.helper.PlanGraphError):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
 
     def test_projection_rejects_presentation_bound_to_superseded_graph_meaning(self) -> None:
         graph = _graph()

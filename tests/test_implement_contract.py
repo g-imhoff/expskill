@@ -101,6 +101,23 @@ class ImplementContractTests(unittest.TestCase):
             for phrase in ("missing or truncated criteria", "material boundary counterexamples", "production baseline", "cumulative regression obligations"):
                 self.assertIn(phrase, role)
 
+    def test_plan_acceptance_basis_is_frozen_before_edits_and_carried_unchanged_to_judges(self) -> None:
+        for phrase in ("freeze_acceptance_basis", "freeze-acceptance", "outside rotating plan generations",
+                       "never use `current.yaml` or `previous.yaml`", "transport that same basis unchanged",
+                       "verify its retained byte digest", "rather than freeze the updated graph",
+                       "load_acceptance_basis", "cumulative regression obligations separate"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.normalized)
+        correct = (PLUGIN / "content" / "skills" / "correct" / "SKILL.md").read_text().lower()
+        for phrase in ("original frozen accepted criterion snapshot unchanged", "before the first production edit",
+                       "freeze_acceptance_basis", "if production edits already began", "does not invent approval"):
+            self.assertIn(phrase, correct)
+        spec = (PLUGIN / "content" / "agents" / "expskill-spec.md").read_text().lower()
+        for phrase in ("frozen pre-edit acceptance snapshot outside rotating plan generations",
+                       "verify its retained byte digest", "reject current.yaml or previous.yaml",
+                       "cannot be replaced by the updated graph"):
+            self.assertIn(phrase, spec)
+
     def test_run_budget_reserves_required_judges_and_reuses_only_identical_inputs(self) -> None:
         for phrase in (
             "3n + 2",

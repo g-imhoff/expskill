@@ -2545,6 +2545,80 @@ def load_workflow(
         return copy.deepcopy(_refresh_repository_state_locked(transaction))
 
 
+def freeze_acceptance_basis(
+    repo: Path, branch: str, workflow_id: str, expected_revision: int,
+    state_home: Path | None = None,
+) -> dict[str, Any]:
+    if not isinstance(workflow_id, str) or not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
+        raise PlanGraphError("invalid acceptance workflow identity")
+    _integer(expected_revision, "acceptance graph revision", minimum=1)
+    with _transaction(repo, branch, state_home, require_workflow=True) as transaction:
+        graph = _refresh_repository_state_locked(transaction)
+        if graph["workflow_id"] != workflow_id:
+            raise PlanGraphError("acceptance workflow identity mismatch")
+        if graph["graph_revision"] != expected_revision:
+            raise RevisionConflict("acceptance graph revision conflict")
+        if _derive_validated(graph) != "ready" or graph["git"]["delivery"]["state"] != "planning":
+            raise PlanGraphError("acceptance snapshot requires a current ready planning basis")
+        root_fd = _open_private_child(transaction.home_fd, "acceptance-bases", create=True)
+        basis_fd: int | None = None
+        try:
+            basis_fd = _open_private_child(root_fd, transaction.key, create=True)
+            name = f"{workflow_id}.json"
+            try:
+                payload = _read_bytes_entry(basis_fd, name)
+            except _MissingState:
+                _create_json_entry_exclusive(basis_fd, name, graph)
+                payload = _read_bytes_entry(basis_fd, name)
+            expected_payload = (json.dumps(graph, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+            if payload != expected_payload:
+                raise PlanGraphError("accepted basis already frozen at another revision or its bytes were altered")
+            _revalidate_directory(transaction.home_fd, "acceptance-bases", root_fd)
+            _revalidate_directory(root_fd, transaction.key, basis_fd)
+            return {
+                "schema_version": "plan-acceptance-basis-receipt.v1",
+                "operation": "freeze-acceptance",
+                "workflow_id": workflow_id,
+                "graph_revision": expected_revision,
+                "path": str(transaction.home_path / "acceptance-bases" / transaction.key / name),
+                "digest": hashlib.sha256(payload).hexdigest(),
+                "graph_digest": _canonical_digest(graph),
+                "repository": graph["identity"]["repository"],
+                "branch": branch,
+                "baseline_commit": graph["baseline"]["repository_revision"],
+            }
+        finally:
+            if basis_fd is not None:
+                os.close(basis_fd)
+            os.close(root_fd)
+
+
+def load_acceptance_basis(path: Path, digest: str) -> dict[str, Any]:
+    if not isinstance(digest, str) or not _HEX_KEY.fullmatch(digest):
+        raise PlanGraphError("accepted basis digest is invalid")
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts or path.parent.parent.name != "acceptance-bases" or not _HEX_KEY.fullmatch(path.parent.name):
+        raise PlanGraphError("accepted basis locator is invalid")
+    basis_fd = _open_directory_path(path.parent, create=False)
+    try:
+        payload = _read_bytes_entry(basis_fd, path.name)
+    finally:
+        os.close(basis_fd)
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise PlanGraphError("accepted basis bytes do not match the retained digest")
+    graph = _decode_json(payload, "accepted basis")
+    if path.name != f"{graph.get('workflow_id')}.json":
+        raise PlanGraphError("accepted basis locator does not bind its workflow")
+    _validate_graph(graph, None, None, validate_objects=False)
+    identity = graph["identity"]
+    key = hashlib.sha256(f"{identity['git_common_dir']}\0{identity['target_branch']}".encode("utf-8")).hexdigest()
+    if path.parent.name != key:
+        raise PlanGraphError("accepted basis locator does not bind its repository and branch")
+    if _derive_validated(graph) != "ready" or graph["git"]["delivery"]["state"] != "planning":
+        raise PlanGraphError("accepted basis is not a frozen ready planning basis")
+    return graph
+
+
 def _stale_repository_evidence(graph: dict[str, Any], context: _RepoContext) -> set[str]:
     fingerprints = graph["baseline"].get("evidence_fingerprints", {})
     changed = None
@@ -4122,7 +4196,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Operate a private Plan Graph from the installed plugin package"
     )
-    parser.add_argument("command", choices=("initialize", "discover", "load", "apply", "recover", "state", "pause", "resume", "discard", "create-branch", "complete"))
+    parser.add_argument("command", choices=("initialize", "discover", "load", "apply", "recover", "state", "pause", "resume", "discard", "create-branch", "complete", "freeze-acceptance"))
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--state-home", type=Path, default=None)
@@ -4183,6 +4257,10 @@ def main(argv: list[str] | None = None) -> int:
         except (UnicodeError, ValueError) as error:
             raise PlanGraphError("CLI JSON input is not strict JSON") from error
 
+    if args.command == "freeze-acceptance":
+        if not args.workflow_id or args.revision is None:
+            parser.error("freeze-acceptance requires --workflow-id and --revision")
+        return emit(freeze_acceptance_basis(args.repo, args.branch, args.workflow_id, args.revision, args.state_home))
     if args.command == "initialize":
         receipt = initialize_workflow(args.repo, args.branch, input_json(), args.state_home)  # type: ignore[arg-type]
         graph = load_workflow(args.repo, args.branch, args.state_home)
