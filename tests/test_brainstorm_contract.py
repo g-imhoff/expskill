@@ -313,9 +313,11 @@ class BrainstormContractTests(unittest.TestCase):
             self.assertEqual(self.contents.count(heading), 1, heading)
         section = _markdown_section(self.contents, "## When to use").lower()
         for clause in (
-            "use only when the user explicitly invokes `$brainstorm` or explicitly asks to use the brainstorm skill",
+            "use only when the user explicitly invokes `$brainstorm`",
+            "an authorized lifecycle coordinator deliberately selects brainstorm",
+            "deliberate selection must be stated to the user and is not implicit activation",
             "stay inactive for generic ideation, explanation, summarization, or research",
-            "stay inactive for requests to plan, implement, test, review, verify, integrate, route, or run a complete workflow",
+            "stay inactive for requests whose intended outcome is already settled",
             "when a request combines brainstorming with another phase, perform only brainstorming",
         ):
             self.assertIn(clause, section)
@@ -368,6 +370,8 @@ class BrainstormContractTests(unittest.TestCase):
         boundaries = _markdown_section(self.contents, "## Boundaries and recovery").lower()
         for clause in (
             "never ask the user for information the agent can safely discover",
+            "handle an isolated choice here",
+            "invoke it only with explicit consent",
         ):
             self.assertIn(clause, understanding)
         for clause in (

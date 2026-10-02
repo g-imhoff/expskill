@@ -219,8 +219,8 @@ Invoke a skill directly when you know what you want:
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work, it
-may launch one Plan session and one Design
-session concurrently from the same baseline. It coordinates against the
+may ask you to open one Plan conversation and one Design
+conversation concurrently from the same baseline. It coordinates against the
 canonical Plan Graph when one exists, validates revision-bound receipts, and
 preserves the implementation gates. It is the only skill that may activate
 implicitly.
@@ -228,8 +228,8 @@ implicitly.
 There is no setup gate. Neither `$setup-design` nor `$setup-test` is
 auto-loaded or router-selected merely because a setup record is absent or
 invalid. If UI or test work arrives with no setup record and no explicit
-setup intent, the router reports "not configured, run `$setup-design` /
-`$setup-test`" and stops before Plan, Design, or feature implementation.
+setup intent, the selected phase discovers the project-native capability it needs.
+Only an actual missing capability blocks that phase.
 A ready `.expskill/setup-design.md` or `.expskill/setup-test.md` record is
 read by its owning skill only and is never a routing precondition. Those
 tracked records and their methods persist across worktrees and runs.

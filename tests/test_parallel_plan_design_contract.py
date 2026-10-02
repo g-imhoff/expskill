@@ -25,7 +25,7 @@ def test_router_has_one_bounded_parallel_plan_design_route() -> None:
     router = " ".join(skill("use-expskill").split())
     required = (
         "There is no setup gate.",
-        "not configured",
+        "discoverable project-native capabilities",
         "never acts as a routing precondition",
         "absent",
         "invalid",
@@ -40,6 +40,7 @@ def test_router_has_one_bounded_parallel_plan_design_route() -> None:
     )
     for phrase in required:
         assert phrase.lower() in router.lower()
+    assert "stop before Plan, Design, or feature implementation" not in router
     for removed in ("inspect_setup.py", "seed-ui-harness", "$setup-ui-testing", ".ui-harness"):
         assert removed.lower() not in router.lower()
 
