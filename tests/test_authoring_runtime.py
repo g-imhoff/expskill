@@ -89,13 +89,24 @@ const compact = { context: [] };
 await hooks["experimental.session.compacting"]({}, compact);
 assert.ok(compact.context.join("\n").includes(rule));
 const registered = {};
-await plugin.setup({ session: { hook: async (name, callback) => { (registered[name] ??= []).push(callback); } } });
+const skills = new Map();
+await plugin.setup({
+  skill: { transform: async callback => callback({ get: id => skills.get(id), add: skill => skills.set(skill.id, skill) }) },
+  session: { hook: async (name, callback) => { (registered[name] ??= []).push(callback); } },
+});
+const unslop = skills.get("expskill:unslop");
+assert.ok(unslop.content.includes("Avoid em dashes entirely"));
+assert.ok(unslop.content.includes("Prefer the plain word"));
+assert.ok(unslop.path.endsWith("unslop/SKILL.md"));
 for (const name of ["context", "compaction", "generate"]) {
   for (const system of [["base instructions"], [{ type: "text", text: "base instructions" }], []]) {
     for (const callback of registered[name]) await callback({ system });
     for (const callback of registered[name]) await callback({ system });
     const text = system.map(item => typeof item === "string" ? item : item.text).join("\n");
     assert.equal(text.split(rule).length - 1, 1, name);
+    assert.ok(text.includes("Always load $expskill:unslop"), name);
+    assert.ok(!text.includes("# Unslop"), name);
+    assert.ok(text.length < 500, name);
   }
 }
 const reminder = { context: [] };
@@ -130,6 +141,12 @@ assert.ok(reminder.context.join("\n").includes(rule));
             module.register(Context())
             self.assertEqual(sections["expskill.authoring"][0], RULE)
             self.assertEqual(sections["expskill.authoring"][1]["position"], "after_memory")
+            unslop = json.loads((package / "assets/unslop-runtime.json").read_text())
+            loaded = "\n\n".join(text for name, (text, _) in sorted(sections.items()) if name.startswith("expskill.unslop"))
+            self.assertTrue(loaded.startswith(unslop["scope"]))
+            self.assertIn("Avoid em dashes entirely", loaded)
+            self.assertIn("Prefer the plain word", loaded)
+            self.assertTrue(all(len(text) <= 4000 for text, _ in sections.values()))
             self.assertEqual(len(skills), 15)
             self.assertTrue(all(path.is_file() for path in skills.values()))
 
@@ -157,15 +174,20 @@ loaded = manager.list_plugins()
 assert loaded[0]["enabled"], loaded
 assert len(manager.list_plugin_skills("expskill")) == 15
 rendered = manager.render_system_prompt_sections({})
-assert [item.content for item in rendered] == [sys.argv[3]]
+assert rendered[0].content == sys.argv[3]
+loaded = "\\n\\n".join(item.content for item in rendered[1:])
+assert "Avoid em dashes entirely" in loaded
+assert "Prefer the plain word" in loaded
+assert all(len(item.content) <= 4000 for item in rendered)
+expected = [item.content for item in rendered]
 prompt = format_system_prompt_sections(rendered) + "\\n\\nConversation started: test"
 agent = SimpleNamespace(_cached_system_prompt=prompt)
-assert [item.content for item in _frozen_plugin_prompt_sections(agent)] == [sys.argv[3]]
+assert [item.content for item in _frozen_plugin_prompt_sections(agent)] == expected
 agent._cached_system_prompt = None
-assert [item.content for item in _frozen_plugin_prompt_sections(agent)] == [sys.argv[3]]
+assert [item.content for item in _frozen_plugin_prompt_sections(agent)] == expected
 resumed = SimpleNamespace()
 restore_plugin_prompt_sections(resumed, prompt)
-assert [item.content for item in _frozen_plugin_prompt_sections(resumed)] == [sys.argv[3]]
+assert [item.content for item in _frozen_plugin_prompt_sections(resumed)] == expected
 print(json.dumps({"enabled": True, "preserved": True}))
 '''
             env = dict(os.environ)
