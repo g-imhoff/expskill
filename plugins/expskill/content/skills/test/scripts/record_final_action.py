@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import shutil
 import stat
 import subprocess
@@ -861,6 +862,75 @@ def verify_execution_record(
         return False
 
 
+def _execute(repository: Path, command: list[str], timeout: float) -> tuple[str, bytes]:
+    try:
+        process = subprocess.Popen(
+            command, cwd=repository, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=os.name == "posix",
+        )
+    except OSError as error:
+        return "launch-error", f"recorder_launch_error={type(error).__name__}: {error}\n".encode("utf-8")
+    try:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+            return str(process.returncode), output
+        except subprocess.TimeoutExpired as error:
+            output = error.stdout or b""
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                output, _ = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired as drain_error:
+                output = drain_error.stdout or output
+                if process.stdout is not None:
+                    process.stdout.close()
+                process.kill()
+                process.wait(timeout=2)
+            return "timeout", output
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def _postflight(repository: Path, values: dict[str, object]) -> dict[str, object]:
+    teardown: list[dict[str, str]] = []
+    for raw in values["cleanup_paths"]:
+        try:
+            status_value, detail = _remove_created_path(repository / raw)
+        except OSError as error:
+            status_value, detail = "fail", f"{type(error).__name__}: {error}"
+        teardown.append({"path": raw, "status": status_value, "detail": detail})
+
+    def capture(*arguments: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return _git(repository, *arguments)
+        except OSError as error:
+            return subprocess.CompletedProcess(["git", *arguments], 1, "", f"{type(error).__name__}: {error}")
+
+    head = capture("rev-parse", "HEAD")
+    branch = capture("branch", "--show-current")
+    diff = capture("diff", "--exit-code", "HEAD", "--", *values["integrity_paths"])
+    worktree = capture("status", "--short", "--untracked-files=all", "--", *values["integrity_paths"])
+    integrity_status = "pass" if (
+        head.returncode == 0 and head.stdout.strip() == values["expected_head"]
+        and branch.returncode == 0 and branch.stdout.strip() == values["expected_branch"]
+        and diff.returncode == 0 and worktree.returncode == 0 and not worktree.stdout.strip()
+    ) else "fail"
+    return {
+        "teardown": teardown,
+        "teardown_status": "pass" if all(item["status"] == "pass" for item in teardown) else "fail",
+        "head": head.stdout.strip(), "branch": branch.stdout.strip(),
+        "source_diff": diff.stdout + diff.stderr,
+        "source_status": worktree.stdout + worktree.stderr,
+        "integrity_status": integrity_status,
+    }
+
+
 def _run(repository: Path, values: dict[str, object], command: list[str]) -> bool:
     _validate_command(command)
     root = values.get("root")
@@ -883,17 +953,16 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
         protected = _snapshot_run_root(root)
         charter = json.loads((root / CHARTER_FILENAME).read_text(encoding="utf-8"))
         remaining = execution_budget.remaining_seconds(charter, root)
-        if remaining <= 0 and "completed_process" not in values:
+        if remaining <= 0 and "execution_result" not in values:
             _error("deadline-exhausted", "frozen run deadline expired before execution")
-        completed = values.get("completed_process") or subprocess.run(
-            command,
-            cwd=repository,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=remaining,
-        )
-        output = completed.stdout
+        if "execution_result" in values:
+            exit_code, output = values["execution_result"]
+            postflight = values["postflight"]
+        else:
+            try:
+                exit_code, output = _execute(repository, command, remaining)
+            finally:
+                postflight = _postflight(repository, values)
         _verify_run_root_unchanged(root, protected)
         observation_metadata = _write_exclusive_at(
             observation_parent,
@@ -907,50 +976,20 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
             observation_metadata,
         )
 
-        teardown: list[dict[str, str]] = []
-        for raw in values["cleanup_paths"]:
-            status_value, detail = _remove_created_path(repository / raw)
-            teardown.append({"path": raw, "status": status_value, "detail": detail})
-        teardown_status = "pass" if all(item["status"] == "pass" for item in teardown) else "fail"
-
-        head = _git(repository, "rev-parse", "HEAD")
-        branch = _git(repository, "branch", "--show-current")
-        diff = _git(repository, "diff", "--exit-code", "HEAD", "--", *values["integrity_paths"])
-        worktree = _git(
-            repository,
-            "status",
-            "--short",
-            "--untracked-files=all",
-            "--",
-            *values["integrity_paths"],
-        )
-        integrity_status = "pass" if (
-            head.returncode == 0
-            and head.stdout.strip() == values["expected_head"]
-            and branch.returncode == 0
-            and branch.stdout.strip() == values["expected_branch"]
-            and diff.returncode == 0
-            and worktree.returncode == 0
-            and not worktree.stdout.strip()
-        ) else "fail"
-        predicate_match = completed.returncode == values["expected_exit"] and _output_matches(
+        teardown_status = postflight["teardown_status"]
+        integrity_status = postflight["integrity_status"]
+        predicate_match = exit_code == str(values["expected_exit"]) and _output_matches(
             output, str(values["predicate_mode"]), values["predicate_value"]
         )
         matched = predicate_match and teardown_status == "pass" and integrity_status == "pass"
         metadata = {
             "schema_version": "test-final-action-record.v1",
             "command": command,
-            "exit_code": str(completed.returncode),
+            "exit_code": exit_code,
             "output_sha256": hashlib.sha256(output).hexdigest(),
             "output_predicate": "match" if predicate_match else "mismatch",
-            "teardown": teardown,
-            "teardown_status": teardown_status,
-            "head": head.stdout.strip(),
-            "branch": branch.stdout.strip(),
             "integrity_paths": values["integrity_paths"],
-            "source_diff": diff.stdout + diff.stderr,
-            "source_status": worktree.stdout + worktree.stderr,
-            "integrity_status": integrity_status,
+            **postflight,
             "outcome": "match" if matched else "mismatch",
         }
         if "execution_entry" in values:
@@ -1069,13 +1108,15 @@ def _record_manifests(repository: Path, root: Path, manifests: list[object]) -> 
         remaining = execution_budget.remaining_seconds(charter, root)
         if remaining <= 0:
             _error("deadline-exhausted", "frozen run deadline expired before execution")
-        def execute(command: list[str]) -> subprocess.CompletedProcess[bytes]:
-            return subprocess.run(command, cwd=repository, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=remaining)
-        with ThreadPoolExecutor(max_workers=len(prepared)) as executor:
-            completed = list(executor.map(execute, [command for _, command, _ in prepared]))
+        try:
+            with ThreadPoolExecutor(max_workers=len(prepared)) as executor:
+                completed = list(executor.map(lambda command: _execute(repository, command, remaining), [command for _, command, _ in prepared]))
+        finally:
+            for values, _, _ in prepared:
+                values["postflight"] = _postflight(repository, values)
         _verify_run_root_unchanged(root, protected)
         for (values, _, _), result in zip(prepared, completed):
-            values["completed_process"] = result
+            values["execution_result"] = result
     outcomes = [_run(repository, values, command) for values, command, _ in prepared]
     recorded_entries = [dict(values["recorded_entry"]) for values, _, _ in prepared]
     for recorded in recorded_entries:
