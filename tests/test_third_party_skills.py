@@ -242,25 +242,22 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         actual = (SKILLS_ROOT / "unslop" / "SKILL.md").read_text(encoding="utf-8")
         self.assertEqual(actual, expected)
 
-    def test_public_grill_me_mechanically_merges_the_upstream_wrapper_and_engine(self) -> None:
-        third_party = PLUGIN_ROOT / "content" / "third-party" / "sources" / "mattpocock"
-        wrapper = (third_party / "grill-me" / "SKILL.md").read_text(encoding="utf-8")
-        engine = (third_party / "grilling" / "SKILL.md").read_text(encoding="utf-8")
-        wrapper_end = wrapper.index("\n---\n", 4) + len("\n---\n")
-        engine_end = engine.index("\n---\n", 4) + len("\n---\n")
-        frontmatter = wrapper[:wrapper_end].replace(
-            "disable-model-invocation: true\n",
-            "",
-            1,
-        )
-        body = engine[engine_end:].lstrip("\n")
-        body = body.replace("it; don't", "it. Don't").replace(
-            "report; ask",
-            "report. Ask",
-        )
-        expected = frontmatter + "\n" + body
+    def test_public_grill_me_adapts_pinned_sources_with_bounded_material_decisions(self) -> None:
         actual = (SKILLS_ROOT / "grill-me" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(actual, expected)
+        for clause in (
+            "Adapted from the pinned Matt Pocock Grill Me and Grilling sources",
+            "Run only on explicit invocation or explicit consent",
+            "Ask at most three material questions per round",
+            "Use at most six rounds",
+            "without a recommended answer",
+            "explicitly deferred choices with their dependent work blocked",
+            "without claiming completion",
+            "confirmed decision delta",
+            "Do not implement, route to another lifecycle phase",
+        ):
+            self.assertIn(clause, actual)
+        for old in ("Ask the whole frontier", "every branch of the design tree visited", "give your recommended answer"):
+            self.assertNotIn(old, actual)
 
     def test_every_skill_owned_text_file_avoids_banned_punctuation(self) -> None:
         roots = (SKILLS_ROOT, ROOT / ".agents" / "skills")

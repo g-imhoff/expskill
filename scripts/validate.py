@@ -2273,14 +2273,18 @@ def _validate_public_third_party_derivations(
             b"",
             1,
         )
-        body = engine[engine_end:].lstrip(b"\n")
-        body = body.replace(b"it; don't", b"it. Don't").replace(
-            b"report; ask",
-            b"report. Ask",
+        grill = _without_shared_metadata_block(public_grill)
+        clauses = (
+            b"Adapted from the pinned Matt Pocock Grill Me and Grilling sources.",
+            b"Run only on explicit invocation or explicit consent",
+            b"Ask at most three material questions per round",
+            b"Use at most six rounds for the current agreed scope.",
+            b"without claiming completion",
+            b"confirmed decision delta",
+            b"Do not implement, route to another lifecycle phase",
         )
-        expected_grill = frontmatter + b"\n" + body
-        if _without_shared_metadata_block(public_grill) != expected_grill:
-            errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
+        if not grill.startswith(b"---\nname: grill-me\n") or any(clause not in grill for clause in clauses):
+            errors.append("public skill 'grill-me' must retain attributed bounded decision behavior")
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
