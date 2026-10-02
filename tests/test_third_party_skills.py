@@ -11,20 +11,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
-SKILLS_ROOT = PLUGIN_ROOT / "skills"
-HOOKS_PATH = PLUGIN_ROOT / "hooks" / "hooks.json"
-HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "inject_unslop.py"
-LOCK_PATH = PLUGIN_ROOT / "third-party" / "upstream-lock.json"
+SKILLS_ROOT = PLUGIN_ROOT / "content" / "skills"
+HOOKS_PATH = PLUGIN_ROOT / "codex" / "hooks" / "hooks.json"
+HOOK_SCRIPT = PLUGIN_ROOT / "codex" / "hooks" / "inject_unslop.py"
+LOCK_PATH = PLUGIN_ROOT / "content" / "third-party" / "upstream-lock.json"
 
 EXPECTED_PUBLIC_SKILLS = {
+    "autonomous-run",
     "brainstorm",
     "design",
     "grill-me",
     "implement",
     "correct",
     "review",
+    "review-loop",
     "plan",
-    "setup-ui-testing",
+    "setup-design",
+    "setup-test",
     "skill-builder",
     "test",
     "unslop",
@@ -85,7 +88,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
     def test_unslop_is_directly_invokable_but_not_implicitly_selected(self) -> None:
         root = SKILLS_ROOT / "unslop"
         frontmatter = _frontmatter(root / "SKILL.md")
-        metadata = (root / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        metadata = (PLUGIN_ROOT / "codex" / "skill-adapters" / "unslop" / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertEqual(frontmatter["name"], "unslop")
         self.assertIn('$unslop', metadata)
@@ -94,7 +97,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
     def test_grill_me_is_directly_invokable_but_not_implicitly_selected(self) -> None:
         root = SKILLS_ROOT / "grill-me"
         frontmatter = _frontmatter(root / "SKILL.md")
-        metadata = (root / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        metadata = (PLUGIN_ROOT / "codex" / "skill-adapters" / "grill-me" / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertEqual(frontmatter["name"], "grill-me")
         self.assertIn('$grill-me', metadata)
@@ -111,7 +114,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         self.assertEqual(len(handlers), 1)
         handler = handlers[0]
         self.assertEqual(handler["type"], "command")
-        self.assertIn("${PLUGIN_ROOT}/hooks/inject_unslop.py", handler["command"])
+        self.assertIn("${PLUGIN_ROOT}/codex/hooks/inject_unslop.py", handler["command"])
         self.assertGreaterEqual(handler["additionalContextLimit"], 4000)
         self.assertFalse(handler.get("async", False))
 
@@ -232,6 +235,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
     def test_public_unslop_is_the_upstream_copy_with_only_codex_frontmatter_adaptation(self) -> None:
         source = (
             PLUGIN_ROOT
+            / "content"
             / "third-party"
             / "sources"
             / "pstack"
@@ -243,7 +247,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_public_grill_me_mechanically_merges_the_upstream_wrapper_and_engine(self) -> None:
-        third_party = PLUGIN_ROOT / "third-party" / "sources" / "mattpocock"
+        third_party = PLUGIN_ROOT / "content" / "third-party" / "sources" / "mattpocock"
         wrapper = (third_party / "grill-me" / "SKILL.md").read_text(encoding="utf-8")
         engine = (third_party / "grilling" / "SKILL.md").read_text(encoding="utf-8")
         wrapper_end = wrapper.index("\n---\n", 4) + len("\n---\n")
@@ -278,7 +282,7 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                         violations.append(f"{path.relative_to(ROOT)}: {label}")
         self.assertEqual(violations, [])
 
-    def test_use_expskill_only_offers_grill_me_at_a_user_decision_frontier(self) -> None:
+    def test_use_expskill_only_uses_grill_me_at_a_user_decision_frontier(self) -> None:
         body = " ".join(
             (SKILLS_ROOT / "use-expskill" / "SKILL.md")
             .read_text(encoding="utf-8")
@@ -291,13 +295,12 @@ class ThirdPartySkillContractTests(unittest.TestCase):
             "consequential",
             "connected",
             "only the user can decide",
-            "offer `$grill-me`",
-            "explicit consent",
+            "use `$grill-me`",
+            "confirmed shared understanding",
             "resume the owning skill",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, body)
-        self.assertIn("never automatically invoke `$grill-me`", body)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ HELPER = (
     ROOT
     / "plugins"
     / "expskill"
+    / "content"
     / "skills"
     / "skill-builder"
     / "scripts"
@@ -5811,6 +5812,7 @@ def test_recovery_reapplies_live_baseline_semantics_to_rehashed_receipt(
     (run / "receipts" / f"{receipt['sequence']:08d}.json").write_bytes(
         helper.canonical_json_bytes(receipt)
     )
+    (run / "receipts" / f"{receipt['sequence']:08d}.json").chmod(0o600)
     (run / "current.json").write_text("{broken", encoding="utf-8")
 
     try:
