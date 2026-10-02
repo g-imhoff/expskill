@@ -99,6 +99,23 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertIn("fail closed", self.body)
         self.assertRegex(self.body, r"never.*fourth|never.*inflat|inflation")
 
+    def test_standalone_allowance_bounds_every_dispatch_and_returns_remaining_capacity(self) -> None:
+        for phrase in (
+            "before any delegation",
+            "48 ai dispatches",
+            "eight retries",
+            "30 minutes",
+            "at most four in flight",
+            "minimum of",
+            "follow-up that starts another ai turn",
+            "reserve required re-reviews before launching any fixer",
+            "every reviewer, fixer, retry, and follow-up",
+            "outstanding reservations",
+            "never reset",
+            "budget handoff on every terminal outcome",
+        ):
+            self.assertIn(phrase, self.body)
+
     def test_prose_stays_plain_and_bounded(self) -> None:
         self.assertLessEqual(len(self.raw.splitlines()), 220)
         self.assertNotIn("\u2014", self.raw)
