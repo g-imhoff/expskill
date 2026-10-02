@@ -101,13 +101,13 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_user_selected_agent_runtime_settings_are_preserved(self) -> None:
         expected = {
-            "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
-            "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-            "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-            "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-            "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-            "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-            "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+            "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
+            "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
+            "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
+            "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
+            "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+            "expskill-review": ("gpt-6-sol", "xhigh", "read-only"),
+            "expskill-spec": ("gpt-6-sol", "xhigh", "read-only"),
         }
         for name, settings in expected.items():
             profile = json.loads(
