@@ -450,6 +450,12 @@ VALID_EVIDENCE_CONTRACT = {
 }
 
 
+_PACKAGED_EVIDENCE_CONTRACT = json.loads(EVIDENCE_CONTRACT.read_text(encoding="utf-8"))
+for _extension in ("output_predicates", "run_budgets", "recorded_execution"):
+    if _extension in _PACKAGED_EVIDENCE_CONTRACT:
+        VALID_EVIDENCE_CONTRACT[_extension] = copy.deepcopy(_PACKAGED_EVIDENCE_CONTRACT[_extension])
+
+
 def _canonical_sha256(value: object) -> str:
     encoded = json.dumps(
         value,

@@ -289,6 +289,25 @@ TEST_EVIDENCE_CONTRACT_FIELDS = {
     "receipt",
     "finding",
 }
+TEST_EVIDENCE_EXTENSIONS = {'run_budgets': {'preparation_schema': 'test-charter-preparation.v2',
+                 'charter_schema': 'test-charter.v2',
+                 'default_actions': 8,
+                 'default_usable_seconds': 780,
+                 'hard_actions': 64,
+                 'hard_waves': 16,
+                 'actions_per_wave': 8,
+                 'hard_usable_seconds': 3600,
+                 'closed_fields': ['semantic_actions_max',
+                                   'waves_max',
+                                   'usable_budget_seconds',
+                                   'rationale',
+                                   'waves'],
+                 'limits_encoding': 'decimal strings',
+                 'required_scope': 'every material oracle required action '
+                                   'occurs in the frozen wave plan',
+                 'execution': 'reject unplanned or reordered waves and bound '
+                              'child execution to the remaining bootstrap '
+                              'deadline'}}
 TEST_EVIDENCE_TERMINAL_STATES = ["PASS", "FAIL", "BLOCKED", "EXEMPT"]
 TEST_EVIDENCE_FINDING_KINDS = [
     "product-defect",
@@ -1482,6 +1501,18 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "scripts/freeze_charter.py",
                 "scripts/record_final_action.py",
             })
+            contract_path = skill_root / "references" / "evidence-contract.json"
+            if contract_path.is_file() and not contract_path.is_symlink():
+                try: contract = json.loads(contract_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError): contract = None
+                if isinstance(contract, dict) and set(contract) == TEST_EVIDENCE_CONTRACT_FIELDS | set(TEST_EVIDENCE_EXTENSIONS):
+                    expected_files.add("scripts/execution_budget.py")
+                    _required_nonempty_package_file(
+                        plugin_root,
+                        f"{relative_skill}/scripts/execution_budget.py",
+                        "test execution budget helper",
+                        errors,
+                    )
         expected_directories: set[str] = set()
         if skill_root.name == "brainstorm":
             expected_directories.add("references")
@@ -1774,12 +1805,16 @@ def _validate_test_evidence_contract(skill_root: Path, errors: list[str]) -> Non
     contract = _load_json_object(contract_path, "test evidence contract", errors)
     if contract is None:
         return
-    if set(contract) != TEST_EVIDENCE_CONTRACT_FIELDS:
+    if set(contract) not in (TEST_EVIDENCE_CONTRACT_FIELDS, TEST_EVIDENCE_CONTRACT_FIELDS | set(TEST_EVIDENCE_EXTENSIONS)):
         errors.append(
-            "test evidence contract keys must be exactly schema_version, "
-            "terminal_states, finding_kinds, bundle, receipt, and finding"
+            "test evidence contract keys must be exactly the legacy six fields or "
+            "those fields plus run_budgets"
         )
         return
+    if set(TEST_EVIDENCE_EXTENSIONS) <= set(contract):
+        for name, expected in TEST_EVIDENCE_EXTENSIONS.items():
+            if contract[name] != expected:
+                errors.append(f"test evidence contract {name} must match the required closed declaration")
     if contract.get("schema_version") != TEST_EVIDENCE_CONTRACT_VERSION:
         errors.append(
             "test evidence contract schema_version must be "
