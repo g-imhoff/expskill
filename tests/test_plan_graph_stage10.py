@@ -1580,6 +1580,77 @@ class TransactionLayerTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.helper.PlanGraphError, "fresh and independent"):
                     self._typed_update(receipt.workflow_id, loaded, "refresh-audit", ["audit"], attempted, home)
 
+    def test_public_audit_correction_sequence_requires_fresh_inspection_after_real_negative_and_user_changes(self) -> None:
+        template = _graph()
+        template["audit"] = {"breadth": True, "reason": "Validation crosses producer and consumer boundaries"}
+        template["proof"]["P1"]["planned_method"]["negative"] = "valid input loads"
+        template["projections"]["U1"]["confirmed"] = False
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
+        observations = []
+        program = ("import json,os,sys; g=json.load(open(sys.argv[1])); "
+                   "negative=g['proof']['P1']['planned_method']['negative'].lower(); "
+                   "ok='rejected' in negative and ('malformed' in negative or 'unknown' in negative); "
+                   "print(json.dumps({'pid':os.getpid(),'open':not ok,'negative':negative}))")
+
+        def inspect_and_record():
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            frozen = self.root / f"audit-graph-{graph['graph_revision']}.json"
+            frozen.write_text(json.dumps(graph), encoding="utf-8")
+            frozen.chmod(0o400)
+            result = subprocess.run([sys.executable, "-c", program, str(frozen)], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            observation = json.loads(result.stdout)
+            observations.append(observation)
+            finding = {"id": "missing-negative", "severity": "high", "evidence": ["E1"],
+                "disposition": "open" if observation["open"] else "resolved"}
+            resolutions = [] if observation["open"] else [{"finding_id": "missing-negative", "disposition": "resolved", "evidence": ["E1"]}]
+            audit = dict(graph["audit"], fresh=True, independent=True, graph_revision=graph["graph_revision"],
+                findings=[finding], resolutions=resolutions,
+                constraints=graph["audit"]["constraints"] + [f"test-only read-only subprocess {observation['pid']}"])
+            return self._typed_update(receipt.workflow_id, graph, "refresh-audit", ["audit"], audit)
+
+        self.assertEqual(inspect_and_record().state, "stale")
+        self.assertTrue(observations[0]["open"])
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["proof", "P1", "planned_method", "negative"],
+              "value": "Malformed configuration is rejected with a reason"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["audit"]["fresh"])
+        self.assertFalse(graph["audit"]["independent"])
+        self.assertIsNone(graph["audit"]["operation_receipt"])
+        resolved = dict(graph["audit"], fresh=True, graph_revision=graph["graph_revision"],
+            findings=[{"id": "missing-negative", "severity": "high", "evidence": ["E1"], "disposition": "resolved"}],
+            resolutions=[{"finding_id": "missing-negative", "disposition": "resolved", "evidence": ["E1"]}])
+        with self.assertRaises(self.helper.PlanGraphError):
+            self._typed_update(receipt.workflow_id, graph, "resolve-finding", ["audit"], resolved)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        self.assertEqual(inspect_and_record().state, "stale")
+        self.assertFalse(observations[-1]["open"])
+
+        def confirm_current_part(text):
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False,
+                presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text=text))
+            self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            return self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"],
+                dict(graph["projections"]["U1"], confirmed=True))
+
+        self.assertEqual(confirm_current_part("Reject malformed configuration and report its validation reason.").state, "ready")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["proof", "P1", "planned_method", "negative"],
+              "value": "Unknown configuration keys are rejected with a reason"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["audit"]["fresh"])
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        inspect_and_record()
+        self.assertEqual(confirm_current_part("Reject unknown configuration keys and report their validation reason.").state, "ready")
+        self.assertEqual(len(observations), 3)
+        self.assertEqual(len({item["pid"] for item in observations}), 3)
+        self.assertTrue(observations[0]["open"])
+
     def test_semantics_derived_audit_floor_and_resolved_findings_readiness(self) -> None:
         template = self._three_node_graph()
         template["evidence"]["E1"]["supports"] = ["D1", "T1"]
