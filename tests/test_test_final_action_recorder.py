@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -345,6 +346,132 @@ print('consumer-result=pass')
         self.assertEqual([entry["status"] for entry in entries], ["pass", "pass"])
         self.assertFalse((self.repository / ".test-parallel").exists())
 
+    def install_timeout_action(self) -> None:
+        script = self.repository / "timeout_action.py"
+        script.write_text("""import subprocess
+import sys
+import time
+from pathlib import Path
+runtime = Path('.test-' + sys.argv[1])
+runtime.mkdir()
+(runtime / 'owned').write_text('created')
+if len(sys.argv) > 2 and sys.argv[2] == 'mutate':
+    Path('product.txt').write_text('unexpected mutation')
+    Path('.test-cleanable').mkdir()
+    (runtime / 'link').symlink_to('owned')
+print('consumer-result=pass', flush=True)
+if len(sys.argv) > 2 and sys.argv[2] == 'spawn':
+    subprocess.Popen([sys.executable, 'timeout_action.py', 'descendant'])
+if sys.argv[1] in {'slow', 'descendant'}:
+    time.sleep(30)
+""")
+        subprocess.run(["git", "add", "timeout_action.py"], cwd=self.repository, check=True)
+        subprocess.run(["git", "commit", "-m", "timeout fixture"], cwd=self.repository, check=True, stdout=subprocess.PIPE)
+        charter_path = self.run_root / "charter.json"
+        charter = json.loads(charter_path.read_text())
+        charter["head"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repository, text=True).strip()
+        charter_path.write_text(json.dumps(charter))
+
+    def expire_action_after_one_second(self) -> None:
+        started = time.time() - 779
+        os.utime(self.run_root / "charter.json", (started, started))
+
+    def test_final_action_timeout_retains_partial_output_and_postflight(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py"], cleanup_absent_paths=[".test-slow"])
+        self.expire_action_after_one_second()
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "timeout_action.py", "slow")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual((self.run_root / "final-observation.raw").read_bytes(), b"consumer-result=pass\n")
+        record = json.loads((self.run_root / "final-action-metadata.json").read_text())
+        self.assertEqual(record["exit_code"], "timeout")
+        self.assertEqual(record["outcome"], "mismatch")
+        self.assertEqual(record["output_predicate"], "mismatch")
+        self.assertEqual(record["teardown_status"], "pass")
+        self.assertEqual(record["integrity_status"], "pass")
+        self.assertFalse((self.repository / ".test-slow").exists())
+
+    def test_timeout_retains_failed_cleanup_and_changed_source_without_skipping_other_cleanup(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py", "product.txt"], cleanup_absent_paths=[".test-slow", ".test-cleanable"])
+        self.expire_action_after_one_second()
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "timeout_action.py", "slow", "mutate")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        record = json.loads((self.run_root / "final-action-metadata.json").read_text())
+        self.assertEqual(record["exit_code"], "timeout")
+        self.assertEqual(record["teardown_status"], "fail")
+        self.assertEqual([item["status"] for item in record["teardown"]], ["fail", "pass"])
+        self.assertEqual(record["integrity_status"], "fail")
+        self.assertIn("unexpected mutation", record["source_diff"])
+        self.assertTrue((self.repository / ".test-slow").exists())
+        self.assertFalse((self.repository / ".test-cleanable").exists())
+
+    def test_timeout_terminates_descendants_holding_output_before_cleanup(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py"], cleanup_absent_paths=[".test-slow", ".test-descendant"])
+        self.expire_action_after_one_second()
+        completed = subprocess.run(
+            [sys.executable, str(RECORDER), "run", "--root", str(self.run_root), "--", sys.executable, "timeout_action.py", "slow", "spawn"],
+            cwd=self.repository, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual((self.run_root / "final-observation.raw").read_bytes(), b"consumer-result=pass\nconsumer-result=pass\n")
+        record = json.loads((self.run_root / "final-action-metadata.json").read_text())
+        self.assertEqual(record["exit_code"], "timeout")
+        self.assertEqual(record["teardown_status"], "pass")
+        self.assertFalse((self.repository / ".test-slow").exists())
+        self.assertFalse((self.repository / ".test-descendant").exists())
+
+    def test_mixed_wave_timeout_retains_both_outputs_and_truthful_ledger(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py"])
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        actions = []
+        for action_id, speed in (("changed", "slow"), ("neighbor", "fast")):
+            spec = dict(execution, observation_path=f"artifacts/{action_id}.raw", metadata_path=f"artifacts/{action_id}.json", cleanup_absent_paths=[f".test-{speed}"])
+            entry = {"action_id": action_id, "role": "check", "ring": "inner", "action": "Run consumer", "path": [],
+                     "expected": "Consumer passes", "oracle_ids": ["changed-outcome"], "artifact_ids": [action_id + "-raw", action_id + "-record"]}
+            actions.append({"schema_version": "test-recorded-action.v1", "entry": entry, "execution": spec,
+                            "command": [sys.executable, "timeout_action.py", speed]})
+        for name, value in (("wave.json", {"schema_version": "test-recorded-wave.v1", "actions": actions}),
+                            ("ledger.json", {"schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []})):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        self.expire_action_after_one_second()
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "wave.json")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        entries = json.loads((self.run_root / "ledger.json").read_text())["entries"]
+        self.assertEqual([entry["status"] for entry in entries], ["fail", "pass"])
+        module = _load_recorder_module()
+        for entry in entries:
+            action_id = entry["action_id"]
+            observation_path = f"artifacts/{action_id}.raw"
+            observation = (self.run_root / observation_path).read_bytes()
+            record = json.loads((self.run_root / f"artifacts/{action_id}.json").read_text())
+            self.assertEqual(observation, b"consumer-result=pass\n")
+            self.assertEqual(record["entry"], entry)
+            self.assertEqual(record["teardown_status"], "pass")
+            self.assertEqual(record["integrity_status"], "pass")
+            self.assertTrue(module.verify_execution_record(record, entry, (self.run_root / "charter.json").read_bytes(), observation, observation_path))
+            if action_id == "changed":
+                self.assertEqual(record["exit_code"], "timeout")
+                forged = dict(entry, status="pass")
+                self.assertFalse(module.verify_execution_record(record, forged, (self.run_root / "charter.json").read_bytes(), observation, observation_path))
+        self.assertFalse((self.repository / ".test-slow").exists())
+        self.assertFalse((self.repository / ".test-fast").exists())
+        from tests.test_test_evidence_finalizer import write_draft, invoke_finalizer
+        draft_path = write_draft(self.run_root)
+        draft = json.loads(draft_path.read_text())
+        draft["artifacts"] = [{"artifact_id": action["entry"]["artifact_ids"][index], "kind": "log", "path": action["execution"][label]}
+                              for action in actions for index, label in enumerate(("observation_path", "metadata_path"))]
+        draft_path.write_text(json.dumps(draft))
+        draft_path.chmod(0o600)
+        finalized = invoke_finalizer(self.run_root)
+        self.assertNotEqual(finalized.returncode, 0, finalized.stdout)
+        self.assertIn("unsupported-result", finalized.stdout, finalized.stdout)
+        self.assertFalse((self.run_root / "terminal").exists())
+
     def test_ordinary_mismatch_is_derived_as_fail_and_handwritten_result_fields_are_rejected(self) -> None:
         self.write_spec(output_predicate={"mode": "exact-text", "value": "unobserved success\n"})
         execution = json.loads((self.run_root / "final-action.json").read_text())
@@ -496,6 +623,7 @@ print('consumer-result=pass')
         action = self.repository / "tamper_evidence.py"
         action.write_text(
             """from pathlib import Path
+Path('.runtime').mkdir()
 Path('.test-evidence/run-1/charter.json').write_text('{}\\n', encoding='utf-8')
 print('consumer-result=pass')
 """,
@@ -515,6 +643,7 @@ print('consumer-result=pass')
         self.assertIn("run-root-changed", completed.stderr)
         self.assertFalse((self.run_root / "final-observation.raw").exists())
         self.assertFalse((self.run_root / "final-action-metadata.json").exists())
+        self.assertFalse((self.repository / ".runtime").exists())
 
     def test_product_cannot_redirect_outputs_through_a_parent_symlink(self) -> None:
         """Recorder output stays beneath the authenticated run root."""
