@@ -74,6 +74,35 @@ class LiveActorTests(unittest.TestCase):
         self.assertEqual(actor["runtime"]["requested_model"], "configured-model")
         self.assertIn("started_at", actor["attempts"][0])
 
+    def test_retained_actor_resumes_exact_thread_without_replacing_inherited_flags(self):
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events("retained-thread"), "stderr": "", "exit_code": 0, "timed_out": False}):
+            initial = self.actor(live=True, persistent=True, sandbox="workspace-write")
+            resumed = trials.run_actor(prompt="Bound answer.", cwd=self.root, state_home=self.root / "state",
+                evidence_dir=self.root / "resumed", live=True, persistent=True, sandbox="workspace-write", resume_from=initial)
+        self.assertNotIn("--ephemeral", initial["argv"])
+        self.assertEqual(resumed["argv"], ["codex", "exec", "resume", "--ignore-user-config", "--json", "retained-thread", "-"])
+        self.assertEqual(resumed["transport"]["context"], initial["transport"]["context"])
+        self.assertEqual(resumed["transport"]["resumed_from_thread_id"], "retained-thread")
+        self.assertEqual(resumed["outcome"], "completed-ungraded")
+
+    def test_resume_rejects_changed_or_ephemeral_context_before_launch(self):
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events(), "stderr": "", "exit_code": 0, "timed_out": False}):
+            initial = self.actor(live=True, persistent=True)
+        for changes in ({"cwd": self.root / "other"}, {"sandbox": "workspace-write"}, {"persistent": False}, {"model": "other"}):
+            with self.subTest(changes=changes), mock.patch.object(trials, "run_process_group") as process:
+                arguments = {"prompt": "Answer.", "cwd": self.root, "state_home": self.root / "state", "evidence_dir": self.root / "resumed", "live": True, "persistent": True, "resume_from": initial, **changes}
+                with self.assertRaises(ValueError):
+                    trials.run_actor(**arguments)
+                process.assert_not_called()
+
+    def test_resume_new_thread_identity_is_protocol_invalid(self):
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events("original"), "stderr": "", "exit_code": 0, "timed_out": False}):
+            initial = self.actor(live=True, persistent=True)
+        with mock.patch.object(trials, "run_process_group", return_value={"stdout": events("replacement"), "stderr": "", "exit_code": 0, "timed_out": False}):
+            resumed = trials.run_actor(prompt="Answer.", cwd=self.root, state_home=self.root / "state",
+                evidence_dir=self.root / "resumed", live=True, persistent=True, resume_from=initial)
+        self.assertEqual(resumed["outcome"], "protocol-invalid")
+
     def test_infrastructure_retry_retains_original_and_retry_raw_evidence(self):
         first = {"stdout": json.dumps({"type": "error", "message": "HTTP 502 upstream failed"}) + "\n", "stderr": "", "exit_code": 1, "timed_out": False}
         second = {"stdout": events("offline-retry"), "stderr": "", "exit_code": 0, "timed_out": False}
