@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,6 +119,31 @@ class DesignContractTests(unittest.TestCase):
         ]
         self.assertEqual(matches, [helper])
 
+    def test_documented_helper_locator_resolves_from_source_and_installed_skill(self) -> None:
+        body = _body(DESIGN / "SKILL.md")
+        self.assertIn("`../../scripts/design_state.py` relative to the loaded Design skill directory", body)
+        self.assertIn("plugins/expskill/content/scripts/design_state.py", body)
+        locator = "../../scripts/design_state.py"
+        helper = PLUGIN / "content/scripts/design_state.py"
+        self.assertEqual((DESIGN / locator).resolve(), helper.resolve())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            loaded = root / "installed/skills/design"
+            loaded.mkdir(parents=True)
+            scripts = root / "installed/scripts"
+            scripts.mkdir()
+            shutil.copyfile(DESIGN / "SKILL.md", loaded / "SKILL.md")
+            shutil.copyfile(helper, scripts / "design_state.py")
+            target = root / "project-worktree"
+            target.mkdir()
+            resolved = (loaded / locator).resolve()
+            self.assertEqual(resolved, scripts / "design_state.py")
+            self.assertFalse((target / locator).exists())
+            result = subprocess.run([sys.executable, str(resolved), "--help"], cwd=target, text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("checkpoint-candidate", result.stdout)
+            self.assertEqual(list(target.iterdir()), [])
+
     def test_design_metadata_is_explicit_and_public(self) -> None:
         """Regression: ambient activation or private routing vocabulary must not leak publicly."""
         frontmatter = _frontmatter(DESIGN / "SKILL.md")
@@ -126,6 +153,10 @@ class DesignContractTests(unittest.TestCase):
         metadata = _metadata(PLUGIN / "codex" / "skill-adapters" / "design" / "agents" / "openai.yaml")
         self.assertIn("$design", metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
+        for phrase in ("$use-expskill", "user-opened", "native stack", "exact candidate approval", "local or authorized hosted"):
+            self.assertIn(phrase, metadata)
+        self.assertNotIn("required Yodea", metadata)
+        self.assertNotIn("Publish a Yodea preview", metadata)
         public_text = (DESIGN / "SKILL.md").read_text(encoding="utf-8") + metadata
         self.assertNotRegex(public_text, re.compile(r"\b(?:quick|full|caps?|private[- ]state)\b", re.I))
 
