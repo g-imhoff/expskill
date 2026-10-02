@@ -1525,6 +1525,77 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertFalse(loaded["evidence"]["E1"]["fresh"])
         self.assertTrue(loaded["evidence"]["E2"]["fresh"])
 
+    def test_active_load_and_discover_invalidate_only_changed_repository_sources(self) -> None:
+        for caller in ("load_workflow", "discover_workflow"):
+            with self.subTest(caller=caller):
+                home = self.root / caller
+                graph = self._three_node_graph()
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                (self.repo / "config.py").write_text(f"CONFIG = {{'{caller}': True}}\n", encoding="utf-8")
+                self._git("add", "config.py")
+                self._git("commit", "-m", caller)
+                result = getattr(self.helper, caller)(self.repo, BRANCH, home)
+                self.assertEqual(result["lifecycle"]["derived_state"] if isinstance(result, dict) else result.state, "stale")
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(loaded["graph_revision"], receipt.revision + 1)
+                self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+                self.assertFalse(loaded["projections"]["U1"]["confirmed"])
+                self.assertTrue(loaded["evidence"]["E2"]["fresh"])
+                self.assertTrue(loaded["projections"]["U2"]["confirmed"])
+
+    def test_active_load_detects_changed_bytes_of_already_dirty_source(self) -> None:
+        (self.repo / "config.py").write_text("CONFIG = {'first': True}\n", encoding="utf-8")
+        receipt = self._initialize()
+        self.assertEqual(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["graph_revision"], receipt.revision)
+        first_status = self._git("status", "--porcelain=v1")
+        (self.repo / "config.py").write_text("CONFIG = {'second': True}\n", encoding="utf-8")
+        self.assertEqual(self._git("status", "--porcelain=v1"), first_status)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["evidence"]["E1"]["fresh"])
+        self.assertEqual(graph["graph_revision"], receipt.revision + 1)
+
+    def test_update_entry_rejects_revision_preceding_repository_invalidation(self) -> None:
+        receipt = self._initialize()
+        (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        with self.assertRaises(self.helper.RevisionConflict):
+            self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+                [{"op": "set", "path": ["work", "T1", "result"], "value": "Revised wording"}], self.state_home)
+        self.assertFalse(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["evidence"]["E1"]["fresh"])
+
+    def test_refreshed_evidence_accepts_current_dirty_contents_until_they_change(self) -> None:
+        receipt = self._initialize()
+        (self.repo / "config.py").write_text("CONFIG = {'first': True}\n", encoding="utf-8")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        evidence = dict(graph["evidence"]["E1"], fresh=True, observed_at="2026-10-02T10:00:00Z")
+        refreshed = self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"], evidence)
+        current = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(current["evidence"]["E1"]["fresh"])
+        self.assertEqual(current["graph_revision"], refreshed.revision)
+        (self.repo / "config.py").write_text("CONFIG = {'second': True}\n", encoding="utf-8")
+        self.assertFalse(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["evidence"]["E1"]["fresh"])
+
+    def test_legacy_dirty_grounding_without_content_snapshot_requires_refresh(self) -> None:
+        (self.repo / "config.py").write_text("CONFIG = {'accepted_dirty': True}\n", encoding="utf-8")
+        receipt = self._initialize()
+        graph = json.loads(receipt.path.read_text(encoding="utf-8"))
+        del graph["baseline"]["evidence_fingerprints"]
+        receipt.path.write_text(json.dumps(graph), encoding="utf-8")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+        self.assertEqual(loaded["graph_revision"], receipt.revision + 1)
+
+    def test_resume_retains_evidence_refreshed_after_original_baseline(self) -> None:
+        receipt = self._initialize()
+        (self.repo / "config.py").write_text("CONFIG = {'new_head': True}\n", encoding="utf-8")
+        self._git("add", "config.py")
+        self._git("commit", "-m", "revised source")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        evidence = dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD"), observed_at="2026-10-02T10:00:00Z")
+        refreshed = self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"], evidence)
+        paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, refreshed.revision, self.state_home)
+        self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, self.state_home)
+        self.assertTrue(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["evidence"]["E1"]["fresh"])
+
     def test_resume_normalizes_relative_absolute_and_anchored_repository_sources(self) -> None:
         sources = ["config.py:24", "config.py:24:7", "config.py#L24-L30",
                    str(self.repo / "config.py"), f"{self.repo / 'config.py'}:24"]
