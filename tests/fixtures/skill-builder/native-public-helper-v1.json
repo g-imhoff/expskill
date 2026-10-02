@@ -1,0 +1,137 @@
+{
+  "schema_version": "captured-native-public-helper.v1",
+  "origin": {
+    "raw_events": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actors/resolve-baseline/attempt-1/events.jsonl",
+    "raw_events_sha256": "d73b0ef2c80254a7c738560bd433a0ac38548d57e3daa829b15631d62ea956ce",
+    "thread_id": "01a0fdcd-99f3-73e0-9568-d25a194b775b",
+    "framework_revision": "79ff0b607dc8f0b30c2f0353afefd74b7cc890a7"
+  },
+  "helper": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py",
+  "state_root": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actor-state/public-state",
+  "current": {
+    "workflow_id": "7049a6b85c301cac350b6451200795e4",
+    "head_sequence": 2
+  },
+  "receipts": {
+    "00000000.json": {
+      "authority_event_digest": null,
+      "created_at": "2026-10-02T18:09:52.128054Z",
+      "destination_stage": "resolved",
+      "event": "initialize",
+      "prior_receipt_digest": null,
+      "receipt_digest": "f9fd755cbe7ab7dfec81d8fa2c7529456c432d324120e074247f1e667d8dbc7e",
+      "relevant_artifact_digests": [
+        {
+          "artifact_id": "resolution",
+          "envelope_digest": "972e6c2a0b4eb1f433a8f0f409cd513f7a448b81b702e963b94d5f0db272f8e8",
+          "status": "accepted"
+        }
+      ],
+      "schema_version": "skill-builder-transition.v1",
+      "sequence": 0,
+      "source_stage": null,
+      "target_identity": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/canonical-target/count-lines",
+      "target_snapshot_digest": "4cb31d84f9afd2243aea4f72220f9f60858c6ba56173c87735f8fbdd525614a9",
+      "workflow_id": "7049a6b85c301cac350b6451200795e4"
+    },
+    "00000001.json": {
+      "authority_event_digest": null,
+      "created_at": "2026-10-02T18:10:32.829277Z",
+      "destination_stage": "resolved",
+      "event": "retain-artifact",
+      "prior_receipt_digest": "f9fd755cbe7ab7dfec81d8fa2c7529456c432d324120e074247f1e667d8dbc7e",
+      "receipt_digest": "ffcbec7c6a582386ede51dd795edb493b1151bdf2e19fdd1e4c6ad90ffde2af1",
+      "relevant_artifact_digests": [
+        {
+          "artifact_id": "create-baseline",
+          "envelope_digest": "c0bea95a70ad3bf20ae3b53b3cd087d367d00ea151bb02059586b55311c3bffe",
+          "status": "accepted"
+        }
+      ],
+      "schema_version": "skill-builder-transition.v1",
+      "sequence": 1,
+      "source_stage": "resolved",
+      "target_identity": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/canonical-target/count-lines",
+      "target_snapshot_digest": "4cb31d84f9afd2243aea4f72220f9f60858c6ba56173c87735f8fbdd525614a9",
+      "workflow_id": "7049a6b85c301cac350b6451200795e4"
+    },
+    "00000002.json": {
+      "authority_event_digest": null,
+      "created_at": "2026-10-02T18:10:52.469230Z",
+      "destination_stage": "baseline",
+      "event": "capture-baseline",
+      "prior_receipt_digest": "ffcbec7c6a582386ede51dd795edb493b1151bdf2e19fdd1e4c6ad90ffde2af1",
+      "receipt_digest": "5c84b1a51ef1db02518540b3cc9c383b073e515344b52cefc96cf1dbcf4484d0",
+      "relevant_artifact_digests": [
+        {
+          "artifact_id": "create-baseline",
+          "envelope_digest": "c0bea95a70ad3bf20ae3b53b3cd087d367d00ea151bb02059586b55311c3bffe",
+          "status": "accepted"
+        }
+      ],
+      "schema_version": "skill-builder-transition.v1",
+      "sequence": 2,
+      "source_stage": "resolved",
+      "target_identity": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/canonical-target/count-lines",
+      "target_snapshot_digest": "4cb31d84f9afd2243aea4f72220f9f60858c6ba56173c87735f8fbdd525614a9",
+      "workflow_id": "7049a6b85c301cac350b6451200795e4"
+    }
+  },
+  "events": [
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_31",
+        "type": "command_execution",
+        "command": "/usr/bin/zsh -lc 'python3 /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py --state-root /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actor-state/public-state initialize < initialize-request.json > initialize-result.json\ncat initialize-result.json'",
+        "aggregated_output": "{\"operation\":\"initialize\",\"receipt_digest\":\"f9fd755cbe7ab7dfec81d8fa2c7529456c432d324120e074247f1e667d8dbc7e\",\"schema_version\":\"skill-builder-operation.v1\",\"sequence\":0,\"stage\":\"resolved\",\"target_snapshot_digest\":\"4cb31d84f9afd2243aea4f72220f9f60858c6ba56173c87735f8fbdd525614a9\",\"workflow_id\":\"7049a6b85c301cac350b6451200795e4\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_35",
+        "type": "command_execution",
+        "command": "/usr/bin/zsh -lc \"python3 - <<'PY'\nimport json,pathlib,hashlib,base64\np=pathlib.Path; s=json.loads(p('load-result.json').read_text()); req=json.loads(p('initialize-request.json').read_text())\nfiles={n:p(n).read_bytes() for n in ['baseline-observations.json','initialize-request.json','initialize-result.json','load-result.json']}\nlimitations=['Overlap discovery is bounded to the framework snapshot and session catalog; no global installation scan or behavioural neighbour trials were performed.','No candidate exists; no target behaviour or scoring outcome is claimed.']\npayload={'schema_version':'skill-builder-baseline.v1','mode':'create','target_snapshot_digest':s['target_snapshot']['snapshot_digest'],'absent_target_proof':{k:s['target_snapshot'][k] for k in ['absence_evidence_digest','overlap_map_digest']},'host_conventions':['Observed snapshot packages use a SKILL.md entrypoint with YAML name and description metadata.','Codex session uses explicit skill instructions and bounded filesystem write roots.','Public run state is managed only through run_state.py CLI with JSON stdin.'],'preserved_regressions':['Preserve skill-builder explicit selection and its skill authoring responsibility.','Preserve implement ownership of accepted implementation briefs; do not absorb general code implementation.','Preserve all scanned neighbouring SKILL.md bytes and identities; baseline-observations.json retains their hashes.'],'raw_evidence_digests':[hashlib.sha256(b).hexdigest() for b in files.values()],'limitations':limitations}\nfiles['baseline.json']=(json.dumps(payload,indent=2)+'\\\\n').encode(); p('baseline.json').write_bytes(files['baseline.json'])\nr={'workflow_id':s['workflow_id'],'expected_sequence':0,'artifact_id':'create-baseline','artifact_type':'baseline-report','files_base64':{n:base64.b64encode(b).decode() for n,b in files.items()},'primary_path':'baseline.json','producer':'create:resolve-baseline','input_bindings':[{'artifact_id':'resolution','digest':s['artifact_index']['resolution']['digest']}],'limitations':limitations}\np('retain-request.json').write_text(json.dumps(r)+'\\\\n')\nPY\npython3 /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py --state-root /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actor-state/public-state retain < retain-request.json > retain-result.json\ncat retain-result.json\"",
+        "aggregated_output": "error: baseline-report primary payload is not exact canonical JSON encoding\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_36",
+        "type": "command_execution",
+        "command": "/usr/bin/zsh -lc \"python3 - <<'PY'\nimport json,pathlib,base64\np=pathlib.Path;r=json.loads(p('retain-request.json').read_text());v=json.loads(p('baseline.json').read_text()); b=(json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False)+'\\\\n').encode();p('baseline.json').write_bytes(b);r['files_base64']['baseline.json']=base64.b64encode(b).decode();p('retain-request.json').write_text(json.dumps(r)+'\\\\n')\nPY\npython3 /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py --state-root /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actor-state/public-state retain < retain-request.json > retain-result.json\ncat retain-result.json\"",
+        "aggregated_output": "{\"artifact_digest\":\"c0bea95a70ad3bf20ae3b53b3cd087d367d00ea151bb02059586b55311c3bffe\",\"artifact_id\":\"create-baseline\",\"operation\":\"retain-artifact\",\"receipt_digest\":\"ffcbec7c6a582386ede51dd795edb493b1151bdf2e19fdd1e4c6ad90ffde2af1\",\"schema_version\":\"skill-builder-operation.v1\",\"sequence\":1,\"stage\":\"resolved\",\"workflow_id\":\"7049a6b85c301cac350b6451200795e4\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_37",
+        "type": "command_execution",
+        "command": "/usr/bin/zsh -lc \"python3 - <<'PY'\nimport json,pathlib\nr=json.loads(pathlib.Path('retain-result.json').read_text()); pathlib.Path('transition-request.json').write_text(json.dumps({'workflow_id':r['workflow_id'],'expected_sequence':r['sequence'],'event':'capture-baseline','destination_stage':'baselined','artifact_ids':['create-baseline']})+'\\\\n')\nPY\npython3 /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py --state-root /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actor-state/public-state transition < transition-request.json > transition-result.json\ncat transition-result.json\"",
+        "aggregated_output": "error: unsupported stage transition\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_39",
+        "type": "command_execution",
+        "command": "/usr/bin/zsh -lc \"python3 - <<'PY'\nimport json,pathlib\np=pathlib.Path('transition-request.json');r=json.loads(p.read_text());r['destination_stage']='baseline';p.write_text(json.dumps(r)+'\\\\n')\nPY\npython3 /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py --state-root /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v1/create/actor-state/public-state transition < transition-request.json > transition-result.json\ncat transition-result.json\"",
+        "aggregated_output": "{\"operation\":\"capture-baseline\",\"receipt_digest\":\"5c84b1a51ef1db02518540b3cc9c383b073e515344b52cefc96cf1dbcf4484d0\",\"schema_version\":\"skill-builder-operation.v1\",\"sequence\":2,\"stage\":\"baseline\",\"workflow_id\":\"7049a6b85c301cac350b6451200795e4\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    }
+  ]
+}
