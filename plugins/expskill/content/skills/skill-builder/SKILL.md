@@ -79,6 +79,7 @@ Present the current contract and wait for explicit user confirmation. Record the
 ### 8. Freeze acceptance before candidate work
 
 Create visible development cases, frozen validation cases, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Bind the pack to the confirmed contract digest and unchanged target snapshot. Keep hidden expectations and oracles away from implementers and trial agents. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze before any candidate edit. Reject candidate entry unless the helper confirms the contract digest, its confirmation record, the frozen pack digest, and an unchanged target snapshot.
+Freeze the criterion evidence map with the evaluation pack. For every rubric criterion, select only its relevant frozen parameters and cases and name the output, tool-event, or filesystem observations that will prove it. Every criterion has evidence, and the complete map covers every frozen scoring parameter and case. Scoring must use those bindings, blanket or unrelated references cannot replace a criterion's evidence.
 
 ### 9. Build one isolated candidate
 

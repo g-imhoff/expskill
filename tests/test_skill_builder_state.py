@@ -1228,6 +1228,14 @@ def confirmation_payload(
     }
 
 
+def criterion_fixture_binding(criterion_id: str) -> dict[str, object]:
+    if criterion_id.startswith("TR"):
+        return {"frozen_parameter_identifiers": ["maximum"], "case_evidence": {"case-1": ["output_digest"]}}
+    if criterion_id.startswith("RE"):
+        return {"frozen_parameter_identifiers": ["recovery"], "case_evidence": {"case-2": ["filesystem_result_digest", "tool_event_digest"]}}
+    return {"frozen_parameter_identifiers": ["maximum"], "case_evidence": {"case-3": ["output_digest"]}}
+
+
 def evaluation_payload(
     *, contract_digest: str, confirmation_digest: str, snapshot_digest: str
 ) -> dict[str, object]:
@@ -1237,13 +1245,17 @@ def evaluation_payload(
     ):
         partitions[partition] = [evaluation_case(f"case-{index}", partition)]
     return {
-        "schema_version": "skill-builder-evaluation-pack.v1",
+        "schema_version": "skill-builder-evaluation-pack.v2",
         "frozen": True,
         "contract_digest": contract_digest,
         "confirmation_digest": confirmation_digest,
         "target_snapshot_digest": snapshot_digest,
         "rubric_digest": fixture_digest(EVALUATION_RUBRIC_BYTES),
-        "scoring_parameters": {"maximum": 10},
+        "scoring_parameters": {"maximum": 10, "recovery": "local recovery"},
+        "criterion_evidence_map": {
+            criterion_id: criterion_fixture_binding(criterion_id)
+            for criteria in SCORE_CRITERIA.values() for criterion_id in criteria
+        },
         "freeze_timestamp": "2026-09-05T12:01:00Z",
         "partitions": partitions,
     }
@@ -1614,11 +1626,7 @@ def scorecard_payload(
             else trial_cases
         )
         assert isinstance(cases, list)
-        case_ids = sorted(case["case_id"] for case in cases)
-        raw_artifact_digests = sorted({case["output_digest"] for case in cases})
-        trial_receipt_ids = sorted(
-            fixture_digest(fixture_canonical_bytes(case)) for case in cases
-        )
+        cases_by_id = {case["case_id"]: case for case in cases}
         findings = review_findings or []
         categories = []
         for name in SCORE_CATEGORIES:
@@ -1627,6 +1635,11 @@ def scorecard_payload(
             )
             criterion_results: dict[str, object] = {}
             for criterion_id, passed in criterion_states.items():
+                binding = criterion_fixture_binding(criterion_id)
+                case_ids = sorted(binding["case_evidence"])
+                selected_cases = [cases_by_id[case_id] for case_id in case_ids]
+                raw_artifact_digests = sorted({case[field] for case in selected_cases for field in binding["case_evidence"][case["case_id"]]})
+                trial_receipt_ids = sorted(fixture_digest(fixture_canonical_bytes(case)) for case in selected_cases)
                 finding_ids = sorted(
                     {
                         fixture_digest(fixture_canonical_bytes(finding))
@@ -1636,7 +1649,7 @@ def scorecard_payload(
                 )
                 criterion_result = {
                     "passed": passed,
-                    "frozen_parameter_identifiers": ["maximum"],
+                    "frozen_parameter_identifiers": binding["frozen_parameter_identifiers"],
                     "case_ids": case_ids,
                     "raw_artifact_digests": raw_artifact_digests,
                     "trial_receipt_ids": trial_receipt_ids,
@@ -6928,11 +6941,77 @@ def test_current_run_rejects_legacy_aggregate_boolean_scorecard(
         )
 
 
+def test_scorecard_accepts_relevant_selective_criterion_evidence(tmp_path: Path) -> None:
+    helper = load_helper()
+    cases = trial_payload("candidate")["cases"]
+    first, second = cases[:2]
+    state_root, workflow_id, _, _ = build_verified_stage(
+        helper, tmp_path,
+        scorecard_evidence_overrides={
+            "TR1": {
+                "frozen_parameter_identifiers": ["maximum"],
+                "case_ids": [first["case_id"]],
+                "raw_artifact_digests": [first["output_digest"]],
+                "trial_receipt_ids": [fixture_digest(fixture_canonical_bytes(first))],
+            },
+            "RE1": {
+                "frozen_parameter_identifiers": ["recovery"],
+                "case_ids": [second["case_id"]],
+                "raw_artifact_digests": sorted([second["tool_event_digest"], second["filesystem_result_digest"]]),
+                "trial_receipt_ids": [fixture_digest(fixture_canonical_bytes(second))],
+            },
+        },
+    )
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "verified"
+
+
+@pytest.mark.parametrize("mutation", ("criterion", "parameters", "cases", "observations", "unknown-parameter", "unknown-case", "unknown-observation", "duplicate", "parameter-coverage", "case-coverage"))
+def test_frozen_criterion_mapping_rejects_missing_unrelated_and_uncovered_evidence(mutation: str) -> None:
+    helper = load_helper()
+    evaluation = evaluation_payload(contract_digest="a" * 64, confirmation_digest="b" * 64, snapshot_digest="c" * 64)
+    matrix = evaluation["criterion_evidence_map"]
+    if mutation == "criterion":
+        del matrix["TR1"]
+    elif mutation == "parameters":
+        matrix["TR1"]["frozen_parameter_identifiers"] = []
+    elif mutation == "cases":
+        matrix["TR1"]["case_evidence"] = {}
+    elif mutation == "observations":
+        matrix["TR1"]["case_evidence"]["case-1"] = []
+    elif mutation == "unknown-parameter":
+        matrix["TR1"]["frozen_parameter_identifiers"] = ["invented"]
+    elif mutation == "unknown-case":
+        matrix["TR1"]["case_evidence"] = {"invented": ["output_digest"]}
+    elif mutation == "unknown-observation":
+        matrix["TR1"]["case_evidence"]["case-1"] = ["invented_digest"]
+    elif mutation == "duplicate":
+        matrix["TR1"]["frozen_parameter_identifiers"] = ["maximum", "maximum"]
+    elif mutation == "parameter-coverage":
+        evaluation["scoring_parameters"]["uncovered"] = "material requirement"
+    else:
+        for binding in matrix.values():
+            if "case-2" in binding["case_evidence"]:
+                binding["case_evidence"] = {"case-3": ["output_digest"]}
+    with pytest.raises(helper.RunStateError, match="criterion|coverage|unrelated|unsupported"):
+        helper._validate_artifact_payload("evaluation-pack", evaluation)
+
+
+def test_scorecard_rejects_valid_but_unrelated_case_evidence(tmp_path: Path) -> None:
+    helper = load_helper()
+    unrelated = trial_payload("candidate")["cases"][1]
+    with pytest.raises(helper.RunStateError, match="criterion evidence"):
+        build_verified_stage(helper, tmp_path, scorecard_evidence_overrides={"TR1": {
+            "case_ids": [unrelated["case_id"]],
+            "raw_artifact_digests": [unrelated["output_digest"]],
+            "trial_receipt_ids": [fixture_digest(fixture_canonical_bytes(unrelated))],
+        }})
+
+
 @pytest.mark.parametrize(
     "field,value",
     (
         ("frozen_parameter_identifiers", ["invented-parameter"]),
-        ("case_ids", ["case-1"]),
+        ("case_ids", ["case-2"]),
         ("raw_artifact_digests", ["a" * 64]),
         ("trial_receipt_ids", ["b" * 64]),
         ("review_finding_ids", ["c" * 64]),
