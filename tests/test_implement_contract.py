@@ -99,6 +99,17 @@ class ImplementContractTests(unittest.TestCase):
                        "cannot be replaced by the updated graph"):
             self.assertIn(phrase, spec)
 
+    def test_new_acceptance_epoch_is_explicit_and_cannot_replace_existing_actor_criteria(self) -> None:
+        for phrase in ("separate implementation epoch", "freeze_acceptance_epoch", "--previous-basis",
+                       "--previous-digest", "--reason", "changed covered meaning and a later typed projection approval",
+                       "keep every old worker and judge bound to its original basis",
+                       "never rebind prior receipts", "retain cumulative budgets and regression obligations across epochs"):
+            self.assertIn(phrase, self.normalized)
+        correct = (PLUGIN / "content" / "skills" / "correct" / "SKILL.md").read_text().lower()
+        self.assertIn("keep existing actors on their original basis", correct)
+        spec = (PLUGIN / "content" / "agents" / "expskill-spec.md").read_text().lower()
+        self.assertIn("inspect the new epoch receipt and its previous-basis binding", spec)
+
     def test_remote_and_protected_branch_boundary_is_closed(self) -> None:
         for phrase in (
             "exact non-protected target branch",

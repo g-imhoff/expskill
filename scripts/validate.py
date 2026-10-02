@@ -705,7 +705,7 @@ REVIEW_HANDOFF_EXCEPTION_CLAUSES["content/skills/implement/SKILL.md"] = (
     "edits or a specification file that existed before review dispatch."
 )
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "content/skills/implement/SKILL.md": "b3888f46163bbc059218ec6e262bd496bb670b70b86bddc4c2e41e86d7ac4a87",
+    "content/skills/implement/SKILL.md": "9054b512587e322f4b6d413867f90525da4e752eba090aaca7d00f7807389741",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
@@ -728,7 +728,7 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
     "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "expskill-spec": "1c3bc835b7dedd3f861a4e410fc362ae9755ab9d2be241397396ab4fba796d60",
+    "expskill-spec": "f3789bed1d70cbb971072629ed830ee167f34d992fa192f86bd4ddc835184280",
 }
 
 REQUIRED_AGENT_FIELDS = (
