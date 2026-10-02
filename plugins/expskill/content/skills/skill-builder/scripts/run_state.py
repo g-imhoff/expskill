@@ -49,6 +49,12 @@ LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
 REVIEW_SCHEMA = "skill-builder-review.v2"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
 SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
+LEGACY_EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v1"
+EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v2"
+_SCORE_OBSERVATION_FIELDS = frozenset({
+    "output_digest", "tool_event_digest", "filesystem_result_digest",
+    "before_target_manifest_digest", "after_target_manifest_digest",
+})
 LOADABLE_CONTENT_SCHEMA = "skill-builder-loadable-content.v1"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -150,7 +156,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "design-record": "skill-builder-design.v1",
     "skill-contract": "skill-builder-contract.v1",
     "user-confirmation-record": "skill-builder-user-confirmation.v1",
-    "evaluation-pack": "skill-builder-evaluation-pack.v1",
+    "evaluation-pack": {LEGACY_EVALUATION_SCHEMA, EVALUATION_SCHEMA},
     "candidate-record": {
         LEGACY_CANDIDATE_SCHEMA,
         PREVIOUS_CANDIDATE_SCHEMA,
@@ -1030,6 +1036,35 @@ def _mapping_list(value: object, label: str) -> list[dict[str, Any]]:
     return value
 
 
+def _validate_criterion_evidence_map(evaluation: dict[str, Any], case_ids: set[str]) -> None:
+    matrix = evaluation.get("criterion_evidence_map")
+    criteria = set().union(*_SCORE_CRITERIA.values())
+    if not isinstance(matrix, dict) or set(matrix) != criteria:
+        raise RunStateError("evaluation criterion evidence map must cover every target criterion exactly once")
+    parameters = set(evaluation["scoring_parameters"])
+    for parameter in parameters:
+        _text(parameter, "frozen scoring parameter")
+    covered_parameters: set[str] = set()
+    covered_cases: set[str] = set()
+    for criterion, binding in matrix.items():
+        if not isinstance(binding, dict) or set(binding) != {"frozen_parameter_identifiers", "case_evidence"}:
+            raise RunStateError("evaluation criterion binding fields are invalid")
+        selected_parameters = _text_list(binding["frozen_parameter_identifiers"], "criterion frozen parameters")
+        if not selected_parameters or selected_parameters != sorted(set(selected_parameters)) or not set(selected_parameters) <= parameters:
+            raise RunStateError("evaluation criterion parameters are missing, duplicate, or unrelated")
+        selected_cases = binding["case_evidence"]
+        if not isinstance(selected_cases, dict) or not selected_cases or not set(selected_cases) <= case_ids:
+            raise RunStateError("evaluation criterion cases are missing or unrelated")
+        for fields in selected_cases.values():
+            observations = _text_list(fields, "criterion observation fields")
+            if not observations or observations != sorted(set(observations)) or not set(observations) <= _SCORE_OBSERVATION_FIELDS:
+                raise RunStateError("evaluation criterion observations are missing, duplicate, or unsupported")
+        covered_parameters.update(selected_parameters)
+        covered_cases.update(selected_cases)
+    if covered_parameters != parameters or covered_cases != case_ids:
+        raise RunStateError("evaluation criterion evidence map omits frozen parameter or case coverage")
+
+
 def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
     """Apply the normative, versioned payload schema before accepting an artifact."""
     expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
@@ -1041,6 +1076,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     )
     schema_version = payload.get("schema_version")
     versioned_fields = set(expected_fields)
+    if artifact_type == "evaluation-pack" and schema_version == EVALUATION_SCHEMA:
+        versioned_fields.add("criterion_evidence_map")
     if artifact_type == "candidate-record" and schema_version in {
         HISTORICAL_CANDIDATE_SCHEMA,
         CANDIDATE_SCHEMA,
@@ -1250,6 +1287,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 _text(case["pass_fail_rule"], "evaluation pass/fail rule")
         if not case_ids:
             raise RunStateError("evaluation pack has no frozen cases")
+        if schema_version == EVALUATION_SCHEMA:
+            _validate_criterion_evidence_map(payload, case_ids)
         return
 
     if artifact_type == "candidate-record":
@@ -3781,15 +3820,13 @@ def _validate_score_bindings(
     if scorecard["schema_version"] == LEGACY_SCORECARD_SCHEMA:
         return
 
-    frozen_parameter_ids = sorted(evaluation["scoring_parameters"])
-    if not frozen_parameter_ids:
-        raise RunStateError("scorecard lacks frozen scoring-parameter evidence")
-    for parameter_id in frozen_parameter_ids:
-        _text(parameter_id, "evaluation scoring parameter identity")
+    if evaluation["schema_version"] != EVALUATION_SCHEMA:
+        raise RunStateError("per-criterion scoring requires a frozen criterion evidence map, refreeze acceptance before candidate work")
     cases_by_id = {case["case_id"]: case for case in trials["cases"]}
     frozen_case_ids = sorted(cases_by_id)
     if not frozen_case_ids:
         raise RunStateError("scorecard lacks frozen case evidence")
+    _validate_criterion_evidence_map(evaluation, set(frozen_case_ids))
     review_finding_ids: dict[str, list[str]] = {}
     for finding in review["findings"]:
         finding_id = raw_digest(canonical_json_bytes(finding))
@@ -3799,17 +3836,19 @@ def _validate_score_bindings(
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
-            selected_cases = [cases_by_id[case_id] for case_id in frozen_case_ids]
+            frozen_binding = evaluation["criterion_evidence_map"][criterion_id]
+            selected_case_ids = sorted(frozen_binding["case_evidence"])
+            selected_cases = [cases_by_id[case_id] for case_id in selected_case_ids]
             expected_raw_digests = sorted(
-                {case["output_digest"] for case in selected_cases}
+                {case[field] for case in selected_cases for field in frozen_binding["case_evidence"][case["case_id"]]}
             )
             expected_trial_receipts = sorted(
                 raw_digest(canonical_json_bytes(case)) for case in selected_cases
             )
             expected_finding_ids = sorted(set(review_finding_ids.get(criterion_id, [])))
             if (
-                result["frozen_parameter_identifiers"] != frozen_parameter_ids
-                or result["case_ids"] != frozen_case_ids
+                result["frozen_parameter_identifiers"] != frozen_binding["frozen_parameter_identifiers"]
+                or result["case_ids"] != selected_case_ids
                 or result["raw_artifact_digests"] != expected_raw_digests
                 or result["trial_receipt_ids"] != expected_trial_receipts
                 or result["review_finding_ids"] != expected_finding_ids
@@ -3967,6 +4006,9 @@ def _validate_evaluation_binding(
     }
     if not required <= set(evaluation) or evaluation.get("frozen") is not True:
         raise RunStateError("evaluation pack is not frozen")
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    if resolution.get("scorecard_schema") == SCORECARD_SCHEMA and evaluation["schema_version"] != EVALUATION_SCHEMA:
+        raise RunStateError("current evaluation freeze requires a criterion evidence map")
     if (
         evaluation.get("contract_digest") != contract_envelope["envelope_digest"]
         or evaluation.get("confirmation_digest")
