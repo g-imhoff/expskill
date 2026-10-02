@@ -761,7 +761,7 @@ REVIEW_HANDOFF_EXCEPTION_CLAUSES["content/skills/implement/SKILL.md"] = (
 )
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
     "content/skills/review-loop/SKILL.md": "f6e9ac75b0c9f030ae09686633c6671d7b9dfdb26c0399bb6424d83f9a3d5810",
-    "content/skills/implement/SKILL.md": "b3888f46163bbc059218ec6e262bd496bb670b70b86bddc4c2e41e86d7ac4a87",
+    "content/skills/implement/SKILL.md": "9054b512587e322f4b6d413867f90525da4e752eba090aaca7d00f7807389741",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
@@ -784,7 +784,7 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
     "expskill-review": "282892b800401e3f98ee7c08dcd70eed8b7f34b260f3520a7a16c91895fb9f03",
-    "expskill-spec": "86f1d88bc1bd6ee1ebc35f2880a66d71198107233b1ef6d7d0e418a5df2d79f9",
+    "expskill-spec": "4be6f7afdcb772a04c82eeb3981969fadf0d8ae4e2c88bfa6800ead3cf5ba597",
 }
 
 REQUIRED_AGENT_FIELDS = (

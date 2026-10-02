@@ -2549,6 +2549,30 @@ def freeze_acceptance_basis(
     repo: Path, branch: str, workflow_id: str, expected_revision: int,
     state_home: Path | None = None,
 ) -> dict[str, Any]:
+    return _freeze_acceptance_basis(repo, branch, workflow_id, expected_revision, state_home)
+
+
+def freeze_acceptance_epoch(
+    repo: Path, branch: str, workflow_id: str, expected_revision: int,
+    previous_path: Path, previous_digest: str, reason: str,
+    state_home: Path | None = None,
+) -> dict[str, Any]:
+    _text(reason, "new acceptance epoch reason")
+    previous_path = Path(previous_path)
+    previous = load_acceptance_basis(previous_path, previous_digest)
+    return _freeze_acceptance_basis(repo, branch, workflow_id, expected_revision, state_home,
+        previous_basis=(previous_path, previous_digest, previous, reason))
+
+
+def _acceptance_epoch_name(graph: dict[str, Any]) -> str:
+    return f"{graph['workflow_id']}-{graph['graph_revision']}-{_canonical_digest(graph)}.json"
+
+
+def _freeze_acceptance_basis(
+    repo: Path, branch: str, workflow_id: str, expected_revision: int,
+    state_home: Path | None,
+    previous_basis: tuple[Path, str, dict[str, Any], str] | None = None,
+) -> dict[str, Any]:
     if not isinstance(workflow_id, str) or not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
         raise PlanGraphError("invalid acceptance workflow identity")
     _integer(expected_revision, "acceptance graph revision", minimum=1)
@@ -2560,11 +2584,28 @@ def freeze_acceptance_basis(
             raise RevisionConflict("acceptance graph revision conflict")
         if _derive_validated(graph) != "ready" or graph["git"]["delivery"]["state"] != "planning":
             raise PlanGraphError("acceptance snapshot requires a current ready planning basis")
+        if previous_basis is not None:
+            previous_path, previous_digest, previous, reason = previous_basis
+            expected_parent = transaction.home_path / "acceptance-bases" / transaction.key
+            if previous_path.parent != expected_parent or previous["workflow_id"] != workflow_id or previous["identity"] != graph["identity"]:
+                raise PlanGraphError("previous acceptance basis does not bind this workflow and private pool")
+            if previous["graph_revision"] >= expected_revision:
+                raise PlanGraphError("new acceptance epoch requires a later ready revision")
+            changed = [projection for projection_id, projection in graph["projections"].items()
+                if projection_id not in previous["projections"] or
+                _projection_source_digest(graph, projection, digest_version=2) !=
+                _projection_source_digest(previous, previous["projections"][projection_id], digest_version=2)]
+            if not changed or any(
+                (projection.get("operation_receipt") or {}).get("operation") not in {"reconfirm-projection", "clarify-projection"} or
+                (projection.get("operation_receipt") or {}).get("prior_graph_revision", -1) < previous["graph_revision"]
+                for projection in changed
+            ):
+                raise PlanGraphError("new acceptance epoch requires changed covered meaning and later typed projection approval")
         root_fd = _open_private_child(transaction.home_fd, "acceptance-bases", create=True)
         basis_fd: int | None = None
         try:
             basis_fd = _open_private_child(root_fd, transaction.key, create=True)
-            name = f"{workflow_id}.json"
+            name = f"{workflow_id}.json" if previous_basis is None else _acceptance_epoch_name(graph)
             try:
                 payload = _read_bytes_entry(basis_fd, name)
             except _MissingState:
@@ -2575,9 +2616,9 @@ def freeze_acceptance_basis(
                 raise PlanGraphError("accepted basis already frozen at another revision or its bytes were altered")
             _revalidate_directory(transaction.home_fd, "acceptance-bases", root_fd)
             _revalidate_directory(root_fd, transaction.key, basis_fd)
-            return {
+            receipt = {
                 "schema_version": "plan-acceptance-basis-receipt.v1",
-                "operation": "freeze-acceptance",
+                "operation": "freeze-acceptance" if previous_basis is None else "freeze-acceptance-epoch",
                 "workflow_id": workflow_id,
                 "graph_revision": expected_revision,
                 "path": str(transaction.home_path / "acceptance-bases" / transaction.key / name),
@@ -2587,6 +2628,11 @@ def freeze_acceptance_basis(
                 "branch": branch,
                 "baseline_commit": graph["baseline"]["repository_revision"],
             }
+            if previous_basis is not None:
+                receipt.update({"previous_basis": {"path": str(previous_path), "digest": previous_digest,
+                    "graph_revision": previous["graph_revision"], "graph_digest": _canonical_digest(previous)},
+                    "reason": reason, "trust": "coordinator-attestation"})
+            return receipt
         finally:
             if basis_fd is not None:
                 os.close(basis_fd)
@@ -2607,9 +2653,9 @@ def load_acceptance_basis(path: Path, digest: str) -> dict[str, Any]:
     if hashlib.sha256(payload).hexdigest() != digest:
         raise PlanGraphError("accepted basis bytes do not match the retained digest")
     graph = _decode_json(payload, "accepted basis")
-    if path.name != f"{graph.get('workflow_id')}.json":
-        raise PlanGraphError("accepted basis locator does not bind its workflow")
     _validate_graph(graph, None, None, validate_objects=False)
+    if path.name not in {f"{graph['workflow_id']}.json", _acceptance_epoch_name(graph)}:
+        raise PlanGraphError("accepted basis locator does not bind its workflow, revision, and graph digest")
     identity = graph["identity"]
     key = hashlib.sha256(f"{identity['git_common_dir']}\0{identity['target_branch']}".encode("utf-8")).hexdigest()
     if path.parent.name != key:
@@ -4196,7 +4242,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Operate a private Plan Graph from the installed plugin package"
     )
-    parser.add_argument("command", choices=("initialize", "discover", "load", "apply", "recover", "state", "pause", "resume", "discard", "create-branch", "complete", "freeze-acceptance"))
+    parser.add_argument("command", choices=("initialize", "discover", "load", "apply", "recover", "state", "pause", "resume", "discard", "create-branch", "complete", "freeze-acceptance", "freeze-acceptance-epoch"))
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--state-home", type=Path, default=None)
@@ -4204,6 +4250,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revision", type=int)
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--baseline")
+    parser.add_argument("--previous-basis", type=Path)
+    parser.add_argument("--previous-digest")
+    parser.add_argument("--reason")
     parser.add_argument("--json")
     args = parser.parse_args(argv)
     context = None if args.command == "create-branch" else _repo_context(args.repo, args.branch)
@@ -4261,6 +4310,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.workflow_id or args.revision is None:
             parser.error("freeze-acceptance requires --workflow-id and --revision")
         return emit(freeze_acceptance_basis(args.repo, args.branch, args.workflow_id, args.revision, args.state_home))
+    if args.command == "freeze-acceptance-epoch":
+        if not args.workflow_id or args.revision is None or args.previous_basis is None or not args.previous_digest or not args.reason:
+            parser.error("freeze-acceptance-epoch requires --workflow-id, --revision, --previous-basis, --previous-digest, and --reason")
+        return emit(freeze_acceptance_epoch(args.repo, args.branch, args.workflow_id, args.revision,
+            args.previous_basis, args.previous_digest, args.reason, args.state_home))
     if args.command == "initialize":
         receipt = initialize_workflow(args.repo, args.branch, input_json(), args.state_home)  # type: ignore[arg-type]
         graph = load_workflow(args.repo, args.branch, args.state_home)
