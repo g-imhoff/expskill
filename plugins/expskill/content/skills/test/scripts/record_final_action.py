@@ -27,6 +27,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+
 
 SCHEMA_VERSION = "test-final-action.v2"
 HANDOFF_MODE = "compose-record-finalize with one root argument"
@@ -144,12 +147,16 @@ def _read_charter_identity(repository: Path, root: Path) -> tuple[str, str]:
         _error("invalid-charter", f"cannot decode frozen charter: {error}")
     if (
         not isinstance(value, dict)
-        or set(value) != CHARTER_FIELDS
-        or value.get("schema_version") != "test-charter.v1"
+        or set(value) != (CHARTER_FIELDS | {"execution_budget"} if value.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS)
+        or value.get("schema_version") not in {"test-charter.v1", "test-charter.v2"}
         or value.get("run_id") != root.name
         or value.get("repository") != str(repository)
     ):
         _error("invalid-charter", "frozen charter shape or root binding is invalid")
+    try:
+        execution_budget.for_charter(value)
+    except ValueError as error:
+        _error("invalid-budget", str(error))
     head = value.get("head")
     branch = value.get("branch")
     if not isinstance(head, str) or HEAD_RE.fullmatch(head) is None:
@@ -713,12 +720,17 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
             label="metadata_path",
         )
         protected = _snapshot_run_root(root)
+        charter = json.loads((root / CHARTER_FILENAME).read_text(encoding="utf-8"))
+        remaining = execution_budget.remaining_seconds(charter, root)
+        if remaining <= 0:
+            _error("deadline-exhausted", "frozen run deadline expired before execution")
         completed = subprocess.run(
             command,
             cwd=repository,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
+            timeout=remaining,
         )
         output = completed.stdout
         _verify_run_root_unchanged(root, protected)
