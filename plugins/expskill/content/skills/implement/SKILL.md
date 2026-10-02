@@ -16,7 +16,9 @@ and protected-branch merge.
 
 Ground the accepted work in current code and Git state. Require a concrete outcome, protected behavior, scope, non-goals, proof intent, the exact non-protected target branch and starting commit, current dependencies with disjoint ownership per runnable node, approved Design deliverables for UI work, and authority for local edits, tests, commits, worktrees, and local integration.
 
-Before production edits, bind the complete accepted criterion basis. Use the current accepted Plan Graph or a real accepted specification by path and digest, or capture the complete direct brief as immutable criterion text in the coordinator. Include observable positive and negative behavior, protected behavior, constraints, non-goals, proof obligations, and Design decisions. Never reconstruct missing criteria from the candidate. Transport that same basis to every worker and judge under the final Review context contract. If the basis is missing or cannot be transported completely, stop before production edits and identify only the missing material meaning. Preserve already accepted user intent without redundant confirmation.
+Before production edits, bind the complete accepted criterion basis. For Plan-backed work, call `freeze_acceptance_basis(repo, branch, workflow_id, expected_revision)` through the packaged helper, or its `freeze-acceptance` CLI command with the exact workflow ID and revision. This preserves the complete current ready planning graph in the private `acceptance-bases` namespace outside rotating Plan generations. Retain its returned absolute path, byte digest, graph digest, original workflow/revision, and baseline commit. Repeated freezing cannot replace an existing basis with a later graph. Never use `current.yaml` or `previous.yaml` as the immutable criterion locator. Use a real accepted specification by immutable locator and digest, or capture the complete direct brief as immutable criterion text in the coordinator. Include observable positive and negative behavior, protected behavior, constraints, non-goals, proof obligations, and Design decisions. Never reconstruct missing criteria from the candidate. Transport that same basis unchanged to every worker and judge under the final Review context contract. Verify its retained byte digest before dispatch. If the basis is missing or cannot be transported completely, stop before production edits and identify only the missing material meaning. If the original basis is missing after production edits began, stop and identify the missing original criteria rather than freeze the updated graph or invent assent. Preserve already accepted user intent without redundant confirmation.
+
+If the user approves a material scope or choice change during implementation, settle or stop existing worker activity before starting a separate implementation epoch. Keep every old worker and judge bound to its original basis. Update and reconfirm the same Plan workflow, then explicitly call `freeze_acceptance_epoch(repo, branch, workflow_id, expected_revision, previous_path, previous_digest, reason)` or `freeze-acceptance-epoch` with `--previous-basis`, `--previous-digest`, and `--reason`. The helper requires changed covered meaning and a later typed projection approval, then preserves a distinct revision-and-digest snapshot with the previous basis binding. The new-epoch reason is a coordinator attestation, not authenticated user assent. Transport the new receipt only to the new epoch's workers and judges. Never rebind prior receipts or replace criteria for existing actors. Ordinary evidence refreshes and execution updates cannot create a new acceptance epoch. Retain cumulative budgets and regression obligations across epochs.
 
 Derive an acceptance oracle from those criteria before inspecting implementation output. For each material behavior, name an observable expected result and a boundary or counterexample that could disprove it. Keep these expectations independent of worker-authored tests and preserve them through corrections. Stabilize shared interfaces before fan-out, including for direct briefs.
 
@@ -25,7 +27,7 @@ material decision or authority that cannot be discovered. If pre-existing
 uncommitted changes affect the work, stop, explain the safe options, and ask what
 to do instead of stashing, discarding, overwriting, or absorbing them silently.
 
-For Plan-backed work, read the current canonical graph through the Plan helper. Do not invent a second
+For Plan-backed work, read the current canonical graph through the Plan helper for execution state while keeping the frozen accepted basis unchanged. The snapshot is complete original criterion text, not another canonical workflow or a new approval. `load_acceptance_basis(path, digest)` verifies its retained bytes and historical structure without refreshing it from current repository state. Keep cumulative regression obligations separate from the original basis. Do not invent a second
 state format and do not make workers graph writers. Return compact node results to the active
 coordinator for graph updates, and a complete direct brief may run without a Plan Graph.
 
@@ -134,13 +136,13 @@ revision, what changed and why, review scope, claimed checks with concise
 results, known concerns, and paths plus optional digests for relevant evidence.
 A real accepted specification file is referenced separately when it exists.
 Every judge must also receive the complete accepted criterion basis captured
-before production edits. Reference the immutable accepted graph or specification
+before production edits for that implementation epoch. Reference the frozen accepted graph snapshot or immutable specification
 with its revision and digest, or include that complete criterion text inline
 within the 300-line total. This is the sole accepted-requirements exception to
 the locator-only rule. It is not a review-time summary or copied transcript.
 A missing or incomplete basis makes the handoff invalid. Stop before dispatch
 rather than truncate it or infer requirements from the candidate.
-The exception applies only to a specification file that existed before review
+The exception applies only to the complete accepted graph snapshot preserved before production edits or a specification file that existed before review
 dispatch. It does not permit a review-time summary, copy, or relabelled context
 package.
 
