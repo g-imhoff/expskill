@@ -90,3 +90,15 @@ def test_customized_profiles_match_reviewed_content() -> None:
     profiles = PLUGIN / "content" / "agents"
     for name, expected in PRESERVED_PROFILES.items():
         assert hashlib.sha256((profiles / name).read_bytes()).hexdigest() == expected
+
+
+def test_parallel_input_and_answer_relay_preserve_phase_ownership():
+    router = skill("use-expskill")
+    for clause in (
+        "complete accepted input", "Do not invoke Brainstorm to materialize settled intent",
+        "conversation-relay.json", "actual session identifier", "pending question ID",
+        "codex exec resume --json", "claude -p --resume", "opencode run --session",
+        "Never send it to both sessions", "relaunch the initial prompt as a substitute", "same Plan session",
+        "Recovery never implies approval, resets a budget", "preference-first policy",
+    ):
+        assert clause.lower() in router.lower()

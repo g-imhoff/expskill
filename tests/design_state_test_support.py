@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 
 TECHNICAL_GATE_NAMES = frozenset(
     {
@@ -65,6 +68,13 @@ def prepare_delivery_fixture(module, receipt, state_home, workflow_id, records, 
         updated = replace(copy.deepcopy(layer))
         layer.clear()
         layer.update(updated)
+    for name, component in records["components"].items():
+        files = component.get("files") or [item.copy() for item in layers[0]["files"] if item["digest"] == component["code_digest"]]
+        component["files"] = files
+        component["code_digest"] = module.component_digest(files)
+        for collection in ("evidence", "approvals"):
+            for item in records[collection].values():
+                if item["component_id"] == name: item["code_digest"] = component["code_digest"]
     result = module.record_check(workflow_id=workflow_id, expected_revision=receipt["revision"], argv=[sys.executable, "-c", "print('fixture-check-output')"], candidate_payload=layers[0], state_home=state_home)
     for evidence in records["evidence"].values():
         evidence["technical"]["results"] = [result.copy()]
@@ -76,3 +86,12 @@ def prepare_delivery_fixture(module, receipt, state_home, workflow_id, records, 
         for name, layer in zip(("candidate", "review", "manifest"), layers):
             records["delivery"][name] = {"inventory_digest": hashlib.sha256(json.dumps(layer, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "files": layer["files"]}
     return layers
+
+
+FIXTURE_BRIEF = {"objective": "Fixture component review", "requirements": ["Preserve fixture behavior"], "responsive_expectations": {"compact": "No overflow", "intermediate": "No overflow", "wide": "No overflow"}, "non_goals": ["Integration"], "source": {"kind": "specification", "path": "README.md", "digest": hashlib.sha256(b"fixture\n").hexdigest()}}
+FIXTURE_BRIEF_DIGEST = hashlib.sha256(json.dumps({**FIXTURE_BRIEF, "confirmed": True}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def confirm_fixture_workflow(module, receipt, state_home):
+    confirmed = module.confirm_brief(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], brief=FIXTURE_BRIEF, confirmed=True, state_home=state_home)
+    return {**receipt, "revision": confirmed["revision"]}

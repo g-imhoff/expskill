@@ -321,3 +321,19 @@ def test_owned_scope_rejects_directory_wildcard_traversal_and_symlink(tmp_path: 
     (repo / "linked").symlink_to(repo / "component.txt")
     with pytest.raises(ValueError):
         module.initialize_workflow(repository=repo, branch="expskill/design/ui", worktree=repo, baseline=baseline, dirty_fingerprint=module._dirty(repo), ui_contract={"digest": DIGEST}, scope={"components": [], "exclusions": [], "owned_paths": [owned]}, invocation_mode="direct", state_home=state_home)
+
+
+def test_private_accepted_direct_input_is_bound_without_brainstorm_file(tmp_path):
+    module, repo, home, receipt, _ = initialize(tmp_path, invocation_mode="direct")
+    source = tmp_path / "accepted-input.json"
+    source.write_text('{"request":"A complete accepted direct UI request","non_goals":["No navigation"]}')
+    source.chmod(0o400)
+    brief = {key: value for key, value in module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)["brief"].items() if key not in {"confirmed", "digest"}}
+    brief["source"] = {"kind": "accepted-input", "path": str(source), "digest": hashlib.sha256(source.read_bytes()).hexdigest(), "decision_reference": "original explicit user request"}
+    confirmed = module.confirm_brief(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], brief=brief, confirmed=True, state_home=home)
+    assert module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)["brief"]["digest"] == confirmed["brief_digest"]
+    source.chmod(0o600)
+    source.write_text('{"request":"Changed accepted meaning"}')
+    source.chmod(0o400)
+    with pytest.raises(ValueError, match="source digest mismatch"):
+        module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)
