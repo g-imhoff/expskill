@@ -2855,6 +2855,24 @@ def recover_workflow(
             raise PlanGraphError("current generation is valid; recovery is not applicable")
         recovered = copy.deepcopy(previous)
         recovered["graph_revision"] = previous["graph_revision"] + 2
+        changed_paths = _changed_repository_paths(transaction.context, recovered["baseline"]["repository_revision"])
+        stale_evidence = {
+            evidence_id for evidence_id, record in recovered["evidence"].items()
+            if record["kind"] == "repository"
+            and any(_path_related(record["source"], path) for path in changed_paths)
+        }
+        _invalidate_semantic_dependents(
+            recovered,
+            {("projections", projection_id, "version") for projection_id in recovered["projections"]}
+            | {("evidence", evidence_id, "revision") for evidence_id in stale_evidence},
+        )
+        recovered["unresolved"].append({
+            "id": f"recovery-{recovered['graph_revision']}",
+            "kind": "recovery-reconciliation",
+            "material": True,
+            "question": "Reconcile the recovered plan with current user intent before confirming its projections.",
+            "reason": f"Recovered revision {previous['graph_revision']}; newer recorded intent may have been lost.",
+        })
         _finalize_graph(
             recovered,
             transaction.context,

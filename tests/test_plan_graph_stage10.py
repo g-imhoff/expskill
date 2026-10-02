@@ -1323,6 +1323,44 @@ class TransactionLayerTests(unittest.TestCase):
             _graph()["work"]["T1"]["result"],
         )
 
+    def test_recovery_requires_reconciliation_and_fresh_projection_confirmation(self) -> None:
+        receipt = self._initialize()
+        second = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["outcomes", "O1", "result"],
+              "value": "Configuration is validated without coercion"}], self.state_home)
+        second.path.write_text("corrupt", encoding="utf-8")
+        recovered = self.helper.recover_workflow(self.repo, BRANCH, receipt.workflow_id, self.state_home)
+        self.assertEqual(recovered.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["unresolved"][0]["kind"], "recovery-reconciliation")
+        self.assertTrue(graph["projections"]["U1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertEqual(graph["outcomes"]["O1"]["result"], _graph()["outcomes"]["O1"]["result"])
+        cleared = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["unresolved"], "value": []}], self.state_home)
+        self.assertEqual(cleared.state, "stale")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        regenerated = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_recovery_stales_repository_evidence_changed_since_checkpoint(self) -> None:
+        receipt = self._initialize()
+        second = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Revised work"}], self.state_home)
+        (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        second.path.write_text("corrupt", encoding="utf-8")
+        self.helper.recover_workflow(self.repo, BRANCH, receipt.workflow_id, self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["evidence"]["E1"]["fresh"])
+
     def test_resume_is_one_revision_and_stales_only_relevant_repository_evidence(self) -> None:
         graph = _graph()
         graph["evidence"]["E2"] = {
