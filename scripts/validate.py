@@ -1153,6 +1153,12 @@ def validate_repository(
         _validate_removed_repository_local_skill(repository_root, errors)
         _validate_skill_punctuation(repository_root, errors)
         _validate_no_legacy_project_identity(repository_root, errors)
+    if include_opencode or include_hermes:
+        try:
+            skill_inventory(repository_root)
+        except AgentSyncError as error:
+            errors.append(f"canonical skill inputs cannot be inventoried: {error}")
+            return tuple(errors)
     if include_opencode:
         _validate_opencode_package(repository_root, errors)
     if include_hermes:
