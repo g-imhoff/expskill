@@ -9,12 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
-DIGEST = "a" * 64
+DIGEST = hashlib.sha256(b"fixture-artifact").hexdigest()
 BASE_RECEIPT_KEYS = {"schema_version", "operation", "workflow_id", "revision", "lifecycle", "identity", "state_digest"}
 DELIVERY_RECEIPT_KEYS = BASE_RECEIPT_KEYS | {"candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest"}
 
@@ -218,7 +218,12 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             delivery_env = os.environ.copy(); delivery_env["XDG_STATE_HOME"] = str(root / "delivery-xdg")
             delivery_receipt = self._initialize(delivery_env, delivery_repo, delivery_head)
             workflow = delivery_receipt["workflow_id"]
-            applied = self._run("apply", {"workflow_id": workflow, "expected_revision": delivery_receipt["revision"], "updates": self._records()}, delivery_env)
+            from tests.test_design_state_contract_v3 import _load
+            module = _load("design_state_cli_artifacts")
+            records = self._records()
+            candidate, review, manifest = self._layers()
+            prepare_delivery_fixture(module, delivery_receipt, Path(delivery_env["XDG_STATE_HOME"]) / "expskill", workflow, records, (candidate, review, manifest))
+            applied = self._run("apply", {"workflow_id": workflow, "expected_revision": delivery_receipt["revision"], "updates": records}, delivery_env)
             self.assertEqual(applied.returncode, 0, applied.stderr)
             applied_receipt = self._receipt(applied, "delivery apply")
             candidate, review, manifest = self._layers()

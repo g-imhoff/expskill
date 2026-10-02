@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import TECHNICAL_GATE_NAMES, passing_technical
+from tests.design_state_test_support import TECHNICAL_GATE_NAMES, passing_technical, prepare_delivery_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +80,7 @@ def _delivery(candidate: dict, review: dict, manifest: dict) -> dict:
 def _seed(module: object, receipt: dict, home: Path, workflow: str) -> tuple[dict, dict, dict, dict]:
     records = _records()
     candidate, review, manifest = _layers(records)
+    prepare_delivery_fixture(module, receipt, home, workflow, records, (candidate, review, manifest))
     updates = dict(records)
     updates["delivery"] = _delivery(candidate, review, manifest)
     updated = module.apply_updates(workflow_id=workflow, expected_revision=receipt["revision"], updates=updates, state_home=home)
@@ -288,3 +289,48 @@ class DesignStateContractV4Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_real_artifacts_records_and_approval_provenance_are_required(tmp_path):
+    import pytest
+
+    module = _load("design_state_real_evidence")
+    receipt, repo, home, workflow = _start(module, tmp_path)
+    updated, records, candidate, review, manifest = _seed(module, receipt, home, workflow)
+    target = home / "design" / workflow
+    original = target.read_bytes()
+    component = repo / candidate["files"][0]["path"]
+    component.write_bytes(component.read_bytes() + b"changed")
+    with pytest.raises(ValueError, match="artifact bytes"):
+        module.deliver_workflow(workflow_id=workflow, expected_revision=updated["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+    assert target.read_bytes() == original
+    component.write_bytes(b"fixture-artifact:" + _records()["components"]["CheckoutForm"]["code_digest"].encode())
+    result = records["evidence"]["E1"]["technical"]["results"][0]
+    output = home / "design" / "records" / (result["record_id"] + ".output")
+    assert output.read_bytes() == b"fixture-check-output\n"
+    output.write_bytes(b"unrelated output")
+    with pytest.raises(ValueError, match="altered command record"):
+        module.deliver_workflow(workflow_id=workflow, expected_revision=updated["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+    assert target.read_bytes() == original
+    output.write_bytes(b"fixture-check-output\n")
+    mutated = json.loads(original)
+    del mutated["approvals"]["A1"]["provenance"]
+    target.write_text(json.dumps(mutated))
+    with pytest.raises(ValueError, match="attestation provenance"):
+        module.deliver_workflow(workflow_id=workflow, expected_revision=updated["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+    target.write_bytes(original)
+    module.deliver_workflow(workflow_id=workflow, expected_revision=updated["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
+
+
+def test_caller_only_command_claim_cannot_deliver(tmp_path):
+    import pytest
+
+    module = _load("design_state_legacy_claim")
+    receipt, _, home, workflow = _start(module, tmp_path)
+    updated, records, candidate, review, manifest = _seed(module, receipt, home, workflow)
+    target = home / "design" / workflow
+    state = json.loads(target.read_bytes())
+    del state["evidence"]["E1"]["technical"]["results"][0]["record_id"]
+    target.write_text(json.dumps(state))
+    with pytest.raises(ValueError, match="recorded checks"):
+        module.deliver_workflow(workflow_id=workflow, expected_revision=updated["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=home)
