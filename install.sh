@@ -97,6 +97,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tempfile
 
@@ -117,15 +118,40 @@ try:
             raise ValueError("missing regular packaged profile: " + str(profile))
         if destination.exists() and not destination.is_symlink() and not destination.is_file():
             raise ValueError("profile destination is not a regular file: " + str(destination))
+    configured_state = os.environ.get("XDG_STATE_HOME")
+    state_base = Path(configured_state) if configured_state else Path.home() / ".local" / "state"
+    if not state_base.is_absolute() or ".." in state_base.parts:
+        raise ValueError("XDG_STATE_HOME must be an absolute path without traversal")
+    private_state = state_base / "expskill"
+    for component in (private_state, *private_state.parents):
+        if component.is_symlink():
+            raise ValueError("private state path is a symlink: " + str(component))
+        git_marker = component / ".git"
+        git_directory = git_marker
+        if git_marker.is_file():
+            reference = git_marker.read_text(encoding="utf-8").strip()
+            if reference.startswith("gitdir: "):
+                git_directory = component / reference[8:]
+        if (git_directory / "HEAD").is_file() and ((git_directory / "objects").is_dir() or (git_directory / "commondir").is_file()):
+            raise ValueError("private state must remain outside a Git repository: " + str(private_state))
+    private_state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state_metadata = private_state.lstat()
+    if not stat.S_ISDIR(state_metadata.st_mode) or state_metadata.st_uid != os.geteuid() or stat.S_IMODE(state_metadata.st_mode) != 0o700:
+        raise ValueError("private state root must be an owned directory with mode 0700: " + str(private_state))
+    planner = (source / "expskill-planner.toml").read_text(encoding="utf-8")
+    if "[sandbox_workspace_write]" in planner:
+        raise ValueError("portable packaged planner must not declare an installation-specific private grant")
+    materialized_planner = planner.rstrip("\n") + "\n\n[sandbox_workspace_write]\nwritable_roots = [" + json.dumps(str(private_state), ensure_ascii=False) + "]\n"
     target.mkdir(parents=True, exist_ok=True)
     backup = None
     with tempfile.TemporaryDirectory(prefix=".expskill-stage-", dir=str(target)) as staging:
         for name in names:
             shutil.copy2(str(source / name), str(Path(staging) / name))
+        (Path(staging) / "expskill-planner.toml").write_text(materialized_planner, encoding="utf-8")
         for name in names:
             destination = target / name
             if not destination.is_symlink() and destination.is_file():
-                if destination.read_bytes() == (source / name).read_bytes():
+                if destination.read_bytes() == (Path(staging) / name).read_bytes():
                     continue
             if os.path.lexists(str(destination)):
                 if backup is None:
@@ -134,11 +160,12 @@ try:
                 os.replace(str(destination), str(backup / name))
             os.replace(str(Path(staging) / name), str(destination))
     print("Installed seven agent profiles in " + str(target))
+    print("Planner private-state grant: " + str(private_state) + ". Rerun the installer if XDG_STATE_HOME changes. Existing state is retained.")
 except (OSError, ValueError) as error:
     print("Could not install Codex agent profiles: " + str(error), file=sys.stderr)
     sys.exit(1)
 PY
-            fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path or package error above, then copy its seven agents/expskill-*.toml profiles into your Codex agents directory (preserving existing files).'
+            fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path, package, or private-state error above, then rerun this installer to materialize the planner grant and preserve existing profiles.'
         printf 'ExpSkill installed or updated successfully for Codex. Review and trust the plugin hook in /hooks, then start a new Codex session.\n'
         ;;
     OpenCode)
