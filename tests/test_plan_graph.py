@@ -145,6 +145,7 @@ def minimal_graph() -> dict[str, object]:
                 "presented": True,
                 "confirmed": True,
                 "stale": False,
+                "presentation": "Validate malformed configuration at the existing boundary and preserve valid inputs. Verify both outcomes with configuration tests.",
             }
         },
         "invalidations": [],
@@ -312,6 +313,7 @@ def rich_graph() -> dict[str, object]:
             "presented": True,
             "confirmed": True,
             "stale": False,
+            "presentation": "Use the accepted validation contract at the existing configuration boundary and prove that contract.",
         },
         "U2": {
             "covers": ["T2", "T3", "J1", "P2", "P3", "P4"],
@@ -320,6 +322,7 @@ def rich_graph() -> dict[str, object]:
             "presented": True,
             "confirmed": True,
             "stale": False,
+            "presentation": "Implement the validation and fixture lanes, then prove integrated startup behavior at their join.",
         },
     }
     graph["invalidations"] = [
