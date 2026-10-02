@@ -125,20 +125,35 @@ def runtime_version(command):
         return "unavailable"
 
 
-def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="read-only", live=False, cli="codex", infrastructure_retries=1, model=None):
+def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="read-only", live=False, cli="codex", infrastructure_retries=1, model=None, persistent=False, resume_from=None):
     if not live:
         raise RuntimeError("live actors require explicit opt-in")
     if sandbox not in {"read-only", "workspace-write"} or timeout <= 0 or infrastructure_retries not in {0, 1}:
         raise ValueError("invalid live actor configuration")
     cwd = Path(cwd).expanduser().resolve()
+    state_home = Path(state_home).expanduser().resolve()
+    command = [cli] if isinstance(cli, str) else list(cli)
+    context = {"cwd": str(cwd), "state_home": str(state_home), "sandbox": sandbox, "cli": command}
+    resumed_thread = None
+    if type(persistent) is not bool:
+        raise ValueError("invalid persistence configuration")
+    if resume_from is not None:
+        if not persistent or model is not None or not isinstance(resume_from, dict) or resume_from.get("outcome") != "completed-ungraded":
+            raise ValueError("resume requires a completed retained actor without a model override")
+        prior = resume_from.get("transport", {})
+        threads = resume_from.get("thread_ids", [])
+        if prior.get("persistent") is not True or prior.get("context") != context or len(threads) != 1 or not isinstance(threads[0], str) or not threads[0] or threads[0].startswith("-") or any(char.isspace() for char in threads[0]):
+            raise ValueError("resume requires the same retained thread and context")
+        resumed_thread = threads[0]
     evidence_dir = Path(evidence_dir).expanduser().resolve()
     evidence_dir.mkdir(parents=True, exist_ok=False)
-    state_home = Path(state_home).expanduser().resolve()
     state_home.mkdir(parents=True, exist_ok=True)
     write(evidence_dir / "prompt.txt", prompt)
-    command = [cli] if isinstance(cli, str) else list(cli)
-    argv = command + ["exec", "--ephemeral", "--ignore-user-config", "--json", "--color", "never", "-s", sandbox,
-        "--add-dir", str(state_home), "-C", str(cwd), "-"]
+    if resumed_thread is not None:
+        argv = command + ["exec", "resume", "--ignore-user-config", "--json", resumed_thread, "-"]
+    else:
+        argv = command + ["exec"] + ([] if persistent else ["--ephemeral"]) + ["--ignore-user-config", "--json", "--color", "never", "-s", sandbox,
+            "--add-dir", str(state_home), "-C", str(cwd), "-"]
     if model is not None:
         argv[len(command) + 1:len(command) + 1] = ["--model", model]
     version = runtime_version(tuple(command))
@@ -158,7 +173,8 @@ def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="re
         thread_ids = [event["thread_id"] for event in events if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()]
         messages = [event["item"].get("text", "") for event in events if event.get("type") == "item.completed" and isinstance(event.get("item"), dict) and event["item"].get("type") == "agent_message"]
         infrastructure = infrastructure_failure(events, result["stderr"])
-        outcome = "infrastructure-error" if infrastructure else "timed-out" if result["timed_out"] else "completed-ungraded" if result["exit_code"] == 0 and len(thread_ids) == 1 and messages else "protocol-invalid"
+        valid_thread = len(thread_ids) == 1 and (resumed_thread is None or thread_ids == [resumed_thread])
+        outcome = "infrastructure-error" if infrastructure else "timed-out" if result["timed_out"] else "completed-ungraded" if result["exit_code"] == 0 and valid_thread and messages else "protocol-invalid"
         write(attempt_dir / "events.jsonl", result["stdout"])
         write(attempt_dir / "stderr.txt", result["stderr"])
         attempt = {"attempt": index + 1, "argv": argv, "thread_ids": thread_ids, "started_at": started_at,
@@ -174,6 +190,7 @@ def run_actor(*, prompt, cwd, state_home, evidence_dir, timeout=240, sandbox="re
         "attempts": attempts, "selected_attempt": len(attempts), "argv": argv,
         "runtime": {"cli_version": version, "sandbox": sandbox, "requested_model": model, "configuration": "ignore-user-config",
             "actual_model": "Not independently exposed by the retained CLI protocol unless present in raw events."},
+        "transport": {"persistent": persistent, "resumed_from_thread_id": resumed_thread, "context": context},
         "evidence": str(evidence_dir / "actor.json"), "grading": "Transport completion is not behavioral success. Independent raw-event and fixture assessment is required."}
     write(evidence_dir / "actor.json", json.dumps(actor, indent=2) + "\n")
     return actor
