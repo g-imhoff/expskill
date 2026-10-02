@@ -289,10 +289,7 @@ TEST_EVIDENCE_CONTRACT_FIELDS = {
     "receipt",
     "finding",
 }
-TEST_EVIDENCE_EXTENSIONS = {'output_predicates': {'modes': ['exact-text',
-                                 'sha256',
-                                 'json-fields',
-                                 'exit-only'],
+TEST_EVIDENCE_EXTENSIONS = {'output_predicates': {'modes': ['exact-text', 'sha256', 'json-fields', 'exit-only'],
                        'json_assertion_fields': ['path', 'operator', 'value'],
                        'json_operators': ['equals',
                                           'integer-equals',
@@ -301,9 +298,8 @@ TEST_EVIDENCE_EXTENSIONS = {'output_predicates': {'modes': ['exact-text',
                                           'exists'],
                        'assertions_max': 64,
                        'path_depth_max': 16,
-                       'semantics': 'all typed assertions and the exact '
-                                    'expected exit code must match, reject '
-                                    'duplicate keys and executable predicates'},
+                       'semantics': 'all typed assertions and the exact expected exit code must '
+                                    'match, reject duplicate keys and executable predicates'},
  'run_budgets': {'preparation_schema': 'test-charter-preparation.v2',
                  'charter_schema': 'test-charter.v2',
                  'default_actions': 8,
@@ -318,11 +314,30 @@ TEST_EVIDENCE_EXTENSIONS = {'output_predicates': {'modes': ['exact-text',
                                    'rationale',
                                    'waves'],
                  'limits_encoding': 'decimal strings',
-                 'required_scope': 'every material oracle required action '
-                                   'occurs in the frozen wave plan',
-                 'execution': 'reject unplanned or reordered waves and bound '
-                              'child execution to the remaining bootstrap '
-                              'deadline'}}
+                 'required_scope': 'every material oracle required action occurs in the frozen '
+                                   'wave plan',
+                 'execution': 'reject unplanned or reordered waves and bound child execution to '
+                              'the remaining bootstrap deadline'},
+ 'recorded_execution': {'manifest_schema': 'test-recorded-action.v1',
+                        'manifest_fields': ['schema_version', 'entry', 'command', 'execution'],
+                        'entry_fields': ['action_id',
+                                         'role',
+                                         'ring',
+                                         'action',
+                                         'path',
+                                         'expected',
+                                         'oracle_ids',
+                                         'artifact_ids'],
+                        'wave_schema': 'test-recorded-wave.v1',
+                        'wave_fields': ['schema_version', 'actions'],
+                        'wave_actions_max': 8,
+                        'record_schema': 'test-execution-record.v1',
+                        'derived_fields': ['head', 'actual', 'status'],
+                        'pass_gate': 'one matching recorder receipt per action, complete charter '
+                                     'bytes and entry binding, raw digest and output predicate '
+                                     'recomputation',
+                        'legacy_gate': 'handwritten FAIL and BLOCKED evidence remains supported, '
+                                       'handwritten PASS is rejected'}}
 TEST_EVIDENCE_TERMINAL_STATES = ["PASS", "FAIL", "BLOCKED", "EXEMPT"]
 TEST_EVIDENCE_FINDING_KINDS = [
     "product-defect",
@@ -1823,7 +1838,7 @@ def _validate_test_evidence_contract(skill_root: Path, errors: list[str]) -> Non
     if set(contract) not in (TEST_EVIDENCE_CONTRACT_FIELDS, TEST_EVIDENCE_CONTRACT_FIELDS | set(TEST_EVIDENCE_EXTENSIONS)):
         errors.append(
             "test evidence contract keys must be exactly the legacy six fields or "
-            "those fields plus output_predicates and run_budgets"
+            "those fields plus output_predicates, run_budgets, and recorded_execution"
         )
         return
     if set(TEST_EVIDENCE_EXTENSIONS) <= set(contract):
