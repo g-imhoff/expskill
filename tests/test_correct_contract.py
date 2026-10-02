@@ -62,6 +62,21 @@ class CorrectContractTests(unittest.TestCase):
                 )
 
 
+    def test_known_structural_repairs_preserve_intent_and_choose_technical_owner(self) -> None:
+        body = " ".join((SKILLS / "correct" / "SKILL.md").read_text().lower().split())
+        for phrase in (
+            "known structural mechanism alone does not make the concept vague",
+            "choose plan only if its technical execution remains unresolved",
+            "choose implement when a complete accepted criterion basis",
+            "existing explicit lifecycle delegation",
+            "if only authority is missing, ask for that authority",
+            "offer brainstorm only when the intended outcome or conceptual direction genuinely remains unresolved",
+            "never performs that owner's production implementation",
+        ):
+            self.assertIn(phrase, body)
+        self.assertNotIn("offer it even when the larger direction is already defined", body)
+        self.assertNotIn("stop before further work or checks", body)
+
     def test_router_selects_correct_without_extra_lifecycle_steps(self) -> None:
         body = " ".join(ROUTER.read_text(encoding="utf-8").lower().split())
         self.assertIn("choose `correct`", body)
