@@ -699,7 +699,7 @@ REVIEW_HANDOFF_CLAUSES = (
     "do not attach binary or opaque review context.",
 )
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "content/skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "content/skills/implement/SKILL.md": "617061608dcf8c468cb712455ec120d1572b1be3df7a9e4daea3ff6511e383ea",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
@@ -721,8 +721,8 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "transcripts.",
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
-    "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
+    "expskill-review": "282892b800401e3f98ee7c08dcd70eed8b7f34b260f3520a7a16c91895fb9f03",
+    "expskill-spec": "8d98e6236e1642dd8356e6f65aaa336f893257bbacd27252acfb9920ff804b19",
 }
 
 REQUIRED_AGENT_FIELDS = (

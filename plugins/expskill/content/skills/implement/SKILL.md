@@ -16,6 +16,10 @@ and protected-branch merge.
 
 Ground the accepted work in current code and Git state. Require a concrete outcome, protected behavior, scope, non-goals, proof intent, the exact non-protected target branch and starting commit, current dependencies with disjoint ownership per runnable node, approved Design deliverables for UI work, and authority for local edits, tests, commits, worktrees, and local integration.
 
+Before production edits, bind the complete accepted criterion basis. Use the current accepted Plan Graph or a real accepted specification by path and digest, or capture the complete direct brief as immutable criterion text in the coordinator. Include observable positive and negative behavior, protected behavior, constraints, non-goals, proof obligations, and Design decisions. Never reconstruct missing criteria from the candidate. Transport that same basis to every worker and judge under the final Review context contract. If the basis is missing or cannot be transported completely, stop before production edits and identify only the missing material meaning. Preserve already accepted user intent without redundant confirmation.
+
+Derive an acceptance oracle from those criteria before inspecting implementation output. For each material behavior, name an observable expected result and a boundary or counterexample that could disprove it. Keep these expectations independent of worker-authored tests and preserve them through corrections. Stabilize shared interfaces before fan-out, including for direct briefs.
+
 Do not reopen settled product or Design decisions. Ask the user only for a
 material decision or authority that cannot be discovered. If pre-existing
 uncommitted changes affect the work, stop, explain the safe options, and ask what
@@ -40,7 +44,7 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
 4. Require task-local red-green-refactor: show a meaningful failing test or regression before the production
    change when feasible, make the smallest implementation pass, run affected regressions, inspect the diff, and
    create one coherent local commit. An alternative proof needs a concrete technical reason. A missing file,
-   broken command, or unrelated failure is not RED.
+   broken command, or unrelated failure is not RED. Retain the exact regression test digest, production baseline, command, environment prerequisites, observed failing assertion, and raw output path. Show that the failure exercises the accepted production behavior, then rerun the same regression against the corrected candidate. A concrete alternative must identify the behavior and proof limit, not merely say testing is inconvenient.
 5. Treat the worker result as a candidate, not approval. It must report the exact
    commit, changed paths, commands and results, RED evidence or justified
    alternative, remaining risks, and any scope or decision blocker.
@@ -61,12 +65,12 @@ contract and launch these fresh agents concurrently:
 Neither judge sees or edits the other's conclusion. The implementing worker does
 not review itself.
 
-If either gate fails, combine only current actionable findings into a correction
-brief, launch a new `expskill-implementer` on that node, and rerun both judges
+If either gate fails, combine current actionable findings into a correction
+brief with the original accepted criterion basis and the cumulative regression obligations from resolved findings, launch a new `expskill-implementer` on that node, and rerun both judges
 against the new commit. Do not try to keep one agent alive across attempts. Stop
 for the user when a correction needs changed product intent, Design, scope, or
 authority. If the same cause survives three non-improving attempts, report that
-node blocked.
+node blocked. Track the complete outstanding finding set and candidate pins across attempts. A correction may not drop or weaken a prior regression obligation without evidence that the underlying accepted criterion changed. Detect alternating or recurring failures as non-improvement even when their labels differ.
 
 ## Integrate locally
 
@@ -120,6 +124,13 @@ Include only the repository or candidate path, base revision, candidate
 revision, what changed and why, review scope, claimed checks with concise
 results, known concerns, and paths plus optional digests for relevant evidence.
 A real accepted specification file is referenced separately when it exists.
+Every judge must also receive the complete accepted criterion basis captured
+before production edits. Reference the immutable accepted graph or specification
+with its revision and digest, or include that complete criterion text inline
+within the 300-line total. This is the sole accepted-requirements exception to
+the locator-only rule. It is not a review-time summary or copied transcript.
+A missing or incomplete basis makes the handoff invalid. Stop before dispatch
+rather than truncate it or infer requirements from the candidate.
 The exception applies only to a specification file that existed before review
 dispatch. It does not permit a review-time summary, copy, or relabelled context
 package.

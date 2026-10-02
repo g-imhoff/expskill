@@ -195,7 +195,9 @@ Invoke a skill directly when you know what you want:
   (test types to commands, canary versus full suite, human versus agent
   execution, routine post-setup path) without running routine tests.
 - `$implement` coordinates isolated TDD workers, independent review and spec
-  gates, corrections, local integration, and final whole-branch gates.
+  gates, corrections, local integration, and final whole-branch gates. Every judge
+  receives the complete accepted criteria. Independent expected outcomes and
+  prior regression obligations remain protected through corrections.
 - `$correct` repairs concrete bugs within the existing design and asks for a
   choice before structural or breaking changes.
 - `$review` adversarially inspects a user-defined code scope and saves an
