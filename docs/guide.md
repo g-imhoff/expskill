@@ -286,7 +286,9 @@ owns optional transition selection; the individual skills do not silently open
 the whole pipeline.
 
 Correct checks its own repairs. When a repair needs a consequential choice,
-it explains a sound limited fix and its limitations, or offers Brainstorm.
+it explains the unresolved consequences and a sound limited fix if one exists.
+Known authorized structural solutions can hand off to Plan or Implement.
+Brainstorm is offered only for unresolved conceptual direction.
 
 Review runs through the invoking agent and leaves Implement's internal reviewer
 alone. Reports live in the installed Review skill's `tmp/reports/` directory,

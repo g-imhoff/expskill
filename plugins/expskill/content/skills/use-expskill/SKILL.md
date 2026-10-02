@@ -40,7 +40,10 @@ this router.
 A selected `$correct` runs in the invoking coordinator without an agent
 profile or Plan Graph. If diagnosis reveals a consequential decision, stop the
 repair before production edits and let Correct present the decision to the
-user. Never turn that stop into an automatic Brainstorm or Plan transition.
+user. Preserve known intent. Correct may hand a user-selected or already
+authorized structural repair to Plan or Implement under its own boundary.
+Never force Brainstorm for a technical solution whose conceptual direction is
+already settled, and never infer new authority from the handoff.
 
 ## Prepare routed UI work
 
