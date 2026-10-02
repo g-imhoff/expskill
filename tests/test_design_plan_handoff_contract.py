@@ -5,7 +5,7 @@ needed manual repair to reach implement. These tests pin the lighter
 contract chosen in docs/specs/design-plan-handoff-contract.md: no shared
 folder, just declared fields plus validation before delivery and at the
 join. If either helper drifts from
-plugins/expskill/scripts/design_plan_handoff.py, this file fails.
+plugins/expskill/content/scripts/design_plan_handoff.py, this file fails.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ from tests.test_plan_graph import minimal_graph
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DESIGN_HELPER = ROOT / "plugins" / "expskill" / "scripts" / "design_state.py"
-PLAN_HELPER = ROOT / "plugins" / "expskill" / "scripts" / "plan_graph.py"
-CONTRACT_MODULE = ROOT / "plugins" / "expskill" / "scripts" / "design_plan_handoff.py"
+DESIGN_HELPER = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
+PLAN_HELPER = ROOT / "plugins" / "expskill" / "content" / "scripts" / "plan_graph.py"
+CONTRACT_MODULE = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_plan_handoff.py"
 
 TARGET_BRANCH = "feature/config-validation"
 DESIGN_BRANCH = "expskill/design/ui"
@@ -622,9 +622,9 @@ def test_delivered_design_state_reloads_with_persisted_inventories(tmp_path: Pat
 
 
 def test_skill_docs_point_at_the_shared_contract() -> None:
-    design_skill = (ROOT / "plugins" / "expskill" / "skills"
+    design_skill = (ROOT / "plugins" / "expskill" / "content" / "skills"
                     / "design" / "SKILL.md").read_text(encoding="utf-8")
-    plan_skill = (ROOT / "plugins" / "expskill" / "skills"
+    plan_skill = (ROOT / "plugins" / "expskill" / "content" / "skills"
                   / "plan" / "SKILL.md").read_text(encoding="utf-8")
     assert "docs/specs/design-plan-handoff-contract.md" in design_skill
     assert "docs/specs/design-plan-handoff-contract.md" in plan_skill

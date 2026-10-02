@@ -1,0 +1,131 @@
+"""Public declarative contract for the generated host artifacts.
+
+The builder and validator deliberately consume this small module instead of
+sharing private implementation helpers.  It describes the source roster,
+published layout, and canonical provenance representation; each consumer is
+responsible for independently walking and checking the bytes.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Mapping, Sequence
+
+
+PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v2"
+CODEX_PROVENANCE_SCHEMA_VERSION = "codex-provenance.v1"
+HERMES_PROVENANCE_SCHEMA_VERSION = "hermes-provenance.v1"
+PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
+PLATFORM_SOURCE_FILES = ("agents.json", "package.json", "LICENSE", "index.js")
+PLATFORM_PLUGIN_DIRECTORY = "plugins"
+PLATFORM_PLUGIN_FILES = ("execution-policy.js", "unslop.js")
+HERMES_PLATFORM_FILES = ("plugin.json", "agents.json")
+OPENCODE_README_SOURCE = Path("content/docs/opencode.md")
+# These are canonical source paths.  The target-relative paths are deliberately
+# separate: host packages may render a conventional top-level runtime layout
+# without creating a second authored source tree.
+COPY_TREES = (Path("content/skills"), Path("content/scripts"))
+COPY_TREE_OUTPUTS = {
+    Path("content/skills"): Path("skills"),
+    Path("content/scripts"): Path("scripts"),
+}
+COPY_FILES = (
+    Path("content/policies/execution-policy.json"),
+    Path("content/policies/skills.json"),
+    Path("content/policies/unslop-runtime.json"),
+)
+COPY_FILE_OUTPUTS = {
+    Path("content/policies/execution-policy.json"): Path("assets/execution-policy.json"),
+    Path("content/policies/skills.json"): Path("assets/skill-policies.json"),
+    Path("content/policies/unslop-runtime.json"): Path("assets/unslop-runtime.json"),
+}
+COPY_LICENSES = Path("content/third-party/licenses")
+COPY_LICENSES_OUTPUT = Path("third-party/licenses")
+ARTIFACT_DIRECTORY_MODE = 0o755
+ARTIFACT_FILE_MODE = 0o644
+ARTIFACT_MTIME = 0
+
+
+def artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | None:
+    """Map a repository source path to its published artifact path."""
+
+    try:
+        lexical = os.fspath(source_relative)
+    except TypeError:
+        return None
+    # A str subclass can override lexical methods such as ``split``.  Do not
+    # let those overrides influence the contract's exact path checks.
+    if type(lexical) is not str:
+        return None
+
+    # Validate the exact text returned by os.fspath before Path can normalize
+    # any lexical spelling.  The artifact contract uses portable forward
+    # slash paths, so backslashes and NULs are never valid source text.
+    if not lexical or "\\" in lexical or "\x00" in lexical:
+        return None
+    components = lexical.split("/")
+    absolute = lexical.startswith("/") or (
+        len(lexical) >= 3 and lexical[1] == ":" and lexical[2] == "/"
+    )
+    if absolute or any(component in {"", ".", ".."} for component in components):
+        return None
+
+    relative = Path(*components)
+    package_marker = Path("plugins") / "expskill"
+    if relative.parts[:2] != package_marker.parts:
+        return None
+    within = Path(*relative.parts[2:])
+    for source_root, output_root in COPY_TREE_OUTPUTS.items():
+        if within == source_root:
+            return output_root.as_posix()
+        if len(within.parts) > len(source_root.parts) and within.parts[: len(source_root.parts)] == source_root.parts:
+            return (output_root / Path(*within.parts[len(source_root.parts) :])).as_posix()
+    if within in COPY_FILE_OUTPUTS:
+        return COPY_FILE_OUTPUTS[within].as_posix()
+    if within == OPENCODE_README_SOURCE:
+        return "README.md"
+    if len(within.parts) > len(COPY_LICENSES.parts) and within.parts[: len(COPY_LICENSES.parts)] == COPY_LICENSES.parts:
+        return (COPY_LICENSES_OUTPUT / Path(*within.parts[len(COPY_LICENSES.parts) :])).as_posix()
+    if (
+        len(within.parts) == 3
+        and within.parts[0] == "opencode"
+        and within.parts[1] == PLATFORM_PLUGIN_DIRECTORY
+        and within.parts[2] in PLATFORM_PLUGIN_FILES
+    ):
+        return Path(*within.parts[1:]).as_posix()
+    if (
+        len(within.parts) == 2
+        and within.parts[0] == "opencode"
+        and within.parts[1] in PLATFORM_FILES
+    ):
+        return within.parts[1]
+    if (
+        len(within.parts) == 2
+        and within.parts[0] == "hermes"
+        and within.parts[1] in HERMES_PLATFORM_FILES
+    ):
+        return within.parts[1]
+    return None
+
+
+def canonical_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
+    """Return the exact UTF-8 bytes required for ``provenance.json``."""
+
+    import json
+
+    payload = {"schema_version": PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def hermes_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
+    """Return the exact UTF-8 bytes required for the Hermes ``provenance.json``."""
+
+    import json
+
+    payload = {"schema_version": HERMES_PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")

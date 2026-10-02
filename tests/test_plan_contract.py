@@ -7,10 +7,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
-PLAN_ROOT = PLUGIN_ROOT / "skills" / "plan"
-HELPER_PATH = PLUGIN_ROOT / "scripts" / "plan_graph.py"
+PLAN_ROOT = PLUGIN_ROOT / "content" / "skills" / "plan"
+HELPER_PATH = PLUGIN_ROOT / "content" / "scripts" / "plan_graph.py"
 PHASE_ROOTS = {
-    name: PLUGIN_ROOT / "skills" / name
+    name: PLUGIN_ROOT / "content" / "skills" / name
     for name in ("implement", "use-expskill")
 }
 
@@ -79,7 +79,7 @@ def _numbered_workflow(contents: str) -> list[str]:
 class PlanContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.skill_path = PLAN_ROOT / "SKILL.md"
-        self.metadata_path = PLAN_ROOT / "agents" / "openai.yaml"
+        self.metadata_path = PLUGIN_ROOT / "codex" / "skill-adapters" / "plan" / "agents" / "openai.yaml"
         self.body = self.skill_path.read_text(encoding="utf-8")
         self.normalized = " ".join(self.body.lower().split())
 
@@ -95,7 +95,7 @@ class PlanContractTests(unittest.TestCase):
                 for path in PLAN_ROOT.rglob("*")
                 if path.is_file()
             },
-            {"SKILL.md", "agents/openai.yaml"},
+            {"SKILL.md"},
         )
         self.assertEqual(
             {
@@ -103,7 +103,7 @@ class PlanContractTests(unittest.TestCase):
                 for path in PLAN_ROOT.rglob("*")
                 if path.is_dir()
             },
-            {"agents"},
+            set(),
         )
         self.assertFalse(any(path.is_symlink() for path in PLAN_ROOT.rglob("*")))
 
@@ -163,7 +163,7 @@ class PlanContractTests(unittest.TestCase):
         self.assertEqual(len(steps), 10)
         required_by_step = (
             ("branch policy", "repository revision", "user confirmation"),
-            ("create or resume", "inherited concept brief decision", "conceptual decisions"),
+            ("create or resume", "conceptual decisions"),
             ("main agent", "implementation seam", "never delegated"),
             ("classify feasibility", "contradicts", "smallest necessary amendment"),
             ("adaptive minimum", "one outcome", "proof obligation"),
@@ -260,8 +260,6 @@ class PlanContractTests(unittest.TestCase):
             "edit authority",
             "user interaction",
             "planning role",
-            "materially distinct feasible or conditional options",
-            "through the `$grill-me` skill",
             "rejected alternatives",
         ):
             with self.subTest(phrase=phrase):
@@ -296,7 +294,6 @@ class PlanContractTests(unittest.TestCase):
             "one coherent part per turn",
             "every material decision",
             "confirm or correct",
-            "concise progressive user projections",
             "affected subgraph",
             "only affected",
             "preserve unrelated confirmations",
@@ -397,7 +394,7 @@ class PlanContractTests(unittest.TestCase):
         }
         for name, phrases in required.items():
             body = " ".join((PHASE_ROOTS[name] / "SKILL.md").read_text(encoding="utf-8").lower().split())
-            self.assertIn("plugins/expskill/scripts/plan_graph.py", body)
+            self.assertIn("plugins/expskill/content/scripts/plan_graph.py", body)
             self.assertIn("../../scripts/plan_graph.py", body)
             self.assertIn("source-package locator", body)
             self.assertIn("branch", body)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-SKILLS = PLUGIN / "skills"
+SKILLS = PLUGIN / "content" / "skills"
 DESIGN = SKILLS / "design"
 ACCEPTANCE = "accept" + "ance"
 EXPECTED_SKILLS = {
@@ -21,15 +21,17 @@ EXPECTED_SKILLS = {
     "implement",
     "correct",
     "review",
-    "setup-ui-testing",
+    "setup-design",
+    "setup-test",
     "skill-builder",
     "test",
     "unslop",
     "use-expskill",
+    "autonomous-run",
+    "review-loop",
 }
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",
-    "agents/openai.yaml",
     "references/rules-index.md",
     "references/geometry.md",
     "references/typography.md",
@@ -39,6 +41,7 @@ EXPECTED_DESIGN_FILES = {
     "references/accessibility.md",
     "references/motion.md",
     "references/data-display.md",
+    "references/yodea-preview.md",
 }
 
 
@@ -102,11 +105,16 @@ class DesignContractTests(unittest.TestCase):
 
     def test_design_state_helper_is_unique_regular_and_packaged(self) -> None:
         """Regression: state must not be absent, empty, symlinked, or duplicated in the package."""
-        helper = PLUGIN / "scripts" / "design_state.py"
+        helper = PLUGIN / "content" / "scripts" / "design_state.py"
         self.assertTrue(helper.is_file(), f"missing design state helper: {helper}")
         self.assertFalse(helper.is_symlink())
         self.assertGreater(helper.stat().st_size, 0)
-        matches = [path for path in PLUGIN.rglob("design_state.py") if path.is_file()]
+        matches = [
+            path
+            for path in PLUGIN.rglob("design_state.py")
+            if path.is_file()
+            and path.relative_to(PLUGIN).parts[:2] != ("codex", "runtime")
+        ]
         self.assertEqual(matches, [helper])
 
     def test_design_metadata_is_explicit_and_public(self) -> None:
@@ -115,7 +123,7 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(frontmatter.get("name"), "design")
         description = frontmatter.get("description", "").lower()
         self.assertIn("explicit", description)
-        metadata = _metadata(DESIGN / "agents" / "openai.yaml")
+        metadata = _metadata(PLUGIN / "codex" / "skill-adapters" / "design" / "agents" / "openai.yaml")
         self.assertIn("$design", metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
         public_text = (DESIGN / "SKILL.md").read_text(encoding="utf-8") + metadata
@@ -125,7 +133,7 @@ class DesignContractTests(unittest.TestCase):
         """Regression: skipped gates, empty ceremony, and context bloat weaken design quality."""
         body = _body(DESIGN / "SKILL.md")
         self.assertLess(len(body.splitlines()), 500)
-        positions = [body.lower().find(heading.lower()) for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+        positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
         self.assertTrue(all(position >= 0 for position in positions), positions)
         self.assertEqual(positions, sorted(positions))
         for phrase in ("responsive", "state", "approval", "technical", "synthetic"):
@@ -207,16 +215,22 @@ class DesignContractTests(unittest.TestCase):
             shutil.copytree(DESIGN, copy)
             body_path = copy / "SKILL.md"
             body = _body(body_path)
-            positions = [body.lower().find(heading.lower()) for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+            positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
             self.assertTrue(all(position >= 0 for position in positions))
             self.assertEqual(positions, sorted(positions))
             mutated = re.sub(r"^## Review$", "## Build", body, count=1, flags=re.MULTILINE)
             body_path.write_text(mutated, encoding="utf-8")
-            mutated_positions = [mutated.lower().find(heading.lower()) for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+            mutated_positions = [mutated.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
             self.assertNotEqual(mutated_positions, sorted(mutated_positions))
             self.assertNotEqual(mutated, body)
 
-            metadata_path = copy / "agents" / "openai.yaml"
+            metadata_path = Path(temporary) / "openai.yaml"
+            metadata_path.write_text(
+                (PLUGIN / "codex" / "skill-adapters" / "design" / "agents" / "openai.yaml").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
             metadata = _metadata(metadata_path)
             self.assertIn("allow_implicit_invocation: false", metadata)
             metadata_path.write_text(metadata.replace("false", "true", 1), encoding="utf-8")

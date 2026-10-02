@@ -90,7 +90,7 @@ bindings for callers who need them, but new code should use
 receipt and removes the transcription step entirely.
 
 The machine-readable version of this contract is
-`plugins/expskill/scripts/design_plan_handoff.py`. Both helpers stay
+`plugins/expskill/content/scripts/design_plan_handoff.py`. Both helpers stay
 dependency-free and load standalone, so they carry their own copies of
 these field names. `tests/test_design_plan_handoff_contract.py` fails if
 either copy drifts from the module.

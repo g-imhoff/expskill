@@ -1,0 +1,10 @@
+{
+  "schema_version": "codex-adapter.v1",
+  "manifest": ".codex-plugin/plugin.json",
+  "canonical_skills": "../content/skills",
+  "canonical_agents": "../content/agents",
+  "canonical_agent_metadata": "../content/agents.json",
+  "skill_adapters": "skill-adapters",
+  "agent_overlay": "agents.json",
+  "hook_config": "hooks/hooks.json"
+}
