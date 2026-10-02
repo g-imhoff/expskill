@@ -119,6 +119,7 @@ Record each process gate identifier, pass or fail, evidence digests, affected st
 ### Review record
 
 Record reviewer identity, independence and read-only attestation, exact candidate revision, input artifacts and their digests, access-check evidence, freshness, contamination check, validity, findings, severity, evidence, impact, correction, affected target criteria, and `ready` or `not ready` when valid. An invalid review has no scoring verdict.
+The pre-score review is accepted by `accept-review`. The separate post-score review is accepted by `accept-final-review` from `scored` into `final-reviewed`, after every target score and conformance gate passes. Current final reviews use `skill-builder-review.v3`, the v2 fields plus the `target_scorecard` and `builder_run_conformance` input-provenance roles. Each role binds the current accepted artifact ID, envelope digest, and retained payload digest. The envelope binds both inputs, and its producing receipt must follow the current `accept-scores` receipt. A valid negative final review may be accepted as evidence but cannot authorize verification. Invalidate it and repair through the existing review-change transition. Invalid, stale, or incorrectly bound final reviews append no acceptance receipt. Historical review schemas still require this separate accepted stage and score/conformance envelope pins.
 
 ### Target scorecard
 
@@ -127,6 +128,7 @@ Record the exact ten target category names in accepted order with, for each cate
 ### Verification record
 
 Record verifier identity, independence and read-only attestation, exact candidate revision, exact commands or operations, start and end timestamps, exit status, relevant raw-output digests, before and after manifests, and conclusion.
+Retain verification after `accept-final-review` and bind its envelope to that accepted final review, the current candidate, trials, scorecard, and conformance ledger. `accept-verification` advances `final-reviewed` to `verified`. Verification changes rewind to `final-reviewed`, preserving the final review only while its pinned inputs stay current. Release records identify the accepted post-score final review, never the earlier scoring review.
 
 ### Release record
 
