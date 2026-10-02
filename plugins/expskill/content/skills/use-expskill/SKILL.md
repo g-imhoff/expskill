@@ -119,6 +119,8 @@ integrates, pushes, or merges.
 
 ## Coordinate the lifecycle
 
+Carry an inherited lifecycle run ID, limits, source, and child allocation through every phase. Require each launched conversation to return spent, outstanding, and remaining accounting even when blocked or interrupted. Reconcile unique dispatch IDs once before another launch. A missing or uncertain child return keeps its reservation outstanding. Phase or route limits are additional ceilings, never replacement pools. When no autonomous lifecycle budget exists, the owning skill establishes its explicit local allowance before delegation.
+
 The canonical Plan Graph remains owned by `$plan`. Discover it on the current
 repository branch when it exists, revalidate its revision and commit before a
 transition, and apply only receipts returned by the selected skill. Do not let
