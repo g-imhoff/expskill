@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -506,6 +506,63 @@ function v2PackagePaths() {
   return { skillCandidates, policyCandidates, execPolicyCandidates };
 }
 
+const SKILL_FILE = "SKILL.md";
+const SKILL_ID_PREFIX = "expskill:";
+const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
+
+function v2SkillRoots() {
+  return [
+    path.join(PACKAGE_ROOT, "skills"),
+    path.join(PACKAGE_ROOT, "..", "content", "skills"),
+  ];
+}
+
+function v2ParseSkillFile(contents, skillPath) {
+  const lines = contents.split("\n");
+  const end = lines.indexOf("---", 1);
+  if (lines[0] !== "---" || end < 0) throw new Error(`skill frontmatter missing: ${skillPath}`);
+  const frontmatter = lines.slice(1, end);
+  const name = frontmatter.find(line => line.startsWith("name: "))?.slice(6).trim();
+  const description = frontmatter.find(line => line.startsWith("description: "))?.slice(13).trim();
+  const content = lines.slice(end + 1).join("\n").trim();
+  if (!name || !SKILL_NAME_PATTERN.test(name)) throw new Error(`skill name invalid: ${skillPath}`);
+  if (!description) throw new Error(`skill description missing: ${skillPath}`);
+  if (!content) throw new Error(`skill content missing: ${skillPath}`);
+  return { name, description, content };
+}
+
+async function v2AllSkills() {
+  for (const root of v2SkillRoots()) {
+    let entries;
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const skills = [];
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (!SKILL_NAME_PATTERN.test(entry.name) || UNSAFE_NAMES.has(entry.name)) {
+        throw new Error(`skill directory invalid: ${entry.name}`);
+      }
+      const skillPath = path.join(root, entry.name, SKILL_FILE);
+      let contents;
+      try {
+        contents = await readFile(skillPath, "utf8");
+      } catch {
+        throw new Error(`skill file unreadable: ${skillPath}`);
+      }
+      const parsed = v2ParseSkillFile(contents, skillPath);
+      if (parsed.name !== entry.name) throw new Error(`skill name mismatch: ${skillPath}`);
+      skills.push({ id: `${SKILL_ID_PREFIX}${parsed.name}`, name: parsed.name, description: parsed.description, path: skillPath, content: parsed.content });
+    }
+    if (skills.length === 0) continue;
+    skills.sort((left, right) => (left.name === "unslop" ? -1 : right.name === "unslop" ? 1 : left.name.localeCompare(right.name)));
+    return skills;
+  }
+  throw new Error("expskill skills unavailable");
+}
+
 async function v2UnslopSkill() {
   const { skillCandidates } = v2PackagePaths();
   for (const candidate of skillCandidates) {
@@ -592,9 +649,11 @@ function v2IsExpSkillAgent(value) {
 
 const ExpSkillSetup = async (ctx) => {
   if (ctx?.skill?.transform) {
-    const skill = await v2UnslopSkill();
+    const skills = await v2AllSkills();
     await ctx.skill.transform(editor => {
-      if (!editor.get(skill.id)) editor.add(skill);
+      for (const skill of skills) {
+        if (!editor.get(skill.id)) editor.add(skill);
+      }
     });
   }
   const authoring = await authoringBlock();
