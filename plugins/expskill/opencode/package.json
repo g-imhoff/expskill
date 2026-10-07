@@ -1,6 +1,6 @@
 {
   "name": "opencode-expskill",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "ExpSkill lifecycle skills, agents, commands, and hooks for OpenCode.",
   "type": "module",
   "main": "./index.js",

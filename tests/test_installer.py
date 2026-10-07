@@ -234,13 +234,14 @@ class InstallerTests(unittest.TestCase):
             destination = agents / f"expskill-{role}.toml"
             self.assertFalse(destination.is_symlink())
             self.assertEqual(destination.read_text(), f"# {role}\n")
-        backups = list(agents.glob("expskill-backup-*"))
+        backups = list((custom_home / "agent-backups").glob("expskill-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / edited.name).read_text(), "local customization\n")
         self.assertTrue((backups[0] / linked.name).is_symlink())
         self.assertTrue((backups[0] / dangling.name).is_symlink())
         self.assertEqual(external.read_text(), "external untouched\n")
         self.assertEqual((agents / "unrelated.toml").read_text(), "unrelated\n")
+        self.assertEqual(len(list(agents.rglob("*.toml"))), 8)
         self.assertFalse((self.home / ".codex").exists())
         self.assertIn("/hooks", result.stdout)
         self.assertIn("new Codex session", result.stdout)
@@ -252,7 +253,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         agents = self.home / ".codex" / "agents"
         self.assertEqual(len(list(agents.glob("*.toml"))), 7)
-        self.assertEqual(list(agents.glob("expskill-backup-*")), [])
+        self.assertFalse((agents.parent / "agent-backups").exists())
 
     def test_rerun_updates_all_hosts_to_new_release_and_backs_up_edited_profiles(self):
         self.codex_commands()
@@ -281,9 +282,58 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.state()["hermes-ref"], next_sha)
         self.assertEqual(self.state()["opencode-updated"], "opencode-expskill")
         self.assertEqual((agents / "expskill-designer.toml").read_text(), "new release\n")
-        backups = list(agents.glob("expskill-backup-*"))
+        backups = list((agents.parent / "agent-backups").glob("expskill-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / "expskill-designer.toml").read_text(), "local customization\n")
+        self.assertEqual(len(list(agents.rglob("*.toml"))), 7)
+
+    def test_codex_migrates_legacy_backups_without_losing_contents(self):
+        self.codex_commands()
+        custom_home = self.root / "custom codex"
+        agents = custom_home / "agents"
+        legacy = agents / "expskill-backup-previous"
+        legacy.mkdir(parents=True)
+        profile = legacy / "expskill-designer.toml"
+        profile.write_text("saved customization\n")
+        (legacy / "unrelated.txt").write_text("saved user data\n")
+        external = self.root / "external.toml"
+        external.write_text("external untouched\n")
+        (legacy / "expskill-explorer.toml").symlink_to(external)
+        for role in ROLES:
+            (agents / f"expskill-{role}.toml").write_bytes(
+                (self.package / "agents" / f"expskill-{role}.toml").read_bytes()
+            )
+        unrelated = agents / "other-roles"
+        unrelated.mkdir()
+        (unrelated / "custom.toml").write_text("custom role\n")
+        result = self.run_installer("1\n", CODEX_HOME=str(custom_home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(legacy.exists())
+        migrated = list((custom_home / "agent-backups").glob("*/" + legacy.name))
+        self.assertEqual(len(migrated), 1)
+        self.assertEqual((migrated[0] / profile.name).read_text(), "saved customization\n")
+        self.assertEqual((migrated[0] / "unrelated.txt").read_text(), "saved user data\n")
+        self.assertTrue((migrated[0] / "expskill-explorer.toml").is_symlink())
+        self.assertEqual(external.read_text(), "external untouched\n")
+        self.assertEqual((unrelated / "custom.toml").read_text(), "custom role\n")
+        self.assertEqual(len(list(agents.rglob("*.toml"))), 8)
+        again = self.run_installer("1\n", CODEX_HOME=str(custom_home))
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(list((custom_home / "agent-backups").glob("*/" + legacy.name)), migrated)
+
+    def test_codex_rejects_symlinked_backup_storage_without_changing_profiles(self):
+        self.codex_commands()
+        custom_home = self.root / "custom codex"
+        agents = custom_home / "agents"
+        agents.mkdir(parents=True)
+        profile = agents / "expskill-designer.toml"
+        profile.write_text("local customization\n")
+        external = self.root / "external backups"
+        external.mkdir()
+        (custom_home / "agent-backups").symlink_to(external)
+        self.assert_failed(self.run_installer("1\n", CODEX_HOME=str(custom_home)), "profiles")
+        self.assertEqual(profile.read_text(), "local customization\n")
+        self.assertEqual(list(external.iterdir()), [])
 
     def test_multiple_hosts_can_mix_an_update_and_fresh_install(self):
         self.commands("opencode", "git", "hermes")

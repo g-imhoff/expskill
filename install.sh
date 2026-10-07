@@ -107,10 +107,13 @@ try:
         raise ValueError("Codex did not return an absolute installedPath")
     source = Path(installed) / "agents"
     target = Path(sys.argv[2]) / "agents"
+    backup_root = target.parent / "agent-backups"
     roles = ("designer", "explorer", "implementer", "planner", "review", "spec", "test-engineer")
     names = ["expskill-" + role + ".toml" for role in roles]
     if target.is_symlink():
         raise ValueError("agents directory is a symlink: " + str(target))
+    if backup_root.is_symlink() or (backup_root.exists() and not backup_root.is_dir()):
+        raise ValueError("agent backup storage is not a regular directory: " + str(backup_root))
     for name in names:
         profile, destination = source / name, target / name
         if profile.is_symlink() or not profile.is_file():
@@ -118,8 +121,15 @@ try:
         if destination.exists() and not destination.is_symlink() and not destination.is_file():
             raise ValueError("profile destination is not a regular file: " + str(destination))
     target.mkdir(parents=True, exist_ok=True)
+    for legacy in sorted(target.glob("expskill-backup-*")):
+        if legacy.is_symlink() or not legacy.is_dir():
+            continue
+        backup_root.mkdir(parents=True, exist_ok=True)
+        archive = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(backup_root)))
+        os.replace(str(legacy), str(archive / legacy.name))
+        print("Existing backup moved to " + str(archive / legacy.name), flush=True)
     backup = None
-    with tempfile.TemporaryDirectory(prefix=".expskill-stage-", dir=str(target)) as staging:
+    with tempfile.TemporaryDirectory(prefix=".expskill-stage-", dir=str(target.parent)) as staging:
         for name in names:
             shutil.copy2(str(source / name), str(Path(staging) / name))
         for name in names:
@@ -129,7 +139,8 @@ try:
                     continue
             if os.path.lexists(str(destination)):
                 if backup is None:
-                    backup = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(target)))
+                    backup_root.mkdir(parents=True, exist_ok=True)
+                    backup = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(backup_root)))
                     print("Existing profiles backed up in " + str(backup), flush=True)
                 os.replace(str(destination), str(backup / name))
             os.replace(str(Path(staging) / name), str(destination))
