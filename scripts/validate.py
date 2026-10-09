@@ -116,7 +116,7 @@ except ModuleNotFoundError:
 
 MARKETPLACE_NAME = "expskill"
 PLUGIN_NAME = "expskill"
-PLUGIN_VERSION = "0.1.7"
+PLUGIN_VERSION = "0.1.8"
 PLUGIN_VERSION_PATTERN = re.compile(
     rf"{re.escape(PLUGIN_VERSION)}(?:\+codex\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
