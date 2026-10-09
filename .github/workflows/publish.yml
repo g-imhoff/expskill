@@ -152,10 +152,9 @@ jobs:
       - name: Publish claude-dist branch and tag
         # The Claude Code CLI installs a marketplace from git, so the built
         # marketplace is published as the root of the orphan claude-dist branch.
-        # Install a release with its exact SHA (sort -u: ls-remote matches
-        # the branch and the tag, which point at the same commit):
-        #   sha="$(git ls-remote <url> claude-dist | cut -f1 | sort -u)"
-        #   claude plugin marketplace add <url> --ref "$sha"
+        # Installs track that branch through a #ref suffix (the CLI has no
+        # --ref flag):
+        #   claude plugin marketplace add <url>#claude-dist
         #   claude plugin install expskill@expskill
         run: |
           set -e
@@ -179,8 +178,7 @@ jobs:
             echo ""
             echo "Install with the Claude Code CLI:"
             echo '```'
-            echo "sha=\"\$(git ls-remote https://github.com/${{ github.repository }}.git claude-dist | cut -f1 | sort -u)\""
-            echo "claude plugin marketplace add https://github.com/${{ github.repository }}.git --ref \"\$sha\""
+            echo "claude plugin marketplace add https://github.com/${{ github.repository }}.git#claude-dist"
             echo "claude plugin install expskill@expskill"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

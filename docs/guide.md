@@ -8,7 +8,8 @@ optional lifecycle router. The same skill base also ships as the
 
 Use the [launcher in the README](../README.md) from any directory. Choose one or
 more providers with numbers or names separated by spaces or commas, such as
-`1 3` or `Codex,Hermes`. Enter `all` to install Codex, OpenCode, and Hermes.
+`1 4` or `Codex,Claude`. Enter `all` to install Codex, OpenCode, Hermes, and
+Claude Code.
 Each provider installs or updates once, in selection order. The installer checks
 all selected CLIs before starting and stops on the first installation or update
 failure. Providers that completed before a failure remain installed.
@@ -165,11 +166,11 @@ opencode plugin update opencode-expskill
 
 Build the marketplace outside the checkout, then install the plugin from a
 published release (each tag publishes the built marketplace to the
-`claude-dist` branch; resolve its exact SHA first):
+`claude-dist` branch, which installs track through a `#ref` suffix
+because the CLI has no `--ref` flag):
 
 ```bash
-sha="$(git ls-remote https://github.com/g-imhoff/expskill.git claude-dist | cut -f1 | sort -u)"
-claude plugin marketplace add https://github.com/g-imhoff/expskill.git --ref "$sha"
+claude plugin marketplace add https://github.com/g-imhoff/expskill.git#claude-dist
 claude plugin install expskill@expskill
 ```
 
@@ -184,7 +185,8 @@ rm -rf "$artifact_root"
 ```
 
 The plugin wires `SessionStart` and `PreCompact` to the same authoring-scope
-and unslop-scope payloads. There is no `install.sh` target for Claude Code.
+and unslop-scope payloads. The launcher in the README also installs Claude
+Code as provider `4`, tracking the published `claude-dist` branch.
 
 ## Source layout
 
@@ -212,7 +214,7 @@ into a package installable with `hermes plugins install`. There is no
 `agents.json`, and the `hooks/` sources. The Claude renderer and builder
 combine them with `content/` into a marketplace installable with
 `claude plugin marketplace add` and `claude plugin install expskill@expskill`.
-There is no `install.sh` target for Claude Code.
+The README launcher covers Claude Code as provider `4`.
 
 ## Skills
 

@@ -7,11 +7,11 @@ under ``plugins/expskill`` plus the marketplace manifest. It materializes the
 universal source assets as regular files, never follows symlink inputs, and
 never emits generated output inside the tracked source package.
 
-Install a release with its exact SHA (sort -u: ls-remote matches the branch
-and the tag, which point at the same commit)::
+Install a published release. The CLI pins a marketplace branch with a ``#ref``
+suffix (there is no ``--ref`` flag); the ``claude-dist`` branch moves on each
+release, so installs track the latest published marketplace::
 
-    sha="$(git ls-remote <url> claude-dist | cut -f1 | sort -u)"
-    claude plugin marketplace add <url> --ref "$sha"
+    claude plugin marketplace add <url>#claude-dist
     claude plugin install expskill@expskill
 """
 
