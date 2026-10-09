@@ -57,6 +57,7 @@ try:
     from scripts.render_hermes import RenderError as HermesRenderError
     from scripts.render_hermes import render_agents as render_hermes_agents
     from scripts.render_hermes import render_all as render_hermes_all
+    from scripts.render_hermes import skill_inventory as hermes_skill_inventory
     from scripts.render_opencode import RenderError as AgentSyncError
     from scripts.render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -104,6 +105,7 @@ except ModuleNotFoundError:
     from render_hermes import RenderError as HermesRenderError
     from render_hermes import render_agents as render_hermes_agents
     from render_hermes import render_all as render_hermes_all
+    from render_hermes import skill_inventory as hermes_skill_inventory
     from render_opencode import RenderError as AgentSyncError
     from render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -4696,7 +4698,7 @@ def _validate_hermes_package(repository_root: Path, errors: list[str]) -> None:
         return
     _validate_hermes_platform_source(package_root, errors)
     try:
-        skill_names = skill_inventory(repository_root)
+        skill_names = hermes_skill_inventory(repository_root)
         rendered = render_hermes_all(repository_root)
     except HermesRenderError as error:
         errors.append(f"hermes sources cannot be rendered: {error}")
