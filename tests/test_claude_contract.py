@@ -203,6 +203,26 @@ class ClaudeContractTests(unittest.TestCase):
                 self.assertIn(marker, result.stdout)
                 self.assertNotIn("hookSpecificOutput", result.stdout)
                 self.assertNotIn("additionalContext", result.stdout)
+        with self.subTest(script="inject_unslop.py", event="SessionStart", source="compact"):
+            policy = json.loads(
+                (PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json").read_text(encoding="utf-8")
+            )
+            scope = policy["scope"]
+            reminder = policy["compaction_reminder"]
+            self.assertNotEqual(scope, reminder)
+            result = subprocess.run(
+                [sys.executable, str(CLAUDE_ROOT / "hooks" / "inject_unslop.py")],
+                input=json.dumps({"hook_event_name": "SessionStart", "source": "compact"}),
+                text=True,
+                capture_output=True,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = json.loads(result.stdout)
+            self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "SessionStart")
+            self.assertEqual(output["hookSpecificOutput"]["additionalContext"], reminder)
+            self.assertNotEqual(output["hookSpecificOutput"]["additionalContext"], scope)
         # Cap source for the unslop payload: codex hooks.json additionalContextLimit.
         codex_hooks = json.loads((PLUGIN_ROOT / "codex" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         handlers = codex_hooks["hooks"]["SessionStart"][0]["hooks"]
