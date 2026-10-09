@@ -665,8 +665,8 @@ EXPECTED_AGENTS = {
     "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
     "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
     "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-6-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-6-sol", "xhigh", "read-only"),
+    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 
 REVIEW_HANDOFF_PATHS = (
@@ -820,7 +820,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-review": {
         "agent_type": "expskill-review",
         "role": "review",
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,
@@ -828,7 +828,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-spec": {
         "agent_type": "expskill-spec",
         "role": "spec",
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,

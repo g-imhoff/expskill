@@ -44,7 +44,7 @@
     "expskill-review": {
       "agent_type": "expskill-review",
       "role": "review",
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "effort": "xhigh",
       "sandbox_mode": "read-only",
       "escalation": null
@@ -52,7 +52,7 @@
     "expskill-spec": {
       "agent_type": "expskill-spec",
       "role": "spec",
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "effort": "xhigh",
       "sandbox_mode": "read-only",
       "escalation": null
