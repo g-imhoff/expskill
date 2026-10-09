@@ -4743,12 +4743,6 @@ CLAUDE_AGENT_FACETS = {
     "expskill-test-engineer": ("haiku", CLAUDE_READ_TOOLS),
 }
 CLAUDE_HOOK_SCRIPTS = ("inject_authoring.py", "inject_unslop.py")
-CLAUDE_POLICY_ASSETS = {
-    "execution-policy.json": "execution-policy.json",
-    "skills.json": "skill-policies.json",
-    "unslop-runtime.json": "unslop-runtime.json",
-    "authoring-runtime.json": "authoring-runtime.json",
-}
 
 
 def _claude_artifact_output_relative(source_relative: str) -> str | None:
