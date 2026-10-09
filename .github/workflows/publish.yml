@@ -32,6 +32,8 @@ jobs:
           tests/test_content_host_layout.py
           tests/test_hermes_contract.py
           tests/test_hermes_package.py
+          tests/test_claude_contract.py
+          tests/test_claude_package.py
           tests/test_opencode_contract.py
           tests/test_opencode_package.py
 
@@ -130,6 +132,64 @@ jobs:
         run: npm publish "$ARTIFACT_ROOT" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-claude-dist:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build claude marketplace
+        run: |
+          artifact_root="$(mktemp -d)/claude-marketplace"
+          python3 scripts/build_claude_package.py "$artifact_root"
+          echo "ARTIFACT_ROOT=$artifact_root" >> "$GITHUB_ENV"
+      - name: Publish claude-dist branch and tag
+        # The Claude Code CLI installs a marketplace from git, so the built
+        # marketplace is published as the root of the orphan claude-dist branch.
+        # Install a release with its exact SHA (sort -u: ls-remote matches
+        # the branch and the tag, which point at the same commit):
+        #   sha="$(git ls-remote <url> claude-dist | cut -f1 | sort -u)"
+        #   claude plugin marketplace add <url> --ref "$sha"
+        #   claude plugin install expskill@expskill
+        run: |
+          set -e
+          work="$(mktemp -d)/dist"
+          git init -q "$work"
+          cp -r "$ARTIFACT_ROOT"/. "$work"/
+          git -C "$work" add -A
+          git -C "$work" config user.name "g-imhoff"
+          git -C "$work" config user.email "152416066+g-imhoff@users.noreply.github.com"
+          git -C "$work" var GIT_AUTHOR_IDENT
+          git -C "$work" var GIT_COMMITTER_IDENT
+          git -C "$work" commit -qm "claude dist ${{ github.ref_name }}"
+          git -C "$work" show -s --format='%an <%ae> | %cn <%ce>' HEAD
+          sha="$(git -C "$work" rev-parse HEAD)"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$work" remote add origin "$remote"
+          git -C "$work" push --force origin "HEAD:refs/heads/claude-dist"
+          git -C "$work" push --force origin "HEAD:refs/tags/claude-dist"
+          {
+            echo "## Claude dist published"
+            echo ""
+            echo "Install with the Claude Code CLI:"
+            echo '```'
+            echo "sha=\"\$(git ls-remote https://github.com/${{ github.repository }}.git claude-dist | cut -f1 | sort -u)\""
+            echo "claude plugin marketplace add https://github.com/${{ github.repository }}.git --ref \"\$sha\""
+            echo "claude plugin install expskill@expskill"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: g-imhoff
+          GIT_AUTHOR_EMAIL: 152416066+g-imhoff@users.noreply.github.com
+          GIT_COMMITTER_NAME: g-imhoff
+          GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-hermes-dist:
     needs: validate
