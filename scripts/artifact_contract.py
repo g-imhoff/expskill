@@ -15,6 +15,7 @@ from typing import Mapping, Sequence
 
 PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v2"
 CODEX_PROVENANCE_SCHEMA_VERSION = "codex-provenance.v1"
+CLAUDE_PROVENANCE_SCHEMA_VERSION = "claude-provenance.v1"
 HERMES_PROVENANCE_SCHEMA_VERSION = "hermes-provenance.v1"
 PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
 PLATFORM_SOURCE_FILES = ("agents.json", "package.json", "LICENSE", "index.js")
@@ -128,6 +129,17 @@ def hermes_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
     import json
 
     payload = {"schema_version": HERMES_PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def claude_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
+    """Return the exact UTF-8 bytes required for the Claude ``provenance.json``."""
+
+    import json
+
+    payload = {"schema_version": CLAUDE_PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
     return (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")

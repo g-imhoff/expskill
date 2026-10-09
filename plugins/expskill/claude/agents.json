@@ -1,0 +1,74 @@
+{
+  "_comment": "Claude technical overlay for the canonical agent layer. Descriptions, working-agreement bodies, and closings come from content/agents.json and content/agents/*.md. Everything Claude-specific (model family, tool allowlist, runtime paragraph) lives here. Codex luna roles map to the haiku family and Codex sol roles map to opus; read-only OpenCode permission maps collapse to the read tool set while workspace-write maps add Edit and Write.",
+  "schema_version": "claude-agents.v1",
+  "runtime_paragraph": "You run as a Claude Code subagent with a fresh context for exactly one assignment. Sibling agent outputs are invisible to you. Your prompt carries the only handoff you may trust. Never ask the user a question.",
+  "agents": {
+    "expskill-designer": {
+      "model": "haiku",
+      "tools": [
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    "expskill-explorer": {
+      "model": "haiku",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    "expskill-implementer": {
+      "model": "haiku",
+      "tools": [
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    "expskill-planner": {
+      "model": "haiku",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    "expskill-review": {
+      "model": "opus",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    "expskill-spec": {
+      "model": "opus",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    "expskill-test-engineer": {
+      "model": "haiku",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    }
+  }
+}
