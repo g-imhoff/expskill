@@ -174,6 +174,20 @@ class ClaudeContractTests(unittest.TestCase):
             "inject_authoring.py": "Never create documentation files",
             "inject_unslop.py": "$expskill:unslop",
         }
+        unslop_policy = json.loads(
+            (PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json").read_text(encoding="utf-8")
+        )
+        authoring_policy = json.loads(
+            (PLUGIN_ROOT / "content" / "policies" / "authoring-runtime.json").read_text(encoding="utf-8")
+        )
+        expected_startup = {
+            "inject_authoring.py": authoring_policy["instructions"],
+            "inject_unslop.py": unslop_policy["scope"],
+        }
+        expected_compact_text = {
+            "inject_authoring.py": authoring_policy["instructions"].strip() + "\n",
+            "inject_unslop.py": unslop_policy["compaction_reminder"].strip() + "\n",
+        }
         environment = dict(os.environ)
         environment["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         for script, marker in markers.items():
@@ -190,6 +204,9 @@ class ClaudeContractTests(unittest.TestCase):
                 output = json.loads(result.stdout)
                 self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "SessionStart")
                 self.assertIn(marker, output["hookSpecificOutput"]["additionalContext"])
+                self.assertEqual(
+                    output["hookSpecificOutput"]["additionalContext"], expected_startup[script]
+                )
             with self.subTest(script=script, event="PreCompact"):
                 result = subprocess.run(
                     [sys.executable, str(CLAUDE_ROOT / "hooks" / script)],
@@ -203,6 +220,7 @@ class ClaudeContractTests(unittest.TestCase):
                 self.assertIn(marker, result.stdout)
                 self.assertNotIn("hookSpecificOutput", result.stdout)
                 self.assertNotIn("additionalContext", result.stdout)
+                self.assertEqual(result.stdout, expected_compact_text[script])
         with self.subTest(script="inject_unslop.py", event="SessionStart", source="compact"):
             policy = json.loads(
                 (PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json").read_text(encoding="utf-8")
