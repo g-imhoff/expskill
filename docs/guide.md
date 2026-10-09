@@ -8,7 +8,8 @@ optional lifecycle router. The same skill base also ships as the
 
 Use the [launcher in the README](../README.md) from any directory. Choose one or
 more providers with numbers or names separated by spaces or commas, such as
-`1 3` or `Codex,Hermes`. Enter `all` to install Codex, OpenCode, and Hermes.
+`1 4` or `Codex,Claude`. Enter `all` to install Codex, OpenCode, Hermes, and
+Claude Code.
 Each provider installs or updates once, in selection order. The installer checks
 all selected CLIs before starting and stops on the first installation or update
 failure. Providers that completed before a failure remain installed.
@@ -161,6 +162,32 @@ opencode plugin check
 opencode plugin update opencode-expskill
 ```
 
+## Install through the Claude Code plugin CLI
+
+Build the marketplace outside the checkout, then install the plugin from a
+published release (each tag publishes the built marketplace to the
+`claude-dist` branch, which installs track through a `#ref` suffix
+because the CLI has no `--ref` flag):
+
+```bash
+claude plugin marketplace add https://github.com/g-imhoff/expskill.git#claude-dist
+claude plugin install expskill@expskill
+```
+
+To build and validate locally without publishing:
+
+```bash
+artifact_root="$(mktemp -d)/claude-marketplace"
+python3 scripts/build_claude_package.py "$artifact_root"
+claude plugin validate "$artifact_root/plugins/expskill" --strict
+claude plugin validate "$artifact_root" --strict
+rm -rf "$artifact_root"
+```
+
+The plugin wires `SessionStart` and `PreCompact` to the same authoring-scope
+and unslop-scope payloads. The launcher in the README also installs Claude
+Code as provider `4`, tracking the published `claude-dist` branch.
+
 ## Source layout
 
 `plugins/expskill/content` is the only authored source for shared skill and
@@ -181,6 +208,13 @@ v1 `plugin.json` manifest and the role/sandbox/model-policy overlay in
 `agents.json`. The Hermes renderer and builder combine them with `content/`
 into a package installable with `hermes plugins install`. There is no
 `install.py` target for Hermes.
+
+`plugins/expskill/claude` contains Claude-only mechanics: the
+`.claude-plugin/plugin.json` manifest template, the model/tool overlay in
+`agents.json`, and the `hooks/` sources. The Claude renderer and builder
+combine them with `content/` into a marketplace installable with
+`claude plugin marketplace add` and `claude plugin install expskill@expskill`.
+The README launcher covers Claude Code as provider `4`.
 
 ## Skills
 

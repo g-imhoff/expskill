@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "expskill",
+  "version": "0.1.7",
+  "description": "ExpSkill lifecycle skills, agents, and helpers for Claude Code, generated from the canonical content tree.",
+  "license": "MIT",
+  "repository": "https://github.com/g-imhoff/expskill",
+  "keywords": [
+    "claude-code",
+    "agents",
+    "skills",
+    "lifecycle"
+  ],
+  "author": {
+    "name": "g-imhoff"
+  }
+}

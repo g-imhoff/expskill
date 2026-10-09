@@ -15,6 +15,7 @@ from typing import Mapping, Sequence
 
 PROVENANCE_SCHEMA_VERSION = "opencode-provenance.v2"
 CODEX_PROVENANCE_SCHEMA_VERSION = "codex-provenance.v1"
+CLAUDE_PROVENANCE_SCHEMA_VERSION = "claude-provenance.v1"
 HERMES_PROVENANCE_SCHEMA_VERSION = "hermes-provenance.v1"
 PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
 PLATFORM_SOURCE_FILES = ("agents.json", "package.json", "LICENSE", "index.js")
@@ -44,6 +45,13 @@ COPY_FILE_OUTPUTS = {
 }
 COPY_LICENSES = Path("content/third-party/licenses")
 COPY_LICENSES_OUTPUT = Path("third-party/licenses")
+CLAUDE_HOOK_FILES = ("hooks.json", "inject_authoring.py", "inject_unslop.py")
+CLAUDE_POLICY_ASSET_OUTPUTS = {
+    "execution-policy.json": "execution-policy.json",
+    "skills.json": "skill-policies.json",
+    "unslop-runtime.json": "unslop-runtime.json",
+    "authoring-runtime.json": "authoring-runtime.json",
+}
 ARTIFACT_DIRECTORY_MODE = 0o755
 ARTIFACT_FILE_MODE = 0o644
 ARTIFACT_MTIME = 0
@@ -111,6 +119,74 @@ def artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | N
     return None
 
 
+def claude_artifact_output_relative(source_relative: str | os.PathLike[str]) -> str | None:
+    """Map a repository source path to its Claude marketplace artifact path."""
+
+    try:
+        lexical = os.fspath(source_relative)
+    except TypeError:
+        return None
+    # A str subclass can override lexical methods such as ``split``.  Do not
+    # let those overrides influence the contract's exact path checks.
+    if type(lexical) is not str:
+        return None
+
+    # Validate the exact text returned by os.fspath before Path can normalize
+    # any lexical spelling.  The artifact contract uses portable forward
+    # slash paths, so backslashes and NULs are never valid source text.
+    if not lexical or "\\" in lexical or "\x00" in lexical:
+        return None
+    components = lexical.split("/")
+    absolute = lexical.startswith("/") or (
+        len(lexical) >= 3 and lexical[1] == ":" and lexical[2] == "/"
+    )
+    if absolute or any(component in {"", ".", ".."} for component in components):
+        return None
+
+    relative = Path(*components)
+    package_marker = Path("plugins") / "expskill"
+    if relative.parts[:2] != package_marker.parts:
+        return None
+    within = Path(*relative.parts[2:])
+    plugin_prefix = Path("plugins") / "expskill"
+    content_skills = Path("content") / "skills"
+    content_scripts = Path("content") / "scripts"
+    content_third_party = Path("content") / "third-party"
+    if within == content_skills or (
+        len(within.parts) > len(content_skills.parts)
+        and within.parts[: len(content_skills.parts)] == content_skills.parts
+    ):
+        rest = Path(*within.parts[len(content_skills.parts) :])
+        return (plugin_prefix / "skills" / rest).as_posix() if rest.parts else (plugin_prefix / "skills").as_posix()
+    if within == content_scripts or (
+        len(within.parts) > len(content_scripts.parts)
+        and within.parts[: len(content_scripts.parts)] == content_scripts.parts
+    ):
+        rest = Path(*within.parts[len(content_scripts.parts) :])
+        return (plugin_prefix / "scripts" / rest).as_posix() if rest.parts else (plugin_prefix / "scripts").as_posix()
+    if within == content_third_party or (
+        len(within.parts) > len(content_third_party.parts)
+        and within.parts[: len(content_third_party.parts)] == content_third_party.parts
+    ):
+        rest = Path(*within.parts[len(content_third_party.parts) :])
+        return (plugin_prefix / "third-party" / rest).as_posix() if rest.parts else (plugin_prefix / "third-party").as_posix()
+    if len(within.parts) == 3 and within.parts[0] == "content" and within.parts[1] == "policies":
+        mapped = CLAUDE_POLICY_ASSET_OUTPUTS.get(within.parts[2])
+        if mapped is not None:
+            return (plugin_prefix / "assets" / mapped).as_posix()
+        return None
+    if within == Path("claude") / ".claude-plugin" / "plugin.json":
+        return (plugin_prefix / ".claude-plugin" / "plugin.json").as_posix()
+    if (
+        len(within.parts) == 3
+        and within.parts[0] == "claude"
+        and within.parts[1] == "hooks"
+        and within.parts[2] in CLAUDE_HOOK_FILES
+    ):
+        return (plugin_prefix / "hooks" / within.parts[2]).as_posix()
+    return None
+
+
 def canonical_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
     """Return the exact UTF-8 bytes required for ``provenance.json``."""
 
@@ -128,6 +204,17 @@ def hermes_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
     import json
 
     payload = {"schema_version": HERMES_PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def claude_provenance(inputs: Sequence[Mapping[str, str]]) -> bytes:
+    """Return the exact UTF-8 bytes required for the Claude ``provenance.json``."""
+
+    import json
+
+    payload = {"schema_version": CLAUDE_PROVENANCE_SCHEMA_VERSION, "inputs": list(inputs)}
     return (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
