@@ -2,8 +2,8 @@
 
 ExpSkill's Claude Code marketplace contains the lifecycle skills, seven agent
 profiles, shared helpers, execution policy, and hooks needed by a Claude Code
-installation. Install it with the Claude Code CLI; there is no `install.sh`
-target for Claude Code.
+installation. Install it with the Claude Code CLI, or pick provider `4` in the
+README launcher, which tracks the published `claude-dist` branch.
 
 ## Universal source
 
@@ -70,8 +70,7 @@ Validate a locally built marketplace, then install a published release (each
 release publishes the built marketplace to the `claude-dist` branch):
 
 ```bash
-sha="$(git ls-remote https://github.com/g-imhoff/expskill.git claude-dist | cut -f1 | sort -u)"
-claude plugin marketplace add https://github.com/g-imhoff/expskill.git --ref "$sha"
+claude plugin marketplace add https://github.com/g-imhoff/expskill.git#claude-dist
 claude plugin install expskill@expskill
 ```
 
