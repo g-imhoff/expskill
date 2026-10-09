@@ -1,0 +1,7 @@
+interface:
+  display_name: "Design"
+  short_description: "Design UI components with required Yodea previews"
+  default_prompt: "Use $design directly or in its assigned isolated router worktree. Publish a Yodea preview and share its link in approvals, handoffs, and PRs."
+
+policy:
+  allow_implicit_invocation: false
