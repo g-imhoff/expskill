@@ -197,6 +197,15 @@ class ClaudeContractTests(unittest.TestCase):
         errors = validate_repository(root)
         self.assertTrue(any("claude agent" in error for error in errors), errors)
 
+    def test_validation_rejects_hooks_missing_pre_compact(self) -> None:
+        root = self.copy_repository()
+        hooks_path = root / "plugins" / "expskill" / "claude" / "hooks" / "hooks.json"
+        spec = json.loads(hooks_path.read_text(encoding="utf-8"))
+        del spec["hooks"]["PreCompact"]
+        hooks_path.write_text(json.dumps(spec), encoding="utf-8")
+        errors = validate_repository(root)
+        self.assertTrue(any("claude hooks" in error for error in errors), errors)
+
     def test_source_mutation_changes_fresh_artifact_only(self) -> None:
         root = self.copy_repository()
         skill = root / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
