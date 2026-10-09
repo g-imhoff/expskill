@@ -1,0 +1,19 @@
+{
+  "name": "expskill",
+  "description": "ExpSkill plugin marketplace for Claude Code.",
+  "owner": {
+    "name": "g-imhoff"
+  },
+  "plugins": [
+    {
+      "name": "expskill",
+      "source": "./plugins/expskill",
+      "description": "ExpSkill lifecycle skills, agents, and helpers for Claude Code, generated from the canonical content tree.",
+      "version": "0.1.8",
+      "author": {
+        "name": "g-imhoff"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
