@@ -36,8 +36,8 @@ def _runtime_scope(path: Path, compaction: bool) -> str:
         raise ValueError("Unslop runtime policy has unexpected fields")
     for field in ("scope", "compaction_reminder"):
         value = payload.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"Unslop runtime policy has no {field}")
+        if not isinstance(value, str) or not value.strip() or len(value) > 5000:
+            raise ValueError(f"Unslop runtime policy {field} must contain 1-5000 characters")
     return payload["compaction_reminder" if compaction else "scope"]
 
 
