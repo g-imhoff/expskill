@@ -1096,7 +1096,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 raise RunStateError("research lane identities must be unique")
             lane_ids.add(lane_id)
             _text(lane["question"], "research lane question")
-            if lane["model"] != "GPT-5.6-Luna" or lane["reasoning"] != "max":
+            if lane["model"] != "GPT-6-Luna" or lane["reasoning"] != "max":
                 raise RunStateError("research lane model or reasoning is invalid")
             _text_list(lane["source_scope"], "research source scope")
             _exact_integer(lane["evidence_budget"], "research evidence budget", minimum=1)
