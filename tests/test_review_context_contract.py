@@ -106,8 +106,8 @@ class ReviewContextContractTests(unittest.TestCase):
             "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
             "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
             "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
-            "expskill-review": ("gpt-6-sol", "xhigh", "read-only"),
-            "expskill-spec": ("gpt-6-sol", "xhigh", "read-only"),
+            "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
+            "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
         }
         for name, settings in expected.items():
             profile = json.loads(

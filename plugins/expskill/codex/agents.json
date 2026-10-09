@@ -26,13 +26,13 @@
       "source": "../content/agents/expskill-planner.md"
     },
     "expskill-review": {
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "model_reasoning_effort": "xhigh",
       "sandbox_mode": "read-only",
       "source": "../content/agents/expskill-review.md"
     },
     "expskill-spec": {
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "model_reasoning_effort": "xhigh",
       "sandbox_mode": "read-only",
       "source": "../content/agents/expskill-spec.md"
