@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,6 +168,81 @@ class ClaudeContractTests(unittest.TestCase):
                 contents = (CLAUDE_ROOT / "hooks" / script).read_text(encoding="utf-8")
                 self.assertIn("CLAUDE_PLUGIN_ROOT", contents)
                 self.assertNotIn("PLUGIN_ROOT", contents.replace("CLAUDE_PLUGIN_ROOT", ""))
+
+    def test_hook_scripts_execute_documented_envelope_behavior(self) -> None:
+        markers = {
+            "inject_authoring.py": "Never create documentation files",
+            "inject_unslop.py": "$expskill:unslop",
+        }
+        environment = dict(os.environ)
+        environment["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+        for script, marker in markers.items():
+            with self.subTest(script=script, event="SessionStart"):
+                result = subprocess.run(
+                    [sys.executable, str(CLAUDE_ROOT / "hooks" / script)],
+                    input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "SessionStart")
+                self.assertIn(marker, output["hookSpecificOutput"]["additionalContext"])
+            with self.subTest(script=script, event="PreCompact"):
+                result = subprocess.run(
+                    [sys.executable, str(CLAUDE_ROOT / "hooks" / script)],
+                    input=json.dumps({"hook_event_name": "PreCompact", "trigger": "manual"}),
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(marker, result.stdout)
+                self.assertNotIn("hookSpecificOutput", result.stdout)
+                self.assertNotIn("additionalContext", result.stdout)
+        # Cap source for the unslop payload: codex hooks.json additionalContextLimit.
+        codex_hooks = json.loads((PLUGIN_ROOT / "codex" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        handlers = codex_hooks["hooks"]["SessionStart"][0]["hooks"]
+        unslop_limit = next(
+            handler["additionalContextLimit"] for handler in handlers if "inject_unslop.py" in handler["command"]
+        )
+        self.assertEqual(unslop_limit, 5000)
+        root = self.copy_repository()
+        plugin = root / "plugins" / "expskill"
+        oversized_environment = dict(os.environ)
+        oversized_environment["CLAUDE_PLUGIN_ROOT"] = str(plugin)
+        # Authoring cap source: the 1000-character guard in the Claude inject_authoring.py.
+        cases = (
+            (
+                "inject_authoring.py",
+                plugin / "content" / "policies" / "authoring-runtime.json",
+                {"schema_version": "authoring-runtime.v1", "instructions": "x" * 1001},
+            ),
+            (
+                "inject_unslop.py",
+                plugin / "content" / "policies" / "unslop-runtime.json",
+                {
+                    "schema_version": "unslop-runtime.v1",
+                    "scope": "x" * (unslop_limit + 1),
+                    "compaction_reminder": "reminder",
+                },
+            ),
+        )
+        for script, policy_path, payload in cases:
+            with self.subTest(script=script, event="oversized"):
+                policy_path.write_text(json.dumps(payload), encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, str(root / "plugins" / "expskill" / "claude" / "hooks" / script)],
+                    input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
+                    text=True,
+                    capture_output=True,
+                    env=oversized_environment,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
 
     def test_execution_policy_is_copied_to_artifact(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
