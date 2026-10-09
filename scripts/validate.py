@@ -21,6 +21,9 @@ sys.dont_write_bytecode = True
 try:
     from scripts.build_codex_marketplace import BuildError as CodexBuildError
     from scripts.build_codex_marketplace import build_codex_marketplace
+    from scripts.build_claude_package import BuildError as ClaudeBuildError
+    from scripts.build_claude_package import build_claude_package
+    from scripts.build_claude_package import marketplace_manifest as claude_marketplace_manifest
     from scripts.build_hermes_package import BuildError as HermesBuildError
     from scripts.build_hermes_package import build_hermes_package
     from scripts.build_opencode_package import BuildError as OpencodeBuildError
@@ -29,6 +32,7 @@ try:
         ARTIFACT_DIRECTORY_MODE,
         ARTIFACT_FILE_MODE,
         ARTIFACT_MTIME,
+        CLAUDE_PROVENANCE_SCHEMA_VERSION,
         CODEX_PROVENANCE_SCHEMA_VERSION,
         COPY_FILES,
         COPY_LICENSES,
@@ -43,8 +47,13 @@ try:
         PROVENANCE_SCHEMA_VERSION,
         artifact_output_relative,
         canonical_provenance,
+        claude_artifact_output_relative,
+        claude_provenance,
         hermes_provenance,
     )
+    from scripts.render_claude import RenderError as ClaudeRenderError
+    from scripts.render_claude import render_agents as render_claude_agents
+    from scripts.render_claude import render_all as render_claude_all
     from scripts.render_hermes import RenderError as HermesRenderError
     from scripts.render_hermes import render_agents as render_hermes_agents
     from scripts.render_hermes import render_all as render_hermes_all
@@ -59,6 +68,9 @@ try:
 except ModuleNotFoundError:
     from build_codex_marketplace import BuildError as CodexBuildError
     from build_codex_marketplace import build_codex_marketplace
+    from build_claude_package import BuildError as ClaudeBuildError
+    from build_claude_package import build_claude_package
+    from build_claude_package import marketplace_manifest as claude_marketplace_manifest
     from build_hermes_package import BuildError as HermesBuildError
     from build_hermes_package import build_hermes_package
     from build_opencode_package import BuildError as OpencodeBuildError
@@ -67,6 +79,7 @@ except ModuleNotFoundError:
         ARTIFACT_DIRECTORY_MODE,
         ARTIFACT_FILE_MODE,
         ARTIFACT_MTIME,
+        CLAUDE_PROVENANCE_SCHEMA_VERSION,
         CODEX_PROVENANCE_SCHEMA_VERSION,
         COPY_FILES,
         COPY_LICENSES,
@@ -81,8 +94,13 @@ except ModuleNotFoundError:
         PROVENANCE_SCHEMA_VERSION,
         artifact_output_relative,
         canonical_provenance,
+        claude_artifact_output_relative,
+        claude_provenance,
         hermes_provenance,
     )
+    from render_claude import RenderError as ClaudeRenderError
+    from render_claude import render_agents as render_claude_agents
+    from render_claude import render_all as render_claude_all
     from render_hermes import RenderError as HermesRenderError
     from render_hermes import render_agents as render_hermes_agents
     from render_hermes import render_all as render_hermes_all
@@ -1063,6 +1081,7 @@ def validate_repository(
     include_opencode: bool = True,
     include_main: bool = True,
     include_hermes: bool = True,
+    include_claude: bool = True,
 ) -> tuple[str, ...]:
     repository_root = Path(root).expanduser()
     try:
@@ -1106,6 +1125,8 @@ def validate_repository(
         _validate_opencode_package(repository_root, errors)
     if include_hermes:
         _validate_hermes_package(repository_root, errors)
+    if include_claude:
+        _validate_claude_package(repository_root, errors)
     return tuple(errors)
 
 
@@ -4700,6 +4721,571 @@ def _validate_hermes_package(repository_root: Path, errors: list[str]) -> None:
         )
         _validate_hermes_agents(repository_root, artifact, errors)
 
+CLAUDE_PLUGIN_SCHEMA = "https://anthropic.com/claude-code/plugin.schema.json"
+CLAUDE_EXPECTED_AGENTS = (
+    "expskill-designer",
+    "expskill-explorer",
+    "expskill-implementer",
+    "expskill-planner",
+    "expskill-review",
+    "expskill-spec",
+    "expskill-test-engineer",
+)
+CLAUDE_READ_TOOLS = ("Read", "Grep", "Glob", "Bash")
+CLAUDE_WRITE_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Bash")
+CLAUDE_AGENT_FACETS = {
+    "expskill-designer": ("haiku", CLAUDE_WRITE_TOOLS),
+    "expskill-explorer": ("haiku", CLAUDE_READ_TOOLS),
+    "expskill-implementer": ("haiku", CLAUDE_WRITE_TOOLS),
+    "expskill-planner": ("haiku", CLAUDE_READ_TOOLS),
+    "expskill-review": ("opus", CLAUDE_READ_TOOLS),
+    "expskill-spec": ("opus", CLAUDE_READ_TOOLS),
+    "expskill-test-engineer": ("haiku", CLAUDE_READ_TOOLS),
+}
+CLAUDE_HOOK_SCRIPTS = ("inject_authoring.py", "inject_unslop.py")
+
+
+def _claude_artifact_output_relative(source_relative: str) -> str | None:
+    """Map a repository source path to its Claude marketplace artifact path."""
+
+    return claude_artifact_output_relative(source_relative)
+
+
+def _validate_claude_root(package_root: Path, errors: list[str]) -> bool:
+    if package_root.is_symlink():
+        errors.append(f"claude package root must not be a symlink: {package_root}")
+        return False
+    metadata = _lstat(package_root)
+    if metadata is None:
+        errors.append(f"claude package directory is missing: {package_root}")
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"claude package root must be a directory: {package_root}")
+        return False
+    try:
+        resolved = package_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        errors.append(f"claude package root cannot be resolved: {package_root}: {error}")
+        return False
+    if resolved != package_root:
+        errors.append(f"claude package root resolves outside its lexical path: {package_root}")
+        return False
+    return True
+
+
+def _validate_claude_platform_source(package_root: Path, errors: list[str]) -> None:
+    """Reject any checked-in platform entry outside the exact source roster."""
+
+    expected = {".claude-plugin", "agents.json", "hooks"}
+    try:
+        entries = {path.name: path for path in package_root.iterdir()}
+    except OSError as error:
+        errors.append(f"claude platform source could not be listed: {error}")
+        return
+    unexpected = sorted(set(entries) - expected)
+    missing = sorted(expected - set(entries))
+    if unexpected:
+        errors.append(f"claude platform source has unexpected entries: {unexpected!r}")
+    if missing:
+        errors.append(f"claude platform source is missing entries: {missing!r}")
+    manifest_dir = package_root / ".claude-plugin"
+    manifest_metadata = _lstat(manifest_dir)
+    if manifest_metadata is None or not stat.S_ISDIR(manifest_metadata.st_mode) or manifest_dir.is_symlink():
+        errors.append(f"claude platform manifest directory is not regular: {manifest_dir}")
+    else:
+        try:
+            manifest_entries = {path.name for path in manifest_dir.iterdir()}
+        except OSError as error:
+            errors.append(f"claude platform manifest directory could not be listed: {error}")
+        else:
+            if manifest_entries != {"plugin.json"}:
+                errors.append(
+                    "claude platform source has unexpected manifest entries: "
+                    f"{sorted(manifest_entries)!r}"
+                )
+    hooks_dir = package_root / "hooks"
+    hooks_metadata = _lstat(hooks_dir)
+    if hooks_metadata is None or not stat.S_ISDIR(hooks_metadata.st_mode) or hooks_dir.is_symlink():
+        errors.append(f"claude platform hooks directory is not regular: {hooks_dir}")
+    else:
+        try:
+            hook_entries = {path.name for path in hooks_dir.iterdir()}
+        except OSError as error:
+            errors.append(f"claude platform hooks directory could not be listed: {error}")
+        else:
+            expected_hooks = {"hooks.json", *CLAUDE_HOOK_SCRIPTS}
+            if hook_entries != expected_hooks:
+                errors.append(
+                    "claude platform source has unexpected hook entries: "
+                    f"{sorted(hook_entries)!r}"
+                )
+    for name in (".claude-plugin/plugin.json", "agents.json", "hooks/hooks.json", *[f"hooks/{script}" for script in CLAUDE_HOOK_SCRIPTS]):
+        path = package_root / name
+        metadata = _lstat(path)
+        if metadata is None or not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            errors.append(f"claude platform source file is not regular: {path}")
+
+
+def _validate_claude_manifest(package_root: Path, errors: list[str]) -> None:
+    manifest_path = package_root / ".claude-plugin" / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        errors.append(f"claude package manifest could not be read: {error}")
+        return
+    except json.JSONDecodeError as error:
+        errors.append(f"claude package manifest is not valid JSON: {error.msg}")
+        return
+    if not isinstance(manifest, dict):
+        errors.append("claude package manifest must contain a JSON object")
+        return
+    _reject_placeholders(manifest, "claude plugin.json", errors)
+    if manifest.get("$schema") != CLAUDE_PLUGIN_SCHEMA:
+        errors.append("claude package manifest declares an unsupported Claude Code schema")
+    if manifest.get("name") != PLUGIN_NAME:
+        errors.append(
+            f"claude package name must be {PLUGIN_NAME!r}, got {manifest.get('name')!r}"
+        )
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        errors.append("claude package version must be a non-empty string")
+    elif version != PLUGIN_VERSION:
+        errors.append(
+            "claude package version must match the Codex base version "
+            f"{PLUGIN_VERSION!r}, got {version!r}"
+        )
+    description = manifest.get("description")
+    if not isinstance(description, str) or not description.strip():
+        errors.append("claude package description must be a non-empty string")
+    if manifest.get("license") != "MIT":
+        errors.append("claude package manifest license must be 'MIT'")
+
+
+def _validate_claude_agent_spec(package_root: Path, errors: list[str]) -> None:
+    spec_path = package_root / "agents.json"
+    spec = _load_json_object(spec_path, "claude agent spec", errors)
+    if spec is None:
+        return
+    if spec.get("schema_version") != "claude-agents.v1":
+        errors.append("claude agent spec schema_version must be 'claude-agents.v1'")
+    if set(spec) != {
+        "_comment",
+        "schema_version",
+        "runtime_paragraph",
+        "agents",
+    }:
+        errors.append("claude agent spec must contain exactly the overlay keys")
+        return
+    runtime = spec.get("runtime_paragraph")
+    if not isinstance(runtime, str) or not runtime.strip():
+        errors.append("claude agent spec must declare a non-empty runtime_paragraph")
+    agents = spec.get("agents")
+    if not isinstance(agents, dict) or set(agents) != set(CLAUDE_EXPECTED_AGENTS):
+        errors.append("claude agent spec must contain exactly the seven Claude agents")
+        return
+    for name in CLAUDE_EXPECTED_AGENTS:
+        entry = agents.get(name)
+        expected_model, expected_tools = CLAUDE_AGENT_FACETS[name]
+        if not isinstance(entry, dict) or set(entry) != {"model", "tools"}:
+            errors.append(f"claude agent overlay entry {name!r} must contain model and tools")
+            continue
+        if entry.get("model") != expected_model:
+            errors.append(f"claude agent {name!r} model must be {expected_model!r}")
+        if list(entry.get("tools") or []) != list(expected_tools):
+            errors.append(f"claude agent {name!r} tools must be {list(expected_tools)!r}")
+
+
+def _validate_claude_hooks(package_root: Path, errors: list[str]) -> None:
+    hooks_path = package_root / "hooks" / "hooks.json"
+    spec = _load_json_object(hooks_path, "claude hooks", errors)
+    if spec is None:
+        return
+    hooks = spec.get("hooks")
+    if not isinstance(spec, dict) or not isinstance(hooks, dict) or set(hooks) != {"SessionStart", "PreCompact"}:
+        errors.append("claude hooks must wire exactly SessionStart and PreCompact")
+        return
+    expected_matchers = {"SessionStart": "startup|resume|clear|compact", "PreCompact": "manual|auto"}
+    seen_scripts = {"SessionStart": set(), "PreCompact": set()}
+    for event in ("SessionStart", "PreCompact"):
+        entries = hooks.get(event)
+        if not isinstance(entries, list) or not entries:
+            errors.append(f"claude hooks event {event!r} must declare at least one entry")
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                errors.append(f"claude hooks event {event!r} entry must be an object")
+                continue
+            if entry.get("matcher") != expected_matchers[event]:
+                errors.append(f"claude hooks event {event!r} matcher must be {expected_matchers[event]!r}")
+            subhooks = entry.get("hooks")
+            if not isinstance(subhooks, list) or not subhooks:
+                errors.append(f"claude hooks event {event!r} entry must declare hooks")
+                continue
+            for hook in subhooks:
+                if not isinstance(hook, dict) or hook.get("type") != "command":
+                    errors.append(f"claude hooks event {event!r} hook must be a command hook")
+                    continue
+                command = hook.get("command")
+                if not isinstance(command, str) or "${CLAUDE_PLUGIN_ROOT}" not in command:
+                    errors.append(f"claude hooks event {event!r} command must use ${{CLAUDE_PLUGIN_ROOT}}")
+                    continue
+                for script in CLAUDE_HOOK_SCRIPTS:
+                    if script in command:
+                        seen_scripts[event].add(script)
+    for event in ("SessionStart", "PreCompact"):
+        for script in CLAUDE_HOOK_SCRIPTS:
+            if script not in seen_scripts[event]:
+                errors.append(f"claude hooks event {event!r} must wire {script}")
+    for script in CLAUDE_HOOK_SCRIPTS:
+        path = package_root / "hooks" / script
+        contents = _read_overlay_text(path, f"claude hook script {script!r}", errors)
+        if contents is None:
+            continue
+        if "CLAUDE_PLUGIN_ROOT" not in contents:
+            errors.append(f"claude hook script {script!r} must use CLAUDE_PLUGIN_ROOT")
+
+
+def _claude_source_inventory(root: Path) -> list[tuple[str, Path]]:
+    """Walk the Claude contract roster independently of the package builder."""
+
+    package_root = root / "plugins" / "expskill"
+    paths: list[tuple[str, Path]] = []
+
+    def add(path: Path) -> None:
+        relative = path.relative_to(root).as_posix()
+        metadata = os.lstat(path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"source is not a regular file: {path}")
+        paths.append((relative, path))
+
+    def walk(directory: Path) -> None:
+        metadata = os.lstat(directory)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise OSError(f"source directory is not regular: {directory}")
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            child_metadata = os.lstat(child)
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise OSError(f"source entry must not be a symlink: {child}")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                walk(child)
+            elif stat.S_ISREG(child_metadata.st_mode):
+                relative = child.relative_to(directory)
+                if "__pycache__" not in relative.parts and child.suffix not in {".pyc", ".pyo"}:
+                    add(child)
+            else:
+                raise OSError(f"source entry is not regular: {child}")
+
+    for tree in COPY_TREES:
+        walk(package_root / tree)
+    for relative in COPY_FILES:
+        add(package_root / relative)
+    walk(package_root / "content" / "third-party")
+    walk(package_root / "content" / "agents")
+    add(package_root / "content" / "agents.json")
+    claude_root = package_root / "claude"
+    add(claude_root / ".claude-plugin" / "plugin.json")
+    add(claude_root / "agents.json")
+    for script in ("hooks.json", *CLAUDE_HOOK_SCRIPTS):
+        add(claude_root / "hooks" / script)
+    add(root / "scripts/artifact_contract.py")
+    add(root / "scripts/build_claude_package.py")
+    add(root / "scripts/render_claude.py")
+    return sorted(paths, key=lambda item: item[0])
+
+
+def _claude_artifact_inventory(
+    artifact: Path,
+) -> tuple[dict[str, os.stat_result], list[str]]:
+    """Enumerate every Claude artifact entry without following symlinks."""
+
+    entries: dict[str, os.stat_result] = {}
+    errors: list[str] = []
+    try:
+        root_metadata = os.lstat(artifact)
+    except OSError as error:
+        return {}, [f"claude artifact root cannot be inspected: {error}"]
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        return {}, [f"claude artifact root must be a regular directory: {artifact}"]
+    pending = [artifact]
+    while pending:
+        current = pending.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError as error:
+            errors.append(f"claude artifact directory cannot be listed: {current}: {error}")
+            continue
+        for child in children:
+            relative = child.relative_to(artifact).as_posix()
+            try:
+                metadata = os.lstat(child)
+            except OSError as error:
+                errors.append(f"claude artifact entry cannot be inspected: {child}: {error}")
+                continue
+            entries[relative] = metadata
+            if stat.S_ISLNK(metadata.st_mode):
+                errors.append(f"claude artifact entry must not be a symlink: {child}")
+            elif stat.S_ISDIR(metadata.st_mode):
+                pending.append(child)
+            elif not stat.S_ISREG(metadata.st_mode):
+                errors.append(f"claude artifact entry must be regular: {child}")
+    return entries, errors
+
+
+def _validate_built_claude_artifact(
+    repository_root: Path,
+    artifact: Path,
+    rendered: dict[str, str],
+    errors: list[str],
+) -> None:
+    """Validate the exact built Claude bytes, provenance, inventory, and metadata."""
+
+    expected_files: dict[str, bytes] = {}
+    package_root = repository_root / "plugins" / "expskill"
+    claude_root = package_root / "claude"
+    try:
+        manifest = json.loads((claude_root / ".claude-plugin" / "plugin.json").read_bytes().decode("utf-8"))
+        expected_files[".claude-plugin/marketplace.json"] = (
+            json.dumps(claude_marketplace_manifest(manifest), ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        for relative, source in _claude_source_inventory(repository_root):
+            output_relative = _claude_artifact_output_relative(relative)
+            if output_relative is not None:
+                expected_files[output_relative] = source.read_bytes()
+        expected_files.update(
+            {f"plugins/expskill/{relative}": contents.encode("utf-8") for relative, contents in rendered.items()}
+        )
+        expected_inputs = [
+            {"path": relative, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+            for relative, source in _claude_source_inventory(repository_root)
+        ]
+    except (OSError, ClaudeBuildError, RuntimeError) as error:
+        errors.append(f"claude artifact inputs could not be inventoried: {error}")
+        return
+
+    provenance_path = artifact / "plugins" / "expskill" / "provenance.json"
+    provenance: object | None = None
+    expected_files["plugins/expskill/provenance.json"] = claude_provenance(expected_inputs)
+    try:
+        provenance = json.loads(provenance_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(f"claude artifact provenance is invalid: {error}")
+    if not isinstance(provenance, dict):
+        errors.append("claude artifact provenance must be a JSON object")
+    else:
+        if set(provenance) != {"schema_version", "inputs"}:
+            errors.append("claude artifact provenance must contain exactly schema_version and inputs")
+        if provenance.get("schema_version") != CLAUDE_PROVENANCE_SCHEMA_VERSION:
+            errors.append(
+                "claude artifact provenance schema_version must be "
+                f"{CLAUDE_PROVENANCE_SCHEMA_VERSION!r}"
+            )
+        inputs = provenance.get("inputs")
+        if not isinstance(inputs, list):
+            errors.append("claude artifact provenance inputs must be a list")
+        else:
+            normalized_inputs: list[dict[str, str]] = []
+            for index, entry in enumerate(inputs):
+                if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                    errors.append(f"claude artifact provenance input {index} is malformed")
+                    continue
+                path = entry.get("path")
+                digest = entry.get("sha256")
+                if not isinstance(path, str) or not isinstance(digest, str):
+                    errors.append(f"claude artifact provenance input {index} has invalid fields")
+                    continue
+                normalized_inputs.append({"path": path, "sha256": digest})
+            if [item["path"] for item in normalized_inputs] != sorted(
+                item["path"] for item in normalized_inputs
+            ):
+                errors.append("claude artifact provenance paths must be sorted")
+            if len({item["path"] for item in normalized_inputs}) != len(normalized_inputs):
+                errors.append("claude artifact provenance paths must be unique")
+            if normalized_inputs != expected_inputs:
+                errors.append("claude artifact provenance digests do not match every expected input")
+    expected_paths: set[str] = set(expected_files)
+    expected_entries = set(expected_paths)
+    for relative in expected_paths:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_entries.add(parent.as_posix())
+            parent = parent.parent
+    actual_entries, inventory_errors = _claude_artifact_inventory(artifact)
+    errors.extend(inventory_errors)
+    try:
+        artifact_metadata = os.lstat(artifact)
+    except OSError as error:
+        artifact_metadata = None
+        errors.append(f"claude artifact root cannot be read for metadata: {error}")
+    if artifact_metadata is not None:
+        if stat.S_IMODE(artifact_metadata.st_mode) != ARTIFACT_DIRECTORY_MODE:
+            errors.append("claude artifact root has non-normalized mode")
+        if artifact_metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append("claude artifact root has non-normalized mtime")
+    actual_paths = set(actual_entries)
+    for relative in sorted(actual_paths - expected_entries):
+        errors.append(f"claude artifact contains unexpected entry: {relative}")
+    for relative in sorted(expected_entries - actual_paths):
+        errors.append(f"claude artifact is missing entry: {relative}")
+    for relative, metadata in actual_entries.items():
+        if stat.S_ISDIR(metadata.st_mode):
+            expected_mode = ARTIFACT_DIRECTORY_MODE
+        elif stat.S_ISREG(metadata.st_mode):
+            expected_mode = ARTIFACT_FILE_MODE
+        else:
+            continue
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            errors.append(f"claude artifact entry {relative} has non-normalized mode")
+        if metadata.st_mtime_ns != ARTIFACT_MTIME:
+            errors.append(f"claude artifact entry {relative} has non-normalized mtime")
+    for relative, expected in expected_files.items():
+        path = artifact / relative
+        try:
+            actual = path.read_bytes()
+        except OSError as error:
+            errors.append(f"claude artifact file {relative} could not be read: {error}")
+            continue
+        if actual != expected:
+            errors.append(f"claude artifact file {relative} does not match its accepted bytes")
+
+
+def _validate_claude_shared_skills(
+    canonical_root: Path,
+    artifact: Path,
+    errors: list[str],
+    skill_names: tuple[str, ...],
+) -> None:
+    skills_entry = artifact / "plugins" / "expskill" / "skills"
+    if not skills_entry.is_dir() or skills_entry.is_symlink():
+        errors.append(f"claude shared skills entry is missing: {skills_entry}")
+        return
+    for name in skill_names:
+        label = f"claude shared skill {name!r}"
+        canonical_skill = canonical_root / "content" / "skills" / name
+        if not canonical_skill.is_dir() or canonical_skill.is_symlink():
+            errors.append(f"{label} canonical skill is missing: {canonical_skill}")
+            continue
+        for source in sorted(canonical_skill.rglob("*")):
+            if source.is_dir():
+                continue
+            if "__pycache__" in source.parts or source.suffix in {".pyc", ".pyo"}:
+                continue
+            relative = source.relative_to(canonical_skill)
+            exposed = skills_entry / name / relative
+            try:
+                shared = source.read_bytes()
+            except OSError as error:
+                errors.append(f"{label} canonical file could not be read: {error}")
+                continue
+            try:
+                mirrored = exposed.read_bytes()
+            except OSError:
+                errors.append(f"{label} is missing: {exposed}")
+                continue
+            if mirrored != shared:
+                errors.append(f"{label} file {relative.as_posix()} is not the exact shared base")
+
+
+def _validate_claude_agents(
+    repository_root: Path,
+    artifact: Path,
+    errors: list[str],
+) -> None:
+    agents_root = artifact / "plugins" / "expskill" / "agents"
+    if not agents_root.is_dir() or agents_root.is_symlink():
+        errors.append(f"claude agents directory is missing: {agents_root}")
+        return
+    actual = {
+        path.name
+        for path in agents_root.iterdir()
+        if not path.is_symlink() and path.is_file()
+    }
+    expected = {f"{name}.md" for name in CLAUDE_EXPECTED_AGENTS}
+    for name in sorted(expected - actual):
+        errors.append(f"claude agent {name!r} is missing")
+    for name in sorted(actual - expected):
+        errors.append(f"claude unexpected agent entry {name!r}")
+    try:
+        rendered = render_claude_agents(repository_root)
+    except ClaudeRenderError as error:
+        errors.append(f"claude agents cannot be rendered from shared sources: {error}")
+        return
+    content_agents: dict[str, object] = {}
+    try:
+        content = json.loads(
+            (repository_root / "plugins" / "expskill" / "content" / "agents.json").read_text(encoding="utf-8")
+        )
+        if isinstance(content, dict) and isinstance(content.get("agents"), dict):
+            content_agents = content["agents"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(f"claude canonical agent metadata could not be read: {error}")
+        return
+    for name in CLAUDE_EXPECTED_AGENTS:
+        path = agents_root / f"{name}.md"
+        contents = _read_overlay_text(path, f"claude agent {name!r}", errors)
+        if contents is None:
+            continue
+        if contents != rendered[name]:
+            errors.append(f"claude agent {name!r} does not match the pure renderer")
+            continue
+        parsed = _parse_overlay_frontmatter(contents, f"claude agent {name!r}", errors)
+        if parsed is None:
+            continue
+        scalars, mappings, _block = parsed
+        if set(scalars) != {"name", "description", "model"}:
+            errors.append(f"claude agent {name!r} frontmatter scalar keys must be exactly agent facets")
+            continue
+        if mappings != {"tools"}:
+            errors.append(f"claude agent {name!r} frontmatter must declare exactly the tools mapping")
+            continue
+        expected_model, expected_tools = CLAUDE_AGENT_FACETS[name]
+        if scalars.get("name") != name:
+            errors.append(f"claude agent {name!r} frontmatter name must match its file")
+        if scalars.get("model") != expected_model:
+            errors.append(f"claude agent {name!r} frontmatter model must be {expected_model!r}")
+        for tool in expected_tools:
+            if f"\n  - {tool}\n" not in contents:
+                errors.append(f"claude agent {name!r} frontmatter tools must allow {tool!r}")
+        entry = content_agents.get(name)
+        if isinstance(entry, dict):
+            for field in ("description", "closing"):
+                value = entry.get(field)
+                if isinstance(value, str) and value.strip() and value not in contents:
+                    errors.append(f"claude agent {name!r} is missing its canonical {field}")
+
+
+def _validate_claude_package(repository_root: Path, errors: list[str]) -> None:
+    package_root = repository_root / "plugins" / "expskill" / "claude"
+    if not _validate_claude_root(package_root, errors):
+        return
+    _validate_claude_platform_source(package_root, errors)
+    try:
+        skill_names = skill_inventory(repository_root)
+        rendered = render_claude_all(repository_root)
+    except ClaudeRenderError as error:
+        errors.append(f"claude sources cannot be rendered: {error}")
+        return
+
+    # Platform-owned files are checked in, while agents and shared trees are
+    # deliberately validated from a fresh temporary artifact.  Validation
+    # therefore exercises the same pure renderer and builder used by releases
+    # without mutating this checkout.
+    _validate_claude_manifest(package_root, errors)
+    _validate_claude_agent_spec(package_root, errors)
+    _validate_claude_hooks(package_root, errors)
+    with tempfile.TemporaryDirectory(prefix="expskill-claude-validate-") as temporary:
+        artifact = Path(temporary) / "artifact"
+        try:
+            build_claude_package(repository_root, artifact)
+        except (ClaudeBuildError, OSError) as error:
+            errors.append(f"claude artifact could not be built: {error}")
+            return
+        _validate_built_claude_artifact(repository_root, artifact, rendered, errors)
+        _validate_claude_shared_skills(
+            repository_root / "plugins" / "expskill", artifact, errors, skill_names
+        )
+        _validate_claude_agents(repository_root, artifact, errors)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the expskill repository contract.")
     parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])
@@ -4721,12 +5307,19 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help="validate the Hermes package surface (default: enabled)",
     )
+    parser.add_argument(
+        "--include-claude",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="validate the Claude Code package surface (default: enabled)",
+    )
     args = parser.parse_args(argv)
     errors = validate_repository(
         args.root,
         include_main=args.include_main,
         include_opencode=args.include_opencode,
         include_hermes=args.include_hermes,
+        include_claude=args.include_claude,
     )
     if errors:
         for error in errors:
