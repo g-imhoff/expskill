@@ -47,6 +47,7 @@ try:
         PROVENANCE_SCHEMA_VERSION,
         artifact_output_relative,
         canonical_provenance,
+        claude_artifact_output_relative,
         claude_provenance,
         hermes_provenance,
     )
@@ -93,6 +94,7 @@ except ModuleNotFoundError:
         PROVENANCE_SCHEMA_VERSION,
         artifact_output_relative,
         canonical_provenance,
+        claude_artifact_output_relative,
         claude_provenance,
         hermes_provenance,
     )
@@ -4752,53 +4754,7 @@ CLAUDE_POLICY_ASSETS = {
 def _claude_artifact_output_relative(source_relative: str) -> str | None:
     """Map a repository source path to its Claude marketplace artifact path."""
 
-    if not source_relative or "\\" in source_relative or "\x00" in source_relative:
-        return None
-    components = source_relative.split("/")
-    if any(component in {"", ".", ".."} for component in components):
-        return None
-    relative = Path(*components)
-    package_marker = Path("plugins") / "expskill"
-    if relative.parts[:2] != package_marker.parts:
-        return None
-    within = Path(*relative.parts[2:])
-    plugin_prefix = Path("plugins") / "expskill"
-    content_skills = Path("content") / "skills"
-    content_scripts = Path("content") / "scripts"
-    content_third_party = Path("content") / "third-party"
-    if within == content_skills or (
-        len(within.parts) > len(content_skills.parts)
-        and within.parts[: len(content_skills.parts)] == content_skills.parts
-    ):
-        rest = Path(*within.parts[len(content_skills.parts) :])
-        return (plugin_prefix / "skills" / rest).as_posix() if rest.parts else (plugin_prefix / "skills").as_posix()
-    if within == content_scripts or (
-        len(within.parts) > len(content_scripts.parts)
-        and within.parts[: len(content_scripts.parts)] == content_scripts.parts
-    ):
-        rest = Path(*within.parts[len(content_scripts.parts) :])
-        return (plugin_prefix / "scripts" / rest).as_posix() if rest.parts else (plugin_prefix / "scripts").as_posix()
-    if within == content_third_party or (
-        len(within.parts) > len(content_third_party.parts)
-        and within.parts[: len(content_third_party.parts)] == content_third_party.parts
-    ):
-        rest = Path(*within.parts[len(content_third_party.parts) :])
-        return (plugin_prefix / "third-party" / rest).as_posix() if rest.parts else (plugin_prefix / "third-party").as_posix()
-    if len(within.parts) == 3 and within.parts[0] == "content" and within.parts[1] == "policies":
-        mapped = CLAUDE_POLICY_ASSETS.get(within.parts[2])
-        if mapped is not None:
-            return (plugin_prefix / "assets" / mapped).as_posix()
-        return None
-    if within == Path("claude") / ".claude-plugin" / "plugin.json":
-        return (plugin_prefix / ".claude-plugin" / "plugin.json").as_posix()
-    if (
-        len(within.parts) == 3
-        and within.parts[0] == "claude"
-        and within.parts[1] == "hooks"
-        and within.parts[2] in ("hooks.json", *CLAUDE_HOOK_SCRIPTS)
-    ):
-        return (plugin_prefix / "hooks" / within.parts[2]).as_posix()
-    return None
+    return claude_artifact_output_relative(source_relative)
 
 
 def _validate_claude_root(package_root: Path, errors: list[str]) -> bool:
