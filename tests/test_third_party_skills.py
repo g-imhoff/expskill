@@ -19,6 +19,7 @@ LOCK_PATH = PLUGIN_ROOT / "content" / "third-party" / "upstream-lock.json"
 EXPECTED_PUBLIC_SKILLS = {
     "autonomous-run",
     "brainstorm",
+    "deep-research",
     "design",
     "grill-me",
     "implement",

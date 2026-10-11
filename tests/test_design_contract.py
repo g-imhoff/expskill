@@ -29,6 +29,7 @@ EXPECTED_SKILLS = {
     "use-expskill",
     "autonomous-run",
     "review-loop",
+    "deep-research",
 }
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",

@@ -26,13 +26,13 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
-    def test_guide_and_manifest_expose_fourteen_skills_including_correct(self) -> None:
+    def test_guide_and_manifest_expose_fifteen_skills_including_correct(self) -> None:
         """Regression: stale phase language hides a direct skill or contradicts the public roster."""
         guide = (ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
-        skill_wording = re.compile(r"\bfourteen independent skills and one optional lifecycle router\b", re.I)
+        skill_wording = re.compile(r"\bfifteen independent skills and one optional lifecycle router\b", re.I)
         self.assertRegex(" ".join(guide.split()), skill_wording)
         self.assertIn("$design", guide)
         self.assertIn("$test", guide)
@@ -43,6 +43,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$review-loop", guide)
         self.assertIn("$correct", guide)
         self.assertIn("$autonomous-run", guide)
+        self.assertIn("$deep-research", guide)
         self.assertIn("$test", long_description)
         self.assertIn("$skill-builder", long_description)
         self.assertIn("$setup-design", long_description)
@@ -51,6 +52,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$review-loop", long_description)
         self.assertIn("$correct", long_description)
         self.assertIn("$autonomous-run", long_description)
+        self.assertIn("$deep-research", long_description)
         self.assertRegex(description, skill_wording)
         self.assertNotRegex(guide, re.compile(r"\b(?:six|seven|eight|nine) independent development phases\b", re.I))
         self.assertNotRegex(description, re.compile(r"\b(?:six|seven|eight|nine) standalone development phases\b", re.I))
@@ -78,7 +80,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-thirteen-skill-wording": ("guide", "fourteen independent skills"),
+            "stale-fourteen-skill-wording": ("guide", "fifteen independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
@@ -120,12 +122,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         json.dumps(manifest, indent=2) + "\n",
                         encoding="utf-8",
                     )
-                elif mutation == "stale-thirteen-skill-wording":
+                elif mutation == "stale-fourteen-skill-wording":
                     guide = root / "docs" / "guide.md"
                     guide.write_text(
                         guide.read_text(encoding="utf-8").replace(
+                            "fifteen independent skills",
                             "fourteen independent skills",
-                            "thirteen independent skills",
                             1,
                         ),
                         encoding="utf-8",

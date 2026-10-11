@@ -1,6 +1,6 @@
 # ExpSkill guide
 
-ExpSkill is a Codex plugin with fourteen independent skills and one
+ExpSkill is a Codex plugin with fifteen independent skills and one
 optional lifecycle router. The same skill base also ships as the
 `opencode-expskill` npm package for OpenCode and as an Agent Plugins package for Hermes.
 
@@ -240,6 +240,7 @@ Invoke a skill directly when you know what you want:
   product paths and reports revision-bound evidence without repairing production
   code.
 - `$skill-builder` creates or improves one exact agent skill through evidence-gated research, trials, review, and verification.
+- `$deep-research` investigates a question online through phased subagents, from broad discovery to specific branches, and stops when two complete phases add nothing new.
 - `$unslop` rewrites prose to remove common AI tells and remains directly
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
@@ -284,6 +285,7 @@ Use $review to inspect the changes between this branch and main and save a repor
 Use $review-loop to drive this change to 9 of 10 before opening a PR.
 Use $test to exercise this implemented change through realistic product behavior.
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
+Use $deep-research to investigate this topic through phased subagents and cited findings.
 Use $unslop to rewrite this explanation in a natural voice.
 Use $grill-me to stress-test these connected product decisions.
 Use $autonomous-run to carry this idea to a review-ready draft PR.
