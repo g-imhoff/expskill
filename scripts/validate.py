@@ -190,8 +190,9 @@ PUBLIC_SKILL_TOKENS = {
     "$unslop",
     "$autonomous-run",
     "$review-loop",
+    "$deep-research",
 }
-PUBLIC_SKILL_COUNT_TEXT = "fourteen independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "fifteen independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
@@ -199,6 +200,10 @@ SKILL_BUILDER_REQUIRED_REFERENCES = (
 )
 SETUP_SKILLS_REQUIRED_RESOURCES = (
     "references/record-format.md",
+)
+DEEP_RESEARCH_REQUIRED_RESOURCES = (
+    "references/research-record.md",
+    "scripts/research_record.py",
 )
 SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
     sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
@@ -247,6 +252,7 @@ EXPECTED_SKILLS = {
     "unslop",
     "autonomous-run",
     "review-loop",
+    "deep-research",
 }
 RETIRED_SKILLS = {"full-code-change", "quick-code-change", "route-code-change", "setup-ui-testing"}
 PUBLIC_SKILL_JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
@@ -1366,7 +1372,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise fourteen independent skills and one optional "
+                "plugin description must advertise fifteen independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
@@ -1493,6 +1499,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             })
         if skill_root.name in {"setup-design", "setup-test"}:
             expected_files.update(SETUP_SKILLS_REQUIRED_RESOURCES)
+        if skill_root.name == "deep-research":
+            expected_files.update(DEEP_RESEARCH_REQUIRED_RESOURCES)
         if skill_root.name == "test":
             expected_files.update({
                 "references/quality-rules.json",
@@ -1512,6 +1520,8 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
             expected_directories.update({"references", "scripts"})
         if skill_root.name in {"setup-design", "setup-test"}:
             expected_directories.update({"references"})
+        if skill_root.name == "deep-research":
+            expected_directories.update({"references", "scripts"})
         if skill_root.name == "test":
             expected_directories.add("references")
             expected_directories.add("scripts")
@@ -1550,6 +1560,14 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                     plugin_root,
                     f"{relative_skill}/{relative}",
                     f"skill {skill_root.name!r} required resource {relative!r}",
+                    errors,
+                )
+        if skill_root.name == "deep-research":
+            for relative in DEEP_RESEARCH_REQUIRED_RESOURCES:
+                _required_nonempty_package_file(
+                    plugin_root,
+                    f"{relative_skill}/{relative}",
+                    f"skill 'deep-research' required resource {relative!r}",
                     errors,
                 )
         skill_path = _required_package_path(
@@ -2336,9 +2354,9 @@ def _validate_public_guide(repository_root: Path, errors: list[str]) -> None:
     normalized = " ".join(guide.lower().split())
     if PUBLIC_SKILL_COUNT_TEXT not in normalized:
         errors.append(
-            "Guide must describe fourteen independent skills and one optional lifecycle router"
+            "Guide must describe fifteen independent skills and one optional lifecycle router"
         )
-    if re.search(r"\b(?:seven|eight|nine|ten|eleven|twelve) independent skills\b", normalized):
+    if re.search(r"\b(?:seven|eight|nine|ten|eleven|twelve|thirteen|fourteen) independent skills\b", normalized):
         errors.append("Guide contains stale public-skill count wording")
     if not _contains_exact_skill_token(guide, SKILL_BUILDER_TOKEN):
         errors.append("Guide must advertise $skill-builder")

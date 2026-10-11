@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 ROUTER_ROOT = PLUGIN_ROOT / "content" / "skills" / "use-expskill"
 SKILL_BUILDER_ROOT = PLUGIN_ROOT / "content" / "skills" / "skill-builder"
+DEEP_RESEARCH_ROOT = PLUGIN_ROOT / "content" / "skills" / "deep-research"
 PHASE_ROOTS = {
     name: PLUGIN_ROOT / "content" / "skills" / name
     for name in (
@@ -40,6 +41,7 @@ PUBLIC_SKILL_ROOTS = {
     "use-expskill": ROUTER_ROOT,
     **PHASE_ROOTS,
     "skill-builder": SKILL_BUILDER_ROOT,
+    "deep-research": DEEP_RESEARCH_ROOT,
 }
 EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
@@ -66,6 +68,7 @@ EXPECTED_SKILLS = {
     "unslop",
     "autonomous-run",
     "review-loop",
+    "deep-research",
 }
 REMOVED_PUBLIC_SKILL = "accept" + "ance"
 REMOVED_PUBLIC_TOKEN = "$" + REMOVED_PUBLIC_SKILL
@@ -448,7 +451,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("fourteen", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("fifteen", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -563,7 +566,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bfourteen independent skills and one optional lifecycle router\b"
+            r"\bfifteen independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "docs" / "guide.md",
@@ -1113,6 +1116,7 @@ class ContractTests(unittest.TestCase):
                 self.assertGreater(len(body.splitlines()), 4, name)
                 if name not in {
                     "brainstorm",
+                    "deep-research",
                     "design",
                     "setup-design",
                     "setup-test",
