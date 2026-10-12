@@ -344,7 +344,7 @@ class BrainstormContractTests(unittest.TestCase):
     def test_research_controls_are_independent_and_complete(self) -> None:
         section = _markdown_section(self.contents, "## Research the landscape").lower()
         clauses = (
-            "spawn three independent `gpt-5.6-luna` research subagents at max reasoning as one logical burst",
+            "spawn three independent `gpt-6-luna` research subagents at max reasoning as one logical burst",
             "initiate all three before awaiting any result when three slots are available",
             "use immediate capacity-limited waves when fewer slots are available",
             "do no synthesis, technique work, or unrelated work between capacity-limited waves",
