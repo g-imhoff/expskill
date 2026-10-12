@@ -1110,7 +1110,7 @@ def stage_payload(
                 {
                     "lane_id": f"lane-{index}",
                     "question": f"bounded question {index}",
-                    "model": "GPT-5.6-Luna",
+                    "model": "GPT-6-Luna",
                     "reasoning": "max",
                     "source_scope": ["authoritative sources"],
                     "evidence_budget": 1,

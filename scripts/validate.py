@@ -57,6 +57,7 @@ try:
     from scripts.render_hermes import RenderError as HermesRenderError
     from scripts.render_hermes import render_agents as render_hermes_agents
     from scripts.render_hermes import render_all as render_hermes_all
+    from scripts.render_hermes import skill_inventory as hermes_skill_inventory
     from scripts.render_opencode import RenderError as AgentSyncError
     from scripts.render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -104,6 +105,7 @@ except ModuleNotFoundError:
     from render_hermes import RenderError as HermesRenderError
     from render_hermes import render_agents as render_hermes_agents
     from render_hermes import render_all as render_hermes_all
+    from render_hermes import skill_inventory as hermes_skill_inventory
     from render_opencode import RenderError as AgentSyncError
     from render_opencode import (
         OPENCODE_DESCRIPTION_MAX_LENGTH,
@@ -683,13 +685,13 @@ EXPECTED_UNSLOP_HOOKS = {
 }
 
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 
 REVIEW_HANDOFF_PATHS = (
@@ -803,7 +805,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-explorer": {
         "agent_type": "expskill-explorer",
         "role": "explorer",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
@@ -811,7 +813,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-test-engineer": {
         "agent_type": "expskill-test-engineer",
         "role": "test-engineer",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
@@ -819,7 +821,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-implementer": {
         "agent_type": "expskill-implementer",
         "role": "implementer",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
@@ -827,7 +829,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-planner": {
         "agent_type": "expskill-planner",
         "role": "planner",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
@@ -835,7 +837,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-designer": {
         "agent_type": "expskill-designer",
         "role": "designer",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
@@ -843,7 +845,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-review": {
         "agent_type": "expskill-review",
         "role": "review",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,
@@ -851,7 +853,7 @@ EXPECTED_POLICY_PROFILES = {
     "expskill-spec": {
         "agent_type": "expskill-spec",
         "role": "spec",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,
@@ -4696,7 +4698,7 @@ def _validate_hermes_package(repository_root: Path, errors: list[str]) -> None:
         return
     _validate_hermes_platform_source(package_root, errors)
     try:
-        skill_names = skill_inventory(repository_root)
+        skill_names = hermes_skill_inventory(repository_root)
         rendered = render_hermes_all(repository_root)
     except HermesRenderError as error:
         errors.append(f"hermes sources cannot be rendered: {error}")
