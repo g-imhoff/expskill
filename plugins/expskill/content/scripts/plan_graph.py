@@ -4,9 +4,16 @@ The installed helper is resolved relative to the plugin package, not a source
 checkout.  Its public API is intentionally small: ``initialize_workflow``,
 ``discover_workflow``, ``load_workflow``, ``apply_updates``,
 ``recover_workflow``, ``pause_workflow``, ``resume_workflow``,
-``discard_workflow``, ``create_workflow_branch``, and
+``discard_workflow``, ``create_workflow_branch``,
+``issue_design_join_receipt``, ``record_design_join_from_delivery``, and
 ``complete_for_human_review``.  The command-line entry point exposes the safe
 read/lifecycle subset and accepts ``--state-home`` for isolated operation.
+
+The Design to Plan handoff contract lives in the sibling
+``design_plan_handoff.py`` module and
+``docs/specs/design-plan-handoff-contract.md``.  This helper stays
+dependency-free (it loads standalone), so the field names below mirror that
+contract and ``tests/test_design_plan_handoff_contract.py`` fails on drift.
 """
 from __future__ import annotations
 
@@ -1262,8 +1269,9 @@ def issue_design_join_receipt(
     design_delivery_receipt: dict[str, Any],
 ) -> dict[str, Any]:
     """Build the bounded Design result that Plan may join into its graph."""
-    if not re.fullmatch(r"[0-9a-f]{32}", str(workflow_id)) or not re.fullmatch(r"[0-9a-f]{32}", str(design_workflow_id)):
-        raise PlanGraphError("invalid Design join workflow identity")
+    for field, identifier in (("workflow_id", workflow_id), ("design_workflow_id", design_workflow_id)):
+        if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
+            raise PlanGraphError(f"invalid Design join {field}")
     _integer(plan_revision, "Design join plan revision", minimum=1)
     _integer(design_revision, "Design workflow revision", minimum=1)
     _text(design_branch, "Design branch", maximum=244)
@@ -1298,7 +1306,25 @@ def issue_design_join_receipt(
         "manifest_digest": delivery["manifest_digest"],
     }
     if observed_bindings != expected_bindings or delivery_identity["head"] != candidate_commit:
-        raise PlanGraphError("Design delivery receipt binding mismatch")
+        differing = sorted(
+            key
+            for key in expected_bindings
+            if observed_bindings.get(key) != expected_bindings.get(key)
+        )
+        detail = ", ".join(
+            f"{key}: receipt has {observed_bindings.get(key)!r}, "
+            f"join needs {expected_bindings.get(key)!r}"
+            for key in differing
+        )
+        if delivery_identity["head"] != candidate_commit:
+            head_note = (
+                f"identity.head={delivery_identity['head']!r} is not "
+                f"the candidate commit {candidate_commit!r}"
+            )
+            detail = f"{detail}; {head_note}" if detail else head_note
+        raise PlanGraphError(
+            f"Design delivery receipt binding mismatch ({detail or 'unknown'})"
+        )
     receipt: dict[str, Any] = {
         "schema_version": _DESIGN_JOIN_SCHEMA,
         "receipt_id": secrets.token_hex(16),
@@ -1320,6 +1346,40 @@ def issue_design_join_receipt(
     return receipt
 
 
+def record_design_join_from_delivery(
+    *,
+    workflow_id: str,
+    plan_revision: int,
+    design_delivery_receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the Design join receipt directly from a delivery receipt.
+
+    The router used to retype the workflow id, revision, baseline, branch,
+    candidate commit, and three digests by hand, and any typo failed late
+    with a binding mismatch that needed manual repair. This constructor
+    derives every binding from the unchanged candidate-bearing delivery
+    receipt instead, so there is nothing to mistype. It raises the same
+    actionable errors as ``issue_design_join_receipt`` when the receipt is
+    malformed, stale, unapproved, or off-baseline.
+    """
+    delivery = _validate_design_delivery_receipt(design_delivery_receipt)
+    identity = delivery["identity"]
+    return issue_design_join_receipt(
+        workflow_id=workflow_id,
+        plan_revision=plan_revision,
+        baseline=identity["baseline"],
+        design_workflow_id=delivery["workflow_id"],
+        design_revision=delivery["revision"],
+        design_branch=identity["branch"],
+        candidate_commit=delivery["candidate_commit"],
+        brief_digest=delivery["brief_digest"],
+        approval_digest=delivery["approval_digest"],
+        manifest_digest=delivery["manifest_digest"],
+        approved=True,
+        design_delivery_receipt=delivery,
+    )
+
+
 def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
     receipt = _mapping(value, "Design delivery receipt")
     fields = {
@@ -1328,12 +1388,27 @@ def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
         "review_evidence_digest", "manifest_digest", "evidence_digest",
         "approval_digest", "dependency_digest", "brief_digest", "candidate_commit",
     }
-    if set(receipt) != fields or receipt.get("schema_version") != 1:
-        raise PlanGraphError("Design delivery receipt schema is incomplete")
-    if receipt.get("operation") != "deliver" or receipt.get("lifecycle") != "delivered":
-        raise PlanGraphError("Design delivery receipt is not delivered")
-    if not re.fullmatch(r"[0-9a-f]{32}", str(receipt.get("workflow_id", ""))):
-        raise PlanGraphError("invalid Design delivery workflow identity")
+    missing = sorted(fields - set(receipt))
+    extra = sorted(set(receipt) - fields)
+    version = receipt.get("schema_version")
+    if missing or extra or isinstance(version, bool) or not isinstance(version, int) or version != 1:
+        detail = (
+            f"missing={missing or 'none'} extra={extra or 'none'} "
+            f"schema_version={receipt.get('schema_version')!r}"
+        )
+        raise PlanGraphError(
+            "Design delivery receipt schema is incomplete "
+            f"({detail}; run the Design preflight_plan_join check first)"
+        )
+    operation, lifecycle = receipt.get("operation"), receipt.get("lifecycle")
+    if operation != "deliver" or lifecycle != "delivered":
+        raise PlanGraphError(
+            "Design delivery receipt is not delivered "
+            f"(operation={operation!r} lifecycle={lifecycle!r})"
+        )
+    workflow_id = receipt.get("workflow_id")
+    if not isinstance(workflow_id, str) or not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
+        raise PlanGraphError("invalid Design delivery workflow_id")
     _integer(receipt.get("revision"), "Design delivery revision", minimum=1)
     identity = _mapping(receipt.get("identity"), "Design delivery identity")
     identity_fields = {
@@ -1341,9 +1416,16 @@ def _validate_design_delivery_receipt(value: object) -> dict[str, Any]:
         "dirty_fingerprint", "ui_contract_digest",
     }
     if set(identity) != identity_fields:
-        raise PlanGraphError("Design delivery identity is incomplete")
+        missing_identity = sorted(identity_fields - set(identity))
+        extra_identity = sorted(set(identity) - identity_fields)
+        raise PlanGraphError(
+            "Design delivery identity is incomplete "
+            f"(missing={missing_identity or 'none'} "
+            f"extra={extra_identity or 'none'})"
+        )
     for field in ("repository", "branch", "worktree"):
-        _text(identity.get(field), f"Design delivery identity {field}")
+        _text(identity.get(field), f"Design delivery identity {field}",
+              maximum=244 if field == "branch" else 16_384)
     for field in ("baseline", "head", "candidate_commit"):
         candidate = receipt.get(field) if field == "candidate_commit" else identity.get(field)
         if not isinstance(candidate, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", candidate):
@@ -1415,18 +1497,27 @@ def _validate_design_join(graph: dict[str, Any], context: _RepoContext | None) -
         raise PlanGraphError("Design join is not approved")
     delivery = _validate_design_delivery_receipt(value.get("design_delivery_receipt"))
     delivery_identity = delivery["identity"]
-    if (
-        delivery["workflow_id"] != value["design_workflow_id"]
-        or delivery["revision"] != design_revision
-        or delivery_identity["baseline"] != value["baseline"]
-        or delivery_identity["branch"] != branch
-        or delivery_identity["head"] != value["candidate_commit"]
-        or delivery["candidate_commit"] != value["candidate_commit"]
-        or delivery["brief_digest"] != value["brief_digest"]
-        or delivery["approval_digest"] != value["approval_digest"]
-        or delivery["manifest_digest"] != value["manifest_digest"]
-    ):
-        raise PlanGraphError("Design delivery receipt binding mismatch")
+    bindings = (
+        ("workflow_id", delivery["workflow_id"], value["design_workflow_id"]),
+        ("revision", delivery["revision"], design_revision),
+        ("baseline", delivery_identity["baseline"], value["baseline"]),
+        ("branch", delivery_identity["branch"], branch),
+        ("head", delivery_identity["head"], value["candidate_commit"]),
+        ("candidate_commit", delivery["candidate_commit"], value["candidate_commit"]),
+        ("brief_digest", delivery["brief_digest"], value["brief_digest"]),
+        ("approval_digest", delivery["approval_digest"], value["approval_digest"]),
+        ("manifest_digest", delivery["manifest_digest"], value["manifest_digest"]),
+    )
+    differing = sorted(
+        f"{name}: receipt has {actual!r}, join needs {wanted!r}"
+        for name, actual, wanted in bindings
+        if actual != wanted
+    )
+    if differing:
+        raise PlanGraphError(
+            "Design delivery receipt binding mismatch "
+            f"({'; '.join(differing)})"
+        )
     _text(value.get("issued_at"), "Design join timestamp", maximum=256)
     unsigned = {key: item for key, item in value.items() if key != "digest"}
     if value.get("digest") != _canonical_digest(unsigned):
@@ -2140,6 +2231,42 @@ def _receipt(
     )
 
 
+@contextmanager
+def _hold_design_candidate(context: _RepoContext, graph: dict[str, Any]) -> Iterator[None]:
+    """Keep an unintegrated candidate ref fixed while its join is persisted.
+
+    A prepared Git verify transaction locks the ref without updating it.
+    Aborting releases the lock on both successful writes and exceptions.
+    """
+    join = _design_join_record(graph)
+    receipt = join.get("receipt")
+    if not join.get("required") or receipt is None:
+        yield
+        return
+    candidate = receipt["candidate_commit"]
+    if _commit_is_ancestor(context.repository, candidate, context.head):
+        yield
+        return
+    branch = receipt["design_branch"]
+    process = subprocess.Popen(
+        ["git", "update-ref", "--stdin"], cwd=context.repository,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    try:
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(f"start\nverify refs/heads/{branch} {candidate}\nprepare\n")
+        process.stdin.flush()
+        if process.stdout.readline() != "start: ok\n" or process.stdout.readline() != "prepare: ok\n":
+            _, error = process.communicate()
+            raise PlanGraphError(f"cannot lock Design candidate branch {branch!r}: {error.strip()}")
+        yield
+    finally:
+        # Closing stdin also aborts an uncommitted transaction, including when
+        # the caller fails during the state write. No ref is ever updated.
+        process.communicate()
+
+
 def _rotate(transaction: _Transaction, old: dict[str, Any], new: dict[str, Any]) -> None:
     if transaction.work_fd is None:
         raise PlanGraphError("workflow not found")
@@ -2747,14 +2874,15 @@ def _apply_updates_locked(
         transaction.context,
         _transaction_provenance_resolver(transaction),
     )
-    _rotate(transaction, current, candidate)
-    return _receipt(
-        candidate,
-        transaction,
-        previous_revision=actual_previous_revision,
-        applied_paths=paths,
-        reconciled=reconciled,
-    )
+    with _hold_design_candidate(transaction.context, candidate):
+        _rotate(transaction, current, candidate)
+        return _receipt(
+            candidate,
+            transaction,
+            previous_revision=actual_previous_revision,
+            applied_paths=paths,
+            reconciled=reconciled,
+        )
 
 
 def apply_updates(

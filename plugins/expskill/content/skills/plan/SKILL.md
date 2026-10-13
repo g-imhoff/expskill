@@ -46,7 +46,14 @@ After the exact candidate becomes an ancestor of the target HEAD, validate
 that integrated ancestry so accepted cleanup may remove the isolated branch. Record it only
 through the packaged helper's typed Design-join operation. Do not read or write
 the Design state directly. A malformed, failed, unapproved, or stale result
-stops the join.
+stops the join. Prefer `record_design_join_from_delivery`, which derives
+every binding from the unchanged delivery receipt instead of retyped values.
+If the join response is lost, reload the graph before retrying. A matching
+embedded Design delivery receipt and `ready` state confirm that the join
+succeeded. Reapplying its old operation returns a revision conflict without
+changing the accepted graph.
+The shared Design to Plan expectations live in
+`docs/specs/design-plan-handoff-contract.md`.
 
 ## Canonical private graph
 
