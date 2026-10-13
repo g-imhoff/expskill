@@ -42,13 +42,13 @@ PUBLIC_SKILL_ROOTS = {
     "skill-builder": SKILL_BUILDER_ROOT,
 }
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 EXPECTED_SKILLS = {
     "use-expskill",
@@ -432,7 +432,7 @@ class ContractTests(unittest.TestCase):
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)
         self.assertEqual(manifest["name"], "expskill")
-        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.2")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.8")
         self.assertEqual(manifest["repository"], "https://github.com/g-imhoff/expskill")
         self.assertEqual(manifest["skills"], "./content/skills/")
         self.assertEqual(manifest["interface"]["category"], "Developer Tools")
@@ -748,7 +748,7 @@ class ContractTests(unittest.TestCase):
         self.assertIn("parallel-plan-design", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
-        for version in ("0.1.2", "0.1.2+codex.cache-1", "0.1.2+codex.a.b-2"):
+        for version in ("0.1.8", "0.1.8+codex.cache-1", "0.1.8+codex.a.b-2"):
             with self.subTest(version=version):
                 root = self.copy_repository()
                 manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
@@ -760,12 +760,12 @@ class ContractTests(unittest.TestCase):
     def test_invalid_codex_cachebuster_versions_are_rejected(self) -> None:
         invalid_versions = (
             "0.1.3",
-            "0.1.2+other.cache",
-            "0.1.2+codex.",
-            "0.1.2+codex.a..b",
-            "0.1.2+codex.a b",
-            "0.1.2+codex.a/b",
-            "0.1.2+codex.a_b",
+            "0.1.8+other.cache",
+            "0.1.8+codex.",
+            "0.1.8+codex.a..b",
+            "0.1.8+codex.a b",
+            "0.1.8+codex.a/b",
+            "0.1.8+codex.a_b",
         )
         for version in invalid_versions:
             with self.subTest(version=version):
@@ -993,7 +993,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = root / "plugins" / "expskill" / "codex" / "agents.json"
         metadata = json.loads(path.read_text(encoding="utf-8"))
-        metadata["agents"]["expskill-explorer"]["model"] = "gpt-5.6-not-allowed"
+        metadata["agents"]["expskill-explorer"]["model"] = "gpt-6-not-allowed"
         path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("explorer" in error.lower() and "model" in error.lower() for error in errors))

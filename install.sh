@@ -23,10 +23,10 @@ resolve_release() {
     fi
 }
 
-printf 'Install ExpSkill into:\n  1) Codex\n  2) OpenCode\n  3) Hermes\n  all) All providers\n'
+printf 'Install ExpSkill into:\n  1) Codex\n  2) OpenCode\n  3) Hermes\n  4) Claude Code\n  all) All providers\n'
 while :; do
-    printf 'Choose providers (e.g. 1 3, or all): '
-    IFS= read -r selection || fail 'No provider selection received. Run again and choose 1, 2, 3, or all.'
+    printf 'Choose providers (e.g. 1 4, or all): '
+    IFS= read -r selection || fail 'No provider selection received. Run again and choose 1, 2, 3, 4, or all.'
     hosts=()
     valid=true
     IFS=$' ,\t' read -r -a choices <<< "$selection"
@@ -35,7 +35,8 @@ while :; do
             1|[Cc][Oo][Dd][Ee][Xx]) add_host Codex ;;
             2|[Oo][Pp][Ee][Nn][Cc][Oo][Dd][Ee]) add_host OpenCode ;;
             3|[Hh][Ee][Rr][Mm][Ee][Ss]) add_host Hermes ;;
-            [Aa][Ll][Ll]) add_host Codex; add_host OpenCode; add_host Hermes ;;
+            4|[Cc][Ll][Aa][Uu][Dd][Ee]*) add_host Claude ;;
+            [Aa][Ll][Ll]) add_host Codex; add_host OpenCode; add_host Hermes; add_host Claude ;;
             '') ;;
             *) valid=false ;;
         esac
@@ -52,6 +53,7 @@ for host in "${hosts[@]}"; do
         Codex) require codex; require git; require python3 ;;
         OpenCode) require opencode ;;
         Hermes) require hermes; require git ;;
+        Claude) require claude; require git; require python3 ;;
     esac
 done
 
@@ -107,10 +109,13 @@ try:
         raise ValueError("Codex did not return an absolute installedPath")
     source = Path(installed) / "agents"
     target = Path(sys.argv[2]) / "agents"
+    backup_root = target.parent / "agent-backups"
     roles = ("designer", "explorer", "implementer", "planner", "review", "spec", "test-engineer")
     names = ["expskill-" + role + ".toml" for role in roles]
     if target.is_symlink():
         raise ValueError("agents directory is a symlink: " + str(target))
+    if backup_root.is_symlink() or (backup_root.exists() and not backup_root.is_dir()):
+        raise ValueError("agent backup storage is not a regular directory: " + str(backup_root))
     for name in names:
         profile, destination = source / name, target / name
         if profile.is_symlink() or not profile.is_file():
@@ -118,8 +123,15 @@ try:
         if destination.exists() and not destination.is_symlink() and not destination.is_file():
             raise ValueError("profile destination is not a regular file: " + str(destination))
     target.mkdir(parents=True, exist_ok=True)
+    for legacy in sorted(target.glob("expskill-backup-*")):
+        if legacy.is_symlink() or not legacy.is_dir():
+            continue
+        backup_root.mkdir(parents=True, exist_ok=True)
+        archive = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(backup_root)))
+        os.replace(str(legacy), str(archive / legacy.name))
+        print("Existing backup moved to " + str(archive / legacy.name), flush=True)
     backup = None
-    with tempfile.TemporaryDirectory(prefix=".expskill-stage-", dir=str(target)) as staging:
+    with tempfile.TemporaryDirectory(prefix=".expskill-stage-", dir=str(target.parent)) as staging:
         for name in names:
             shutil.copy2(str(source / name), str(Path(staging) / name))
         for name in names:
@@ -129,7 +141,8 @@ try:
                     continue
             if os.path.lexists(str(destination)):
                 if backup is None:
-                    backup = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(target)))
+                    backup_root.mkdir(parents=True, exist_ok=True)
+                    backup = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(backup_root)))
                     print("Existing profiles backed up in " + str(backup), flush=True)
                 os.replace(str(destination), str(backup / name))
             os.replace(str(Path(staging) / name), str(destination))
@@ -168,6 +181,67 @@ PY
         hermes plugins install "$remote" --ref "$sha" --force ||
             fail 'Hermes installation or update failed. Check the error above and network access, then retry.'
         printf 'ExpSkill installed or updated successfully for Hermes. Start a new Hermes session.\n'
+        ;;
+    Claude)
+        resolve_release claude-dist
+        # Claude Code marketplace sources pin a branch with a #ref suffix
+        # (the CLI has no --ref flag). The claude-dist branch moves on each
+        # release, so installs track the latest published marketplace.
+        source="$remote#claude-dist"
+        marketplaces=$(claude plugin marketplace list --json) ||
+            fail 'Cannot inspect Claude Code marketplaces. Check the error above, then retry.'
+        registered=$(python3 - "$marketplaces" <<'PY'
+import json
+import sys
+
+try:
+    entries = json.loads(sys.argv[1])
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("name"), str)
+        for entry in entries
+    ):
+        raise ValueError("expected a marketplaces list with named entries")
+    print("true" if any(entry["name"] == "expskill" for entry in entries) else "false")
+except ValueError as error:
+    print("Cannot read Claude Code marketplace list: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+        ) || fail 'Cannot inspect Claude Code marketplaces. Update the Claude Code CLI, then retry.'
+        if "$registered"; then
+            printf 'Refreshing the ExpSkill marketplace for Claude Code...\n'
+            claude plugin marketplace update expskill ||
+                fail 'Cannot refresh the Claude Code ExpSkill marketplace. Check the error above, then retry.'
+        else
+            claude plugin marketplace add "$source" ||
+                fail 'Claude Code marketplace registration failed. Check the error above and network access, then retry this installer.'
+        fi
+        installed=$(claude plugin list --json) ||
+            fail 'Cannot inspect Claude Code plugins. Check the error above, then retry.'
+        present=$(python3 - "$installed" <<'PY'
+import json
+import sys
+
+try:
+    entries = json.loads(sys.argv[1])
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+        for entry in entries
+    ):
+        raise ValueError("expected a plugins list with identified entries")
+    print("true" if any(entry["id"] == "expskill@expskill" for entry in entries) else "false")
+except ValueError as error:
+    print("Cannot read Claude Code plugin list: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+        ) || fail 'Cannot inspect Claude Code plugins. Update the Claude Code CLI, then retry.'
+        if "$present"; then
+            claude plugin update expskill@expskill ||
+                fail 'Claude Code update failed. Check the error above and network access, then retry.'
+        else
+            claude plugin install expskill@expskill ||
+                fail 'Claude Code installation failed. Check the error above and network access, then retry.'
+        fi
+        printf 'ExpSkill installed or updated successfully for Claude Code. Start a new Claude Code session.\n'
         ;;
     esac
 done

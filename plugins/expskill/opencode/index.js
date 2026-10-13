@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ export { UnslopPlugin } from "./plugins/unslop.js";
 
 import { ExecutionPolicyPlugin } from "./plugins/execution-policy.js";
 import { UnslopPlugin } from "./plugins/unslop.js";
+import { AuthoringPlugin, authoringBlock } from "./plugins/authoring.js";
 
 const PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_PATH = path.join(PACKAGE_ROOT, "catalog.json");
@@ -446,13 +447,22 @@ function addCatalog(config, catalog) {
 }
 
 export const ExpSkillPlugin = async (input, options) => {
-  const [unslop, executionPolicy] = await Promise.all([
+  const [unslop, executionPolicy, authoring] = await Promise.all([
     UnslopPlugin(input, options),
     ExecutionPolicyPlugin(input, options),
+    AuthoringPlugin(input, options),
   ]);
   return {
     ...unslop,
     ...executionPolicy,
+    "experimental.chat.system.transform": async (input, output) => {
+      await authoring["experimental.chat.system.transform"](input, output);
+      await unslop["experimental.chat.system.transform"](input, output);
+    },
+    "experimental.session.compacting": async (input, output) => {
+      await unslop["experimental.session.compacting"](input, output);
+      await authoring["experimental.session.compacting"](input, output);
+    },
     config: async (config) => {
       try {
         const catalog = await readCatalog();
@@ -496,28 +506,81 @@ function v2PackagePaths() {
   return { skillCandidates, policyCandidates, execPolicyCandidates };
 }
 
-function v2CompactSkill(contents) {
+const SKILL_FILE = "SKILL.md";
+const SKILL_ID_PREFIX = "expskill:";
+const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
+
+function v2SkillRoots() {
+  return [
+    path.join(PACKAGE_ROOT, "skills"),
+    path.join(PACKAGE_ROOT, "..", "content", "skills"),
+  ];
+}
+
+function v2ParseSkillFile(contents, skillPath) {
   const lines = contents.split("\n");
-  if (lines.length === 0 || lines[0] !== "---") throw new Error("unslop skill frontmatter missing");
   const end = lines.indexOf("---", 1);
-  if (end < 0) throw new Error("unslop skill frontmatter unclosed");
-  const body = lines.slice(end + 1).join("\n").trim();
-  const soulMarker = "\n## Adding soul\n";
-  const patternsMarker = "\n## Patterns to detect and fix\n";
-  const soulStart = body.indexOf(soulMarker);
-  const patternsStart = body.indexOf(patternsMarker);
-  if (soulStart < 0 || patternsStart < soulStart) throw new Error("unslop skill sections missing");
-  const introduction = body.slice(0, soulStart).trim();
-  const soulSection = body.slice(soulStart + soulMarker.length, patternsStart);
-  const soulNames = [...soulSection.matchAll(/^- \*\*([^*]+)\*\*/gm)].map((m) => m[1]);
-  if (soulNames.length === 0) throw new Error("unslop skill has no voice rules");
-  const rules = [...body.matchAll(/^(\d+)\. \*\*([^*]+)\*\*\s*(.*)$/gm)].map((m) => {
-    const sentences = m[3].trim().split(/(?<=[.!?])\s+/u);
-    const selected = sentences.length <= 1 ? sentences : [sentences[0], sentences[sentences.length - 1]];
-    return `${m[1]}. **${m[2]}** ${selected.join(" ")}`;
-  });
-  if (rules.length === 0) throw new Error("unslop skill has no numbered rules");
-  return [introduction, `## Adding soul\n\n${soulNames.join(" ")}`, `## Patterns to detect and fix\n\n${rules.join("\n")}`].join("\n\n");
+  if (lines[0] !== "---" || end < 0) throw new Error(`skill frontmatter missing: ${skillPath}`);
+  const frontmatter = lines.slice(1, end);
+  const name = frontmatter.find(line => line.startsWith("name: "))?.slice(6).trim();
+  const description = frontmatter.find(line => line.startsWith("description: "))?.slice(13).trim();
+  const content = lines.slice(end + 1).join("\n").trim();
+  if (!name || !SKILL_NAME_PATTERN.test(name)) throw new Error(`skill name invalid: ${skillPath}`);
+  if (!description) throw new Error(`skill description missing: ${skillPath}`);
+  if (!content) throw new Error(`skill content missing: ${skillPath}`);
+  return { name, description, content };
+}
+
+async function v2AllSkills() {
+  for (const root of v2SkillRoots()) {
+    let entries;
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const skills = [];
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (!SKILL_NAME_PATTERN.test(entry.name) || UNSAFE_NAMES.has(entry.name)) {
+        throw new Error(`skill directory invalid: ${entry.name}`);
+      }
+      const skillPath = path.join(root, entry.name, SKILL_FILE);
+      let contents;
+      try {
+        contents = await readFile(skillPath, "utf8");
+      } catch {
+        throw new Error(`skill file unreadable: ${skillPath}`);
+      }
+      const parsed = v2ParseSkillFile(contents, skillPath);
+      if (parsed.name !== entry.name) throw new Error(`skill name mismatch: ${skillPath}`);
+      skills.push({ id: `${SKILL_ID_PREFIX}${parsed.name}`, name: parsed.name, description: parsed.description, path: skillPath, content: parsed.content });
+    }
+    if (skills.length === 0) continue;
+    skills.sort((left, right) => (left.name === "unslop" ? -1 : right.name === "unslop" ? 1 : left.name.localeCompare(right.name)));
+    return skills;
+  }
+  throw new Error("expskill skills unavailable");
+}
+
+async function v2UnslopSkill() {
+  const { skillCandidates } = v2PackagePaths();
+  for (const candidate of skillCandidates) {
+    let contents;
+    try {
+      contents = await readFile(candidate, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = contents.split("\n");
+    const end = lines.indexOf("---", 1);
+    if (lines[0] !== "---" || end < 0) throw new Error("unslop skill frontmatter missing");
+    const description = lines.slice(1, end).find(line => line.startsWith("description: "))?.slice(13).trim();
+    const content = lines.slice(end + 1).join("\n").trim();
+    if (!description || !content) throw new Error("unslop skill content missing");
+    return { id: "expskill:unslop", name: "unslop", description, path: candidate, content };
+  }
+  throw new Error("unslop skill unavailable");
 }
 
 function v2RuntimePolicy(contents) {
@@ -534,12 +597,12 @@ function v2RuntimePolicy(contents) {
 
 async function v2UnslopBlock() {
   const { skillCandidates, policyCandidates } = v2PackagePaths();
-  const [skill, policyContents] = await Promise.all([
+  const [, policyContents] = await Promise.all([
     v2ReadFirst(skillCandidates),
     v2ReadFirst(policyCandidates),
   ]);
   const policy = v2RuntimePolicy(policyContents);
-  const payload = policy.scope + v2CompactSkill(skill);
+  const payload = policy.scope;
   const block = `${V2_UNSLPO_OPEN}\n${payload}\n${V2_UNSLPO_CLOSE}`;
   if (block.length > V2_UNSLPO_LIMIT) throw new Error("unslop block exceeds limit");
   return { block, compactionReminder: policy.compaction_reminder };
@@ -585,6 +648,28 @@ function v2IsExpSkillAgent(value) {
 }
 
 const ExpSkillSetup = async (ctx) => {
+  if (ctx?.skill?.transform) {
+    const skills = await v2AllSkills();
+    await ctx.skill.transform(editor => {
+      for (const skill of skills) {
+        if (!editor.get(skill.id)) editor.add(skill);
+      }
+    });
+  }
+  const authoring = await authoringBlock();
+  if (ctx?.session?.hook) {
+    for (const kind of ["context", "compaction", "generate"]) {
+      await ctx.session.hook(kind, async (event) => {
+        if (Array.isArray(event?.system)) {
+          const present = event.system.some(entry =>
+            (typeof entry === "string" ? entry : entry?.text)?.includes(authoring));
+          if (!present) v2PushSystem(event.system, authoring);
+        } else if (Array.isArray(event?.context) && !event.context.includes(authoring)) {
+          event.context.push(authoring);
+        }
+      });
+    }
+  }
   try {
     try {
       const catalog = await readCatalog();
