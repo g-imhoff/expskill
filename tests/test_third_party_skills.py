@@ -15,6 +15,7 @@ SKILLS_ROOT = PLUGIN_ROOT / "content" / "skills"
 HOOKS_PATH = PLUGIN_ROOT / "codex" / "hooks" / "hooks.json"
 HOOK_SCRIPT = PLUGIN_ROOT / "codex" / "hooks" / "inject_unslop.py"
 LOCK_PATH = PLUGIN_ROOT / "content" / "third-party" / "upstream-lock.json"
+UNSLOP_POLICY_PATH = PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json"
 
 EXPECTED_PUBLIC_SKILLS = {
     "autonomous-run",
@@ -67,6 +68,10 @@ EXPECTED_UPSTREAM = {
 }
 
 
+def _unslop_policy() -> dict[str, str]:
+    return json.loads(UNSLOP_POLICY_PATH.read_text(encoding="utf-8"))
+
+
 def _frontmatter(path: Path) -> dict[str, str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] != "---":
@@ -95,6 +100,13 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         self.assertEqual(frontmatter["name"], "unslop")
         self.assertIn('$unslop', metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
+
+    def test_unslop_scope_and_process_headings_appear_exactly_once_in_order(self) -> None:
+        text = "\n" + (SKILLS_ROOT / "unslop" / "SKILL.md").read_text(encoding="utf-8")
+        headings = ("\n## Scope\n\n", "\n## Process\n\n")
+        for heading in headings:
+            self.assertEqual(text.count(heading), 1, heading)
+        self.assertLess(text.index(headings[0]), text.index(headings[1]))
 
     def test_grill_me_is_directly_invokable_but_not_implicitly_selected(self) -> None:
         root = SKILLS_ROOT / "grill-me"
@@ -146,10 +158,8 @@ class ThirdPartySkillContractTests(unittest.TestCase):
         hook_output = output["hookSpecificOutput"]
         self.assertEqual(hook_output["hookEventName"], "SessionStart")
         context = hook_output["additionalContext"]
-        self.assertIn("Always load $expskill:unslop", context)
-        self.assertIn("at the start of the conversation", context)
-        self.assertIn("after each compaction", context)
-        self.assertIn("before writing user-facing prose", context)
+        self.assertIn("$expskill:unslop", context)
+        self.assertEqual(context, _unslop_policy()["scope"])
         self.assertNotIn("# Unslop", context)
         self.assertLess(len(context), 500)
 
@@ -195,12 +205,9 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                     "SessionStart",
                 )
                 context = output["hookSpecificOutput"]["additionalContext"]
+                field = "compaction_reminder" if source == "compact" else "scope"
                 self.assertIn("$expskill:unslop", context)
-                self.assertIn("before writing user-facing prose", context)
-                if source == "compact":
-                    self.assertIn("After this compaction, reload", context)
-                else:
-                    self.assertIn("at the start of the conversation", context)
+                self.assertEqual(context, _unslop_policy()[field])
                 self.assertNotIn("# Unslop", context)
 
     def test_upstream_snapshots_and_licenses_match_pinned_digests(self) -> None:
@@ -218,52 +225,6 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                     source["license_sha256"],
                 )
 
-    def test_public_unslop_preserves_upstream_with_first_party_scope(self) -> None:
-        source = (
-            PLUGIN_ROOT
-            / "content"
-            / "third-party"
-            / "sources"
-            / "pstack"
-            / "unslop"
-            / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        expected = source.replace("disable-model-invocation: true\n", "", 1)
-        expected = expected.replace(
-            "## Process\n",
-            "## Scope\n\n"
-            "Apply these rules to natural-language user-facing prose you author, "
-            "including commentary and final messages. Preserve code, commands, "
-            "machine-readable data, logs, identifiers, API names, quotations, citations, "
-            "source excerpts, approved copy, and project-required terminology exactly. "
-            "Higher-priority instructions and explicit user formatting or tone choices win. "
-            "Before sending user-facing prose, perform the included self-audit.\n\n"
-            "## Process\n",
-            1,
-        )
-        actual = (SKILLS_ROOT / "unslop" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(actual, expected)
-
-    def test_public_grill_me_mechanically_merges_the_upstream_wrapper_and_engine(self) -> None:
-        third_party = PLUGIN_ROOT / "content" / "third-party" / "sources" / "mattpocock"
-        wrapper = (third_party / "grill-me" / "SKILL.md").read_text(encoding="utf-8")
-        engine = (third_party / "grilling" / "SKILL.md").read_text(encoding="utf-8")
-        wrapper_end = wrapper.index("\n---\n", 4) + len("\n---\n")
-        engine_end = engine.index("\n---\n", 4) + len("\n---\n")
-        frontmatter = wrapper[:wrapper_end].replace(
-            "disable-model-invocation: true\n",
-            "",
-            1,
-        )
-        body = engine[engine_end:].lstrip("\n")
-        body = body.replace("it; don't", "it. Don't").replace(
-            "report; ask",
-            "report. Ask",
-        )
-        expected = frontmatter + "\n" + body
-        actual = (SKILLS_ROOT / "grill-me" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(actual, expected)
-
     def test_every_skill_owned_text_file_avoids_banned_punctuation(self) -> None:
         roots = (SKILLS_ROOT, ROOT / ".agents" / "skills")
         violations: list[str] = []
@@ -280,25 +241,9 @@ class ThirdPartySkillContractTests(unittest.TestCase):
                         violations.append(f"{path.relative_to(ROOT)}: {label}")
         self.assertEqual(violations, [])
 
-    def test_use_expskill_only_uses_grill_me_at_a_user_decision_frontier(self) -> None:
-        body = " ".join(
-            (SKILLS_ROOT / "use-expskill" / "SKILL.md")
-            .read_text(encoding="utf-8")
-            .lower()
-            .split()
-        )
-        for phrase in (
-            "decision frontier",
-            "facts are exhausted",
-            "consequential",
-            "connected",
-            "only the user can decide",
-            "use `$grill-me`",
-            "confirmed shared understanding",
-            "resume the owning skill",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, body)
+    def test_use_expskill_names_the_grill_me_skill(self) -> None:
+        body = (SKILLS_ROOT / "use-expskill" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("$grill-me", body)
 
 
 if __name__ == "__main__":

@@ -51,9 +51,9 @@ import(%s).then(async (module) => {
   const payload = match?.[1] ?? '';
   const completeBlock = `<unslop-scope>\n${payload}\n</unslop-scope>`;
   assert('under-limit', completeBlock.length <= 5000);
-  assert('load-skill-at-start', payload.includes('Always load $expskill:unslop at the start of the conversation'));
-  assert('load-skill-after-compaction', payload.includes('after each compaction, before writing user-facing prose'));
-  assert('compact-load-instruction', completeBlock.length < 500 && !payload.includes('# Unslop'));
+  assert('load-skill-at-start', payload.includes(process.env.EXPSKILL_TEST_UNSLOP_SCOPE));
+  assert('load-skill-after-compaction', payload.includes('$expskill:unslop'));
+  assert('compact-load-instruction', completeBlock.length < 500 && !payload.includes(process.env.EXPSKILL_TEST_UNSLOP_BODY));
 
   const firstSnapshot = JSON.stringify(firstOutput.system);
   await transform({ sessionID: 's1' }, firstOutput);
@@ -67,10 +67,10 @@ import(%s).then(async (module) => {
 
   const context = { context: [] };
   await compacting({}, context);
-  assert('compacting', context.context.length === 1 && context.context[0].includes('After this compaction, reload $expskill:unslop before writing user-facing prose'));
+  assert('compacting', context.context.length === 1 && context.context[0].includes(process.env.EXPSKILL_TEST_UNSLOP_REMINDER));
   const afterCompaction = { system: ['compacted request instructions'] };
   await transform({ sessionID: 's1' }, afterCompaction);
-  assert('reload-after-compaction', afterCompaction.system[0].includes('Always load $expskill:unslop'));
+  assert('reload-after-compaction', afterCompaction.system[0].includes(process.env.EXPSKILL_TEST_UNSLOP_SCOPE));
 }).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
 """
 
@@ -991,6 +991,18 @@ import(%s).then(async (module) => {
 """
 
 
+def _unslop_env() -> dict[str, str]:
+    policies = ROOT / "plugins" / "expskill" / "content" / "policies"
+    runtime = json.loads((policies / "unslop-runtime.json").read_text(encoding="utf-8"))
+    lines = (ROOT / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+    body = "\n".join(lines[lines.index("---", 1) + 1:]).strip()
+    return {
+        "EXPSKILL_TEST_UNSLOP_SCOPE": runtime["scope"],
+        "EXPSKILL_TEST_UNSLOP_REMINDER": runtime["compaction_reminder"],
+        "EXPSKILL_TEST_UNSLOP_BODY": body,
+    }
+
+
 def run_node_case(
     plugin: Path,
     case: str,
@@ -1036,7 +1048,7 @@ class OpencodeRuntimeTests(unittest.TestCase):
 
     @needs_node
     def test_unslop_plugin_injects_complete_scope_once_per_request(self) -> None:
-        result = run_node_case(self.artifact() / "plugins" / "unslop.js", UNSLP_CASE)
+        result = run_node_case(self.artifact() / "plugins" / "unslop.js", UNSLP_CASE, env={**os.environ, **_unslop_env()})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for token in (
             "ok:exact-module-export-keys",

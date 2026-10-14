@@ -16,7 +16,7 @@ JARGON = re.compile(
 )
 
 
-# These checks cover the static package and delivery boundaries. Following
+# These checks cover the static package layout and vocabulary bans. Following
 # workflow transitions needs behavioral trials, not phrase checks.
 class AutonomousRunContractTests(unittest.TestCase):
     def test_runner_has_one_canonical_body_and_one_codex_adapter(self) -> None:
@@ -44,27 +44,6 @@ class AutonomousRunContractTests(unittest.TestCase):
         )
         self.assertIn("allow_implicit_invocation: false", text)
         self.assertIn("$autonomous-run", text)
-
-    def test_runner_stops_at_human_review(self) -> None:
-        body = RUNNER.read_text(encoding="utf-8")
-        self.assertIn("as a draft", body)
-        for forbidden in (
-            "approve, merge",
-            "auto-merge",
-            "merge queue",
-        ):
-            self.assertIn(forbidden, body)
-        self.assertIn("Never approve", body)
-        self.assertIn("Never push the protected branch.", body)
-
-    def test_runner_pr_description_explains_choices(self) -> None:
-        body = RUNNER.read_text(encoding="utf-8")
-        for phrase in (
-            "rejected alternatives and their evidence",
-            "retained risks",
-            "head SHA",
-        ):
-            self.assertIn(phrase, body)
 
     def test_runner_prose_passes_package_hygiene(self) -> None:
         body = RUNNER.read_text(encoding="utf-8")

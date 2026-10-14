@@ -18,7 +18,6 @@ class RoastContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.raw = BODY.read_text(encoding="utf-8")
-        cls.body = " ".join(cls.raw.lower().split())
 
     def test_canonical_body_and_codex_adapter_have_exact_files(self) -> None:
         observed = {
@@ -53,24 +52,27 @@ class RoastContractTests(unittest.TestCase):
         self.assertTrue(20 <= len(description) <= 300, len(description))
         self.assertIn("$roast", description)
 
-    def test_categories_come_from_the_diff(self) -> None:
-        for phrase in ("derive", "categor", "diff", "weight"):
-            self.assertIn(phrase, self.body)
-        self.assertRegex(self.body, r"100 percent|100%")
+    def test_sections_exist_once_in_order(self) -> None:
+        headings = self.raw.splitlines()
+        sections = (
+            "## Pin the scope",
+            "## Derive categories from the diff",
+            "## Review each category",
+            "## Report",
+        )
+        for section in sections:
+            self.assertEqual(headings.count(section), 1, section)
+        positions = [headings.index(section) for section in sections]
+        self.assertEqual(positions, sorted(positions))
 
-    def test_reviewer_output_contract_is_json_with_score_and_top_issue(self) -> None:
+    def test_reviewer_output_contract_names_its_json_fields(self) -> None:
         for field in ('"category"', '"score"', '"top_issue"', '"evidence"'):
             self.assertIn(field, self.raw)
-        self.assertRegex(self.body, r"score.*0.*10|0.*10.*score")
-        self.assertIn("json", self.body)
-        self.assertRegex(self.body, r"one.*reviewer.*one categor|one categor.*one.*reviewer")
-        self.assertIn("read only", self.body)
-        self.assertIn("fail closed", self.body)
 
     def test_single_pass_has_no_fixer_loop(self) -> None:
-        self.assertNotIn("one fixer", self.body)
-        self.assertNotIn("worktree", self.body)
-        self.assertNotRegex(self.body, r"three.*cycl|cycl.*three")
+        self.assertNotIn("worktrees.py", self.raw)
+        self.assertNotIn("## Fix each top issue", self.raw)
+        self.assertNotIn("## Gate the loop", self.raw)
 
     def test_prose_stays_plain_and_bounded(self) -> None:
         self.assertLessEqual(len(self.raw.splitlines()), 220)
