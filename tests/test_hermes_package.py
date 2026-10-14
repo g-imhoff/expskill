@@ -123,7 +123,7 @@ class HermesPackageTests(unittest.TestCase):
         self.assertEqual(
             sorted(path.name for path in (artifact / "skills").iterdir()), list(names)
         )
-        self.assertEqual(len(names), 15)
+        self.assertEqual(len(names), 16)
 
     def test_agents_match_pure_renderer(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
@@ -184,7 +184,7 @@ class HermesPackageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         self.assertEqual(payload["name"], "expskill")
-        self.assertEqual(payload["version"], "0.1.5")
+        self.assertEqual(payload["version"], "0.1.8")
         self.assertEqual(payload["skills"], list(skill_inventory(ROOT)))
         self.assertEqual(payload["diagnostics"], [])
         self.assertEqual(payload["servers"], [])

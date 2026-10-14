@@ -251,7 +251,7 @@ class PlanContractTests(unittest.TestCase):
         for phrase in (
             "broad research only",
             "one to three",
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             "max reasoning",
             "at most one targeted follow-up",
             "no repository access",

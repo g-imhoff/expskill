@@ -33,7 +33,8 @@ PHASE_ROOTS = {
         "test",
         "unslop",
         "autonomous-run",
-        "review-loop",
+        "roast",
+        "roast-loop",
     )
 }
 PUBLIC_SKILL_ROOTS = {
@@ -42,13 +43,13 @@ PUBLIC_SKILL_ROOTS = {
     "skill-builder": SKILL_BUILDER_ROOT,
 }
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", None),
-    "expskill-implementer": ("gpt-5.6-luna", "max", None),
-    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-6-luna", "max", None),
+    "expskill-implementer": ("gpt-6-luna", "max", None),
+    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 EXPECTED_SKILLS = {
     "use-expskill",
@@ -65,7 +66,8 @@ EXPECTED_SKILLS = {
     "skill-builder",
     "unslop",
     "autonomous-run",
-    "review-loop",
+    "roast",
+    "roast-loop",
 }
 REMOVED_PUBLIC_SKILL = "accept" + "ance"
 REMOVED_PUBLIC_TOKEN = "$" + REMOVED_PUBLIC_SKILL
@@ -432,7 +434,7 @@ class ContractTests(unittest.TestCase):
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)
         self.assertEqual(manifest["name"], "expskill")
-        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.5")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.8")
         self.assertEqual(manifest["repository"], "https://github.com/g-imhoff/expskill")
         self.assertEqual(manifest["skills"], "./content/skills/")
         self.assertEqual(manifest["interface"]["category"], "Developer Tools")
@@ -448,7 +450,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("fourteen", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("fifteen", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -563,7 +565,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bfourteen independent skills and one optional lifecycle router\b"
+            r"\bfifteen independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "docs" / "guide.md",
@@ -748,7 +750,7 @@ class ContractTests(unittest.TestCase):
         self.assertIn("parallel-plan-design", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
-        for version in ("0.1.5", "0.1.5+codex.cache-1", "0.1.5+codex.a.b-2"):
+        for version in ("0.1.8", "0.1.8+codex.cache-1", "0.1.8+codex.a.b-2"):
             with self.subTest(version=version):
                 root = self.copy_repository()
                 manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
@@ -760,12 +762,12 @@ class ContractTests(unittest.TestCase):
     def test_invalid_codex_cachebuster_versions_are_rejected(self) -> None:
         invalid_versions = (
             "0.1.3",
-            "0.1.5+other.cache",
-            "0.1.5+codex.",
-            "0.1.5+codex.a..b",
-            "0.1.5+codex.a b",
-            "0.1.5+codex.a/b",
-            "0.1.5+codex.a_b",
+            "0.1.8+other.cache",
+            "0.1.8+codex.",
+            "0.1.8+codex.a..b",
+            "0.1.8+codex.a b",
+            "0.1.8+codex.a/b",
+            "0.1.8+codex.a_b",
         )
         for version in invalid_versions:
             with self.subTest(version=version):
@@ -806,7 +808,7 @@ class ContractTests(unittest.TestCase):
                 profile = tomllib.loads(rendered[f"agents/{name}.toml"])
                 for field in ("sandbox_mode", "sandbox_workspace_write", "approval_policy", "permissions"):
                     self.assertNotIn(field, profile)
-                self.assertEqual(profile["model"], "gpt-5.6-luna")
+                self.assertEqual(profile["model"], "gpt-6-luna")
                 self.assertEqual(profile["model_reasoning_effort"], "max")
                 self.assertIn("parent-approved sandbox and approval policy", profile["developer_instructions"])
                 self.assertIn("stop before production edits", profile["developer_instructions"])
@@ -1061,7 +1063,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = root / "plugins" / "expskill" / "codex" / "agents.json"
         metadata = json.loads(path.read_text(encoding="utf-8"))
-        metadata["agents"]["expskill-explorer"]["model"] = "gpt-5.6-not-allowed"
+        metadata["agents"]["expskill-explorer"]["model"] = "gpt-6-not-allowed"
         path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("explorer" in error.lower() and "model" in error.lower() for error in errors))
@@ -1327,6 +1329,17 @@ class ContractTests(unittest.TestCase):
     def test_unsupported_read_only_agent_runner_is_removed(self) -> None:
         self.assertFalse((PLUGIN_ROOT / "content" / "scripts" / "read_only_agent.py").exists())
         self.assertFalse((ROOT / "tests" / "test_read_only_agent.py").exists())
+
+    def test_shipped_skills_describe_context_free_named_agent_isolation(self) -> None:
+        for relative_path in (
+            "plugins/expskill/content/skills/implement/SKILL.md",
+            "plugins/expskill/content/skills/skill-builder/SKILL.md",
+        ):
+            body = (ROOT / relative_path).read_text(encoding="utf-8")
+            with self.subTest(path=relative_path):
+                self.assertIn("context-free", body)
+                self.assertNotIn("read_only_agent.py", body)
+                self.assertNotRegex(body, re.compile(r"isolated (?:read-only )?(?:Codex )?process", re.I))
 
     def test_maintained_contracts_require_context_free_named_agent_isolation(self) -> None:
         implementation = (PHASE_ROOTS["implement"] / "SKILL.md").read_text(encoding="utf-8")

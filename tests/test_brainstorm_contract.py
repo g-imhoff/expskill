@@ -350,7 +350,7 @@ class BrainstormContractTests(unittest.TestCase):
             "use zero lanes",
             "one lane for one bounded gap",
             "two lanes for distinct alternatives",
-            "up to three independent `gpt-5.6-luna` research subagents at max reasoning",
+            "up to three independent `gpt-6-luna` research subagents at max reasoning",
             "never expose one lane's prompt or findings to another lane",
             "recoverable tool error alone does not invalidate useful evidence",
             "retry a failed lane once",

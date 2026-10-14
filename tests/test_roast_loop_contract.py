@@ -1,4 +1,4 @@
-"""Deterministic contract for the review-loop pre-PR gate skill."""
+"""Deterministic contract for the roast-loop fix-and-repeat skill."""
 from __future__ import annotations
 
 import re
@@ -8,13 +8,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
-SKILL = PLUGIN / "content" / "skills" / "review-loop"
+SKILL = PLUGIN / "content" / "skills" / "roast-loop"
 BODY = SKILL / "SKILL.md"
-METADATA = PLUGIN / "codex" / "skill-adapters" / "review-loop" / "agents" / "openai.yaml"
+METADATA = PLUGIN / "codex" / "skill-adapters" / "roast-loop" / "agents" / "openai.yaml"
 JARGON = re.compile(r"\b(?:quick|full|model|caps?)\b", re.IGNORECASE)
 
 
-class ReviewLoopContractTests(unittest.TestCase):
+class RoastLoopContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.raw = BODY.read_text(encoding="utf-8")
@@ -48,23 +48,16 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertEqual(
             set(key.strip() for key in frontmatter), {"name", "description"}
         )
-        self.assertEqual(frontmatter["name"].strip(), "review-loop")
+        self.assertEqual(frontmatter["name"].strip(), "roast-loop")
         description = frontmatter["description"].strip()
         self.assertTrue(20 <= len(description) <= 300, len(description))
-        self.assertIn("$review-loop", description)
+        self.assertIn("$roast-loop", description)
 
-    def test_categories_come_from_the_diff(self) -> None:
-        for phrase in ("derive", "categor", "diff", "weight"):
+    def test_each_pass_reuses_the_roast_skill(self) -> None:
+        self.assertIn("$roast", self.raw)
+        self.assertIn("../roast/SKILL.md", self.raw)
+        for phrase in ("categor", "weight"):
             self.assertIn(phrase, self.body)
-        self.assertRegex(self.body, r"100 percent|100%")
-
-    def test_reviewer_output_contract_is_json_with_score_and_top_issue(self) -> None:
-        for field in ('"category"', '"score"', '"top_issue"', '"evidence"'):
-            self.assertIn(field, self.raw)
-        self.assertRegex(self.body, r"score.*0.*10|0.*10.*score")
-        self.assertIn("json", self.body)
-        self.assertRegex(self.body, r"one.*reviewer.*one categor|one categor.*one.*reviewer")
-        self.assertIn("read only", self.body)
 
     def test_all_material_blockers_survive_scores_and_later_omissions(self) -> None:
         for phrase in (
@@ -127,7 +120,7 @@ class ReviewLoopContractTests(unittest.TestCase):
         self.assertIn("display_name", contents)
         self.assertIn("short_description", contents)
         self.assertIn("default_prompt", contents)
-        self.assertIn("$review-loop", contents)
+        self.assertIn("$roast-loop", contents)
         self.assertIn("allow_implicit_invocation: false", contents)
 
 

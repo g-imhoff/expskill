@@ -1,0 +1,39 @@
+{
+  "description": "Load Unslop and inject authoring instructions at session start and before compaction.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/inject_authoring.py\"",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/inject_unslop.py\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/inject_authoring.py\"",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/inject_unslop.py\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

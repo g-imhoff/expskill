@@ -1,6 +1,6 @@
 # ExpSkill guide
 
-ExpSkill is a Codex plugin with fourteen independent skills and one
+ExpSkill is a Codex plugin with fifteen independent skills and one
 optional lifecycle router. The same skill base also ships as the
 `opencode-expskill` npm package for OpenCode and as an Agent Plugins package for Hermes.
 
@@ -8,7 +8,8 @@ optional lifecycle router. The same skill base also ships as the
 
 Use the [launcher in the README](../README.md) from any directory. Choose one or
 more providers with numbers or names separated by spaces or commas, such as
-`1 3` or `Codex,Hermes`. Enter `all` to install Codex, OpenCode, and Hermes.
+`1 4` or `Codex,Claude`. Enter `all` to install Codex, OpenCode, Hermes, and
+Claude Code.
 Each provider installs or updates once, in selection order. The installer checks
 all selected CLIs before starting and stops on the first installation or update
 failure. Providers that completed before a failure remain installed.
@@ -161,6 +162,32 @@ opencode plugin check
 opencode plugin update opencode-expskill
 ```
 
+## Install through the Claude Code plugin CLI
+
+Build the marketplace outside the checkout, then install the plugin from a
+published release (each tag publishes the built marketplace to the
+`claude-dist` branch, which installs track through a `#ref` suffix
+because the CLI has no `--ref` flag):
+
+```bash
+claude plugin marketplace add https://github.com/g-imhoff/expskill.git#claude-dist
+claude plugin install expskill@expskill
+```
+
+To build and validate locally without publishing:
+
+```bash
+artifact_root="$(mktemp -d)/claude-marketplace"
+python3 scripts/build_claude_package.py "$artifact_root"
+claude plugin validate "$artifact_root/plugins/expskill" --strict
+claude plugin validate "$artifact_root" --strict
+rm -rf "$artifact_root"
+```
+
+The plugin wires `SessionStart` and `PreCompact` to the same authoring-scope
+and unslop-scope payloads. The launcher in the README also installs Claude
+Code as provider `4`, tracking the published `claude-dist` branch.
+
 ## Source layout
 
 `plugins/expskill/content` is the only authored source for shared skill and
@@ -182,6 +209,13 @@ v1 `plugin.json` manifest and the role/sandbox/model-policy overlay in
 into a package installable with `hermes plugins install`. There is no
 `install.py` target for Hermes.
 
+`plugins/expskill/claude` contains Claude-only mechanics: the
+`.claude-plugin/plugin.json` manifest template, the model/tool overlay in
+`agents.json`, and the `hooks/` sources. The Claude renderer and builder
+combine them with `content/` into a marketplace installable with
+`claude plugin marketplace add` and `claude plugin install expskill@expskill`.
+The README launcher covers Claude Code as provider `4`.
+
 ## Skills
 
 Invoke a skill directly when you know what you want:
@@ -202,10 +236,10 @@ Invoke a skill directly when you know what you want:
   choice before structural or breaking changes.
 - `$review` adversarially inspects a user-defined code scope and saves an
   evidence-backed Markdown report with ratings, without fixes or fix advice.
-- `$review-loop` runs independent category reviewers, keeps every material
-  finding in a blocker ledger, and repairs them. Its gate requires current
-  valid reviews, passing checks, every score at 9 of 10, and no open High or
-  Medium finding before a PR.
+- `$roast` runs adversarial category reviewers and reports scores
+  with top issues in a single pass before a PR.
+- `$roast-loop` runs `$roast` reviewers, fixes each top issue,
+  and repeats until every score reaches 9 of 10 before a PR.
 - `$test` exercises already-implemented behavior through realistic composed
   product paths and reports revision-bound evidence without repairing production
   code.
@@ -219,9 +253,11 @@ Invoke a skill directly when you know what you want:
   conversation transitions to a review-ready draft PR.
   It answers questions and confirms decisions within your scope and constraints.
   After local implementation, the invoking agent owns the authorized feature
-  branch push and draft PR creation. It runs or reuses an unchanged, independently
-  reviewed `$review-loop` result before handing the PR to you. Calls and retries
-  share one run allowance across conversations.
+  branch push and draft PR creation. After the workflow delivers the PR, it runs
+  `$roast-loop` in its own conversation, reusing an unchanged, independently
+  reviewed result only when scope, pins, criteria, evidence, and reviewer provenance
+  are unchanged. Calls and retries share one run allowance across conversations
+  before handing the result to you for review and merge.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work, it
@@ -253,7 +289,8 @@ Use $setup-design to establish this project's reusable isolated design-sketch me
 Use $implement to execute this accepted implementation work.
 Use $correct to repair this bounded regression before the branch is merged.
 Use $review to inspect the changes between this branch and main and save a report.
-Use $review-loop to drive this change to 9 of 10 before opening a PR.
+Use $roast to score this change by category before opening a PR.
+Use $roast-loop to drive this change to 9 of 10 before opening a PR.
 Use $test to exercise this implemented change through realistic product behavior.
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
 Use $unslop to rewrite this explanation in a natural voice.
@@ -275,7 +312,7 @@ Design works on one isolated candidate commit. The graph cannot become ready
 until Plan validates and records the approved Design receipt from that same
 baseline.
 
-`$brainstorm`, `$setup-design`, `$setup-test`, `$correct`, `$review`, `$review-loop`, and
+`$brainstorm`, `$setup-design`, `$setup-test`, `$correct`, `$review`, `$roast`, `$roast-loop`, and
 `$test` remain
 independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
@@ -296,7 +333,10 @@ outside every repository. Filenames include the date and time through seconds.
 The user deletes reports manually. Review does not apply corrections or start
 another skill.
 
-`$review-loop` coordinates per-category reviewers and fixers as the pre-PR gate.
+`$roast` runs per-category reviewers as a single pre-PR pass.
+It reports scores with top issues and stops without fixes.
+
+`$roast-loop` coordinates `$roast` reviewers and fixers as the pre-PR gate.
 It runs up to three review cycles and passes when every category scores at
 least 9 of 10.
 

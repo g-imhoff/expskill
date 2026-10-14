@@ -381,7 +381,7 @@ def test_research_prompt_caps_and_actual_scoped_reads_keep_owner_state_unpublish
     transport.workflow = workflow
     workflow.stage("resolve-baseline", "Capture the baseline.", "baseline", ("initialize", "retain", "transition"))
     before = workflow.public("load", {"workflow_id": workflow.workflow_id})
-    actor, origin, reply = workflow.actor("research-0", "Return only independently researched evidence cards.", model="gpt-5.6-luna")
+    actor, origin, reply = workflow.actor("research-0", "Return only independently researched evidence cards.", model="gpt-6-luna")
     call = transport.observed_calls[-1]
     assert call["timeout"] == 480
     assert transport.observed_calls[0]["timeout"] == 240
