@@ -848,6 +848,75 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertTrue(self.status(run)["saturation_allowed"])
         self.cli("finish", str(run), "--status", "saturated", "--reason", "Two quiet phases.")
 
+    def test_finish_incomplete_refuses_covered_branch_without_evidence(self) -> None:
+        run = self.init(branches=1)
+        self.apply(run, start("discovery", ["B1"]), add("assignment", id="A1", branch_ids=["B1"], question="Q"))
+        self.finish_assignment(run, "A1")
+        self.apply(run, update("branch", "B1", status="covered"), complete("P1"))
+        refused = self.cli("finish", str(run), "--status", "incomplete", "--reason", "Done.", code=1)
+        self.assertIn("covered branches lacking evidence: B1", self.errors(refused))
+        self.apply(
+            run,
+            start("investigation", ["B1"]),
+            add("failure", id="F1", assignment_id="A1", kind="source", detail="Required source 404."),
+        )
+        self.apply(run, add("assignment", id="A2", branch_ids=["B1"], question="Q2"))
+        self.finish_assignment(run, "A2")
+        self.apply(
+            run,
+            update("failure", "F1", resolved=True, resolution="A2 covered B1 from an open copy.", resolved_by="A2"),
+            update("branch", "B1", status="blocked", blocked_reason="Required source 404."),
+            complete("P2"),
+        )
+        result = self.cli("finish", str(run), "--status", "incomplete", "--reason", "Required source dead.")
+        self.assertEqual(result["status"], "incomplete")
+
+    def test_recovery_on_another_branch_does_not_clear_bare_branch(self) -> None:
+        run = self.init(branches=2)
+        self.apply(
+            run,
+            start("discovery", ["B1", "B2"]),
+            add("assignment", id="A1", branch_ids=["B1", "B2"], question="Q"),
+        )
+        self.finish_assignment(run, "A1")
+        self.apply(
+            run,
+            update("branch", "B1", status="covered"),
+            update("branch", "B2", status="covered"),
+            complete("P1"),
+        )
+        self.apply(
+            run,
+            start("investigation", ["B1", "B2"]),
+            add("failure", id="F1", assignment_id="A1", kind="source", detail="Required source 404."),
+        )
+        self.apply(run, add("assignment", id="A2", branch_ids=["B2"], question="Q2"))
+        self.finish_assignment(run, "A2")
+        self.apply(
+            run,
+            update("failure", "F1", resolved=True, resolution="A2 recovered B2.", resolved_by="A2"),
+            complete("P2"),
+        )
+        refused = self.cli("finish", str(run), "--status", "incomplete", "--reason", "Done.", code=1)
+        self.assertIn("covered branches lacking evidence: B1", self.errors(refused))
+        self.assertNotIn("B2", self.errors(refused))
+        self.apply(run, update("branch", "B1", status="blocked", blocked_reason="Required source 404."))
+        result = self.cli("finish", str(run), "--status", "incomplete", "--reason", "B1 blocked.")
+        self.assertEqual(result["status"], "incomplete")
+
+    def test_saturation_refuses_covered_branch_without_evidence(self) -> None:
+        run = self.init(branches=1)
+        self.apply(run, start("discovery", ["B1"]), add("assignment", id="A1", branch_ids=["B1"], question="Q"))
+        self.finish_assignment(run, "A1")
+        self.apply(run, update("branch", "B1", status="covered"), complete("P1"))
+        self.zero_phase(run, "challenge")
+        report = self.status(run)
+        self.assertEqual(report["streak"], 2)
+        self.assertFalse(report["saturation_allowed"])
+        self.assertTrue(any("covered with no accepted claims" in reason for reason in report["reasons"]))
+        refused = self.cli("finish", str(run), "--status", "saturated", "--reason", "Quiet.", code=1)
+        self.assertIn("covered with no accepted claims", self.errors(refused))
+
     def test_finish_paused_marks_running_assignments_interrupted(self) -> None:
         run = self.init()
         self.apply(

@@ -7,9 +7,10 @@ again. `schema` prints every field, default, enum, and op shape.
 
 Every command runs as `python3 <skill dir>/scripts/research_record.py
 <command>`. In the table, `RUN` is the absolute `run_dir` that `init` printed.
-Type the full command and the full run directory in every call. Do not keep
-the command in a shell variable or function: they may not persist between
-calls, and zsh does not split a variable that holds a whole command.
+Type the full command and the full run directory in every call. Shell
+variables and functions may not persist between calls, and zsh does not split
+a variable holding a whole command, so self-contained lines are the reliable
+form.
 
 ## Commands
 
@@ -52,8 +53,8 @@ requested pause point). Omit `--root` to use the private default under
 repository. Keep the printed `run_dir`.
 
 When browsing is a host-supplied command instead of built-in search and fetch
-tools, put its exact invocation in `browsing_method`. Workers receive it and
-never need to look for a tool.
+tools, put its exact invocation in `browsing_method`. The brief carries it to
+workers, so each worker already holds the command.
 
 Workers see the question, inclusions, exclusions, relevance rule, source and
 date rules, the browsing method, branch titles and questions, assignment
@@ -154,7 +155,11 @@ Assignments:
   failed one.
 - Only `change_scope` moves an existing branch into or out of scope.
 
-A branch can be `covered` only after a complete assignment includes it.
+A branch can be `covered` only after a complete assignment includes it, and only
+with accepted evidence on it: an accepted claim naming the branch, or a resolved
+failure on its assignments. A branch whose required source is inaccessible is
+`blocked` with a reason. `covered` is reserved for branches with accepted
+evidence.
 
 `complete_phase` refuses while assignments of the phase are planned or
 running, while an accepted claim of the phase has no novelty event, or while a
@@ -195,8 +200,8 @@ compare it with the accepted claims of its branches:
 
 Capture each reply before using it. Paste it exactly on stdin, inside a
 quoted heredoc whose delimiter does not occur in the reply. Copy it character
-for character: no rewording, shortening, restyling, or fixes, even where your
-own writing rules would change it. Never save it to a file first. The heredoc
+for character: your own writing rules shape your prose, the pasted bytes stay
+exact. Paste directly on stdin inside the quoted heredoc. The heredoc
 adds one final newline, which is expected.
 
 ```bash
@@ -211,14 +216,18 @@ set it `complete` or `failed`. List the capture in `return_ids` on the claims
 drawn from it.
 
 Worker prompts come from `worker-brief RUN --assignment ID --format text`.
-Pass its whole output as the subagent prompt. Never excerpt, edit, or rebuild
-it, and never redirect it to a file.
+Send its whole output as the subagent prompt, straight to the worker with no
+file in between.
 
 ## Failures, retries, and continuations
 
 - Record a failure (`source`, `tool`, `truncation`, `overflow`, `coverage`,
   `capture`, `storage`, or `limit`) for every failed question, inaccessible
-  required source, and cut-off reply.
+  required source, and cut-off reply. An inaccessible required source gets a
+  `source` failure naming the assignment, its branch goes `blocked` with the
+  reason, and the run finishes `incomplete`. The helper refuses an `incomplete`
+  or `saturated` finish while a `covered` branch has neither accepted claims
+  nor a resolved failure.
 - Retry a failed question once with `retry_of`, or cover it through a
   credible alternative assignment on the same branch in the same or a later
   phase. Continue truncated work with `continuation_of` until it completes.
@@ -233,10 +242,10 @@ it, and never redirect it to a file.
   its `scope_id` to the new scope, adding in-scope `branch_ids` in the same
   update when its old branches left scope, or reject it.
 - `finish --status paused` or `cancelled` marks running assignments
-  `interrupted`. Cancelled runs can never resume.
+  `interrupted`. Cancelled is terminal: start a new run instead of resuming.
 - `resume` first verifies owner, checkpoint chain, digests, returns, modes,
-  and state. Any problem blocks it. Report the problems and stop. Do not edit
-  run files. Resume marks running assignments `interrupted`. Continue them
+  and state. Any problem blocks it. Report the problems and stop, leaving run
+  files untouched. Resume marks running assignments `interrupted`. Continue them
   with `continuation_of`.
 
 ## Checkpoints and reporting
