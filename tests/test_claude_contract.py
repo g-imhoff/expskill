@@ -113,6 +113,7 @@ class ClaudeContractTests(unittest.TestCase):
         rendered = render_agents(ROOT)
         self.assertEqual(set(rendered), set(AGENTS))
         content = json.loads((PLUGIN_ROOT / "content" / "agents.json").read_text(encoding="utf-8"))
+        runtime = json.loads((CLAUDE_ROOT / "agents.json").read_text(encoding="utf-8"))["runtime_paragraph"]
         for name in AGENTS:
             with self.subTest(agent=name):
                 contents = (self.plugin_dir(artifact) / "agents" / f"{name}.md").read_text(encoding="utf-8")
@@ -130,7 +131,9 @@ class ClaudeContractTests(unittest.TestCase):
                     self.assertIn(f"\n  - {tool}\n", contents)
                 self.assertIn(content["agents"][name]["description"], contents)
                 self.assertIn(content["agents"][name]["closing"], contents)
-                self.assertIn("You run as a Claude Code subagent", contents)
+                canonical_body = (PLUGIN_ROOT / "content" / "agents" / f"{name}.md").read_text(encoding="utf-8").strip()
+                self.assertIn(canonical_body, contents)
+                self.assertIn(" ".join(runtime.split()), " ".join(contents.split()))
 
     def test_manifest_matches_claude_plugin_schema_and_base_version(self) -> None:
         manifest = json.loads((CLAUDE_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
@@ -170,16 +173,16 @@ class ClaudeContractTests(unittest.TestCase):
                 self.assertNotIn("PLUGIN_ROOT", contents.replace("CLAUDE_PLUGIN_ROOT", ""))
 
     def test_hook_scripts_execute_documented_envelope_behavior(self) -> None:
-        markers = {
-            "inject_authoring.py": "Never create documentation files",
-            "inject_unslop.py": "$expskill:unslop",
-        }
         unslop_policy = json.loads(
             (PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json").read_text(encoding="utf-8")
         )
         authoring_policy = json.loads(
             (PLUGIN_ROOT / "content" / "policies" / "authoring-runtime.json").read_text(encoding="utf-8")
         )
+        markers = {
+            "inject_authoring.py": authoring_policy["instructions"],
+            "inject_unslop.py": "$expskill:unslop",
+        }
         expected_startup = {
             "inject_authoring.py": authoring_policy["instructions"],
             "inject_unslop.py": unslop_policy["scope"],
@@ -326,7 +329,7 @@ class ClaudeContractTests(unittest.TestCase):
         root = self.copy_repository()
         skill = root / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
         skill.write_text(
-            skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"),
+            skill.read_text(encoding="utf-8") + "\nChanged skill marker\n",
             encoding="utf-8",
         )
         _temporary, artifact = self.build_artifact(root)

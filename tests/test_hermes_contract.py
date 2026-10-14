@@ -101,6 +101,7 @@ class HermesContractTests(unittest.TestCase):
         rendered = render_agents(ROOT)
         self.assertEqual(set(rendered), set(AGENTS))
         content = json.loads((PLUGIN_ROOT / "content" / "agents.json").read_text(encoding="utf-8"))
+        runtime = json.loads((PLUGIN_ROOT / "hermes" / "agents.json").read_text(encoding="utf-8"))["runtime_paragraph"]
         for name in AGENTS:
             with self.subTest(agent=name):
                 contents = (artifact / "agents" / f"{name}.md").read_text(encoding="utf-8")
@@ -117,7 +118,9 @@ class HermesContractTests(unittest.TestCase):
                 self.assertEqual(scalars.get("model_policy"), HERMES_MODEL_POLICY)
                 self.assertIn(content["agents"][name]["description"], contents)
                 self.assertIn(content["agents"][name]["closing"], contents)
-                self.assertIn("You run as a Hermes agent", contents)
+                canonical_body = (PLUGIN_ROOT / "content" / "agents" / f"{name}.md").read_text(encoding="utf-8").strip()
+                self.assertIn(canonical_body, contents)
+                self.assertIn(" ".join(runtime.split()), " ".join(contents.split()))
 
     def test_manifest_matches_agent_plugins_v1_and_base_version(self) -> None:
         manifest = json.loads((PLUGIN_ROOT / "hermes" / "plugin.json").read_text(encoding="utf-8"))
@@ -162,7 +165,7 @@ class HermesContractTests(unittest.TestCase):
         root = self.copy_repository()
         skill = root / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
         skill.write_text(
-            skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"),
+            skill.read_text(encoding="utf-8") + "\nChanged skill marker\n",
             encoding="utf-8",
         )
         _temporary, artifact = self.build_artifact(root)
