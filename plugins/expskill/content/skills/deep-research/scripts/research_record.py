@@ -1020,6 +1020,28 @@ def _unsettled(state: dict[str, Any]) -> list[str]:
     ]
 
 
+def _bare_covered(state: dict[str, Any]) -> list[str]:
+    assignments = _index(state, "assignment")
+    out = []
+    for branch in state["branches"]:
+        if branch["status"] != "covered":
+            continue
+        evidenced = any(
+            claim["status"] == "accepted" and branch["id"] in claim["branch_ids"] for claim in state["claims"]
+        )
+        if not evidenced:
+            for failure in state["failures"]:
+                if not failure["resolved"]:
+                    continue
+                resolver = assignments.get(failure["resolved_by"] or "")
+                if resolver and branch["id"] in resolver["branch_ids"]:
+                    evidenced = True
+                    break
+        if not evidenced:
+            out.append(branch["id"])
+    return out
+
+
 def _closure(state: dict[str, Any], ignore_status: bool = False) -> dict[str, Any]:
     scope = state["brief"]["scope_id"]
     after = _reset_index(state)
@@ -1048,6 +1070,9 @@ def _closure(state: dict[str, Any], ignore_status: bool = False) -> dict[str, An
          [a["id"] for a in state["assignments"] if a["status"] in ("planned", "running")]),
         ("in-scope branches not covered",
          [f"{b['id']} ({b['status']})" for b in state["branches"] if b["status"] not in ("covered", "out_of_scope")]),
+        ("in-scope branches marked covered with no accepted claims or resolved failures "
+         "(set them blocked with a failure record, or add the supporting claims)",
+         _bare_covered(state)),
         ("assignments failed, truncated, or interrupted without a complete retry, continuation, or resolved "
          "failure", _unsettled(state)),
         ("unresolved failures", [f["id"] for f in state["failures"] if not f["resolved"]]),
@@ -1988,6 +2013,19 @@ def cmd_finish(args: argparse.Namespace) -> dict[str, Any]:
                     "errors": [f"cannot finish saturated: {item}" for item in closure["reasons"]],
                     "reasons": closure["reasons"],
                     "streak": closure["streak"],
+                }
+        if args.status == "incomplete":
+            bare = _bare_covered(state)
+            if bare:
+                return {
+                    "ok": False,
+                    "errors": [
+                        f"cannot finish incomplete with covered branches lacking evidence: {', '.join(bare)}. "
+                        "A covered branch needs an accepted claim naming it or a resolved failure on its "
+                        "assignments. Set such branches blocked with a reason and record the failure "
+                        "(kind source for an inaccessible required source), or add the supporting claims first"
+                    ],
+                    "branches": bare,
                 }
         interrupted = _interrupt_running(state) if args.status in ("paused", "cancelled") else []
         state.update(status=args.status, stop_reason=reason, updated_at=_now())
