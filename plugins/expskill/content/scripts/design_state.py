@@ -7,7 +7,7 @@ used below mirror that contract and
 ``tests/test_design_plan_handoff_contract.py`` fails on drift.
 """
 from __future__ import annotations
-import fcntl, hashlib, json, os, re, secrets, subprocess, sys, threading
+import ast, fcntl, hashlib, inspect, json, os, re, secrets, shlex, subprocess, sys, threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -24,6 +24,11 @@ LEGACY_KEYSETS = {
 TOOLING_GATES = {"format", "lint", "type", "build"}
 BEHAVIOR_GATES = {"runtime", "responsive", "accessibility", "interaction", "reduced_motion"}
 TECHNICAL_GATES = TOOLING_GATES | BEHAVIOR_GATES
+UI_CONTRACT_FIELDS = {"digest", "outcome"}
+SCOPE_FIELDS = {"components", "exclusions", "owned_paths", "protected_digest"}
+BRIEF_INPUT_FIELDS = {"objective", "requirements", "responsive_expectations", "non_goals", "source"}
+BRIEF_FIELDS = BRIEF_INPUT_FIELDS | {"confirmed", "digest"}
+TECHNICAL_FIELDS = {"status", "results", "gates"}
 
 def _thread_lock(key: str):
     with _THREAD_GUARD: return _THREAD_LOCKS.setdefault(key, threading.RLock())
@@ -111,19 +116,20 @@ def _upgrade_legacy_state(state: object) -> object:
     return state
 
 def _validate_technical(technical: object) -> bool:
-    if not isinstance(technical, dict) or set(technical) != {"status", "results", "gates"}:
+    if not isinstance(technical, dict) or set(technical) != TECHNICAL_FIELDS:
         raise ValueError("invalid technical evidence")
     if technical["status"] not in {"pass", "fail"} or not isinstance(technical["results"], list) or not technical["results"]:
         raise ValueError("invalid technical status")
     output_digests = set()
     results_pass = True
     for result in technical["results"]:
-        if not isinstance(result, dict) or set(result) != {"command", "exit", "output_digest"}:
+        if not isinstance(result, dict) or set(result) not in ({"command", "exit", "output_digest"}, {"command", "exit", "output_digest", "record_id"}):
             raise ValueError("invalid technical result")
         if not isinstance(result["command"], str) or not result["command"] or isinstance(result["exit"], bool) or not isinstance(result["exit"], int) or result["exit"] < 0:
             raise ValueError("invalid technical result")
         if not isinstance(result["output_digest"], str) or not DIGEST_RE.fullmatch(result["output_digest"]):
             raise ValueError("invalid technical result digest")
+        if "record_id" in result and not ID_RE.fullmatch(str(result["record_id"])): raise ValueError("invalid command record")
         output_digests.add(result["output_digest"])
         results_pass = results_pass and result["exit"] == 0
     gates = technical["gates"]
@@ -163,7 +169,7 @@ def _validate_technical(technical: object) -> bool:
     return derived_pass
 
 def _validate_brief(brief: object) -> None:
-    if not isinstance(brief, dict) or set(brief) != {"objective", "requirements", "responsive_expectations", "non_goals", "source", "confirmed", "digest"}:
+    if not isinstance(brief, dict) or set(brief) != BRIEF_FIELDS:
         raise ValueError("invalid design brief")
     if not isinstance(brief["confirmed"], bool): raise ValueError("invalid design brief confirmation")
     if not brief["confirmed"]:
@@ -179,16 +185,28 @@ def _validate_brief(brief: object) -> None:
     if not isinstance(responsive, dict) or set(responsive) != {"compact", "intermediate", "wide"} or any(not isinstance(value, str) or not value.strip() for value in responsive.values()):
         raise ValueError("invalid responsive expectations")
     source = brief["source"]
-    if not isinstance(source, dict) or source.get("kind") not in {"plan-graph", "specification"}: raise ValueError("invalid design brief source")
+    if not isinstance(source, dict) or source.get("kind") not in {"plan-graph", "specification", "accepted-input"}: raise ValueError("invalid design brief source")
     if source["kind"] == "plan-graph":
         if set(source) != {"kind", "workflow_id", "revision", "digest"} or not ID_RE.fullmatch(str(source.get("workflow_id", ""))) or isinstance(source.get("revision"), bool) or not isinstance(source.get("revision"), int) or source["revision"] < 1:
             raise ValueError("invalid Plan Graph source")
-    else:
+    elif source["kind"] == "specification":
         if set(source) != {"kind", "path", "digest"} or not isinstance(source.get("path"), str) or not source["path"] or source["path"].startswith("/") or "\\" in source["path"] or any(part in {"", ".."} for part in source["path"].split("/")):
             raise ValueError("invalid specification source")
+    if source["kind"] == "accepted-input":
+        if set(source) != {"kind", "path", "digest", "decision_reference"} or not isinstance(source.get("path"), str) or not source["path"].startswith("/") or "\\" in source["path"] or any(part in {"", ".", ".."} for part in source["path"].split("/")[1:]) or not isinstance(source["decision_reference"], str) or not source["decision_reference"].strip(): raise ValueError("invalid accepted input source")
     if not DIGEST_RE.fullmatch(str(source.get("digest", ""))): raise ValueError("invalid design brief source digest")
     expected = canonical_digest({key: value for key, value in brief.items() if key != "digest"})
     if brief["digest"] != expected: raise ValueError("design brief digest mismatch")
+
+def _revalidate_brief_source(brief: dict, worktree: Path) -> None:
+    if not brief["confirmed"] or brief["source"]["kind"] == "plan-graph": return
+    source = brief["source"]
+    path = Path(source["path"]) if source["kind"] == "accepted-input" else worktree / source["path"]
+    _reject_links(path)
+    if not path.is_file(): raise ValueError("design brief source is unavailable")
+    if source["kind"] == "accepted-input" and path.stat().st_mode & 0o277: raise ValueError("accepted input must be private and read-only")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != source["digest"]: raise ValueError("design brief source digest mismatch")
+
 
 def _validate_candidate(candidate: object, state: dict) -> None:
     if candidate is None: return
@@ -204,14 +222,17 @@ def _validate_domains(state: dict) -> None:
     _validate_brief(state["brief"])
     _validate_candidate(state["candidate"], state)
     if state["invocation_mode"] == "direct" and state["candidate"] is not None: raise ValueError("direct Design workflow cannot contain a candidate checkpoint")
-    if set(state["ui_contract"]) - {"digest", "outcome"} or not DIGEST_RE.fullmatch(str(state["ui_contract"].get("digest", ""))): raise ValueError("invalid ui contract")
+    if set(state["ui_contract"]) - UI_CONTRACT_FIELDS or not DIGEST_RE.fullmatch(str(state["ui_contract"].get("digest", ""))): raise ValueError("invalid ui contract")
     scope=state["scope"]
-    if scope and (set(scope) - {"components", "exclusions"} or not isinstance(scope.get("components", []), list) or not isinstance(scope.get("exclusions", []), list)): raise ValueError("invalid scope")
+    if scope and (set(scope) - SCOPE_FIELDS or not isinstance(scope.get("components", []), list) or not isinstance(scope.get("exclusions", []), list)): raise ValueError("invalid scope")
+    owned_paths = _owned_paths(scope, Path(state["identity"]["worktree"]), inspect_workspace=state["lifecycle"] != "delivered")
+    if owned_paths and not DIGEST_RE.fullmatch(str(scope.get("protected_digest", ""))): raise ValueError("missing protected workspace digest")
     for item in state["selected_rules"].values():
         if not isinstance(item, dict) or set(item) != {"id", "reason"} or not all(isinstance(v, str) and v for v in item.values()): raise ValueError("invalid selected rule")
     if state["seed_permission"] and (set(state["seed_permission"]) != {"source", "version", "approved"} or not isinstance(state["seed_permission"].get("approved"), bool)): raise ValueError("invalid seed permission")
     for item in state["questions"].values():
-        if not isinstance(item, dict) or set(item) != {"id"}: raise ValueError("invalid question")
+        if not isinstance(item, dict) or set(item) not in ({"id"}, {"id", "material", "resolved", "decision_reference"}) or not isinstance(item.get("id"), str) or not item["id"]: raise ValueError("invalid question")
+        if "resolved" in item and (not isinstance(item["resolved"], bool) or not isinstance(item["material"], bool) or not isinstance(item["decision_reference"], str) or item["resolved"] and not item["decision_reference"].strip()): raise ValueError("invalid question resolution")
     for item in state["invalidations"].values():
         if not isinstance(item, dict) or set(item) != {"reason", "component_id", "approval_id"}: raise ValueError("invalid invalidation")
     delivery=state["delivery"]
@@ -222,11 +243,13 @@ def _validate_domains(state: dict) -> None:
     for layer in ("candidate", "review", "manifest"):
             value=delivery[layer]
             if value is not None and (not isinstance(value, dict) or set(value) != {"inventory_digest", "files"}): raise ValueError("invalid delivery layer")
-    for collection, allowed in ((state["components"], {"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved"}), (state["dependencies"], {"id","digest","component_ids"}), (state["evidence"], {"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"}), (state["approvals"], {"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision"})):
+    for collection, allowed in ((state["components"], {"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved","files"}), (state["dependencies"], {"id","digest","component_ids"}), (state["evidence"], {"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"}), (state["approvals"], {"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"})):
         if not isinstance(collection, dict): raise ValueError("invalid binding collection")
         for key, item in collection.items():
             if not isinstance(key, str) or not isinstance(item, dict) or set(item) - allowed: raise ValueError("unknown binding field")
             if item.get("id") != key: raise ValueError("binding id mismatch")
+            if collection is state["components"] and "files" in item: _component_inventory(item)
+            if collection is state["components"] and "eligible" in item and not isinstance(item["eligible"], bool): raise ValueError("invalid component eligibility")
             for field in ("digest", "code_digest", "contract_digest"):
                 if field in item and not DIGEST_RE.fullmatch(str(item[field])): raise ValueError("invalid binding digest")
             if collection is state["evidence"] and not DIGEST_RE.fullmatch(str(item.get("digest", ""))): raise ValueError("missing evidence digest")
@@ -239,6 +262,7 @@ def _validate_domains(state: dict) -> None:
                 raise ValueError("binding does not match confirmed design brief")
     for approval_id, approval in state["approvals"].items():
         if approval.get("decision") == "approved" and approval_id not in state["invalidations"] and approval.get("component_id") not in state["invalidations"]:
+            if not state["brief"]["confirmed"]: raise ValueError("confirmed design brief required before approval")
             evidence_ids = approval.get("evidence_ids", [])
             if not isinstance(evidence_ids, list) or not evidence_ids:
                 raise ValueError("technical evidence required before approval")
@@ -285,19 +309,34 @@ def _durable_write(root: Path, workflow: str, state: dict) -> None:
     with target.open("rb") as fh: os.fsync(fh.fileno())
     dfd = os.open(root, os.O_RDONLY); os.fsync(dfd); os.close(dfd)
 
+def _workflow_paths(root):
+    for path in root.iterdir():
+        if path.name == ".lock" or path.name.endswith((".previous", ".tmp", ".backup")): continue
+        if path.name == "records":
+            _reject_links(path)
+            if not path.is_dir() or path.stat().st_mode & 0o077: raise ValueError("unsafe command records")
+            continue
+        if not path.is_file(): raise ValueError("ambiguous state")
+        yield path
+
+
 def initialize_workflow(*, repository, branch, worktree, baseline, dirty_fingerprint, ui_contract, scope, state_home, invocation_mode="direct"):
     if invocation_mode not in {"direct", "routed"}: raise ValueError("invalid invocation mode")
     identity = _identity(repository, branch, worktree, baseline, dirty_fingerprint, ui_contract)
+    scope = dict(scope)
+    owned_paths = _owned_paths(scope, Path(identity["worktree"]))
+    if owned_paths:
+        scope["protected_digest"] = _protected_workspace_digest(Path(identity["worktree"]), owned_paths)
+    elif "protected_digest" in scope:
+        raise ValueError("protected digest requires an owned path scope")
     with _locked(Path(state_home)) as root:
-        for p in root.iterdir():
-            if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
-            if p.is_file():
-                try:
-                    old = _load(root, p.name)
-                    if old["identity"]["repository"] == identity["repository"] and old["identity"]["branch"] == branch: raise ValueError("active workflow exists")
-                except ValueError as exc:
-                    if "active workflow" in str(exc): raise
-                    raise ValueError("ambiguous state") from exc
+        for p in _workflow_paths(root):
+            try:
+                old = _load(root, p.name)
+                if old["lifecycle"] != "delivered" and old["identity"]["repository"] == identity["repository"] and old["identity"]["branch"] == branch: raise ValueError("active workflow exists")
+            except ValueError as exc:
+                if "active workflow" in str(exc): raise
+                raise ValueError("ambiguous state") from exc
         workflow = secrets.token_hex(16)
         state = {"schema_version":1,"workflow_id":workflow,"revision":0,"lifecycle":"active","identity":identity,"ui_contract":ui_contract,"scope":scope,"selected_rules":{},"seed_permission":{},"questions":{},"delivery":{"classifications":{"candidate":"component","review":"review","manifest":"manifest"},"candidate":None,"review":None,"manifest":None},"components":{},"dependencies":{},"evidence":{},"approvals":{},"invalidations":{},"candidate_payload":None,"review_evidence":None,"manifest":None,"brief":{"objective":"","requirements":[],"responsive_expectations":{},"non_goals":[],"source":None,"confirmed":False,"digest":None},"candidate":None,"invocation_mode":invocation_mode}
         _validate_domains(state)
@@ -308,20 +347,60 @@ def load_workflow(*, workflow_id, state_home, repository=None, branch=None, work
     with _locked(Path(state_home)) as root:
         raw = json.loads((root / workflow_id).read_text(encoding="utf-8"))
         if (not isinstance(raw.get("delivery"), dict) or set(raw["delivery"]) != {"classifications", "candidate", "review", "manifest"} or raw["delivery"].get("classifications") != {"candidate":"component","review":"review","manifest":"manifest"}): raise ValueError("legacy delivery shape")
-        state = _load(root, workflow_id); _revalidate(state)
+        state = _load(root, workflow_id)
+        if state["lifecycle"] != "delivered": _revalidate(state)
         if any(x is not None for x in (repository,branch,worktree,baseline,dirty_fingerprint,ui_contract)):
             expected = _identity(repository or state["identity"]["repository"], branch or state["identity"]["branch"], worktree or state["identity"]["worktree"], baseline or state["identity"]["baseline"], dirty_fingerprint or state["identity"]["dirty_fingerprint"], ui_contract or {"digest":state["identity"]["ui_contract_digest"]}, head=state["identity"]["head"])
             if expected != state["identity"]: raise ValueError("identity revalidation failed")
         return state
 
+def _owned_paths(scope: dict, worktree: Path, *, inspect_workspace: bool = True) -> list[str]:
+    paths = scope.get("owned_paths", [])
+    if not isinstance(paths, list) or any(not isinstance(item, str) or not item or item.startswith("/") or "\\" in item or any(part in {"", ".", "..", ".git"} for part in item.split("/")) or any(character in item for character in "*?[]{}") for item in paths):
+        raise ValueError("invalid owned path scope")
+    if len({item.casefold() for item in paths}) != len(paths):
+        raise ValueError("duplicate owned path scope")
+    if inspect_workspace:
+        for item in paths:
+            target = worktree / item
+            _reject_links(target)
+            if target.exists() and not target.is_file(): raise ValueError("owned paths must name exact files")
+    return paths
+
+
+def _protected_workspace_digest(worktree: Path, owned_paths: list[str]) -> str:
+    raw = subprocess.check_output(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    records = []
+    for relative in sorted(set(os.fsdecode(item) for item in raw.split(b"\0") if item)):
+        if relative in owned_paths: continue
+        target = worktree / relative
+        if target.is_symlink():
+            records.append([relative, "symlink", os.readlink(target)])
+        elif target.is_file():
+            records.append([relative, "file", hashlib.sha256(target.read_bytes()).hexdigest()])
+        elif target.exists():
+            records.append([relative, "other", target.stat().st_mode])
+        else:
+            records.append([relative, "missing"])
+    return canonical_digest(records)
+
+
 def _revalidate(state: dict) -> None:
     i = state["identity"]
-    actual = _identity(i["repository"], i["branch"], i["worktree"], i["baseline"], i["dirty_fingerprint"], {"digest": state["identity"]["ui_contract_digest"]}, head=i["head"])
+    worktree = Path(i["worktree"])
+    owned_paths = _owned_paths(state["scope"], worktree)
+    expected_dirty = _dirty(worktree) if owned_paths else i["dirty_fingerprint"]
+    actual = _identity(i["repository"], i["branch"], i["worktree"], i["baseline"], expected_dirty, {"digest": i["ui_contract_digest"]}, head=i["head"])
+    if owned_paths:
+        if _protected_workspace_digest(worktree, owned_paths) != state["scope"].get("protected_digest"):
+            raise ValueError("unrelated workspace bytes changed")
+        actual["dirty_fingerprint"] = i["dirty_fingerprint"]
     if actual != i: raise ValueError("external workspace change")
+    _revalidate_brief_source(state["brief"], worktree)
 
 def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_home):
     if confirmed is not True: raise PermissionError("explicit design brief confirmation required")
-    if not isinstance(brief, dict) or set(brief) != {"objective", "requirements", "responsive_expectations", "non_goals", "source"}:
+    if not isinstance(brief, dict) or set(brief) != BRIEF_INPUT_FIELDS:
         raise ValueError("invalid design brief")
     candidate = dict(brief)
     candidate["confirmed"] = True
@@ -331,12 +410,7 @@ def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_hom
         state = _load(root, workflow_id)
         _revalidate(state)
         if state["lifecycle"] == "delivered" or state["revision"] != expected_revision: raise ValueError("immutable or stale workflow")
-        source = candidate["source"]
-        if source["kind"] == "specification":
-            spec_path = Path(state["identity"]["worktree"]) / source["path"]
-            _reject_links(spec_path)
-            if spec_path.is_symlink() or not spec_path.is_file(): raise ValueError("design brief specification is unavailable")
-            if hashlib.sha256(spec_path.read_bytes()).hexdigest() != source["digest"]: raise ValueError("design brief specification digest mismatch")
+        _revalidate_brief_source(candidate, Path(state["identity"]["worktree"]))
         changed = state["brief"]["confirmed"] and state["brief"]["digest"] != candidate["digest"]
         if changed and state["candidate"] is not None: raise ValueError("cannot change design brief after candidate checkpoint")
         if state["brief"]["digest"] != candidate["digest"]:
@@ -370,6 +444,9 @@ def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, st
         parents = _git(worktree, "rev-list", "--parents", "-n", "1", candidate_commit).split()
         if len(parents) != 2 or parents[1] != identity["baseline"]: raise ValueError("candidate must be one commit above baseline")
         if _git(worktree, "rev-list", "--count", f"{identity['baseline']}..{candidate_commit}") != "1": raise ValueError("candidate history is not atomic")
+        owned_paths = _owned_paths(state["scope"], worktree)
+        if owned_paths and _protected_workspace_digest(worktree, owned_paths) != state["scope"].get("protected_digest"):
+            raise ValueError("unrelated workspace bytes changed")
         previous = state["candidate"]
         changed = previous is not None and previous["commit"] != candidate_commit
         if changed:
@@ -392,11 +469,9 @@ def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, st
 def discover_workflow(*, repository, branch, state_home):
     with _locked(Path(state_home)) as root:
         matches=[]
-        for p in root.iterdir():
-            if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
-            if not p.is_file(): raise ValueError("ambiguous state")
+        for p in _workflow_paths(root):
             state=_load(root,p.name)
-            if state["identity"]["repository"]==str(Path(repository).resolve()) and state["identity"]["branch"]==branch: matches.append(state)
+            if state["lifecycle"] != "delivered" and state["identity"]["repository"]==str(Path(repository).resolve()) and state["identity"]["branch"]==branch: matches.append(state)
         if len(matches)!=1: raise ValueError("ambiguous workflow")
         s=matches[0]; return {"workflow_id":s["workflow_id"],"revision":s["revision"],"lifecycle":s["lifecycle"]}
 
@@ -409,12 +484,14 @@ def apply_updates(*, workflow_id, expected_revision, updates, state_home):
         old_evidence=dict(s["evidence"])
         old_dependencies=dict(s["dependencies"])
         if not isinstance(updates,dict) or not set(updates)<= {"components","dependencies","evidence","approvals","scope","ui_contract","selected_rules","seed_permission","questions","delivery"}: raise ValueError("closed update")
+        if "scope" in updates and (not isinstance(updates["scope"], dict) or updates["scope"].get("owned_paths") != s["scope"].get("owned_paths") or updates["scope"].get("protected_digest") != s["scope"].get("protected_digest")):
+            raise ValueError("owned path scope cannot change silently")
         for k,v in updates.items():
             if not isinstance(v,dict): raise ValueError("typed update required")
-            if k=="ui_contract" and (set(v)-{"digest","outcome"} or not isinstance(v.get("digest"),str) or not DIGEST_RE.fullmatch(v["digest"])): raise ValueError("invalid ui contract")
-            if k=="scope" and set(v)-{"components","exclusions"}: raise ValueError("invalid scope")
+            if k=="ui_contract" and (set(v)-UI_CONTRACT_FIELDS or not isinstance(v.get("digest"),str) or not DIGEST_RE.fullmatch(v["digest"])): raise ValueError("invalid ui contract")
+            if k=="scope" and set(v)-SCOPE_FIELDS: raise ValueError("invalid scope")
             if k in {"components","dependencies","evidence","approvals"} and any(not isinstance(n,str) or not isinstance(x,dict) for n,x in v.items()): raise ValueError("typed binding required")
-            allowed = {"components":{"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved"},"dependencies":{"id","digest","component_ids"},"evidence":{"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"},"approvals":{"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision"}}
+            allowed = {"components":{"id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","approval_id","digest","eligible","approved","files"},"dependencies":{"id","digest","component_ids"},"evidence":{"id","component_id","digest","code_digest","contract_digest","brief_digest","widths","themes","states","technical"},"approvals":{"id","component_id","code_digest","contract_digest","brief_digest","evidence_ids","dependency_ids","decision","provenance"}}
             if k in allowed:
                 for x in v.values():
                     if set(x) - allowed[k]: raise ValueError("unknown nested key")
@@ -476,7 +553,8 @@ def recover_workflow(*,workflow_id,state_home):
             raise ValueError("unsafe current generation")
         if target.is_file() and not target.is_symlink():
             try:
-                current=_load(root, workflow_id); _revalidate(current)
+                current=_load(root, workflow_id)
+                if current["lifecycle"] != "delivered": _revalidate(current)
                 raise ValueError("current generation is valid")
             except ValueError as exc:
                 if "current generation is valid" in str(exc): raise
@@ -495,12 +573,88 @@ def recover_workflow(*,workflow_id,state_home):
         return {"workflow_id":workflow_id,"revision":state["revision"],"lifecycle":state["lifecycle"]}
 
 def _inventory(value):
-    if not isinstance(value,dict) or not isinstance(value.get("files"),list) or not value["files"]: raise ValueError("exact inventory required")
+    if not isinstance(value,dict) or set(value) != {"files"} or not isinstance(value.get("files"),list) or not value["files"]: raise ValueError("exact inventory required")
     for item in value["files"]:
         if not isinstance(item,dict) or set(item)!={"path","digest","classification"} or not isinstance(item["path"],str) or not DIGEST_RE.fullmatch(str(item["digest"])): raise ValueError("invalid inventory")
-        if item["path"].startswith("/") or "\\" in item["path"] or any(part in {"", ".."} for part in item["path"].split("/")): raise ValueError("invalid inventory path")
+        if item["path"].startswith("/") or "\\" in item["path"] or any(part in {"", ".", "..", ".git"} for part in item["path"].split("/")): raise ValueError("invalid inventory path")
     paths=[x["path"] for x in value["files"]]
     if len(paths)!=len(set(paths)) or len({p.casefold() for p in paths})!=len(paths): raise ValueError("duplicate inventory path")
+
+def component_digest(files: list) -> str:
+    inventory = {"files": files}
+    _inventory(inventory)
+    if any(item["classification"] != "component" for item in files): raise ValueError("component file classification")
+    return canonical_digest({"files": sorted(files, key=lambda item: item["path"])})
+
+
+def _component_inventory(component: dict) -> list:
+    files = component.get("files")
+    if files is None: raise ValueError("legacy component requires exact file inventory")
+    if component.get("code_digest") != component_digest(files): raise ValueError("component inventory digest mismatch")
+    return files
+
+
+def _artifact_files(inventory: dict, worktree: Path) -> None:
+    _inventory(inventory)
+    for item in inventory["files"]:
+        target = worktree / item["path"]
+        _reject_links(target)
+        if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != item["digest"]:
+            raise ValueError("artifact bytes do not match inventory")
+
+
+def record_check(*, workflow_id, expected_revision, argv, candidate_payload, state_home, timeout_seconds=300):
+    if not isinstance(argv, list) or not argv or any(not isinstance(arg, str) or not arg or "\0" in arg for arg in argv): raise ValueError("invalid check argv")
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 300: raise ValueError("invalid check timeout")
+    with _locked(Path(state_home)) as root:
+        state = _load(root, workflow_id)
+        _revalidate(state)
+        if state["lifecycle"] != "active" or state["revision"] != expected_revision: raise ValueError("inactive or stale check")
+        worktree = Path(state["identity"]["worktree"])
+        _artifact_files(candidate_payload, worktree)
+        completed = subprocess.run(argv, cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout_seconds, check=False)
+        _revalidate(state)
+        _artifact_files(candidate_payload, worktree)
+        records = root / "records"
+        _reject_links(records)
+        records.mkdir(mode=0o700, exist_ok=True)
+        if records.stat().st_mode & 0o077: raise ValueError("unsafe command records")
+        record_id = secrets.token_hex(16)
+        output_digest = hashlib.sha256(completed.stdout).hexdigest()
+        record = {"record_id": record_id, "workflow_id": workflow_id, "baseline": state["identity"]["baseline"], "brief_digest": state["brief"]["digest"], "contract_digest": state["ui_contract"]["digest"], "candidate_digest": canonical_digest(candidate_payload), "command": shlex.join(argv), "exit": completed.returncode if completed.returncode >= 0 else 128 - completed.returncode, "output_digest": output_digest}
+        for suffix, data in ((".output", completed.stdout), (".json", json.dumps(record, sort_keys=True).encode())):
+            fd = os.open(records / (record_id + suffix), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+        return {key: record[key] for key in ("record_id", "command", "exit", "output_digest")}
+
+
+def _recorded_results(root: Path, state: dict, technical: dict, candidate_payload: dict) -> None:
+    for result in technical["results"]:
+        record_id = result.get("record_id")
+        if not ID_RE.fullmatch(str(record_id)): raise ValueError("legacy technical evidence requires recorded checks")
+        records = root / "records"
+        if not records.is_dir() or records.stat().st_mode & 0o077: raise ValueError("unsafe command records")
+        record_path = records / (record_id + ".json")
+        output_path = root / "records" / (record_id + ".output")
+        _reject_links(record_path)
+        _reject_links(output_path)
+        _file(record_path)
+        _file(output_path)
+        try: record = json.loads(record_path.read_bytes())
+        except Exception as exc: raise ValueError("missing command record") from exc
+        expected = {"record_id": record_id, "workflow_id": state["workflow_id"], "baseline": state["identity"]["baseline"], "brief_digest": state["brief"]["digest"], "contract_digest": state["ui_contract"]["digest"], "candidate_digest": canonical_digest(candidate_payload), "command": result["command"], "exit": result["exit"], "output_digest": result["output_digest"]}
+        if record != expected or not output_path.is_file() or hashlib.sha256(output_path.read_bytes()).hexdigest() != result["output_digest"]:
+            raise ValueError("stale or altered command record")
+
+
+def _approval_attestation(approval: dict) -> None:
+    provenance = approval.get("provenance")
+    if not isinstance(provenance, dict) or set(provenance) != {"kind", "actor", "authority_reference", "decision_reference"} or provenance["kind"] != "trusted-attestation" or provenance["actor"] not in {"human", "authorized-agent"} or any(not isinstance(provenance[key], str) or not provenance[key].strip() for key in ("authority_reference", "decision_reference")):
+        raise ValueError("explicit approval attestation provenance required")
+
 
 def _delivery_result(s):
     """Derive the same delivery result from the immutable saved generation."""
@@ -523,27 +677,38 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
                 raise ValueError("immutable or stale workflow: retry the identical delivery request")
             return _delivery_result(s)
         if s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
+        if not s["brief"]["confirmed"]: raise ValueError("confirmed design brief required for delivery")
+        if any(question.get("material", True) and not question.get("resolved", False) for question in s["questions"].values()): raise ValueError("unresolved material Design questions")
+        if any(component.get("eligible") is False for component in s["components"].values()): raise ValueError("ineligible Design component")
         if s["invocation_mode"] == "routed" and s["candidate"] is None: raise ValueError("routed delivery requires candidate checkpoint")
-        if s["invocation_mode"] == "routed" and not s["brief"]["confirmed"]: raise ValueError("confirmed design brief required for routed delivery; the Plan join needs brief_digest")
-        for x in (candidate_payload,review_evidence,manifest): _inventory(x)
         if not s["components"]: raise ValueError("current approvals required")
+        for x in (candidate_payload,review_evidence,manifest): _inventory(x)
+        union = {}
+        for component in s["components"].values():
+            for item in _component_inventory(component):
+                if item["path"] in union and union[item["path"]] != item: raise ValueError("conflicting component file ownership")
+                union[item["path"]] = item
+        expected_inventory = {"files": sorted(union.values(), key=lambda item: item["path"])}
+        _inventory(expected_inventory)
+        if sorted(candidate_payload["files"], key=lambda item: item["path"]) != expected_inventory["files"]: raise ValueError("candidate binding requires complete component file union")
+        for x in (candidate_payload,review_evidence,manifest): _artifact_files(x, Path(s["identity"]["worktree"]))
         for name, comp in s["components"].items():
             aid=comp.get("approval_id"); approval=s["approvals"].get(aid, {})
             if not aid or approval.get("decision")!="approved" or approval.get("component_id")!=name or name in s["invalidations"]: raise ValueError("current approvals required")
+            _approval_attestation(approval)
             if approval.get("code_digest") != comp.get("code_digest") or approval.get("contract_digest") != comp.get("contract_digest"): raise ValueError("stale approval")
             if set(approval.get("evidence_ids", [])) != set(comp.get("evidence_ids", [])) or set(approval.get("dependency_ids", [])) != set(comp.get("dependency_ids", [])): raise ValueError("stale approval")
             for eid in comp.get("evidence_ids", []):
                 ev=s["evidence"].get(eid, {})
                 if ev.get("id") != eid or ev.get("component_id") != name or ev.get("code_digest") != comp.get("code_digest") or ev.get("contract_digest") != comp.get("contract_digest") or set(ev.get("widths", [])) != {"compact", "intermediate", "wide"} or not ev.get("themes") or not ev.get("states"): raise ValueError("incomplete evidence")
                 if not _validate_technical(ev.get("technical")): raise ValueError("technical evidence failed")
+                _recorded_results(root, s, ev["technical"], candidate_payload)
             for did in comp.get("dependency_ids", []):
                 dep=s["dependencies"].get(did, {})
                 if dep.get("id") != did or name not in dep.get("component_ids", []) or not DIGEST_RE.fullmatch(str(dep.get("digest", ""))): raise ValueError("invalid dependency")
         if any(x["classification"]!="component" for x in candidate_payload["files"]): raise ValueError("candidate classification")
         if any(x["classification"]!="review" for x in review_evidence["files"]): raise ValueError("review classification")
         if any(x["classification"]!="manifest" for x in manifest["files"]): raise ValueError("manifest classification")
-        expected_codes={x.get("code_digest") for x in s["components"].values()}
-        if {x["digest"] for x in candidate_payload["files"]} != expected_codes: raise ValueError("candidate binding")
         evidence_digests={s["evidence"][eid].get("digest") for comp in s["components"].values() for eid in comp.get("evidence_ids", []) if s["evidence"].get(eid, {}).get("digest")}
         if evidence_digests and not {x["digest"] for x in review_evidence["files"]} <= evidence_digests: raise ValueError("review binding")
         def inv(x): return {"inventory_digest": hashlib.sha256(json.dumps(x, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "files": x["files"]}
@@ -593,14 +758,115 @@ def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_tar
             problems.append(f"branch {identity['branch']!r} must stay isolated from the Plan target branch")
         return {"workflow_id": workflow_id, "revision": s["revision"], "eligible": not problems, "problems": problems}
 
+def _cli_operations():
+    return {"initialize": initialize_workflow, "discover": discover_workflow, "load": load_workflow,
+            "confirm-brief": confirm_brief, "checkpoint-candidate": checkpoint_candidate,
+            "record-check": record_check, "apply": apply_updates, "pause": pause_workflow,
+            "resume": resume_workflow, "recover": recover_workflow, "discard": discard_workflow,
+            "deliver": deliver_workflow}
+
+
+def _domain_predicates(selectors):
+    source = inspect.getsource(_validate_domains)
+    statements = ast.parse(source).body[0].body
+    return [ast.get_source_segment(source, statement) for statement in statements
+            if any(isinstance(node, ast.Constant) and node.value in selectors
+                   or isinstance(node, ast.Name) and node.id in selectors
+                   for node in ast.walk(statement) if isinstance(node, (ast.Constant, ast.Name)))]
+
+
+def _schema_definitions():
+    return {
+        "ui-contract": (["digest"], sorted(UI_CONTRACT_FIELDS - {"digest"}), ("ui_contract",), ()),
+        "scope": ([], sorted(SCOPE_FIELDS), ("scope", "owned_paths"), (_owned_paths,)),
+        "brief": (sorted(BRIEF_INPUT_FIELDS), [], (), (_validate_brief,)),
+        "technical-evidence": (sorted(TECHNICAL_FIELDS), [], (), (_validate_technical, _recorded_results)),
+        "components": (None, None, ("components",), (_component_inventory, component_digest, _inventory)),
+        "dependencies": (None, None, ("dependencies",), ()),
+        "evidence": (None, None, ("evidence",), (_validate_technical, _recorded_results)),
+        "approvals": (None, None, ("approvals",), (_approval_attestation, _validate_technical)),
+        "inventory": (["files"], [], (), (_inventory, _artifact_files)),
+        "updates": ([], None, (), (apply_updates,)),
+    }
+
+
+def _describe_schema(name):
+    definitions = _schema_definitions()
+    if name is None:
+        return {"schema_version": "design-schema-catalog.v1", "schemas": sorted(definitions),
+                "authority": "Source descriptions only. No state, target, approval or operation authority is granted."}
+    if name not in definitions:
+        raise ValueError("unknown Design schema")
+    required, optional, selectors, validators = definitions[name]
+    result = {"schema_version": "design-schema-description.v1", "name": name,
+              "format": "Authoritative Python validation predicates, not portable JSON Schema or semantic examples.",
+              "predicates": _domain_predicates(selectors) if selectors else [],
+              "validators": {function.__name__: inspect.getsource(function) for function in validators},
+              "digest_format": DIGEST_RE.pattern, "identity_format": ID_RE.pattern}
+    if required is not None:
+        result["required_fields"] = required
+    if optional is not None:
+        result["optional_fields"] = optional
+    if name == "brief":
+        result["helper_generated_fields"] = sorted(BRIEF_FIELDS - BRIEF_INPUT_FIELDS)
+        result["digest_serialization"] = inspect.getsource(canonical_digest)
+    if name in {"technical-evidence", "evidence", "approvals"}:
+        result["gate_names"] = sorted(TECHNICAL_GATES)
+        result["tooling_gates"] = sorted(TOOLING_GATES)
+        result["behavior_gates"] = sorted(BEHAVIOR_GATES)
+    return result
+
+
+def _describe_operation(operation):
+    operations = _cli_operations()
+    interface = {"input": "One JSON object on stdin, at most 1048576 characters.",
+                 "state_option": "For isolated tests only, OPERATION --state-home PATH. State home is supplied by the CLI, never an authored payload field.",
+                 "exit_statuses": {"0": "Operation or description completed. A description does not execute an operation.",
+                                   "1": "Operation input or domain validation failed.", "2": "Unknown command, invalid argument layout or excessive input."}}
+    if operation is None:
+        return {"schema_version": "design-operation-catalog.v1", "operations": sorted(operations),
+                "descriptions": ["describe OPERATION", "OPERATION --help", "describe-schema NAME"], **interface}
+    if operation not in operations:
+        raise ValueError("unknown Design operation")
+    function = operations[operation]
+    fields = inspect.signature(function).parameters
+    required = [name for name, field in fields.items()
+                if name != "state_home" and field.default is inspect.Parameter.empty]
+    optional = {name: field.default for name, field in fields.items()
+                if name != "state_home" and field.default is not inspect.Parameter.empty}
+    schemas = {"initialize": ("ui-contract", "scope"), "load": ("ui-contract",),
+               "confirm-brief": ("brief",), "record-check": ("inventory",),
+               "apply": ("updates",), "deliver": ("inventory", "approvals", "technical-evidence")}.get(operation, ())
+    return {"schema_version": "design-operation-description.v1", "operation": operation,
+            "required_fields": required, "optional_fields": optional,
+            "schemas": {name: _describe_schema(name) for name in schemas},
+            "operation_predicates": inspect.getsource(function), **interface}
+
+
 def _cli():
-    if len(sys.argv)>1 and sys.argv[1] == "--help":
-        print("initialize discover load confirm-brief checkpoint-candidate apply pause resume recover discard deliver preflight")
+    operations = _cli_operations()
+    operations["preflight"] = preflight_plan_join
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print(" ".join(sorted(operations)) + " describe describe-schema")
         return 0
-    if len(sys.argv)<2 or len(sys.argv)>4 or (len(sys.argv)>2 and sys.argv[2] != "--state-home"): return 2
+    if args and (args[0] in {"describe", "describe-schema"} or len(args) == 2 and args[1] == "--help"):
+        if len(args) > 2:
+            return 2
+        try:
+            if args[0] == "describe-schema":
+                result = _describe_schema(args[1] if len(args) == 2 else None)
+            else:
+                operation = args[0] if args[-1] == "--help" else args[1] if len(args) == 2 else None
+                result = _describe_operation(operation)
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if len(args) not in {1, 3} or (len(args) == 3 and args[1] != "--state-home"): return 2
     command=sys.argv[1]
-    allowed={"initialize","discover","load","confirm-brief","checkpoint-candidate","apply","pause","resume","recover","discard","deliver","preflight"}
-    if command not in allowed: return 2
+    if command not in operations: return 2
     raw=sys.stdin.read(1024*1024+1)
     if len(raw)>1024*1024: return 2
     try:
@@ -611,19 +877,13 @@ def _cli():
         if command=="preflight":
             result=preflight_plan_join(state_home=home,**payload)
             print(json.dumps({"schema_version":1,"operation":command,**result},sort_keys=True)); return 0 if result["eligible"] else 1
-        if command=="initialize": result=initialize_workflow(state_home=home,**payload)
-        elif command=="discover": result=discover_workflow(state_home=home,**payload)
-        elif command=="load": result=load_workflow(state_home=home,**payload)
-        elif command=="confirm-brief": result=confirm_brief(state_home=home,**payload)
-        elif command=="checkpoint-candidate": result=checkpoint_candidate(state_home=home,**payload)
-        elif command=="apply": result=apply_updates(state_home=home,**payload)
-        elif command=="pause": result=pause_workflow(state_home=home,**payload)
-        elif command=="resume": result=resume_workflow(state_home=home,**payload)
-        elif command=="recover": result=recover_workflow(state_home=home,**payload)
-        elif command=="discard": result=discard_workflow(state_home=home,**payload)
-        else: result=deliver_workflow(state_home=home,**payload)
+        result=operations[command](state_home=home,**payload)
         digest=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
         base={"schema_version":1,"operation":command,"workflow_id":result.get("workflow_id"),"revision":result.get("revision",0),"lifecycle":result.get("lifecycle","active"),"identity":result.get("identity",{}),"state_digest":digest}
+        if command=="record-check":
+            base["workflow_id"]=payload["workflow_id"]
+            base["revision"]=payload["expected_revision"]
+            base["record"]=result
         if command=="deliver":
             for key in ("candidate_digest","candidate_inventory_digest","review_evidence_digest","manifest_digest","evidence_digest","approval_digest","dependency_digest","brief_digest","candidate_commit"):
                 if key in result: base[key]=result[key]

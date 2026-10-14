@@ -102,7 +102,15 @@ class CodexAgentDiscoveryTests(unittest.TestCase):
         self.assertEqual(_agent_warnings(binary, codex_home, fixture.root), [])
         self.assertEqual(len(list(agents.rglob("*.toml"))), 7)
         for relative, contents in rendered.items():
-            self.assertEqual((agents / Path(relative).name).read_text(), contents)
+            installed = (agents / Path(relative).name).read_text()
+            if Path(relative).name == "expskill-planner.toml":
+                import tomllib
+
+                profile = tomllib.loads(installed)
+                self.assertIn("sandbox_workspace_write", profile)
+                self.assertTrue(installed.startswith(contents))
+            else:
+                self.assertEqual(installed, contents)
         saved = list((codex_home / "agent-backups").rglob("*.toml"))
         self.assertEqual(len(saved), 14)
         for profile in saved:

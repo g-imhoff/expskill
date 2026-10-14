@@ -1,0 +1,12 @@
+{
+  "schema_version": "skill-builder-live-repair-probe.v1",
+  "scope": "A bounded skill-candidate functional repair observation, not a complete Skill Builder run.",
+  "synthetic_foundation": ["target-selection", "accepted-contract", "frozen-three-case-oracle"],
+  "required_files": ["SKILL.md", "scripts/count_lines.py"],
+  "contract": "Create a count-lines skill whose Python helper accepts one UTF-8 file path and emits JSON with integer line_count equal to len(text.splitlines()). Empty files count as zero. Missing input files exit nonzero. The skill instructs its user to invoke this helper. Only the two required candidate files are owned. Use only Python standard-library dependencies and add no code comments.",
+  "cases": [
+    {"case_id": "two-lines", "text": "alpha\nbeta\n", "expected_line_count": 2},
+    {"case_id": "empty-file", "text": "", "expected_line_count": 0},
+    {"case_id": "missing-file", "text": null, "expected_line_count": null}
+  ]
+}

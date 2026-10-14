@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 from unittest import mock
 
 
@@ -34,6 +34,8 @@ def _valid_updates(component_names: tuple[str, ...] = ("CheckoutForm", "Unrelate
         evidence_digest = hashlib.sha256(f"{name}-evidence".encode()).hexdigest()
         evidence[evidence_id] = {"id": evidence_id, "component_id": name, "digest": evidence_digest, "code_digest": code_digest, "contract_digest": contract_digest, "widths": ["compact", "intermediate", "wide"], "themes": ["light", "dark"], "states": ["default", "error"], "technical": passing_technical(evidence_digest)}
         approvals[approval_id] = {"id": approval_id, "component_id": name, "code_digest": code_digest, "contract_digest": contract_digest, "evidence_ids": [evidence_id], "dependency_ids": [dependency_id], "decision": "approved"}
+    for collection in (components, evidence, approvals):
+        for item in collection.values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
     return {"components": components, "dependencies": dependencies, "evidence": evidence, "approvals": approvals}
 
 
@@ -74,6 +76,7 @@ def _start(module: object, root: Path) -> tuple[dict, Path, Path, str]:
         scope={"components": ["CheckoutForm"], "exclusions": ["route"]},
         state_home=state_home,
     )
+    receipt = confirm_fixture_workflow(module, receipt, state_home)
     return receipt, repo, state_home, str(receipt["workflow_id"])
 
 
@@ -266,7 +269,7 @@ class DesignStateAdversarialTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             receipt, _, state_home, workflow_id = _start(module, root)
-            insecure = {"components": {"CheckoutForm": {"id": "CheckoutForm", "code_digest": DIGEST, "eligible": True, "approved": True}}}
+            insecure = {"components": {"CheckoutForm": {"id": "CheckoutForm", "code_digest": DIGEST, "brief_digest": FIXTURE_BRIEF_DIGEST, "eligible": True, "approved": True}}}
             insecure_receipt = module.apply_updates(workflow_id=workflow_id, expected_revision=receipt["revision"], updates=insecure, state_home=state_home)
             bad = {"files": "not-an-inventory"}
             with self.assertRaises(Exception):
@@ -274,13 +277,15 @@ class DesignStateAdversarialTests(unittest.TestCase):
 
             valid_receipt, _, valid_home, valid_id = _start(module, root / "valid-delivery")
             valid = _valid_updates(("CheckoutForm",))
-            seeded = module.apply_updates(workflow_id=valid_id, expected_revision=valid_receipt["revision"], updates=valid, state_home=valid_home)
+            seeded = valid_receipt
             code_digest = valid["components"]["CheckoutForm"]["code_digest"]
             evidence_digest = valid["evidence"]["CheckoutForm-evidence"]["digest"]
             contract_digest = valid["components"]["CheckoutForm"]["contract_digest"]
             candidate = {"files": [{"path": "CheckoutForm.tsx", "digest": code_digest, "classification": "component"}]}
             review = {"files": [{"path": "CheckoutForm-review.json", "digest": evidence_digest, "classification": "review"}]}
             manifest = {"files": [{"path": "manifest.json", "digest": contract_digest, "classification": "manifest"}]}
+            prepare_delivery_fixture(module, valid_receipt, valid_home, valid_id, valid, (candidate, review, manifest))
+            seeded = module.apply_updates(workflow_id=valid_id, expected_revision=valid_receipt["revision"], updates=valid, state_home=valid_home)
             delivered = module.deliver_workflow(workflow_id=valid_id, expected_revision=seeded["revision"], candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=valid_home)
             self.assertEqual(delivered["lifecycle"], "delivered")
             self.assertIn("candidate_digest", delivered)

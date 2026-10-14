@@ -244,14 +244,16 @@ Invoke a skill directly when you know what you want:
 
 - `$brainstorm` explores uncertainty without writing production code.
 - `$plan` produces an ordered, reviewable implementation-and-proof design with observable criteria, behavior, planned tests, and verification intent.
-- `$design` creates grounded production-intended UI components and publishes a Yodea preview for responsive, stateful review after blocking quality gates pass. Preview links accompany approval requests, handoffs, and PR descriptions and stay available through PR review.
+- `$design` creates grounded production-intended UI components and uses the project’s native specimen for responsive, stateful review after blocking quality gates pass. A compatible authorized hosted preview is preferred, with a reproducible local review surface when hosting is unavailable or forbidden. The review entry, candidate identity, and any hosting limitation accompany approvals, handoffs, and PR descriptions.
 - `$setup-design` establishes or records one reusable, project-native
   isolated design-sketch method without approving feature sketches.
 - `$setup-test` establishes or records the project's test-method matrix
   (test types to commands, canary versus full suite, human versus agent
   execution, routine post-setup path) without running routine tests.
 - `$implement` coordinates isolated TDD workers, independent review and spec
-  gates, corrections, local integration, and final whole-branch gates.
+  gates, corrections, local integration, and final whole-branch gates. Every judge
+  receives the complete accepted criteria. Independent expected outcomes and
+  prior regression obligations remain protected through corrections.
 - `$correct` repairs concrete bugs within the existing design and asks for a
   choice before structural or breaking changes.
 - `$review` adversarially inspects a user-defined code scope and saves an
@@ -267,18 +269,22 @@ Invoke a skill directly when you know what you want:
 - `$unslop` rewrites prose to remove common AI tells and remains directly
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
-  fact-grounded interview and mandatory final confirmation.
+  fact-grounded interview, at most three material questions per round, and confirmed shared meaning.
 - `$autonomous-run` acts as an AI user on your behalf. It launches one initial
   `$use-expskill` conversation and follows the workflow's instructions and
   conversation transitions to a review-ready draft PR.
   It answers questions and confirms decisions within your scope and constraints.
-  After the workflow delivers the PR, it runs `$roast-loop` in its own
-  conversation before handing the result to you for review and merge.
+  After local implementation, the invoking agent owns the authorized feature
+  branch push and draft PR creation. After the workflow delivers the PR, it runs
+  `$roast-loop` in its own conversation, reusing an unchanged, independently
+  reviewed result only when scope, pins, criteria, evidence, and reviewer provenance
+  are unchanged. Calls and retries share one run allowance across conversations
+  before handing the result to you for review and merge.
 
 Invoke `$use-expskill` when you want the plugin to select and explain the next
 skill. It normally opens one skill per transition. For unresolved UI work, it
-may launch one Plan session and one Design
-session concurrently from the same baseline. It coordinates against the
+may ask you to open one Plan conversation and one Design
+conversation concurrently from the same baseline. It coordinates against the
 canonical Plan Graph when one exists, validates revision-bound receipts, and
 preserves the implementation gates. It is the only skill that may activate
 implicitly.
@@ -286,8 +292,8 @@ implicitly.
 There is no setup gate. Neither `$setup-design` nor `$setup-test` is
 auto-loaded or router-selected merely because a setup record is absent or
 invalid. If UI or test work arrives with no setup record and no explicit
-setup intent, the router reports "not configured, run `$setup-design` /
-`$setup-test`" and stops before Plan, Design, or feature implementation.
+setup intent, the selected phase discovers the project-native capability it needs.
+Only an actual missing capability blocks that phase.
 A ready `.expskill/setup-design.md` or `.expskill/setup-test.md` record is
 read by its owning skill only and is never a routing precondition. Those
 tracked records and their methods persist across worktrees and runs.
@@ -339,7 +345,9 @@ owns optional transition selection; the individual skills do not silently open
 the whole pipeline.
 
 Correct checks its own repairs. When a repair needs a consequential choice,
-it explains a sound limited fix and its limitations, or offers Brainstorm.
+it explains the unresolved consequences and a sound limited fix if one exists.
+Known authorized structural solutions can hand off to Plan or Implement.
+Brainstorm is offered only for unresolved conceptual direction.
 
 Review runs through the invoking agent and leaves Implement's internal reviewer
 alone. Reports live in the installed Review skill's `tmp/reports/` directory,

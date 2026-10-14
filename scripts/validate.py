@@ -133,12 +133,17 @@ UNSLOP_RUNTIME_POLICY_PATH = "content/policies/unslop-runtime.json"
 AUTHORING_RUNTIME_POLICY_PATH = "content/policies/authoring-runtime.json"
 HELPER_PATH = "content/scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
+RESEARCH_BUDGET_HELPER_PATH = "content/scripts/research_budget.py"
 UNSLOP_HOOK_CONFIG_PATH = "codex/hooks/hooks.json"
 UNSLOP_HOOK_SCRIPT_PATH = "codex/hooks/inject_unslop.py"
 UNSLOP_HOOK_HELPER_PATH = "codex/hooks/unslop_body.py"
 HERMES_UNSLOP_HOOK_PATH = "content/scripts/hermes_unslop.py"
 OPENCODE_UNSLOP_V2_PLUGIN_PATH = "opencode/plugins/unslop-v2.ts"
 THIRD_PARTY_LOCK_PATH = "content/third-party/upstream-lock.json"
+PUBLIC_GRILL_DECLARED_BODY_SHA256 = {
+    "upstream-derived-v1": "12480936945e61f35b95f2dfc70279f778b51b0d8a71437aa39e8feaa83dad93",
+    "bounded-authored-v2": "92e451dc5a18c9e6139146623986c463af28b23628912d23e311875b8f617c63",
+}
 PLACEHOLDER = "[TODO:"
 PLUGIN_AUTHOR_NAME = "g-imhoff"
 LEGACY_PROJECT_IDENTITIES = (
@@ -315,6 +320,55 @@ TEST_EVIDENCE_CONTRACT_FIELDS = {
     "receipt",
     "finding",
 }
+TEST_EVIDENCE_EXTENSIONS = {'output_predicates': {'modes': ['exact-text', 'sha256', 'json-fields', 'exit-only'],
+                       'json_assertion_fields': ['path', 'operator', 'value'],
+                       'json_operators': ['equals',
+                                          'integer-equals',
+                                          'length-equals',
+                                          'type',
+                                          'exists'],
+                       'assertions_max': 64,
+                       'path_depth_max': 16,
+                       'semantics': 'all typed assertions and the exact expected exit code must '
+                                    'match, reject duplicate keys and executable predicates'},
+ 'run_budgets': {'preparation_schema': 'test-charter-preparation.v2',
+                 'charter_schema': 'test-charter.v2',
+                 'default_actions': 8,
+                 'default_usable_seconds': 780,
+                 'hard_actions': 64,
+                 'hard_waves': 16,
+                 'actions_per_wave': 8,
+                 'hard_usable_seconds': 3600,
+                 'closed_fields': ['semantic_actions_max',
+                                   'waves_max',
+                                   'usable_budget_seconds',
+                                   'rationale',
+                                   'waves'],
+                 'limits_encoding': 'decimal strings',
+                 'required_scope': 'every material oracle required action occurs in the frozen '
+                                   'wave plan',
+                 'execution': 'reject unplanned or reordered waves and bound child execution to '
+                              'the remaining bootstrap deadline'},
+ 'recorded_execution': {'manifest_schema': 'test-recorded-action.v1',
+                        'manifest_fields': ['schema_version', 'entry', 'command', 'execution'],
+                        'entry_fields': ['action_id',
+                                         'role',
+                                         'ring',
+                                         'action',
+                                         'path',
+                                         'expected',
+                                         'oracle_ids',
+                                         'artifact_ids'],
+                        'wave_schema': 'test-recorded-wave.v1',
+                        'wave_fields': ['schema_version', 'actions'],
+                        'wave_actions_max': 8,
+                        'record_schema': 'test-execution-record.v1',
+                        'derived_fields': ['head', 'actual', 'status'],
+                        'pass_gate': 'one matching recorder receipt per action, complete charter '
+                                     'bytes and entry binding, raw digest and output predicate '
+                                     'recomputation',
+                        'legacy_gate': 'handwritten FAIL and BLOCKED evidence remains supported, '
+                                       'handwritten PASS is rejected'}}
 TEST_EVIDENCE_TERMINAL_STATES = ["PASS", "FAIL", "BLOCKED", "EXEMPT"]
 TEST_EVIDENCE_FINDING_KINDS = [
     "product-defect",
@@ -694,8 +748,8 @@ EXPECTED_AGENTS = {
     "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
     "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
     "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-6-luna", "max", None),
+    "expskill-implementer": ("gpt-6-luna", "max", None),
     "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
     "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
@@ -717,15 +771,21 @@ REVIEW_HANDOFF_CLAUSES = (
     "stop before dispatch or before sending a follow-up when the resulting total would "
     "exceed the limit.",
     "a real accepted specification file is referenced separately when it exists.",
-    "the exception applies only to a specification file that existed before review "
-    "dispatch.",
     "it does not permit a review-time summary, copy, or relabelled context package.",
     "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
     "or other repository content.",
     "do not attach binary or opaque review context.",
 )
+REVIEW_HANDOFF_EXCEPTION_CLAUSES = {
+    relative: "the exception applies only to a specification file that existed before review dispatch."
+    for relative in REVIEW_HANDOFF_PATHS
+}
+REVIEW_HANDOFF_EXCEPTION_CLAUSES["content/skills/implement/SKILL.md"] = (
+    "the exception applies only to the complete accepted graph snapshot preserved before production "
+    "edits or a specification file that existed before review dispatch."
+)
 REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "content/skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
+    "content/skills/implement/SKILL.md": "9054b512587e322f4b6d413867f90525da4e752eba090aaca7d00f7807389741",
     "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
     "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
 }
@@ -747,8 +807,8 @@ REVIEW_AGENT_HANDOFF_CLAUSES = (
     "transcripts.",
 )
 REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
-    "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
+    "expskill-review": "282892b800401e3f98ee7c08dcd70eed8b7f34b260f3520a7a16c91895fb9f03",
+    "expskill-spec": "4be6f7afdcb772a04c82eeb3981969fadf0d8ae4e2c88bfa6800ead3cf5ba597",
 }
 
 REQUIRED_AGENT_FIELDS = (
@@ -756,7 +816,6 @@ REQUIRED_AGENT_FIELDS = (
     "description",
     "model",
     "model_reasoning_effort",
-    "sandbox_mode",
     "developer_instructions",
 )
 
@@ -774,6 +833,9 @@ AGENT_BOUNDARIES = {
         "one owned branch",
         "no delegation",
         "no scope expansion",
+        "parent-approved sandbox and approval policy",
+        "stop before production edits",
+        "never change sandbox settings",
     ),
     "expskill-planner": (
         "private plan graph",
@@ -786,6 +848,9 @@ AGENT_BOUNDARIES = {
         "one coherent local candidate commit",
         "do not write the plan graph",
         "do not delegate",
+        "parent-approved sandbox and approval policy",
+        "stop before production edits",
+        "never change sandbox settings",
     ),
     "expskill-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
         "read-only",
@@ -864,6 +929,14 @@ EXPECTED_POLICY_PROFILES = {
         "sandbox_mode": "read-only",
         "escalation": None,
     },
+}
+
+EXPECTED_PLANNER_EVIDENCE = {
+    "schema_version": "plan-evidence-dispatch.v1",
+    "caller_profile": "expskill-planner",
+    "service_profile": "expskill-explorer",
+    "purposes": ["research", "plan-audit"],
+    "max_prompt_lines": 300,
 }
 
 EXPECTED_POLICY_ROUTES = {
@@ -1124,11 +1197,18 @@ def validate_repository(
             _validate_unslop_hook(plugin_root, errors)
             _validate_authoring_runtime(plugin_root, errors)
             _validate_third_party_sources(plugin_root, errors)
+            _validate_authored_skill_integrity(plugin_root, errors)
             _validate_helper_and_package_layout(plugin_root, errors)
         _validate_public_readme(repository_root, errors)
         _validate_removed_repository_local_skill(repository_root, errors)
         _validate_skill_punctuation(repository_root, errors)
         _validate_no_legacy_project_identity(repository_root, errors)
+    if include_opencode or include_hermes:
+        try:
+            skill_inventory(repository_root)
+        except AgentSyncError as error:
+            errors.append(f"canonical skill inputs cannot be inventoried: {error}")
+            return tuple(errors)
     if include_opencode:
         _validate_opencode_package(repository_root, errors)
     if include_hermes:
@@ -1159,7 +1239,7 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
                 f"review handoff contract at {relative} must begin at a live top-level "
                 "Markdown heading"
             )
-        for clause in REVIEW_HANDOFF_CLAUSES:
+        for clause in (*REVIEW_HANDOFF_CLAUSES, REVIEW_HANDOFF_EXCEPTION_CLAUSES[relative]):
             if clause not in normalized:
                 errors.append(
                     f"review handoff contract at {relative} must include {clause!r}"
@@ -1511,6 +1591,18 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
                 "scripts/freeze_charter.py",
                 "scripts/record_final_action.py",
             })
+            contract_path = skill_root / "references" / "evidence-contract.json"
+            if contract_path.is_file() and not contract_path.is_symlink():
+                try: contract = json.loads(contract_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError): contract = None
+                if isinstance(contract, dict) and set(contract) == TEST_EVIDENCE_CONTRACT_FIELDS | set(TEST_EVIDENCE_EXTENSIONS):
+                    expected_files.add("scripts/execution_budget.py")
+                    _required_nonempty_package_file(
+                        plugin_root,
+                        f"{relative_skill}/scripts/execution_budget.py",
+                        "test execution budget helper",
+                        errors,
+                    )
         expected_directories: set[str] = set()
         if skill_root.name == "brainstorm":
             expected_directories.add("references")
@@ -1803,12 +1895,16 @@ def _validate_test_evidence_contract(skill_root: Path, errors: list[str]) -> Non
     contract = _load_json_object(contract_path, "test evidence contract", errors)
     if contract is None:
         return
-    if set(contract) != TEST_EVIDENCE_CONTRACT_FIELDS:
+    if set(contract) not in (TEST_EVIDENCE_CONTRACT_FIELDS, TEST_EVIDENCE_CONTRACT_FIELDS | set(TEST_EVIDENCE_EXTENSIONS)):
         errors.append(
-            "test evidence contract keys must be exactly schema_version, "
-            "terminal_states, finding_kinds, bundle, receipt, and finding"
+            "test evidence contract keys must be exactly the legacy six fields or "
+            "those fields plus output_predicates, run_budgets, and recorded_execution"
         )
         return
+    if set(TEST_EVIDENCE_EXTENSIONS) <= set(contract):
+        for name, expected in TEST_EVIDENCE_EXTENSIONS.items():
+            if contract[name] != expected:
+                errors.append(f"test evidence contract {name} must match the required closed declaration")
     if contract.get("schema_version") != TEST_EVIDENCE_CONTRACT_VERSION:
         errors.append(
             "test evidence contract schema_version must be "
@@ -2373,14 +2469,29 @@ def _validate_public_third_party_derivations(
             b"",
             1,
         )
-        body = engine[engine_end:].lstrip(b"\n")
-        body = body.replace(b"it; don't", b"it. Don't").replace(
-            b"report; ask",
-            b"report. Ask",
+        grill = _without_shared_metadata_block(public_grill)
+        clauses = (
+            b"Adapted from the pinned Matt Pocock Grill Me and Grilling sources.",
+            b"Run only on explicit invocation or explicit consent",
+            b"Ask at most three material questions per round",
+            b"Use at most six rounds for the current agreed scope.",
+            b"without claiming completion",
+            b"confirmed decision delta",
+            b"Do not implement, route to another lifecycle phase",
         )
-        expected_grill = frontmatter + b"\n" + body
-        if _without_shared_metadata_block(public_grill) != expected_grill:
-            errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
+        if not grill.startswith(b"---\nname: grill-me\n") or any(clause not in grill for clause in clauses):
+            errors.append("public skill 'grill-me' must retain attributed bounded decision behavior")
+
+
+def _validate_authored_skill_integrity(plugin_root: Path, errors: list[str]) -> None:
+    path = plugin_root / "content" / "skills" / "grill-me" / "SKILL.md"
+    try:
+        content = _without_shared_metadata_block(path.read_bytes())
+    except OSError as error:
+        errors.append(f"public Grill Me authored-wrapper validation failed: {error}")
+        return
+    if hashlib.sha256(content).hexdigest() not in PUBLIC_GRILL_DECLARED_BODY_SHA256.values():
+        errors.append("public skill 'grill-me' differs from its declared derived or authored-wrapper body")
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
@@ -2811,14 +2922,17 @@ def _validate_policy(plugin_root: Path, errors: list[str]) -> None:
         "policy_version": "execution-budget-policy.v1",
         "profiles": EXPECTED_POLICY_PROFILES,
         "routes": EXPECTED_POLICY_ROUTES,
+        "planner_evidence": EXPECTED_PLANNER_EVIDENCE,
     }
     if set(policy) != set(expected):
-        errors.append("execution policy keys must be exactly policy_version, profiles, and routes")
+        errors.append("execution policy keys must be exactly policy_version, profiles, routes, and planner_evidence")
         return
     if policy.get("policy_version") != expected["policy_version"]:
         errors.append("execution policy policy_version is not execution-budget-policy.v1")
     if policy.get("profiles") != EXPECTED_POLICY_PROFILES:
         errors.append("execution policy profiles do not match the exact validated roster")
+    if policy.get("planner_evidence") != EXPECTED_PLANNER_EVIDENCE:
+        errors.append("execution policy planner evidence service does not match its scoped contract")
     if policy.get("routes") != EXPECTED_POLICY_ROUTES:
         errors.append("execution policy routes do not match the exact validated plans")
 
@@ -2877,6 +2991,12 @@ def _validate_helper_and_package_layout(plugin_root: Path, errors: list[str]) ->
     design_helper = plugin_root / design_helper_path
     if design_helper.is_symlink() or not design_helper.is_file() or design_helper.stat().st_size == 0:
         errors.append("design state helper must be a non-empty regular file")
+    research_helper = _required_package_path(plugin_root, RESEARCH_BUDGET_HELPER_PATH, "research budget helper", "file", errors)
+    research_matches = sorted(path.relative_to(plugin_root).as_posix() for path in plugin_root.rglob("research_budget.py") if path.is_file() or path.is_symlink())
+    if research_matches != [RESEARCH_BUDGET_HELPER_PATH]:
+        errors.append(f"research budget helper must exist only at {RESEARCH_BUDGET_HELPER_PATH}; found {', '.join(research_matches) or 'none'}")
+    if research_helper is not None and (research_helper.is_symlink() or not research_helper.is_file() or research_helper.stat().st_size == 0):
+        errors.append("research budget helper must be a non-empty regular file")
 
 
 def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
@@ -2959,6 +3079,8 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
         if not isinstance(metadata, dict):
             continue
         expected_fields = {"model", "model_reasoning_effort", "sandbox_mode", "source"}
+        if EXPECTED_AGENTS[expected_name][2] is None:
+            expected_fields.remove("sandbox_mode")
         if set(metadata) != expected_fields:
             errors.append(
                 f"Codex agent metadata {expected_name!r} must contain only technical fields"
@@ -2969,6 +3091,8 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
                 f"Codex agent metadata {expected_name!r} source must be {expected_source!r}"
             )
         expected_model, expected_effort, expected_sandbox = EXPECTED_AGENTS[expected_name]
+        if expected_sandbox is None and "sandbox_mode" in metadata:
+            errors.append(f"Codex agent metadata {expected_name!r} must inherit the parent sandbox")
         for field, expected_value in (
             ("model", expected_model),
             ("model_reasoning_effort", expected_effort),
@@ -3327,6 +3451,8 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
         )
 
     expected_model, expected_effort, expected_sandbox = EXPECTED_AGENTS[expected_name]
+    if expected_sandbox is None and "sandbox_mode" in profile:
+        errors.append(f"agent profile {expected_name!r} must inherit the parent sandbox")
     for field, expected_value in (
         ("model", expected_model),
         ("model_reasoning_effort", expected_effort),
@@ -3978,6 +4104,21 @@ def _validate_opencode_agent_spec(package_root: Path, errors: list[str]) -> None
     if not isinstance(entries, dict) or set(entries) != set(OPENCODE_AGENTS):
         errors.append("opencode agent spec agents must cover the exact agent roster")
         return
+    planner_entry = entries["expskill-planner"]
+    planner_permission = planner_entry.get("permission", {}) if isinstance(planner_entry, dict) else {}
+    if not isinstance(planner_permission, dict):
+        planner_permission = {}
+    expected_tasks = {"*": "deny", "expskill-explorer": "allow"}
+    if planner_permission.get("task") != expected_tasks or list(planner_permission.get("task", {}).items()) != list(expected_tasks.items()):
+        errors.append("opencode planner task permission must allow only the scoped explorer service after its wildcard denial")
+    if planner_permission.get("edit") != "deny":
+        errors.append("opencode planner must retain its product edit denial")
+    explorer_entry = entries["expskill-explorer"]
+    explorer_permission = explorer_entry.get("permission", {}) if isinstance(explorer_entry, dict) else {}
+    if not isinstance(explorer_permission, dict):
+        explorer_permission = {}
+    if explorer_permission.get("external_directory") != "ask" or explorer_permission.get("edit") != "deny" or explorer_permission.get("task") != "deny":
+        errors.append("opencode explorer must ask for external reads while retaining edit and task denials")
     for name in OPENCODE_READ_ONLY_GIT_AGENTS:
         entry = entries.get(name)
         if not isinstance(entry, dict):
@@ -4198,7 +4339,8 @@ def _validate_opencode_agents(
             errors.append(
                 f"opencode agent {name!r} description must match the bounded canonical profile"
             )
-        for marker in ("task: deny", "question: deny"):
+        task_markers = ('task:', '"*": deny', 'expskill-explorer: allow') if name == "expskill-planner" else ("task: deny",)
+        for marker in (*task_markers, "question: deny"):
             if marker not in block:
                 errors.append(f"opencode agent {name!r} permission must declare {marker}")
         if name in OPENCODE_READ_ONLY_AGENTS:

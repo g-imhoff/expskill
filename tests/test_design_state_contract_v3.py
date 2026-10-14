@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +49,7 @@ def _start(module: object, root: Path) -> tuple[dict, Path, Path, str]:
     repo, head = _repo(root)
     state_home = root / "state"
     receipt = module.initialize_workflow(repository=repo, branch="feature/design", worktree=repo, baseline=head, dirty_fingerprint=_dirty(repo), ui_contract={"digest": DIGEST, "outcome": "checkout"}, scope={"components": ["CheckoutForm", "AccountCard"], "exclusions": ["route"]}, state_home=state_home)
+    receipt = confirm_fixture_workflow(module, receipt, state_home)
     return receipt, repo, state_home, str(receipt["workflow_id"])
 
 
@@ -66,12 +67,15 @@ def _records(names: tuple[str, ...] = ("CheckoutForm", "AccountCard"), suffix: s
         dependencies[dependency_id] = {"id": dependency_id, "digest": hashlib.sha256(f"{name}:dependency".encode()).hexdigest(), "component_ids": [name]}
         evidence[evidence_id] = {"id": evidence_id, "component_id": name, "digest": evidence_digest, "code_digest": code, "contract_digest": contract, "widths": ["compact", "intermediate", "wide"], "themes": ["light", "dark"], "states": ["default", "loading", "error"], "technical": passing_technical(evidence_digest, "component-check")}
         approvals[approval_id] = {"id": approval_id, "component_id": name, "code_digest": code, "contract_digest": contract, "evidence_ids": [evidence_id], "dependency_ids": [dependency_id], "decision": "approved"}
+    for collection in (components, evidence, approvals):
+        for item in collection.values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
     return {"components": components, "dependencies": dependencies, "evidence": evidence, "approvals": approvals}
 
 
 def _seed(module: object, receipt: dict, state_home: Path, workflow_id: str, names: tuple[str, ...] = ("CheckoutForm", "AccountCard"), suffix: str = "") -> tuple[dict, dict]:
     records = _records(names, suffix)
     candidate, review, manifest = _layers(records)
+    prepare_delivery_fixture(module, receipt, state_home, workflow_id, records, (candidate, review, manifest))
     records["selected_rules"] = {"responsive": {"id": "responsive", "reason": "actual pressure"}}
     records["seed_permission"] = {"source": "project-owned", "version": "current", "approved": True}
     records["questions"] = {}
@@ -87,7 +91,7 @@ def _digest(value: object) -> str:
 def _layers(records: dict[str, dict]) -> tuple[dict, dict, dict]:
     components = records["components"]
     evidence = records["evidence"]
-    candidate = {"files": sorted([{"path": f"components/{name}.tsx", "digest": value["code_digest"], "classification": "component"} for name, value in components.items()], key=lambda item: item["path"])}
+    candidate = {"files": sorted([item for name, value in components.items() for item in value.get("files", [{"path": f"components/{name}.tsx", "digest": value["code_digest"], "classification": "component"}])], key=lambda item: item["path"])}
     review = {"files": sorted([{"path": f"evidence/{eid}.json", "digest": value["digest"], "classification": "review"} for eid, value in evidence.items()], key=lambda item: item["path"])}
     manifest = {"files": sorted([{"path": f"contracts/{name}.json", "digest": value["contract_digest"], "classification": "manifest"} for name, value in components.items()], key=lambda item: item["path"])}
     return candidate, review, manifest
@@ -230,7 +234,9 @@ class DesignStateContractV3Tests(unittest.TestCase):
             refreshed["evidence"]["CheckoutForm-evidence"] = changed
             refreshed["approvals"]["CheckoutForm-approval"]["code_digest"] = refreshed["components"]["CheckoutForm"]["code_digest"]
             refreshed_layers = _layers(refreshed)
-            refreshed_receipt = module.apply_updates(workflow_id=workflow_id, expected_revision=stale["revision"], updates={"components": {"CheckoutForm": refreshed["components"]["CheckoutForm"].copy()}, "evidence": {"CheckoutForm-evidence": changed}, "dependencies": {"CheckoutForm-dependency": refreshed["dependencies"]["CheckoutForm-dependency"]}, "approvals": {"CheckoutForm-approval": refreshed["approvals"]["CheckoutForm-approval"]}, "delivery": _expected_delivery(*refreshed_layers)}, state_home=state_home)
+            prepare_delivery_fixture(module, stale, state_home, workflow_id, refreshed, refreshed_layers)
+            changed = refreshed["evidence"]["CheckoutForm-evidence"]
+            refreshed_receipt = module.apply_updates(workflow_id=workflow_id, expected_revision=stale["revision"], updates={**{key: refreshed[key] for key in ("components", "evidence", "dependencies", "approvals")}, "delivery": _expected_delivery(*refreshed_layers)}, state_home=state_home)
             refreshed_state = module.load_workflow(workflow_id=workflow_id, state_home=state_home)
             self.assertNotIn("CheckoutForm", refreshed_state["invalidations"])
             self.assertNotIn("AccountCard", refreshed_state["invalidations"])

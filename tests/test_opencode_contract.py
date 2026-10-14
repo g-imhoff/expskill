@@ -145,7 +145,11 @@ class OpencodeContractTests(unittest.TestCase):
                 self.assertLessEqual(len(scalars["description"]), OPENCODE_DESCRIPTION_MAX_LENGTH)
                 self.assertIn("permission", mappings)
                 self.assertEqual(scalars["description"], catalog["agents"][name]["description"])
-                self.assertIn("task: deny", contents)
+                if name == "expskill-planner":
+                    self.assertEqual(spec["agents"][name]["permission"]["task"], {"*": "deny", "expskill-explorer": "allow"})
+                    self.assertIn("expskill-explorer: allow", contents)
+                else:
+                    self.assertIn("task: deny", contents)
                 self.assertIn("question: deny", contents)
                 if name in ("expskill-implementer", "expskill-designer"):
                     self.assertIn("edit: allow", contents)

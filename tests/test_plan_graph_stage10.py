@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -92,6 +93,7 @@ def _graph() -> dict[str, object]:
                 "presented": True,
                 "confirmed": True,
                 "stale": False,
+                "presentation": "Validate configuration, accepting valid input and rejecting invalid input through configuration tests.",
             }
         },
         "invalidations": [],
@@ -182,10 +184,13 @@ class TransactionLayerTests(unittest.TestCase):
         value: dict[str, object],
         home: Path | None = None,
     ) -> object:
+        if operation == "refresh-audit" and value.get("independent"):
+            from tests.plan_audit_fixture import refresh_audit
+            return refresh_audit(self.helper, self.repo, BRANCH, graph, value, home or self.state_home)
         version_field = (
             "version"
             if operation
-            in {"reconfirm-decision", "regenerate-projection", "reconfirm-projection"}
+            in {"confirm-decision", "reconfirm-decision", "revalidate-decision", "regenerate-projection", "reconfirm-projection", "clarify-projection"}
             else "record_version"
         )
         version = value[version_field]
@@ -486,7 +491,9 @@ class TransactionLayerTests(unittest.TestCase):
         template["work"]["T1"]["decisions"] = ["D1"]
         template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
         template["projections"]["U2"] = {"covers": ["O1"], "version": 1,
-            "decision_versions": {}, "presented": True, "confirmed": True, "stale": False}
+            "decision_versions": {}, "presented": True, "confirmed": True, "stale": False,
+            "presentation": "Configuration is validated."}
+        template["audit"] = {"breadth": True, "reason": "Changes ownership across configuration and startup callers"}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         self.assertEqual(receipt.state, "stale")
 
@@ -508,8 +515,11 @@ class TransactionLayerTests(unittest.TestCase):
 
         evidence = json.loads(json.dumps(stale_graph["evidence"]["E1"]))
         evidence.update(fresh=True, observed_at="2026-01-01T00:00:00Z")
-        decision = json.loads(json.dumps(stale_graph["decisions"]["D1"]))
-        decision.update(stale=False, confirmed_version=decision["version"])
+        self._typed_update(receipt.workflow_id, stale_graph, "refresh-evidence", ["evidence", "E1"], evidence)
+        stale_graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        stale = self.helper.discover_workflow(self.repo, BRANCH, self.state_home)
+        decision = self.helper.issue_decision_revalidation(graph=stale_graph, decision_id="D1",
+            classification="unchanged-meaning", reason="The revised evidence preserves config-boundary ownership.")
         proof = json.loads(json.dumps(stale_graph["proof"]["P1"]))
         proof.update(fresh=True, evidence=[{
             "workflow_id": receipt.workflow_id, "graph_revision": stale.revision,
@@ -520,9 +530,13 @@ class TransactionLayerTests(unittest.TestCase):
         projection = json.loads(json.dumps(stale_graph["projections"]["U1"]))
         projection.update(stale=False, presented=True, confirmed=False,
                           decision_versions={"D1": decision["version"]})
+        presentation_graph = json.loads(json.dumps(stale_graph))
+        presentation_graph["projections"]["U1"] = projection
+        projection["presentation"] = self.helper.issue_projection_presentation(
+            graph=presentation_graph, projection_id="U1", text="Validate at the revised configuration boundary and prove its behavior.")
 
         def typed(operation: str, path: list[str], value: dict[str, object]) -> dict[str, object]:
-            version = value["version"] if operation in {"reconfirm-decision", "regenerate-projection"} else value["record_version"]
+            version = value["version"] if operation in {"revalidate-decision", "regenerate-projection"} else value["record_version"]
             operation_receipt = self.helper.issue_operation_receipt(
                 operation=operation, workflow_id=receipt.workflow_id,
                 prior_graph_revision=stale.revision, target=path,
@@ -533,13 +547,14 @@ class TransactionLayerTests(unittest.TestCase):
 
         repaired = self.helper.apply_updates(
             self.repo, BRANCH, receipt.workflow_id, stale.revision,
-            [typed("refresh-evidence", ["evidence", "E1"], evidence),
-             typed("reconfirm-decision", ["decisions", "D1"], decision),
+            [typed("revalidate-decision", ["decisions", "D1"], decision),
              typed("refresh-proof", ["proof", "P1"], proof),
-             typed("refresh-audit", ["audit"], audit),
              typed("regenerate-projection", ["projections", "U1"], projection)],
             self.state_home,
         )
+        inspected_graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        inspected_audit = dict(inspected_graph["audit"], fresh=True, independent=True, graph_revision=inspected_graph["graph_revision"])
+        repaired = self._typed_update(receipt.workflow_id, inspected_graph, "refresh-audit", ["audit"], inspected_audit)
         self.assertEqual(repaired.state, "awaiting-user")
         regenerated = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         confirmed = json.loads(json.dumps(regenerated["projections"]["U1"]))
@@ -561,6 +576,872 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertTrue(final_graph["decisions"]["D1"]["operation_receipt"])
         self.assertTrue(final_graph["proof"]["P1"]["operation_receipt"])
         self.assertTrue(final_graph["audit"]["operation_receipt"])
+
+    def test_revised_unexecuted_proof_plan_can_be_confirmed_without_execution(self) -> None:
+        receipt = self._initialize()
+        changed = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["outcomes", "O1", "result"],
+              "value": "Configuration is validated without coercion"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        proof = dict(graph["proof"]["P1"], fresh=True)
+        refreshed = self._typed_update(
+            receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], proof)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["proof"]["P1"]["evidence"], [])
+        self.assertFalse(graph["proof"]["P1"]["execution_required"])
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        projection["presentation"] = self.helper.issue_projection_presentation(
+            graph=graph, projection_id="U1", text="Validate configuration without coercion and prove that behavior.")
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        confirmed = dict(graph["projections"]["U1"], confirmed=True)
+        ready = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], confirmed)
+        self.assertEqual(ready.state, "ready")
+        self.assertGreater(ready.revision, refreshed.revision)
+        self.assertEqual(changed.state, "stale")
+
+    def test_initial_projection_retains_exact_presented_words_and_digests(self) -> None:
+        graph = _graph()
+        wording = "Validate configuration without coercion. Preserve valid input."
+        graph["projections"]["U1"]["presentation"] = wording
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        stored = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        presentation = stored["projections"]["U1"]["presentation"]
+        self.assertEqual(receipt.state, "ready")
+        self.assertEqual(presentation["text"], wording)
+        self.assertEqual(presentation["text_digest"], hashlib.sha256(wording.encode("utf-8")).hexdigest())
+        self.assertEqual(presentation["source_digest"], self.helper.issue_projection_presentation(
+            graph=stored, projection_id="U1", text=wording)["source_digest"])
+
+    def test_projection_confirmation_cannot_change_presented_words(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"]["presentation"] = "Validate configuration."
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["projections", "U1", "presented"], "value": False}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        wording = "Validate configuration and preserve valid inputs."
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text=wording))
+        regenerated = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        substituted = dict(graph["projections"]["U1"], confirmed=True,
+            presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text="Accept every input."))
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "outside its authority"):
+            self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], substituted)
+        confirmed = dict(graph["projections"]["U1"], confirmed=True)
+        final = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], confirmed)
+        stored = self.helper.load_workflow(self.repo, BRANCH, self.state_home)["projections"]["U1"]
+        self.assertEqual(final.state, "ready")
+        self.assertEqual(stored["presentation"]["text"], wording)
+        self.assertEqual(stored["operation_receipt"]["value_digest"], self.helper._record_payload_digest(stored))
+
+    def test_fresh_draft_projection_can_be_presented_then_confirmed(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"].update(presented=False, confirmed=False)
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.assertEqual(receipt.state, "awaiting-user")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(loaded["projections"]["U1"], presented=True)
+        presented = self._typed_update(receipt.workflow_id, loaded, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(presented.state, "awaiting-user")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(loaded["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, loaded, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_fresh_material_decision_can_receive_initial_confirmation_without_invalidation(self) -> None:
+        template = _graph()
+        template["decisions"]["D1"] = {
+            "question": "Choose the validation policy", "choice": "Reject invalid input",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+        }
+        template["work"]["T1"]["decisions"] = ["D1"]
+        template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1}, confirmed=False)
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        decision = self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1")
+        self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"], decision)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], confirmed=True)
+        result = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], projection)
+        final = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(result.state, "ready")
+        self.assertEqual(final["decisions"]["D1"]["version"], 1)
+        self.assertFalse(final["decisions"]["D1"]["stale"])
+        self.assertEqual(final["decisions"]["D1"]["confirmation"]["presentation"], final["projections"]["U1"]["presentation"])
+        self.assertEqual(final["decisions"]["D1"]["confirmation"]["trust"], "coordinator-attestation")
+        self.assertEqual(final["proof"], graph["proof"])
+        approved = final["decisions"]["D1"]["confirmation"]
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, final["graph_revision"],
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Validate configuration through an adapter"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["decisions"]["D1"]["confirmation"], approved)
+        revalidated = self.helper.issue_decision_revalidation(graph=graph, decision_id="D1",
+            classification="unchanged-meaning", reason="The adapter preserves the rejection policy.")
+        self._typed_update(receipt.workflow_id, graph, "revalidate-decision", ["decisions", "D1"], revalidated)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text="Validate configuration through the adapter and reject invalid input."))
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], dict(graph["projections"]["U1"], confirmed=True)).state, "ready")
+        final = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(final["decisions"]["D1"]["confirmation"], approved)
+        self.assertEqual(final["decisions"]["D1"]["confirmed_version"], 1)
+        self.assertNotEqual(final["projections"]["U1"]["presentation"], approved["presentation"])
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, final["graph_revision"],
+            [{"op": "set", "path": ["decisions", "D1", "choice"], "value": "Reject unknown and malformed input"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(graph["decisions"]["D1"]["stale"])
+        self.assertEqual(graph["decisions"]["D1"]["version"], 2)
+        self.assertEqual(graph["decisions"]["D1"]["confirmed_version"], 1)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False, decision_versions={"D1": 2})
+        presentation_graph = json.loads(json.dumps(graph))
+        presentation_graph["projections"]["U1"] = projection
+        projection["presentation"] = self.helper.issue_projection_presentation(graph=presentation_graph, projection_id="U1", text="Reject unknown and malformed input through the adapter.")
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "retained current presentation"):
+            self._typed_update(receipt.workflow_id, graph, "reconfirm-decision", ["decisions", "D1"], dict(graph["decisions"]["D1"], stale=False, confirmed_version=2))
+        decision = self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1")
+        self._typed_update(receipt.workflow_id, graph, "reconfirm-decision", ["decisions", "D1"], decision)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], dict(graph["projections"]["U1"], confirmed=True)).state, "ready")
+        final = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(final["decisions"]["D1"]["confirmation"]["presentation"], final["projections"]["U1"]["presentation"])
+
+    def test_initial_decision_confirmation_rejects_missing_or_changed_presented_binding(self) -> None:
+        template = _graph()
+        template["decisions"]["D1"] = {
+            "question": "Choose validation", "choice": "Reject invalid input",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+        }
+        template["work"]["T1"]["decisions"] = ["D1"]
+        template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1}, confirmed=False)
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        decision = self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1")
+        missing = dict(decision)
+        del missing["confirmation"]
+        wrong_text = json.loads(json.dumps(decision))
+        wrong_text["confirmation"]["presentation"]["text"] = "Accept invalid input."
+        wrong_text["confirmation"]["presentation"]["text_digest"] = hashlib.sha256(b"Accept invalid input.").hexdigest()
+        wrong_choice = dict(decision, choice="Accept invalid input")
+        for value in (missing, wrong_text, wrong_choice):
+            with self.subTest(value=value), self.assertRaises(self.helper.PlanGraphError):
+                self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"], value)
+        for field, value in (("presented", False), ("stale", True), ("decision_versions", {"D1": 2}), ("presentation", None)):
+            unavailable = json.loads(json.dumps(graph))
+            unavailable["projections"]["U1"][field] = value
+            with self.subTest(field=field), self.assertRaises(self.helper.PlanGraphError):
+                self.helper.issue_decision_confirmation(graph=unavailable, decision_id="D1", projection_id="U1")
+        self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"], decision)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "not current"):
+            self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"], dict(graph["decisions"]["D1"]))
+        downgraded = dict(graph["decisions"]["D1"])
+        del downgraded["confirmation"]
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "typed confirmation"):
+            self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                                      [{"op": "set", "path": ["decisions", "D1"], "value": downgraded}], self.state_home)
+
+    def test_adaptive_material_decision_insertion_is_fresh_presentable_and_first_confirmable(self) -> None:
+        receipt = self._initialize()
+        decision = {
+            "question": "Choose compatibility policy", "choice": "Reject unknown configuration keys",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+            "invalidates": [], "consequences": [], "operation_receipt": None,
+        }
+        inserted = self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["decisions", "D1"], "value": decision},
+             {"op": "set", "path": ["work", "T1", "decisions"], "value": ["D1"]},
+             {"op": "set", "path": ["projections", "U1", "covers"], "value": ["D1", "T1", "P1"]}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(inserted.state, "stale")
+        self.assertEqual(graph["decisions"]["D1"]["version"], 1)
+        self.assertIsNone(graph["decisions"]["D1"]["confirmed_version"])
+        self.assertFalse(graph["decisions"]["D1"]["stale"])
+        self.assertFalse(graph["decisions"]["D1"].get("revalidation_required", False))
+        self.assertFalse(graph["proof"]["P1"]["fresh"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False, decision_versions={"D1": 1})
+        presented_graph = json.loads(json.dumps(graph))
+        presented_graph["projections"]["U1"] = projection
+        projection["presentation"] = self.helper.issue_projection_presentation(graph=presented_graph, projection_id="U1", text="Validate configuration and reject unknown keys.")
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        decision = self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1")
+        self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"], decision)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        confirmed = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], dict(graph["projections"]["U1"], confirmed=True))
+        self.assertEqual(confirmed.state, "ready")
+        final = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(final["decisions"]["D1"]["version"], 1)
+        self.assertEqual(final["decisions"]["D1"]["confirmation"]["presentation"], final["projections"]["U1"]["presentation"])
+
+    def test_adaptive_insertion_does_not_preserve_changed_existing_approval_or_accept_preconfirmed_new_choice(self) -> None:
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, self._shared_decision_graph(), self.state_home)
+        decision = {
+            "question": "Choose another policy", "choice": "Use bounded validation",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+            "invalidates": [], "consequences": [], "operation_receipt": None,
+        }
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["decisions", "D3"], "value": decision},
+             {"op": "set", "path": ["decisions", "D1", "choice"], "value": "A materially changed choice"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["decisions"]["D3"]["version"], 1)
+        self.assertFalse(graph["decisions"]["D3"]["stale"])
+        self.assertEqual(graph["decisions"]["D1"]["version"], 2)
+        self.assertEqual(graph["decisions"]["D1"]["confirmed_version"], 1)
+        self.assertTrue(graph["decisions"]["D1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertTrue(graph["projections"]["U3"]["confirmed"])
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["decisions", "D4"], "value": dict(decision, confirmed_version=1)}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(graph["decisions"]["D4"]["stale"])
+        self.assertNotEqual(graph["decisions"]["D4"]["version"], graph["decisions"]["D4"]["confirmed_version"])
+        self.assertNotEqual(graph["lifecycle"]["derived_state"], "ready")
+
+    def test_original_accepted_basis_survives_source_and_execution_rotations_unchanged(self) -> None:
+        receipt = self._initialize()
+        original = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        basis = self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        basis_path = Path(basis["path"])
+        basis_digest = basis["digest"]
+        self.assertNotEqual(basis_path.parent, receipt.path.parent)
+        self.assertEqual(self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home), basis)
+        (self.repo / "config.py").write_text("CONFIG = {'implemented': True}\n", encoding="utf-8")
+        self._git("add", "config.py")
+        self._git("commit", "-m", "authorized implementation")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"],
+            dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD"), observed_at="2026-10-02T14:00:00Z"))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        command = [sys.executable, "-c", "import config; assert config.CONFIG['implemented'] is True"]
+        result = subprocess.run(command, cwd=self.repo, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proof = dict(graph["proof"]["P1"], fresh=True, evidence=[{
+            "workflow_id": receipt.workflow_id, "graph_revision": graph["graph_revision"],
+            "node": "T1", "branch": BRANCH, "commit": self._git("rev-parse", "HEAD"),
+            "check": shlex.join(command), "result": {"status": "pass", "exit_code": result.returncode},
+        }])
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof", ["proof", "P1"], proof)
+        current = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        previous = json.loads(receipt.previous_path.read_text(encoding="utf-8"))
+        self.assertGreater(current["graph_revision"], original["graph_revision"] + 1)
+        self.assertGreater(previous["graph_revision"], original["graph_revision"])
+        self.assertTrue(current["proof"]["P1"]["execution_required"])
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "changed covered meaning"):
+            self.helper.freeze_acceptance_epoch(self.repo, BRANCH, receipt.workflow_id, current["graph_revision"],
+                basis_path, basis_digest, "Ordinary execution rotations cannot create a newly accepted scope.", self.state_home)
+        self.assertEqual(hashlib.sha256(basis_path.read_bytes()).hexdigest(), basis_digest)
+        self.assertEqual(json.loads(basis_path.read_text(encoding="utf-8")), original)
+        self.assertEqual(self.helper.load_acceptance_basis(basis_path, basis_digest), original)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "already frozen"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, current["graph_revision"], self.state_home)
+        self.helper.discard_workflow(self.repo, BRANCH, receipt.workflow_id, current["graph_revision"], True, self.state_home)
+        self.assertFalse(receipt.path.exists())
+        self.assertEqual(self.helper.load_acceptance_basis(basis_path, basis_digest), original)
+
+    def test_new_accepted_choice_in_same_workflow_exports_distinct_epoch_without_rebinding_original(self) -> None:
+        template = _graph()
+        template["decisions"]["D1"] = {
+            "question": "Choose validation", "choice": "Reject invalid input",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": None, "stale": False,
+        }
+        template["work"]["T1"]["decisions"] = ["D1"]
+        template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1}, confirmed=False)
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "confirm-decision", ["decisions", "D1"],
+            self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1"))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], dict(graph["projections"]["U1"], confirmed=True))
+        original = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        first = self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, original["graph_revision"], self.state_home)
+        original_bytes = Path(first["path"]).read_bytes()
+        (self.repo / "config.py").write_text("CONFIG = {'partial_implementation': True}\n", encoding="utf-8")
+        self._git("add", "config.py")
+        self._git("commit", "-m", "partial first implementation epoch")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"],
+            dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD")))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "revalidate-decision", ["decisions", "D1"],
+            self.helper.issue_decision_revalidation(graph=graph, decision_id="D1", classification="unchanged-meaning",
+                reason="Partial implementation preserves the accepted rejection policy."))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "changed covered meaning"):
+            self.helper.freeze_acceptance_epoch(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                Path(first["path"]), first["digest"], "Execution progress alone is not a newly accepted scope.", self.state_home)
+        paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"], self.state_home)
+        resumed = self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, self.state_home)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, resumed.revision,
+            [{"op": "set", "path": ["decisions", "D1", "choice"], "value": "Reject malformed input and report the reason"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(graph["decisions"]["D1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "current ready"):
+            self.helper.freeze_acceptance_epoch(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                Path(first["path"]), first["digest"], "The revised choice still awaits user approval.", self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False, decision_versions={"D1": 2})
+        presentation_graph = json.loads(json.dumps(graph))
+        presentation_graph["projections"]["U1"] = projection
+        projection["presentation"] = self.helper.issue_projection_presentation(graph=presentation_graph, projection_id="U1",
+            text="Reject malformed configuration and report the validation reason.")
+        self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "reconfirm-decision", ["decisions", "D1"],
+            self.helper.issue_decision_confirmation(graph=graph, decision_id="D1", projection_id="U1"))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"],
+            dict(graph["projections"]["U1"], confirmed=True)).state, "ready")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        approved_presentation = dict(graph["projections"]["U1"]["presentation"])
+        clarification = self.helper.issue_projection_clarification(graph=graph, projection_id="U1",
+            text="Invalid configuration fails with a validation reason.", classification="unchanged-meaning",
+            reason="The user requested clearer wording without changing the newly accepted choice.")
+        self._typed_update(receipt.workflow_id, graph, "clarify-projection", ["projections", "U1"], clarification)
+        accepted = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(accepted["projections"]["U1"]["presentation"], approved_presentation)
+        second = self.helper.freeze_acceptance_epoch(self.repo, BRANCH, receipt.workflow_id, accepted["graph_revision"],
+            Path(first["path"]), first["digest"], "The user approved the revised choice for a separate implementation run.", self.state_home)
+        self.assertNotEqual(first["path"], second["path"])
+        self.assertEqual(second["operation"], "freeze-acceptance-epoch")
+        self.assertEqual(second["previous_basis"]["digest"], first["digest"])
+        self.assertEqual(second["trust"], "coordinator-attestation")
+        reason = "The user approved the revised choice for a separate implementation run."
+        repeated = self.helper.freeze_acceptance_epoch(self.repo, BRANCH, receipt.workflow_id, accepted["graph_revision"],
+            Path(first["path"]), first["digest"], reason, self.state_home)
+        self.assertEqual(repeated, second)
+        exported = subprocess.run([sys.executable, str(HELPER), "freeze-acceptance-epoch", "--repo", str(self.repo),
+            "--branch", BRANCH, "--workflow-id", receipt.workflow_id, "--revision", str(accepted["graph_revision"]),
+            "--previous-basis", first["path"], "--previous-digest", first["digest"], "--reason", reason,
+            "--state-home", str(self.state_home)], capture_output=True, text=True, check=False)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertEqual(json.loads(exported.stdout), second)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "already frozen"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, accepted["graph_revision"], self.state_home)
+        self.assertEqual(Path(first["path"]).read_bytes(), original_bytes)
+        self.assertEqual(self.helper.load_acceptance_basis(Path(first["path"]), first["digest"]), original)
+        self.assertEqual(self.helper.load_acceptance_basis(Path(second["path"]), second["digest"]), accepted)
+        second_path = Path(second["path"])
+        second_bytes = second_path.read_bytes()
+        second_path.write_bytes(second_bytes + b"\n")
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "retained digest"):
+            self.helper.load_acceptance_basis(second_path, second["digest"])
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "bytes were altered"):
+            self.helper.freeze_acceptance_epoch(self.repo, BRANCH, receipt.workflow_id, accepted["graph_revision"],
+                Path(first["path"]), first["digest"], reason, self.state_home)
+        self.assertEqual(Path(first["path"]).read_bytes(), original_bytes)
+
+    def test_acceptance_freeze_rejects_wrong_identity_stale_revision_and_changed_or_unconfirmed_grounding(self) -> None:
+        receipt = self._initialize()
+        for workflow_id, revision in (("0" * 32, receipt.revision), (receipt.workflow_id, receipt.revision + 1)):
+            with self.subTest(workflow_id=workflow_id, revision=revision), self.assertRaises(self.helper.PlanGraphError):
+                self.helper.freeze_acceptance_basis(self.repo, BRANCH, workflow_id, revision, self.state_home)
+        self.assertFalse((self.state_home / "acceptance-bases").exists())
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["projections", "U1", "confirmed"], "value": False}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "current ready"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"], self.state_home)
+        home = self.root / "changed-before-freeze"
+        ready = self._initialize(home)
+        (self.repo / "config.py").write_text("CONFIG = {'edited_before_freeze': True}\n", encoding="utf-8")
+        with self.assertRaises(self.helper.RevisionConflict):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, ready.workflow_id, ready.revision, home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "current ready"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, ready.workflow_id, graph["graph_revision"], home)
+        self.assertFalse((home / "acceptance-bases").exists())
+
+    def test_acceptance_cli_export_is_complete_and_detects_changed_bytes_or_symlink_substitution(self) -> None:
+        receipt = self._initialize()
+        exported = subprocess.run([sys.executable, str(HELPER), "freeze-acceptance", "--repo", str(self.repo),
+                                   "--branch", BRANCH, "--workflow-id", receipt.workflow_id, "--revision", str(receipt.revision),
+                                   "--state-home", str(self.state_home)], capture_output=True, text=True, check=False)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        basis = json.loads(exported.stdout)
+        self.assertEqual(basis["schema_version"], "plan-acceptance-basis-receipt.v1")
+        path = Path(basis["path"])
+        original_bytes = path.read_bytes()
+        original = self.helper.load_acceptance_basis(path, basis["digest"])
+        self.assertEqual(original, self.helper.load_workflow(self.repo, BRANCH, self.state_home))
+        self.assertEqual(basis["graph_digest"], self.helper._canonical_digest(original))
+        path.write_bytes(original_bytes + b"\n")
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "retained digest"):
+            self.helper.load_acceptance_basis(path, basis["digest"])
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "bytes were altered"):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        self.assertEqual(path.read_bytes(), original_bytes + b"\n")
+        path.unlink()
+        path.symlink_to(receipt.path)
+        with self.assertRaises(self.helper.PlanGraphError):
+            self.helper.load_acceptance_basis(path, basis["digest"])
+        with self.assertRaises(self.helper.PlanGraphError):
+            self.helper.freeze_acceptance_basis(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+
+    def test_projection_rejects_presentation_bound_to_superseded_graph_meaning(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"]["presentation"] = "Validate configuration."
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Accept malformed configuration"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        old_presentation = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "graph meaning is stale"):
+            self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], old_presentation)
+
+    def test_legacy_ready_projection_requires_real_presentation_and_confirmation(self) -> None:
+        graph = _graph()
+        graph["projections"]["U1"]["presentation"] = "Validate configuration."
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        legacy = json.loads(receipt.path.read_text(encoding="utf-8"))
+        del legacy["projections"]["U1"]["presentation"]
+        receipt.path.write_text(json.dumps(legacy), encoding="utf-8")
+        before = receipt.path.read_bytes()
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(loaded["lifecycle"]["derived_state"], "awaiting-user")
+        self.assertNotIn("presentation", loaded["projections"]["U1"])
+        self.assertEqual(before, receipt.path.read_bytes())
+        projection = dict(loaded["projections"]["U1"], presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(
+                graph=loaded, projection_id="U1", text="Validate configuration and preserve valid inputs."))
+        regenerated = self._typed_update(receipt.workflow_id, loaded, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(loaded["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, loaded, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_projection_wording_edits_revoke_confirmation_and_detect_digest_tampering(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        revised = self.helper.issue_projection_presentation(
+            graph=graph, projection_id="U1", text="Reject invalid configuration and preserve valid input.")
+        changed = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["projections", "U1", "presentation"], "value": revised}], self.state_home)
+        stored = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(changed.state, "stale")
+        self.assertFalse(stored["projections"]["U1"]["confirmed"])
+        self.assertEqual(stored["projections"]["U1"]["version"], 2)
+        stored["projections"]["U1"]["presentation"]["text"] = "Silently accept invalid configuration."
+        changed.path.write_text(json.dumps(stored), encoding="utf-8")
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "text digest mismatch"):
+            self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+
+    def test_explicit_wording_clarification_retains_approved_text_and_literal_history(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        approved = dict(graph["projections"]["U1"]["presentation"])
+        for wording in ("Reject invalid configuration and preserve valid input.", "Invalid input fails validation; valid input loads."):
+            value = dict(graph["projections"]["U1"])
+            value["clarifications"] = value.get("clarifications", []) + [{
+                "presentation": self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text=wording),
+                "approved_presentation": approved,
+                "classification": "unchanged-meaning",
+                "trust": "coordinator-attestation",
+                "reason": "The user requested clearer wording without changing the accepted validation behavior.",
+                "prior_graph_revision": graph["graph_revision"],
+            }]
+            result = self._typed_update(receipt.workflow_id, graph, "clarify-projection", ["projections", "U1"], value)
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            self.assertEqual(result.state, "ready")
+            self.assertEqual(graph["projections"]["U1"]["presentation"], approved)
+            self.assertEqual(graph["projections"]["U1"]["version"], 1)
+            self.assertTrue(graph["projections"]["U1"]["confirmed"])
+            self.assertEqual(graph["projections"]["U1"]["clarifications"][-1]["presentation"]["text"], wording)
+            self.assertEqual(graph["projections"]["U1"]["operation_receipt"]["value_digest"], self.helper._record_payload_digest(graph["projections"]["U1"]))
+        self.assertEqual(len(graph["projections"]["U1"]["clarifications"]), 2)
+
+    def test_clarification_api_requires_explicit_classification_and_current_approval(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        kwargs = {"graph": graph, "projection_id": "U1", "text": "Valid input loads; invalid input fails.", "reason": "The user requested clearer wording."}
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "explicit unchanged-meaning"):
+            self.helper.issue_projection_clarification(**kwargs, classification="changed-meaning")
+        for change in ({"confirmed": False}, {"stale": True}, {"presentation": None}):
+            with self.subTest(change=change):
+                changed = json.loads(json.dumps(graph))
+                changed["projections"]["U1"].update(change)
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "current confirmed presentation"):
+                    self.helper.issue_projection_clarification(**dict(kwargs, graph=changed), classification="unchanged-meaning")
+        self.assertEqual(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["graph_revision"], receipt.revision)
+
+    def test_clarification_rejects_changed_source_tampered_wording_and_unsupported_trust(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        value = self.helper.issue_projection_clarification(graph=graph, projection_id="U1",
+            text="Valid input loads; invalid input fails.", classification="unchanged-meaning", reason="Clearer wording requested.")
+        for field, replacement in (("text", "Accept invalid input."), ("source_digest", "0" * 64), ("trust", "verified-semantic-equivalence")):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(value))
+                row = changed["clarifications"][-1]
+                if field == "trust":
+                    row[field] = replacement
+                else:
+                    row["presentation"][field] = replacement
+                before = receipt.path.read_bytes()
+                with self.assertRaises(self.helper.PlanGraphError):
+                    self._typed_update(receipt.workflow_id, graph, "clarify-projection", ["projections", "U1"], changed)
+                self.assertEqual(receipt.path.read_bytes(), before)
+        with self.assertRaises(self.helper.PlanGraphError):
+            operation = self.helper.issue_operation_receipt(operation="clarify-projection", workflow_id=receipt.workflow_id,
+                prior_graph_revision=graph["graph_revision"], target=["projections", "U1"], record_version=value["version"], value=value)
+            self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"], [
+                {"op": "set", "path": ["work", "T1", "result"], "value": "Accept invalid input"},
+                {"op": "clarify-projection", "path": ["projections", "U1"], "value": value,
+                 "prior_graph_revision": graph["graph_revision"], "record_version": value["version"], "receipt": operation}], self.state_home)
+
+    def test_clarification_history_cannot_be_erased_or_rewritten_by_later_operations(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        value = self.helper.issue_projection_clarification(graph=graph, projection_id="U1",
+            text="Valid input loads; invalid input fails.", classification="unchanged-meaning", reason="Clearer wording requested.")
+        clarified = self._typed_update(receipt.workflow_id, graph, "clarify-projection", ["projections", "U1"], value)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "history changes require"):
+            self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, clarified.revision,
+                [{"op": "set", "path": ["projections", "U1", "clarifications"], "value": []}], self.state_home)
+        next_value = self.helper.issue_projection_clarification(graph=graph, projection_id="U1",
+            text="Validation preserves valid inputs and rejects invalid inputs.", classification="unchanged-meaning", reason="A second wording clarification.")
+        next_value["clarifications"][0]["reason"] = "Rewrite the old history"
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "one appended history record"):
+            self._typed_update(receipt.workflow_id, graph, "clarify-projection", ["projections", "U1"], next_value)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, clarified.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Apply a changed validation policy"}], self.state_home)
+        stale = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(stale["projections"]["U1"]["confirmed"])
+        self.assertEqual(stale["projections"]["U1"]["clarifications"], graph["projections"]["U1"]["clarifications"])
+        proof = dict(stale["proof"]["P1"], fresh=True)
+        self._typed_update(receipt.workflow_id, stale, "refresh-proof-plan", ["proof", "P1"], proof)
+        current = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(current["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=current, projection_id="U1", text="Apply the changed validation policy."))
+        regenerated = self._typed_update(receipt.workflow_id, current, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        current = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "current confirmed presentation"):
+            self.helper.issue_projection_clarification(graph=current, projection_id="U1", text="Clarify the new policy.",
+                classification="unchanged-meaning", reason="A wording clarification cannot replace missing assent.")
+        confirmed = dict(current["projections"]["U1"], confirmed=True)
+        self.assertEqual(self._typed_update(receipt.workflow_id, current, "reconfirm-projection", ["projections", "U1"], confirmed).state, "ready")
+        self.assertEqual(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["projections"]["U1"]["clarifications"], graph["projections"]["U1"]["clarifications"])
+
+    def test_projection_digest_binds_referenced_outcomes_and_evidence(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        original = self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text="Validate configuration.")
+        for family, record_id, field in (("outcomes", "O1", "result"), ("evidence", "E1", "fact")):
+            with self.subTest(family=family):
+                changed = json.loads(json.dumps(graph))
+                changed[family][record_id][field] = "Materially different accepted meaning"
+                revised = self.helper.issue_projection_presentation(graph=changed, projection_id="U1", text=original["text"])
+                self.assertEqual(original["text_digest"], revised["text_digest"])
+                self.assertNotEqual(original["source_digest"], revised["source_digest"])
+        self.assertEqual(receipt.state, "ready")
+
+    def test_legacy_repository_revision_digests_remain_readable_and_reconcile_without_rewriting_assent(self) -> None:
+        receipt = self._initialize()
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        presentation = graph["projections"]["U1"]["presentation"]
+        presentation["source_digest"] = self.helper._projection_source_digest(graph, graph["projections"]["U1"], digest_version=1)
+        del presentation["source_digest_version"]
+        receipt.path.write_text(json.dumps(graph), encoding="utf-8")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["lifecycle"]["derived_state"], "ready")
+        approved = dict(graph["projections"]["U1"]["presentation"])
+        clarification = self.helper.issue_projection_clarification(graph=graph, projection_id="U1", text="Accept valid configuration and reject invalid configuration.",
+            classification="unchanged-meaning", reason="Clarify the existing policy.")
+        self._typed_update(receipt.workflow_id, graph, "clarify-projection", ["projections", "U1"], clarification)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["projections"]["U1"]["presentation"], approved)
+        self.assertNotIn("source_digest_version", graph["projections"]["U1"]["clarifications"][-1]["presentation"])
+        (self.repo / "config.py").write_text("CONFIG = {'approved_correction': True}\n", encoding="utf-8")
+        self._git("add", "config.py")
+        self._git("commit", "-m", "approved correction")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"],
+            dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD"), observed_at="2026-10-02T12:00:00Z"))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertEqual(graph["projections"]["U1"]["presentation"], approved)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text=approved["text"]))
+        self.assertEqual(projection["presentation"]["source_digest_version"], 2)
+        result = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(result.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        result = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], dict(graph["projections"]["U1"], confirmed=True))
+        self.assertEqual(result.state, "ready")
+
+    def test_proof_freshness_change_preserves_valid_dependency_presentation_binding(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T2"]["requires"] = ["T1"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        changed = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["proof", "P1", "fresh"], "value": False}], self.state_home)
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(changed.state, "stale")
+        self.assertTrue(loaded["projections"]["U2"]["confirmed"])
+        self.assertEqual(loaded["projections"]["U2"]["presentation"]["source_digest"],
+            self.helper.issue_projection_presentation(graph=loaded, projection_id="U2", text="Consumer 2 works.")["source_digest"])
+
+    def _three_node_graph(self) -> dict[str, object]:
+        graph = _graph()
+        for number in (2, 3):
+            outcome, evidence, work, proof, projection = (f"{prefix}{number}" for prefix in "OETPU")
+            graph["outcomes"][outcome] = {"kind": "outcome", "result": f"Consumer {number} works"}
+            graph["evidence"][evidence] = dict(graph["evidence"]["E1"],
+                source=f"consumer{number}.py", supports=[work])
+            graph["work"][work] = dict(graph["work"]["T1"], covers=[outcome],
+                based_on=[evidence], proof=[proof], repository_boundary=[f"consumer{number}.py"])
+            graph["proof"][proof] = json.loads(json.dumps(graph["proof"]["P1"]))
+            graph["proof"][proof].update(covers=[outcome], required_by=[work])
+            graph["projections"][projection] = dict(graph["projections"]["U1"], covers=[work, proof],
+                presentation=f"Consumer {number} works and has planned configuration proof.")
+        return graph
+
+    def _shared_decision_graph(self) -> dict[str, object]:
+        graph = self._three_node_graph()
+        for number in (1, 2):
+            graph["decisions"][f"D{number}"] = {
+                "question": f"Choose policy {number}", "choice": f"Retain policy {number}",
+                "alternatives": [], "based_on": [f"E{number}"], "material": True,
+                "version": 1, "confirmed_version": 1, "stale": False,
+            }
+        graph["work"]["T1"]["decisions"] = ["D1", "D2"]
+        graph["work"]["T2"]["decisions"] = ["D1"]
+        graph["work"]["T3"]["decisions"] = ["D2"]
+        graph["projections"]["U1"].update(covers=["D1", "D2", "T1", "P1"], decision_versions={"D1": 1, "D2": 1})
+        graph["projections"]["U2"].update(covers=["D1", "T2", "P2"], decision_versions={"D1": 1})
+        graph["projections"]["U3"].update(covers=["D2", "T3", "P3"], decision_versions={"D2": 1})
+        return graph
+
+    def test_technical_slice_change_preserves_shared_decision_versions_and_unrelated_slices(self) -> None:
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, self._shared_decision_graph(), self.state_home)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Validate configuration through the revised adapter"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        for decision in graph["decisions"].values():
+            self.assertEqual(decision["version"], 1)
+            self.assertEqual(decision["confirmed_version"], 1)
+            self.assertFalse(decision["stale"])
+            self.assertTrue(decision["revalidation_required"])
+        self.assertFalse(graph["proof"]["P1"]["fresh"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        for number in (2, 3):
+            self.assertTrue(graph["proof"][f"P{number}"]["fresh"])
+            self.assertTrue(graph["projections"][f"U{number}"]["confirmed"])
+
+    def test_dependency_revalidation_requires_current_grounding_explicit_classification_and_typed_authority(self) -> None:
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, self._shared_decision_graph(), self.state_home)
+        (self.repo / "config.py").write_text("CONFIG = {'authorized_edit': True}\n", encoding="utf-8")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "refreshed dependency evidence"):
+            self.helper.issue_decision_revalidation(graph=graph, decision_id="D1", classification="unchanged-meaning", reason="Grounding is still stale.")
+        evidence = dict(graph["evidence"]["E1"], fresh=True, observed_at="2026-10-02T12:00:00Z")
+        self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"], evidence)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "explicit unchanged-meaning"):
+            self.helper.issue_decision_revalidation(graph=graph, decision_id="D1", classification="equivalent", reason="Unsupported classification.")
+        value = self.helper.issue_decision_revalidation(graph=graph, decision_id="D1", classification="unchanged-meaning", reason="The authorized correction preserves policy 1.")
+        self.assertEqual(value["revalidation"]["trust"], "coordinator-attestation")
+        for field, replacement in (("trust", "verified-semantic-equivalence"), ("decision_digest", "0" * 64), ("dependency_digest", "0" * 64)):
+            bad = json.loads(json.dumps(value))
+            bad["revalidation"][field] = replacement
+            with self.subTest(field=field), self.assertRaises(self.helper.PlanGraphError):
+                self._typed_update(receipt.workflow_id, graph, "revalidate-decision", ["decisions", "D1"], bad)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "typed revalidation"):
+            self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                [{"op": "set", "path": ["decisions", "D1"], "value": value}], self.state_home)
+        changed_choice = dict(value, choice="A different policy")
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "outside its authority"):
+            self._typed_update(receipt.workflow_id, graph, "revalidate-decision", ["decisions", "D1"], changed_choice)
+        self._typed_update(receipt.workflow_id, graph, "revalidate-decision", ["decisions", "D1"], value)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["decisions"]["D1"]["version"], 1)
+        self.assertEqual(graph["lifecycle"]["derived_state"], "stale")
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["decisions", "D1", "choice"], "value": "A changed rejection policy"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["decisions"]["D1"]["version"], 2)
+        self.assertEqual(graph["decisions"]["D1"]["confirmed_version"], 1)
+        self.assertTrue(graph["decisions"]["D1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertFalse(graph["projections"]["U2"]["confirmed"])
+        self.assertTrue(graph["projections"]["U3"]["confirmed"])
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "unchanged decision"):
+            self.helper.issue_decision_revalidation(graph=graph, decision_id="D1", classification="unchanged-meaning", reason="Changed choices need fresh assent.")
+
+    def test_approved_source_edit_can_refresh_grounding_without_fabricated_reconfirmation(self) -> None:
+        for committed in (False, True):
+            with self.subTest(committed=committed):
+                home = self.root / f"source-edit-{committed}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, self._shared_decision_graph(), home)
+                before = self.helper.load_workflow(self.repo, BRANCH, home)
+                (self.repo / "config.py").write_text(f"CONFIG = {{'authorized_correction': {committed}}}\n", encoding="utf-8")
+                if committed:
+                    self._git("add", "config.py")
+                    self._git("commit", "-m", "authorized correction")
+                graph = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(graph["decisions"]["D1"]["version"], 1)
+                self.assertEqual(graph["decisions"]["D1"]["confirmed_version"], 1)
+                self.assertFalse(graph["decisions"]["D1"]["stale"])
+                self.assertTrue(graph["decisions"]["D1"]["revalidation_required"])
+                self.assertTrue(graph["projections"]["U1"]["confirmed"])
+                self.assertEqual(graph["projections"]["U1"]["presentation"], before["projections"]["U1"]["presentation"])
+                self.assertEqual(graph["lifecycle"]["derived_state"], "stale")
+                evidence = dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD"), observed_at="2026-10-02T12:00:00Z")
+                self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"], evidence, home)
+                graph = self.helper.load_workflow(self.repo, BRANCH, home)
+                for decision_id, decision in list(graph["decisions"].items()):
+                    if decision.get("revalidation_required"):
+                        value = self.helper.issue_decision_revalidation(graph=graph, decision_id=decision_id,
+                            classification="unchanged-meaning", reason="Authorized source correction preserves the chosen policy.")
+                        self._typed_update(receipt.workflow_id, graph, "revalidate-decision", ["decisions", decision_id], value, home)
+                        graph = self.helper.load_workflow(self.repo, BRANCH, home)
+                for proof_id, proof in list(graph["proof"].items()):
+                    if not proof["fresh"]:
+                        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", proof_id], dict(proof, fresh=True), home)
+                        graph = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(graph["lifecycle"]["derived_state"], "ready")
+                for projection_id, projection in graph["projections"].items():
+                    self.assertEqual(projection, before["projections"][projection_id])
+
+    def test_producer_meaning_change_stales_transitive_consumer_proof_and_confirmation(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T2"]["requires"] = ["T1"]
+        graph["work"]["T3"]["requires"] = ["T2"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"],
+              "value": "Produce a materially different result contract"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        for number in (1, 2, 3):
+            self.assertFalse(graph["proof"][f"P{number}"]["fresh"])
+            self.assertFalse(graph["projections"][f"U{number}"]["confirmed"])
+
+    def test_crossed_proof_attachments_cannot_cover_unrelated_work_outcomes(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T1"]["proof"] = ["P2"]
+        graph["work"]["T2"]["proof"] = ["P1"]
+        graph["proof"]["P1"]["required_by"] = ["T2"]
+        graph["proof"]["P2"]["required_by"] = ["T1"]
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "work outcome lacks attached or downstream join proof"):
+            self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+
+    def test_shared_proof_can_cover_each_attached_work_outcome(self) -> None:
+        graph = self._three_node_graph()
+        graph["work"]["T2"]["proof"] = ["P1"]
+        graph["proof"]["P1"].update(covers=["O1", "O2"], required_by=["T1", "T2"])
+        del graph["proof"]["P2"]
+        graph["projections"]["U2"]["covers"] = ["T2", "P1"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.assertEqual(receipt.state, "ready")
+
+    def test_downstream_join_proof_can_cover_upstream_outcome(self) -> None:
+        graph = self._three_node_graph()
+        graph["outcomes"]["C1"] = {"kind": "constraint", "result": "Local validation remains compatible"}
+        graph["work"]["T1"]["covers"] = ["O1", "C1"]
+        graph["proof"]["P1"]["covers"] = ["C1"]
+        graph["work"]["T2"].update(kind="join", requires=["T1"], covers=["O1", "O2"])
+        graph["proof"]["P2"]["covers"] = ["O1", "O2"]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.assertEqual(receipt.state, "ready")
+
+    def test_unrelated_join_cannot_supply_missing_upstream_proof(self) -> None:
+        graph = self._three_node_graph()
+        graph["proof"]["P1"]["covers"] = ["O2"]
+        graph["work"]["T2"].update(kind="join", covers=["O1", "O2"])
+        graph["proof"]["P2"]["covers"] = ["O1", "O2"]
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "work outcome lacks attached or downstream join proof"):
+            self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+
+    def test_transitive_join_proof_covers_outcome_after_intermediate_work(self) -> None:
+        graph = self._three_node_graph()
+        graph["outcomes"]["C1"] = {"kind": "constraint", "result": "Local validation remains compatible"}
+        graph["work"]["T1"]["covers"] = ["O1", "C1"]
+        graph["proof"]["P1"]["covers"] = ["C1"]
+        graph["work"]["T2"]["requires"] = ["T1"]
+        graph["work"]["T3"].update(kind="join", requires=["T2"], covers=["O1", "O3"])
+        graph["proof"]["P3"]["covers"] = ["O1", "O3"]
+        self.assertEqual(self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home).state, "ready")
+
+    def test_explicit_invalidation_edges_propagate_across_record_families(self) -> None:
+        graph = self._three_node_graph()
+        graph["decisions"]["D1"] = {
+            "question": "Choose validation policy", "choice": "Strict validation",
+            "alternatives": [], "based_on": ["E1"], "material": True,
+            "version": 1, "confirmed_version": 1, "stale": False,
+            "invalidates": ["E2"], "consequences": []}
+        graph["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
+        graph["invalidations"] = [{"source": "P2", "targets": ["E3"]}]
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["decisions", "D1", "choice"],
+              "value": "Compatibility validation"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        for number in (2, 3):
+            self.assertFalse(graph["evidence"][f"E{number}"]["fresh"])
+            self.assertFalse(graph["proof"][f"P{number}"]["fresh"])
+            self.assertFalse(graph["projections"][f"U{number}"]["confirmed"])
+
+    def test_executed_proof_cannot_downgrade_to_an_unexecuted_plan(self) -> None:
+        receipt = self._initialize()
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["proof", "P1", "evidence"], "value": [{
+                "workflow_id": receipt.workflow_id, "graph_revision": receipt.revision,
+                "node": "T1", "branch": BRANCH, "commit": self._git("rev-parse", "HEAD"),
+                "check": "python3 -m pytest", "result": {"status": "pass", "exit_code": 0}}]}],
+            self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(graph["proof"]["P1"]["execution_required"])
+        self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["outcomes", "O1", "result"], "value": "Revised outcome"},
+             {"op": "set", "path": ["proof", "P1", "evidence"], "value": []}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        proof = dict(graph["proof"]["P1"], fresh=True)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "unexecuted planning obligation"):
+            self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], proof)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "exact execution evidence"):
+            self._typed_update(receipt.workflow_id, graph, "refresh-proof", ["proof", "P1"], proof)
+        replacement = dict(graph["proof"]["P1"], execution_required=False)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "execution requirement cannot be downgraded"):
+            self.helper.apply_updates(
+                self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                [{"op": "set", "path": ["proof", "P1"], "value": replacement}], self.state_home)
 
     def test_typed_refresh_malformed_wrong_target_and_stale_receipt_reject(self) -> None:
         receipt = self._initialize()
@@ -651,8 +1532,138 @@ class TransactionLayerTests(unittest.TestCase):
         self.assertFalse(graph["projections"]["U1"]["confirmed"])
         self.assertIsNone(graph["projections"]["U1"]["operation_receipt"])
 
-    def test_semantics_derived_audit_floor_and_resolved_findings_readiness(self) -> None:
+    def test_tiny_settled_serial_plan_needs_no_audit_for_external_grounding_or_rejected_alternative(self) -> None:
+        for mode in ("external", "alternative", "both"):
+            with self.subTest(mode=mode):
+                graph = _graph()
+                if mode in {"external", "both"}:
+                    graph["evidence"]["E2"] = {
+                        "kind": "external", "fact": "The chosen parser rejects unknown keys",
+                        "source": "https://example.invalid/parser/official-contract", "version": "1",
+                        "fresh": True, "supports": ["T1"], "limitations": ["Repository wiring is grounded separately"],
+                    }
+                    graph["work"]["T1"]["based_on"] = ["E1", "E2"]
+                if mode in {"alternative", "both"}:
+                    graph["decisions"]["D1"] = {
+                        "question": "Choose the validation seam", "choice": "Use the existing seam",
+                        "alternatives": [{"id": "A", "status": "selected", "reason": "Preserves the current caller contract"},
+                                         {"id": "B", "status": "rejected", "reason": "Duplicates validation in the caller"}],
+                        "based_on": ["E1"], "material": True, "version": 1, "confirmed_version": 1, "stale": False,
+                    }
+                    graph["work"]["T1"]["decisions"] = ["D1"]
+                    graph["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
+                home = self.root / f"tiny-{mode}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(receipt.state, "ready")
+                self.assertEqual(loaded["audit"]["classification"], "tiny")
+                self.assertFalse(loaded["audit"]["required"])
+                self.assertIsNone(loaded["audit"]["operation_receipt"])
+                self.assertEqual(loaded["work"]["T1"]["concurrency"], "serial")
+
+    def test_parallel_ownership_and_required_design_join_enforce_independent_audit_despite_tiny_claim(self) -> None:
+        for mode in ("parallel", "design-join"):
+            with self.subTest(mode=mode):
+                graph = self._three_node_graph()
+                graph["audit"] = {"classification": "tiny", "breadth": False, "complexity": False,
+                                  "high_consequence": False, "required": False}
+                if mode == "parallel":
+                    graph["work"]["T2"]["concurrency"] = "parallel-candidate"
+                    graph["work"]["T3"]["concurrency"] = "parallel-candidate"
+                else:
+                    graph["design_join"] = self.helper._empty_design_join()
+                    graph["design_join"].update(required=True, fresh=False)
+                home = self.root / f"complex-{mode}"
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertTrue(loaded["audit"]["required"])
+                self.assertTrue(loaded["audit"]["complexity"])
+                self.assertEqual(loaded["audit"]["classification"], "complex")
+                self.assertFalse(loaded["audit"]["fresh"])
+                self.assertNotEqual(receipt.state, "ready")
+                attempted = dict(loaded["audit"], fresh=True, independent=False, graph_revision=loaded["graph_revision"])
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "fresh and independent"):
+                    self._typed_update(receipt.workflow_id, loaded, "refresh-audit", ["audit"], attempted, home)
+
+    def test_public_audit_correction_sequence_requires_fresh_inspection_after_real_negative_and_user_changes(self) -> None:
         template = _graph()
+        template["audit"] = {"breadth": True, "reason": "Validation crosses producer and consumer boundaries"}
+        template["proof"]["P1"]["planned_method"]["negative"] = "valid input loads"
+        template["projections"]["U1"]["confirmed"] = False
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
+        observations = []
+        program = ("import json,os,sys; g=json.load(open(sys.argv[1])); "
+                   "negative=g['proof']['P1']['planned_method']['negative'].lower(); "
+                   "ok='rejected' in negative and ('malformed' in negative or 'unknown' in negative); "
+                   "print(json.dumps({'pid':os.getpid(),'open':not ok,'negative':negative}))")
+
+        from tests.plan_audit_fixture import artifact, result_for
+        accepted_input = artifact(self.root / "audit-accepted-input.json", {"kind": "test-only accepted foundation", "graph": template})
+
+        def inspect_and_record():
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            dispatch_id = f"negative-check-{len(observations) + 1}"
+            reservation = self.helper.reserve_plan_audit(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+                dispatch_id, accepted_input, "initial" if not observations else "correction", "Check actual canonical negative behavior", self.state_home)
+            frozen = reservation["dispatch"]["graph_snapshot"]["path"]
+            result = subprocess.run([sys.executable, "-c", program, frozen], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            observation = json.loads(result.stdout)
+            observations.append(observation)
+            finding = {"id": "missing-negative", "severity": "high", "description": "Negative proof omits rejected malformed or unknown input", "evidence": ["E1"],
+                "disposition": "open" if observation["open"] else "resolved"}
+            resolutions = [] if observation["open"] else [{"finding_id": "missing-negative", "disposition": "resolved", "evidence": ["E1"]}]
+            output = artifact(self.root / f"{dispatch_id}-actual-output.json", observation)
+            self.helper.bind_plan_audit_actor(self.repo, BRANCH, receipt.workflow_id, dispatch_id, f"subprocess-{observation['pid']}", self.state_home)
+            bound_result = result_for(reservation["dispatch"], output, findings=[finding], resolutions=resolutions,
+                actor=f"subprocess-{observation['pid']}", constraints=["Test-only independent read-only Python process, no live AI model"])
+            self.helper.record_plan_audit_result(self.repo, BRANCH, receipt.workflow_id, dispatch_id, bound_result, self.state_home)
+            return self.helper.apply_plan_audit_result(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"], dispatch_id, self.state_home)
+
+        self.assertEqual(inspect_and_record().state, "stale")
+        self.assertTrue(observations[0]["open"])
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["proof", "P1", "planned_method", "negative"],
+              "value": "Malformed configuration is rejected with a reason"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["audit"]["fresh"])
+        self.assertFalse(graph["audit"]["independent"])
+        self.assertIsNone(graph["audit"]["operation_receipt"])
+        resolved = dict(graph["audit"], fresh=True, graph_revision=graph["graph_revision"],
+            findings=[{"id": "missing-negative", "severity": "high", "evidence": ["E1"], "disposition": "resolved"}],
+            resolutions=[{"finding_id": "missing-negative", "disposition": "resolved", "evidence": ["E1"]}])
+        with self.assertRaises(self.helper.PlanGraphError):
+            self._typed_update(receipt.workflow_id, graph, "resolve-finding", ["audit"], resolved)
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        self.assertEqual(inspect_and_record().state, "stale")
+        self.assertFalse(observations[-1]["open"])
+
+        def confirm_current_part(text):
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False,
+                presentation=self.helper.issue_projection_presentation(graph=graph, projection_id="U1", text=text))
+            self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+            graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+            return self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"],
+                dict(graph["projections"]["U1"], confirmed=True))
+
+        self.assertEqual(confirm_current_part("Reject malformed configuration and report its validation reason.").state, "ready")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["proof", "P1", "planned_method", "negative"],
+              "value": "Unknown configuration keys are rejected with a reason"}], self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["audit"]["fresh"])
+        self._typed_update(receipt.workflow_id, graph, "refresh-proof-plan", ["proof", "P1"], dict(graph["proof"]["P1"], fresh=True))
+        inspect_and_record()
+        self.assertEqual(confirm_current_part("Reject unknown configuration keys and report their validation reason.").state, "ready")
+        self.assertEqual(len(observations), 3)
+        self.assertEqual(len({item["pid"] for item in observations}), 3)
+        self.assertTrue(observations[0]["open"])
+
+    def test_semantics_derived_audit_floor_and_resolved_findings_readiness(self) -> None:
+        template = self._three_node_graph()
         template["evidence"]["E1"]["supports"] = ["D1", "T1"]
         template["decisions"]["D1"] = {
             "question": "Choose a boundary", "choice": "A",
@@ -664,12 +1675,16 @@ class TransactionLayerTests(unittest.TestCase):
         }
         template["work"]["T1"]["decisions"] = ["D1"]
         template["projections"]["U1"].update(covers=["D1", "T1", "P1"], decision_versions={"D1": 1})
-        template["audit"] = {"classification": "tiny", "breadth": False,
-            "complexity": False, "high_consequence": False, "required": False}
+        template["work"]["T2"]["decisions"] = ["D1"]
+        template["work"]["T3"]["decisions"] = ["D1"]
+        template["audit"] = {"classification": "broad", "breadth": True,
+            "complexity": False, "high_consequence": False, "required": True,
+            "reason": "Changes validation ownership across producer and two independent consumer boundaries"}
         receipt = self.helper.initialize_workflow(self.repo, BRANCH, template, self.state_home)
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         self.assertTrue(graph["audit"]["required"])
         self.assertTrue(graph["audit"]["breadth"])
+        self.assertEqual(graph["audit"]["reason"], template["audit"]["reason"])
         self.assertEqual(receipt.state, "stale")
 
         audited = json.loads(json.dumps(graph["audit"]))
@@ -685,8 +1700,24 @@ class TransactionLayerTests(unittest.TestCase):
         resolved["resolutions"] = [{"finding_id": "F1", "disposition": "resolved",
                                      "evidence": ["E1"]}]
         resolved["graph_revision"] = open_graph["graph_revision"]
-        ready = self._typed_update(
-            receipt.workflow_id, open_graph, "resolve-finding", ["audit"], resolved)
+        with self.assertRaisesRegex(self.helper.PlanGraphError, "fresh independent correction"):
+            self._typed_update(receipt.workflow_id, open_graph, "resolve-finding", ["audit"], resolved)
+        self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, open_graph["graph_revision"],
+            [{"op": "set", "path": ["proof", "P1", "planned_method", "negative"],
+              "value": "Malformed configuration is rejected with a reason after ownership repair"}], self.state_home)
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self._typed_update(receipt.workflow_id, corrected, "refresh-proof-plan", ["proof", "P1"], dict(corrected["proof"]["P1"], fresh=True))
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        resolved = dict(corrected["audit"], fresh=True, independent=True, graph_revision=corrected["graph_revision"],
+            findings=resolved["findings"], resolutions=resolved["resolutions"])
+        checked = self._typed_update(receipt.workflow_id, corrected, "refresh-audit", ["audit"], resolved)
+        self.assertEqual(checked.state, "stale")
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(corrected["projections"]["U1"], stale=False, presented=True, confirmed=False,
+            presentation=self.helper.issue_projection_presentation(graph=corrected, projection_id="U1", text="Prove rejected malformed configuration after ownership repair."))
+        self._typed_update(receipt.workflow_id, corrected, "regenerate-projection", ["projections", "U1"], projection)
+        corrected = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        ready = self._typed_update(receipt.workflow_id, corrected, "reconfirm-projection", ["projections", "U1"], dict(corrected["projections"]["U1"], confirmed=True))
         self.assertEqual(ready.state, "ready")
 
         lowered = json.loads(json.dumps(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["audit"]))
@@ -1226,6 +2257,46 @@ class TransactionLayerTests(unittest.TestCase):
             _graph()["work"]["T1"]["result"],
         )
 
+    def test_recovery_requires_reconciliation_and_fresh_projection_confirmation(self) -> None:
+        receipt = self._initialize()
+        second = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["outcomes", "O1", "result"],
+              "value": "Configuration is validated without coercion"}], self.state_home)
+        second.path.write_text("corrupt", encoding="utf-8")
+        recovered = self.helper.recover_workflow(self.repo, BRANCH, receipt.workflow_id, self.state_home)
+        self.assertEqual(recovered.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertEqual(graph["unresolved"][0]["kind"], "recovery-reconciliation")
+        self.assertTrue(graph["projections"]["U1"]["stale"])
+        self.assertFalse(graph["projections"]["U1"]["confirmed"])
+        self.assertEqual(graph["outcomes"]["O1"]["result"], _graph()["outcomes"]["O1"]["result"])
+        cleared = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, graph["graph_revision"],
+            [{"op": "set", "path": ["unresolved"], "value": []}], self.state_home)
+        self.assertEqual(cleared.state, "stale")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], stale=False, presented=True, confirmed=False)
+        projection["presentation"] = self.helper.issue_projection_presentation(
+            graph=graph, projection_id="U1", text="Validate configuration and prove the recovered plan's behavior.")
+        regenerated = self._typed_update(receipt.workflow_id, graph, "regenerate-projection", ["projections", "U1"], projection)
+        self.assertEqual(regenerated.state, "awaiting-user")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        projection = dict(graph["projections"]["U1"], confirmed=True)
+        confirmed = self._typed_update(receipt.workflow_id, graph, "reconfirm-projection", ["projections", "U1"], projection)
+        self.assertEqual(confirmed.state, "ready")
+
+    def test_recovery_stales_repository_evidence_changed_since_checkpoint(self) -> None:
+        receipt = self._initialize()
+        second = self.helper.apply_updates(
+            self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+            [{"op": "set", "path": ["work", "T1", "result"], "value": "Revised work"}], self.state_home)
+        (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        second.path.write_text("corrupt", encoding="utf-8")
+        self.helper.recover_workflow(self.repo, BRANCH, receipt.workflow_id, self.state_home)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["evidence"]["E1"]["fresh"])
+
     def test_resume_is_one_revision_and_stales_only_relevant_repository_evidence(self) -> None:
         graph = _graph()
         graph["evidence"]["E2"] = {
@@ -1249,6 +2320,116 @@ class TransactionLayerTests(unittest.TestCase):
         loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
         self.assertFalse(loaded["evidence"]["E1"]["fresh"])
         self.assertTrue(loaded["evidence"]["E2"]["fresh"])
+
+    def test_active_load_and_discover_invalidate_only_changed_repository_sources(self) -> None:
+        for caller in ("load_workflow", "discover_workflow"):
+            with self.subTest(caller=caller):
+                home = self.root / caller
+                graph = self._three_node_graph()
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                (self.repo / "config.py").write_text(f"CONFIG = {{'{caller}': True}}\n", encoding="utf-8")
+                self._git("add", "config.py")
+                self._git("commit", "-m", caller)
+                result = getattr(self.helper, caller)(self.repo, BRANCH, home)
+                self.assertEqual(result["lifecycle"]["derived_state"] if isinstance(result, dict) else result.state, "stale")
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(loaded["graph_revision"], receipt.revision + 1)
+                self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+                self.assertFalse(loaded["proof"]["P1"]["fresh"])
+                self.assertTrue(loaded["projections"]["U1"]["confirmed"])
+                self.assertTrue(loaded["evidence"]["E2"]["fresh"])
+                self.assertTrue(loaded["projections"]["U2"]["confirmed"])
+
+    def test_active_load_detects_changed_bytes_of_already_dirty_source(self) -> None:
+        (self.repo / "config.py").write_text("CONFIG = {'first': True}\n", encoding="utf-8")
+        receipt = self._initialize()
+        self.assertEqual(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["graph_revision"], receipt.revision)
+        first_status = self._git("status", "--porcelain=v1")
+        (self.repo / "config.py").write_text("CONFIG = {'second': True}\n", encoding="utf-8")
+        self.assertEqual(self._git("status", "--porcelain=v1"), first_status)
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(graph["evidence"]["E1"]["fresh"])
+        self.assertEqual(graph["graph_revision"], receipt.revision + 1)
+
+    def test_update_entry_rejects_revision_preceding_repository_invalidation(self) -> None:
+        receipt = self._initialize()
+        (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        with self.assertRaises(self.helper.RevisionConflict):
+            self.helper.apply_updates(self.repo, BRANCH, receipt.workflow_id, receipt.revision,
+                [{"op": "set", "path": ["work", "T1", "result"], "value": "Revised wording"}], self.state_home)
+        self.assertFalse(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["evidence"]["E1"]["fresh"])
+
+    def test_refreshed_evidence_accepts_current_dirty_contents_until_they_change(self) -> None:
+        receipt = self._initialize()
+        (self.repo / "config.py").write_text("CONFIG = {'first': True}\n", encoding="utf-8")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        evidence = dict(graph["evidence"]["E1"], fresh=True, observed_at="2026-10-02T10:00:00Z")
+        refreshed = self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"], evidence)
+        current = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertTrue(current["evidence"]["E1"]["fresh"])
+        self.assertEqual(current["graph_revision"], refreshed.revision)
+        (self.repo / "config.py").write_text("CONFIG = {'second': True}\n", encoding="utf-8")
+        self.assertFalse(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["evidence"]["E1"]["fresh"])
+
+    def test_legacy_dirty_grounding_without_content_snapshot_requires_refresh(self) -> None:
+        (self.repo / "config.py").write_text("CONFIG = {'accepted_dirty': True}\n", encoding="utf-8")
+        receipt = self._initialize()
+        graph = json.loads(receipt.path.read_text(encoding="utf-8"))
+        del graph["baseline"]["evidence_fingerprints"]
+        receipt.path.write_text(json.dumps(graph), encoding="utf-8")
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+        self.assertEqual(loaded["graph_revision"], receipt.revision + 1)
+
+    def test_resume_retains_evidence_refreshed_after_original_baseline(self) -> None:
+        receipt = self._initialize()
+        (self.repo / "config.py").write_text("CONFIG = {'new_head': True}\n", encoding="utf-8")
+        self._git("add", "config.py")
+        self._git("commit", "-m", "revised source")
+        graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        evidence = dict(graph["evidence"]["E1"], fresh=True, revision=self._git("rev-parse", "HEAD"), observed_at="2026-10-02T10:00:00Z")
+        refreshed = self._typed_update(receipt.workflow_id, graph, "refresh-evidence", ["evidence", "E1"], evidence)
+        paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, refreshed.revision, self.state_home)
+        self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, self.state_home)
+        self.assertTrue(self.helper.load_workflow(self.repo, BRANCH, self.state_home)["evidence"]["E1"]["fresh"])
+
+    def test_resume_normalizes_relative_absolute_and_anchored_repository_sources(self) -> None:
+        sources = ["config.py:24", "config.py:24:7", "config.py#L24-L30",
+                   str(self.repo / "config.py"), f"{self.repo / 'config.py'}:24"]
+        for number, source in enumerate(sources):
+            with self.subTest(source=source):
+                (self.repo / "config.py").write_text("CONFIG = {}\n", encoding="utf-8")
+                home = self.root / f"source-{number}"
+                graph = _graph()
+                graph["evidence"]["E1"]["source"] = source
+                receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, home)
+                paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, receipt.revision, home)
+                (self.repo / "config.py").write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+                resumed = self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, home)
+                loaded = self.helper.load_workflow(self.repo, BRANCH, home)
+                self.assertEqual(resumed.state, "stale")
+                self.assertFalse(loaded["evidence"]["E1"]["fresh"])
+                self.assertEqual(loaded["evidence"]["E1"]["source"], source)
+
+    def test_repository_evidence_outside_repository_is_rejected(self) -> None:
+        for number, source in enumerate((str(self.root / "outside.py"), "../outside.py:12")):
+            with self.subTest(source=source):
+                graph = _graph()
+                graph["evidence"]["E1"]["source"] = source
+                with self.assertRaisesRegex(self.helper.PlanGraphError, "outside repository"):
+                    self.helper.initialize_workflow(self.repo, BRANCH, graph, self.root / f"outside-source-{number}")
+
+    def test_resume_preserves_literal_filename_with_numeric_colon_suffix(self) -> None:
+        path = self.repo / "config.py:24"
+        path.write_text("CONFIG = {}\n", encoding="utf-8")
+        graph = _graph()
+        graph["evidence"]["E1"]["source"] = path.name
+        receipt = self.helper.initialize_workflow(self.repo, BRANCH, graph, self.state_home)
+        paused = self.helper.pause_workflow(self.repo, BRANCH, receipt.workflow_id, receipt.revision, self.state_home)
+        path.write_text("CONFIG = {'changed': True}\n", encoding="utf-8")
+        self.helper.resume_workflow(self.repo, BRANCH, receipt.workflow_id, paused.revision, self.state_home)
+        loaded = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
+        self.assertFalse(loaded["evidence"]["E1"]["fresh"])
 
     def test_receipt_schema_rejects_independent_mutants(self) -> None:
         required = {

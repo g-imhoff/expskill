@@ -170,6 +170,24 @@ class TestLedgerAppenderTests(unittest.TestCase):
             "actual", "status", "oracle_ids", "artifact_ids",
         })
         self.assertFalse((self.run_root / "ledger-batch.json").exists())
+
+    def test_scaled_charter_accepts_ten_required_actions_with_two_waves(self) -> None:
+        charter = json.loads((self.run_root / "charter.json").read_text())
+        actions = [f"required-{index}" for index in range(10)]
+        charter["schema_version"] = "test-charter.v2"
+        charter["material_oracles"][0]["required_action_ids"] = actions
+        charter["execution_budget"] = {
+            "semantic_actions_max": "10", "waves_max": "2",
+            "usable_budget_seconds": "1200", "rationale": "Ten required consumers.",
+            "waves": [actions[:5], actions[5:]],
+        }
+        self.write_private("charter.json", charter)
+        self.write_batch([self.entry(action_id=action) for action in actions])
+
+        completed = self.append()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(len(json.loads((self.run_root / "ledger.json").read_text())["entries"]), 10)
         self.assertEqual(stat.S_IMODE((self.run_root / "ledger.json").stat().st_mode), 0o600)
 
     def test_accepts_multiline_observations_and_repeated_journey_steps(self) -> None:

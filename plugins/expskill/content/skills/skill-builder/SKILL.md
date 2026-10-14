@@ -16,9 +16,11 @@ Read [artifact contracts](references/artifact-contracts.md) completely at run st
 
 ## Durable run state
 
-Resolve the package's `scripts/run_state.py` relative to the loaded skill and use only the interface its runtime help exposes for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Never guess flags or edit state directly.
+Resolve the package's `scripts/run_state.py` relative to the loaded skill and execute it with the available Python 3 interpreter, using `python3` rather than assuming `python` exists. Before an unfamiliar operation, run `python3 /absolute/loaded-skill/scripts/run_state.py describe OPERATION` or `OPERATION --help`. These read-only interfaces expose the actual required and optional JSON fields, base64 wire encoding, mode requirements, valid transitions, option ordering, and exit statuses without opening state or targets. `describe` alone lists every operation. Normal operations receive one strict JSON object on stdin. `--state-root` belongs on the command line before or after the operation and is reserved for isolated test state. Use this interface for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Never guess flags or edit state directly.
 
 The helper owns private XDG state outside target repositories and requires immutable hash-chained transition receipts, strict manifests, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat current-state files as replaceable derived indexes and treat missing, stale, inconsistent, or unauditable state as a failed gate. Before every transition the helper validates the receipt chain, immutable artifacts, derived state, input bindings, target snapshot, and allowed transition. Success appends one canonical receipt linked to the prior digest. Failure appends nothing, keeps the current stage, and blocks downstream work. Open the binding, invalidation, recovery, and tombstone sections of the artifact contracts reference whenever a transition fails or persisted work resumes.
+
+Before authoring an unfamiliar artifact, run `python3 /absolute/loaded-skill/scripts/run_state.py describe-artifact TYPE`. The compact `describe-artifact` catalog lists authored artifact types and supported schema versions. A focused type description exposes exact versioned fields, nested validation predicates and their type definitions, retained-byte obligations, and transition binding predicates directly from this helper's authoritative validators. These are normative Python predicates, not a portable JSON Schema or filled semantic examples. Descriptions read no workflow state and grant no authority. Author actual evidence and use the normal public gates to validate, retain and accept it.
 
 ## Ordered workflow
 
@@ -79,6 +81,7 @@ Present the current contract and wait for explicit user confirmation. Record the
 ### 8. Freeze acceptance before candidate work
 
 Create visible development cases, frozen validation cases, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Bind the pack to the confirmed contract digest and unchanged target snapshot. Keep hidden expectations and oracles away from implementers and trial agents. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze before any candidate edit. Reject candidate entry unless the helper confirms the contract digest, its confirmation record, the frozen pack digest, and an unchanged target snapshot.
+Freeze the criterion evidence map with the evaluation pack. For every rubric criterion, select only its relevant frozen parameters and cases and name the output, tool-event, or filesystem observations that will prove it. Every criterion has evidence, and the complete map covers every frozen scoring parameter and case. Scoring must use those bindings, blanket or unrelated references cannot replace a criterion's evidence.
 
 ### 9. Build one isolated candidate
 
@@ -103,6 +106,7 @@ Repair the lowest score first, breaking ties by greater safety or correctness im
 ### 13. Review, verify, and finalize one exact revision
 
 After all ten target categories reach 10 with every builder-run gate passing, run a final independent target review against the same exact revision and validate it before use. An invalid final review blocks advancement without changing scores. A valid `not ready` review or valid High or Medium finding lowers mapped categories below 10 and returns them to repair.
+Retain and accept this review through `accept-final-review`, advancing `scored` to `final-reviewed`. Current runs use `skill-builder-review.v3`, with the same review fields and two additional input-provenance roles, `target_scorecard` and `builder_run_conformance`, each pinning the accepted artifact and its retained payload digest. Retain it after the current `accept-scores` receipt. A pre-score review cannot fill this gate. Retain independent verification only after final review acceptance. Verification and release bind to this final review, while the scorecard remains bound to its pre-score review. A valid negative final review is retained as evidence and blocks verification. Invalidate that accepted review through the helper and return to repair before rescoring. An invalid review never advances the stage.
 
 After a valid `ready` final review, run independent verification against that exact revision, recording exact commands or operations, exit status, relevant output, target manifests, and revision. Any candidate change invalidates both final gates and returns affected categories to repair. Finalize through the state helper only when every gate passes, every category is 10, the final review is valid and `ready`, verification passes, every binding matches, and release evidence is retained. The finalization terminal stage retains the contract, confirmation, evaluation pack, candidate identity, conformance ledger, scorecard, review, verification, limitations, and release record.
 
@@ -113,7 +117,7 @@ Commit, install, push, publish, or otherwise deliver only with explicit user aut
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, and authority checks.
 - Exactly three research agents use web access and return evidence only. They never edit.
 - One candidate implementer writes only inside the isolated candidate. Trial agents write only inside disposable targets.
-- Reviewers and verifiers stay independent and read-only to tracked source.
+- Reviewers and verifiers stay independent and read-only to tracked source. Their payload identity must equal the envelope's producer identity. The helper rejects overlap with any retained research, design, candidate, trial, conformance, or scorecard producer and any recorded trial context, including superseded or invalidated contributors. Keep producer identities stable across repairs. These identities are host attestations, not authenticated sessions.
 - No delegated agent confirms product intent, broadens scope, reveals hidden material, delivers externally, or cleans state.
 
 ## Changed goals and gate failures

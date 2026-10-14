@@ -125,10 +125,10 @@ def write_ledger(
                 "action": f"Run consumer observation {index + 1}",
                 "path": [],
                 "expected": "The consumer receives the accepted response.",
-                "actual": f"The consumer observation was {status}.",
+                "actual": "exit=0 output=match teardown=pass integrity=pass" if status == "pass" else f"The consumer observation was {status}.",
                 "status": status,
                 "oracle_ids": ["consumer-response"],
-                "artifact_ids": ["consumer-log"],
+                "artifact_ids": ["consumer-log", f"consumer-record-{index}"] if status == "pass" else ["consumer-log"],
             }
         )
     ledger = {
@@ -137,6 +137,26 @@ def write_ledger(
         "charter_digest": _digest(charter),
         "entries": entries,
     }
+    for index, entry in enumerate(entries):
+        if entry["status"] != "pass":
+            continue
+        observation = (run_root / "artifacts/consumer.log").read_bytes()
+        receipt = {
+            "schema_version": "test-execution-record.v1", "command": ["python3", "consumer.py"],
+            "exit_code": "0", "output_sha256": hashlib.sha256(observation).hexdigest(),
+            "output_predicate": "match", "teardown": [], "teardown_status": "pass",
+            "head": HEAD, "branch": charter["branch"], "integrity_paths": ["consumer.py"],
+            "source_diff": "", "source_status": "", "integrity_status": "pass", "outcome": "match",
+            "run_id": run_root.name, "charter_sha256": hashlib.sha256((run_root / "charter.json").read_bytes()).hexdigest(),
+            "observation_path": "artifacts/consumer.log", "entry": entry,
+            "execution_spec": {
+                "schema_version": "test-final-action.v2", "observation_path": "artifacts/consumer.log",
+                "metadata_path": f"artifacts/consumer-record-{index}.json", "expected_exit_code": "0",
+                "output_predicate": {"mode": "exact-text", "value": observation.decode("utf-8")},
+                "integrity_paths": ["consumer.py"], "cleanup_absent_paths": [],
+            },
+        }
+        _write_json(run_root / f"artifacts/consumer-record-{index}.json", receipt)
     return _write_json(run_root / "ledger.json", ledger)
 
 
@@ -180,6 +200,10 @@ def write_draft(run_root: Path, *, intended_result: str = "PASS") -> Path:
                 "kind": "log",
                 "path": "artifacts/consumer.log",
             }
+        ] + [
+            {"artifact_id": f"consumer-record-{index}", "kind": "log", "path": f"artifacts/consumer-record-{index}.json"}
+            for index, entry in enumerate(_read_json(run_root / "ledger.json")["entries"])
+            if entry["status"] == "pass"
         ],
         "teardown": {
             "status": "not-required" if intended_result == "EXEMPT" else "pass",
@@ -507,6 +531,7 @@ class TestEvidenceFinalizer(unittest.TestCase):
                 artifact_ids,
                 {
                     "consumer-log",
+                    "consumer-record-0",
                     "test-charter",
                     "test-action-ledger",
                     "test-draft",
@@ -516,6 +541,36 @@ class TestEvidenceFinalizer(unittest.TestCase):
             contract = json.loads(EVIDENCE_CONTRACT.read_text(encoding="utf-8"))
             self.assertEqual(set(bundle), set(contract["bundle"]["required"]))
             self.assertEqual(set(receipt), set(contract["receipt"]["required"]))
+
+    def test_handwritten_notrun_artifact_cannot_authorize_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_root = self._prepare_run(Path(temporary))
+            (run_root / "artifacts/consumer.log").write_text("NOTRUN: expected success\n")
+            completed = invoke_finalizer(run_root)
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertFalse((run_root / "terminal").exists())
+
+    def test_pass_requires_receipt_and_exact_frozen_action_and_output_binding(self) -> None:
+        for mutation in ("missing", "status", "oracle", "charter", "digest", "predicate"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                run_root = self._prepare_run(Path(temporary))
+                path = run_root / "artifacts/consumer-record-0.json"
+                record = _read_json(path)
+                if mutation == "missing":
+                    path.write_text("handwritten success")
+                elif mutation == "status":
+                    record["entry"]["actual"] = "handwritten success"
+                elif mutation == "oracle":
+                    record["entry"]["oracle_ids"] = []
+                elif mutation == "charter":
+                    record["charter_sha256"] = "0" * 64
+                elif mutation == "digest":
+                    record["output_sha256"] = "0" * 64
+                else:
+                    record["execution_spec"]["output_predicate"]["value"] = "unobserved success"
+                if mutation != "missing":
+                    _write_json(path, record)
+                self._assert_failure(run_root, code="unrecorded-execution")
 
     def test_v2_ledger_derives_the_charter_binding_without_a_copied_digest(self) -> None:
         """Regression: a one-character copied digest cannot derail terminalization."""
@@ -553,6 +608,10 @@ class TestEvidenceFinalizer(unittest.TestCase):
             ledger = _read_json(run_root / "ledger.json")
             ledger["entries"][0]["path"] = ["tests/e2e/harness.json"]
             _write_json(run_root / "ledger.json", ledger)
+            record_path = run_root / "artifacts/consumer-record-0.json"
+            record = _read_json(record_path)
+            record["entry"] = ledger["entries"][0]
+            _write_json(record_path, record)
 
             completed = invoke_finalizer(run_root)
 
@@ -991,6 +1050,7 @@ class TestEvidenceFinalizer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run_root = self._prepare_run(Path(temporary))
             write_ledger(run_root, statuses=("pass",) * 8)
+            write_draft(run_root)
 
             completed = invoke_finalizer(run_root)
 
@@ -1721,6 +1781,7 @@ class TestEvidenceFinalizer(unittest.TestCase):
             ]
             _write_json(run_root / "charter.json", charter)
             write_ledger(run_root, statuses=("fail", "pass"))
+            write_draft(run_root)
             self._assert_failure(run_root, code="contradictory-oracle")
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1993,6 +2054,7 @@ class TestEvidenceFinalizer(unittest.TestCase):
             ]
             _write_json(run_root / "charter.json", charter)
             write_ledger(run_root, statuses=("fail", "pass"))
+            write_draft(run_root, intended_result="FAIL")
 
             completed = invoke_finalizer(run_root)
 

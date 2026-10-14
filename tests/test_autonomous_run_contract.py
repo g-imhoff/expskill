@@ -66,6 +66,20 @@ class AutonomousRunContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, body)
 
+    def test_invoking_agent_owns_delivery_and_cumulative_run_budget(self) -> None:
+        body = RUNNER.read_text(encoding="utf-8")
+        for phrase in (
+            "You are the delivery actor in this invoking conversation",
+            "router never pushes or creates the PR",
+            "Verify the returned URL, head, base, and draft state",
+            "one cumulative run identifier",
+            "never resets this allowance",
+            "3N + 2",
+            "independent reviewer provenance are unchanged",
+        ):
+            self.assertIn(phrase, body)
+        self.assertNotIn("required even if the workflow used", body)
+
     def test_runner_prose_passes_package_hygiene(self) -> None:
         body = RUNNER.read_text(encoding="utf-8")
         self.assertNotIn("\N{EM DASH}", body)
@@ -75,3 +89,22 @@ class AutonomousRunContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_lifecycle_budget_initialization_and_child_accounting_are_explicit():
+    body = RUNNER.read_text()
+    for clause in (
+        "80 AI dispatches", "six retries", "four hours of wall-clock", "at most six in flight",
+        "limit source", "unique dispatch ID", "only new descendant dispatch IDs",
+        "uncertain spend", "outstanding reservations", "minimum of the lifecycle remainder",
+        "Missing or contradictory accounting blocks another launch", "coordinator attestations",
+    ):
+        assert clause in body
+    for name in ("brainstorm", "plan"):
+        research = (RUNNER.parent.parent / name / "SKILL.md").read_text()
+        assert "six researcher turns" in research
+        assert "twenty minutes of active research" in research
+        assert "dispatch IDs" in research
+    grill = (RUNNER.parent.parent / "grill-me" / "SKILL.md").read_text()
+    assert "two fact-exploration turns" in grill
+    assert "ten minutes of active exploration" in grill

@@ -1,22 +1,22 @@
 # Publish a Yodea preview
 
-Publish the isolated specimen through Yodea on every Design run, in both direct and routed mode. The hosted preview lets the user inspect the work through approval, handoff, and PR review. It never replaces the local gates.
+Use Yodea when an authorized hosted preview is selected for a compatible existing specimen, in either direct or routed mode. The hosted preview lets the user inspect the work through approval, handoff, and PR review. It never replaces the local gates.
 
 Verified against yodea at revision `4691cef`. The issue thread guessed at a `yodea deploy` command and a `credentials.json` file. Both are wrong. The real commands are `push` and `delete`, and the session lives in `session.json`. Use what follows, not the issue body.
 
 ## When this applies
 
-Read this reference on every Design run. Publish each candidate that is ready for visual review after all local gates pass and before requesting approval. Do not wait for a separate request for a preview link. If an explicit user instruction forbids publication or a prerequisite is unavailable, report the blocker and keep preview delivery incomplete. Never claim a local-only result completed the required hosted preview.
+Read this reference when Yodea is selected. Publish the compatible candidate after all local gates pass and before requesting hosted visual approval. If publication is forbidden, unavailable, incompatible, or fails, report the exact hosting limitation and use the native local specimen under Design’s local delivery policy. A separately requested hosted preview remains incomplete until its working link exists.
 
 ## What you upload
 
 The built static bundle only. Build the specimen (`npm run build`), upload `dist/`. The bundle holds deterministic synthetic fixture content. It never holds secrets, credentials, or customer data. Check before you push.
 
-`yodea push` only accepts a Vite React TS folder: `package.json` with react, react-dom, and vite, a `vite.config`, a tsconfig, and at least one `.tsx` file. If the specimen does not meet that, stop. Do not reshape the specimen to fit the host.
+`yodea push` only accepts a Vite React TS folder: `package.json` with react, react-dom, and vite, a `vite.config`, a tsconfig, and at least one `.tsx` file. If the specimen does not meet that, use native local review. Do not reshape the specimen to fit the host.
 
 ## Commands
 
-Install the CLI once. Go 1.27 or newer is required.
+Use an already available CLI. Install it only when existing authorization permits the dependency change. Go 1.27 or newer is required.
 
 ```sh
 go install github.com/g-imhoff/yodea/cmd/yodea@latest
@@ -59,11 +59,11 @@ Before removing a superseded preview, publish and check its replacement, update 
 
 ## Failure modes
 
-- Not logged in, or the saved session is corrupt. Log in again.
-- Expired token. Log in again.
-- Folder is not a Vite React TS app. Stop, do not reshape the specimen.
+- Not logged in, or the saved session is corrupt. Reuse authorized credentials if available, otherwise use local review.
+- Expired token. Reuse authorized credentials if available, otherwise use local review.
+- Folder is not a Vite React TS app. Use native local review, do not reshape the specimen.
 - No `dist/index.html`. Run the build first.
 - Bundle over a cap, or dotfiles or symlinks inside. Trim the bundle, never the gates.
 - Label taken or project name invalid. Pick a valid project name.
-- Server unreachable. The local specimen is still the proof. Stop blocked on preview delivery and say plainly that publication could not be verified. Do not report Design delivery complete until a working hosted link exists.
+- Server unreachable. Retain local proof, report that publication could not be verified, and use local Design delivery when hosting was optional. A separately requested hosted-publication obligation remains blocked.
 - Hosted page fails its load-and-look check. Retain the local evidence, correct the preview, and recheck it before sharing it as ready for review.

@@ -33,7 +33,7 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def initialize(tmp_path: Path, invocation_mode: str = "routed"):
+def initialize(tmp_path: Path, invocation_mode: str = "routed", owned_paths=None):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-b", "expskill/design/ui")
@@ -44,6 +44,9 @@ def initialize(tmp_path: Path, invocation_mode: str = "routed"):
     git(repo, "commit", "-m", "baseline")
     baseline = git(repo, "rev-parse", "HEAD")
     module = load_helper()
+    scope = {"components": ["CheckoutForm"], "exclusions": ["routing"]}
+    if owned_paths is not None:
+        scope["owned_paths"] = owned_paths
     receipt = module.initialize_workflow(
         repository=repo,
         branch="expskill/design/ui",
@@ -51,7 +54,7 @@ def initialize(tmp_path: Path, invocation_mode: str = "routed"):
         baseline=baseline,
         dirty_fingerprint=hashlib.sha256(b"").hexdigest(),
         ui_contract={"digest": DIGEST, "outcome": "approved checkout UI"},
-        scope={"components": ["CheckoutForm"], "exclusions": ["routing"]},
+        scope=scope,
         invocation_mode=invocation_mode,
         state_home=tmp_path / "state",
     )
@@ -298,3 +301,42 @@ def test_amended_candidate_invalidates_dependent_records(tmp_path: Path) -> None
     assert state["dependencies"] == {}
     assert state["evidence"] == {}
     assert state["approvals"] == {}
+
+
+def test_owned_scope_allows_authorized_bytes_and_rejects_unrelated_bytes(tmp_path: Path) -> None:
+    module, repo, state_home, receipt, baseline = initialize(tmp_path, invocation_mode="direct")
+    module.discard_workflow(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], confirmed=True, state_home=state_home)
+    (repo / "protected.txt").write_text("pre-existing user work\n")
+    receipt = module.initialize_workflow(repository=repo, branch="expskill/design/ui", worktree=repo, baseline=baseline, dirty_fingerprint=module._dirty(repo), ui_contract={"digest": DIGEST}, scope={"components": ["CheckoutForm"], "exclusions": [], "owned_paths": ["component.txt", "new-preview.html"]}, invocation_mode="direct", state_home=state_home)
+    (repo / "component.txt").write_text("accepted component change\n")
+    (repo / "new-preview.html").write_text("accepted specimen\n")
+    updated = module.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], updates={}, state_home=state_home)
+    (repo / "protected.txt").write_text("overwritten with the same untracked status\n")
+    with pytest.raises(ValueError, match="unrelated workspace bytes changed"):
+        module.apply_updates(workflow_id=receipt["workflow_id"], expected_revision=updated["revision"], updates={}, state_home=state_home)
+
+
+@pytest.mark.parametrize("owned", [".", "../outside", "/tmp/outside", "component*", "src/**", ".git/config", "folder", "linked"])
+def test_owned_scope_rejects_directory_wildcard_traversal_and_symlink(tmp_path: Path, owned: str) -> None:
+    module, repo, state_home, receipt, baseline = initialize(tmp_path, invocation_mode="direct")
+    module.discard_workflow(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], confirmed=True, state_home=state_home)
+    (repo / "folder").mkdir()
+    (repo / "linked").symlink_to(repo / "component.txt")
+    with pytest.raises(ValueError):
+        module.initialize_workflow(repository=repo, branch="expskill/design/ui", worktree=repo, baseline=baseline, dirty_fingerprint=module._dirty(repo), ui_contract={"digest": DIGEST}, scope={"components": [], "exclusions": [], "owned_paths": [owned]}, invocation_mode="direct", state_home=state_home)
+
+
+def test_private_accepted_direct_input_is_bound_without_brainstorm_file(tmp_path):
+    module, repo, home, receipt, _ = initialize(tmp_path, invocation_mode="direct")
+    source = tmp_path / "accepted-input.json"
+    source.write_text('{"request":"A complete accepted direct UI request","non_goals":["No navigation"]}')
+    source.chmod(0o400)
+    brief = {key: value for key, value in module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)["brief"].items() if key not in {"confirmed", "digest"}}
+    brief["source"] = {"kind": "accepted-input", "path": str(source), "digest": hashlib.sha256(source.read_bytes()).hexdigest(), "decision_reference": "original explicit user request"}
+    confirmed = module.confirm_brief(workflow_id=receipt["workflow_id"], expected_revision=receipt["revision"], brief=brief, confirmed=True, state_home=home)
+    assert module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)["brief"]["digest"] == confirmed["brief_digest"]
+    source.chmod(0o600)
+    source.write_text('{"request":"Changed accepted meaning"}')
+    source.chmod(0o400)
+    with pytest.raises(ValueError, match="source digest mismatch"):
+        module.load_workflow(workflow_id=receipt["workflow_id"], state_home=home)

@@ -161,6 +161,41 @@ class CharterFreezerTests(unittest.TestCase):
         self.assertFalse((self.run_root / "charter.json").exists())
         self.assertFalse((self.run_root / "ledger.json").exists())
 
+    def test_freezes_scope_derived_budget_above_the_default_action_limit(self) -> None:
+        preparation = self.preparation()
+        preparation["schema_version"] = "test-charter-preparation.v2"
+        actions = [f"required-{index}" for index in range(10)]
+        preparation["material_oracles"][0]["required_action_ids"] = actions
+        preparation["execution_budget"] = {
+            "semantic_actions_max": "10", "waves_max": "2",
+            "usable_budget_seconds": "1200", "rationale": "Ten required client paths.",
+            "waves": [actions[:5], actions[5:]],
+        }
+        self.write_preparation(preparation)
+
+        completed = self.run_freezer()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        charter = json.loads((self.run_root / "charter.json").read_text())
+        self.assertEqual(charter["schema_version"], "test-charter.v2")
+        self.assertEqual(charter["execution_budget"], preparation["execution_budget"])
+
+    def test_rejects_budget_that_omits_a_required_action(self) -> None:
+        preparation = self.preparation()
+        preparation["schema_version"] = "test-charter-preparation.v2"
+        preparation["execution_budget"] = {
+            "semantic_actions_max": "8", "waves_max": "1",
+            "usable_budget_seconds": "780", "rationale": "A bounded scope.",
+            "waves": [["unrelated"]],
+        }
+        self.write_preparation(preparation)
+
+        completed = self.run_freezer()
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("invalid-budget", completed.stderr)
+        self.assertFalse((self.run_root / "charter.json").exists())
+
     def test_rejects_non_private_preparation(self) -> None:
         path = self.write_preparation()
         path.chmod(0o644)

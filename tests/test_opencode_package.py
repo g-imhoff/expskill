@@ -34,7 +34,7 @@ needs_node_and_npm = unittest.skipUnless(
 )
 
 EXPECTED_EXPORTS = ("ExecutionPolicyPlugin", "ExpSkillPlugin", "UnslopPlugin", "default")
-SHARED_HELPERS = ("design_state.py", "plan_graph.py", "worktrees.py")
+SHARED_HELPERS = ("design_state.py", "plan_graph.py", "research_budget.py", "worktrees.py")
 THIRD_PARTY_LICENSES = ("mattpocock-skills-MIT.txt", "pstack-MIT.txt")
 
 

@@ -115,5 +115,15 @@
         "max_elapsed_ms": 7200000
       }
     }
+  },
+  "planner_evidence": {
+    "schema_version": "plan-evidence-dispatch.v1",
+    "caller_profile": "expskill-planner",
+    "service_profile": "expskill-explorer",
+    "purposes": [
+      "research",
+      "plan-audit"
+    ],
+    "max_prompt_lines": 300
   }
 }

@@ -89,6 +89,13 @@ def join(plan, request):
     )
 
 
+def audit_to_ready(plan, repo, home):
+    graph = plan.load_workflow(repo, support.TARGET_BRANCH, home)
+    result = support.refresh_audit(plan, repo, home, graph)
+    assert result.state == "ready", result.state
+    return plan.load_workflow(repo, support.TARGET_BRANCH, home)
+
+
 def kill_at_boundary(root, helper, mode, request):
     path = root / (mode + ".json")
     path.write_text(json.dumps(request))
@@ -112,8 +119,8 @@ def test_interrupted_delivery_retries_to_a_ready_plan(tmp_path, mode):
     receipt = json.loads(retry.stdout)
     assert receipt["revision"] == payload["expected_revision"] + 1
     plan, phome, _, request = setup_plan(tmp_path, repo, receipt)
-    assert join(plan, request).state == "ready"
-    graph = plan.load_workflow(repo, support.TARGET_BRANCH, phome)
+    join(plan, request)
+    graph = audit_to_ready(plan, repo, phome)
     assert graph["design_join"]["receipt"]["design_delivery_receipt"] == receipt
 
 
@@ -121,11 +128,20 @@ def test_duplicate_delivery_returns_identical_stdout_without_writes(tmp_path):
     _, _, _, home, _, _, payload = prepare(tmp_path)
     first = design_call(home, payload)
     assert first.returncode == 0, first.stderr
-    files = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (home / "design").iterdir() if p.name != ".lock"}
+
+    def snapshot():
+        root = home / "design"
+        return {
+            path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    files = snapshot()
     retry = design_call(home, payload)
     assert retry.returncode == 0, retry.stderr
     assert retry.stdout == first.stdout
-    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files} == files
+    assert snapshot() == files
 
 
 @pytest.mark.parametrize("field", ["expected_revision", "candidate_payload", "review_evidence", "manifest"])
@@ -174,13 +190,16 @@ def test_plan_retry_after_saved_join_preserves_the_accepted_receipt(tmp_path, cr
     if crash:
         kill_at_boundary(tmp_path, support.PLAN_HELPER, "plan-after-save", request)
     else:
-        assert join(plan, request).state == "ready"
+        join(plan, request)
+    joined = plan.load_workflow(repo, support.TARGET_BRANCH, phome)
+    assert joined["graph_revision"] == before["graph_revision"] + 1
+    audit_to_ready(plan, repo, phome)
     saved = plan.load_workflow(repo, support.TARGET_BRANCH, phome)
     with pytest.raises(plan.RevisionConflict):
         join(plan, request)
     assert plan.load_workflow(repo, support.TARGET_BRANCH, phome) == saved
     assert saved["lifecycle"]["derived_state"] == "ready"
-    assert saved["graph_revision"] == before["graph_revision"] + 1
+    assert saved["graph_revision"] == before["graph_revision"] + 2
     assert saved["design_join"]["receipt"]["design_delivery_receipt"] == receipt
     # The Git subprocess must release its prepared lock even if Plan is killed.
     support.git(design_repo, "update-ref", "refs/heads/" + support.DESIGN_BRANCH, candidate, candidate)
@@ -216,10 +235,11 @@ def test_candidate_branch_cannot_move_during_join_save(tmp_path, monkeypatch):
         ))
         return original(*args)
     monkeypatch.setattr(plan, "_rotate", rotate)
-    assert join(plan, request).state == "ready"
+    join(plan, request)
     assert len(attempts) == 1 and attempts[0].returncode != 0
     assert "cannot lock ref" in attempts[0].stderr
-    assert plan.load_workflow(repo, support.TARGET_BRANCH, home)["lifecycle"]["derived_state"] == "ready"
+    monkeypatch.undo()
+    assert audit_to_ready(plan, repo, home)["lifecycle"]["derived_state"] == "ready"
     support.git(design_repo, "update-ref", "refs/heads/" + support.DESIGN_BRANCH, candidate, candidate)
 
 

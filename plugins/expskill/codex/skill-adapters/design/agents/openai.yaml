@@ -1,7 +1,7 @@
 interface:
   display_name: "Design"
-  short_description: "Design UI components with required Yodea previews"
-  default_prompt: "Use $design directly or in its assigned isolated router worktree. Publish a Yodea preview and share its link in approvals, handoffs, and PRs."
+  short_description: "Design native UI components with hosted or local previews"
+  default_prompt: "Use $design directly, through deliberate standalone selection by $use-expskill, or in its user-opened isolated parallel conversation. Use the native stack, obtain exact candidate approval, and share the working local or authorized hosted review entry."
 
 policy:
   allow_implicit_invocation: false

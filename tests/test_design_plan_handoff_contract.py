@@ -159,6 +159,8 @@ def bound_components(design, brief_digest: str) -> dict:
 
 def prepare_routed_design(tmp_path: Path):
     """Prepare an approved fixture and return its pending delivery payload."""
+    from tests.design_state_test_support import prepare_delivery_fixture
+
     design = load("handoff_design", DESIGN_HELPER)
     tmp_path.mkdir(parents=True, exist_ok=True)
     repo, baseline = make_repo(tmp_path)
@@ -188,26 +190,33 @@ def prepare_routed_design(tmp_path: Path):
         candidate_commit=candidate,
         state_home=state_home,
     )
+    records = bound_components(design, confirmed["brief_digest"])
+    code_digest = hashlib.sha256(b"CheckoutForm-code").hexdigest()
+    evidence_digest = hashlib.sha256(b"CheckoutForm-evidence").hexdigest()
+    candidate_layer = {"files": [
+        {"path": "CheckoutForm.tsx", "digest": code_digest,
+         "classification": "component"}]}
+    review_layer = {"files": [
+        {"path": "CheckoutForm-review.json", "digest": evidence_digest,
+         "classification": "review"}]}
+    manifest_layer = {"files": [
+        {"path": "manifest.json", "digest": "3" * 64,
+         "classification": "manifest"}]}
+    prepare_delivery_fixture(
+        design, checkpointed, state_home, workflow_id,
+        records, (candidate_layer, review_layer, manifest_layer))
     bound = design.apply_updates(
         workflow_id=workflow_id,
         expected_revision=checkpointed["revision"],
-        updates=bound_components(design, confirmed["brief_digest"]),
+        updates=records,
         state_home=state_home,
     )
-    code_digest = hashlib.sha256(b"CheckoutForm-code").hexdigest()
-    evidence_digest = hashlib.sha256(b"CheckoutForm-evidence").hexdigest()
     payload = {
         "workflow_id": workflow_id,
         "expected_revision": bound["revision"],
-        "candidate_payload": {"files": [
-            {"path": "CheckoutForm.tsx", "digest": code_digest,
-             "classification": "component"}]},
-        "review_evidence": {"files": [
-            {"path": "CheckoutForm-review.json", "digest": evidence_digest,
-             "classification": "review"}]},
-        "manifest": {"files": [
-            {"path": "manifest.json", "digest": "3" * 64,
-             "classification": "manifest"}]},
+        "candidate_payload": candidate_layer,
+        "review_evidence": review_layer,
+        "manifest": manifest_layer,
     }
     return design, repo, state_home, baseline, candidate, payload
 
@@ -360,25 +369,13 @@ def required_graph():
     return graph
 
 
-def refresh_audit(plan, repo: Path, state_home: Path, graph: dict) -> None:
+def refresh_audit(plan, repo: Path, state_home: Path, graph: dict):
+    from tests.plan_audit_fixture import refresh_audit as durable_refresh
+
     audit = copy.deepcopy(graph["audit"])
     audit.update(fresh=True, independent=True,
                  graph_revision=graph["graph_revision"])
-    receipt = plan.issue_operation_receipt(
-        operation="refresh-audit",
-        workflow_id=graph["workflow_id"],
-        prior_graph_revision=graph["graph_revision"],
-        target=["audit"],
-        record_version=audit["record_version"],
-        value=audit,
-    )
-    plan.apply_updates(
-        repo, TARGET_BRANCH, graph["workflow_id"], graph["graph_revision"],
-        [{"op": "refresh-audit", "path": ["audit"], "value": audit,
-          "prior_graph_revision": graph["graph_revision"],
-          "record_version": audit["record_version"], "receipt": receipt}],
-        state_home,
-    )
+    return durable_refresh(plan, repo, TARGET_BRANCH, graph, audit, state_home)
 
 
 def test_helpers_match_the_shared_receipt_field_contract(tmp_path: Path) -> None:
@@ -425,8 +422,6 @@ def test_routed_delivery_joins_plan_with_no_manual_repair(tmp_path: Path) -> Non
     state_home = tmp_path / "plan-state"
     plan.initialize_workflow(repo, TARGET_BRANCH, required_graph(), state_home)
     graph = plan.load_workflow(repo, TARGET_BRANCH, state_home)
-    refresh_audit(plan, repo, state_home, graph)
-    graph = plan.load_workflow(repo, TARGET_BRANCH, state_home)
 
     join_receipt = plan.record_design_join_from_delivery(
         workflow_id=graph["workflow_id"],
@@ -444,13 +439,15 @@ def test_routed_delivery_joins_plan_with_no_manual_repair(tmp_path: Path) -> Non
         record_version=record["record_version"],
         value=record,
     )
-    result = plan.apply_updates(
+    plan.apply_updates(
         repo, TARGET_BRANCH, graph["workflow_id"], graph["graph_revision"],
         [{"op": "record-design-join", "path": ["design_join"], "value": record,
           "prior_graph_revision": graph["graph_revision"],
           "record_version": record["record_version"], "receipt": operation}],
         state_home,
     )
+    graph = plan.load_workflow(repo, TARGET_BRANCH, state_home)
+    result = refresh_audit(plan, repo, state_home, graph)
     assert result.state == "ready"
 
 

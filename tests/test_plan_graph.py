@@ -145,6 +145,7 @@ def minimal_graph() -> dict[str, object]:
                 "presented": True,
                 "confirmed": True,
                 "stale": False,
+                "presentation": "Validate malformed configuration at the existing boundary and preserve valid inputs. Verify both outcomes with configuration tests.",
             }
         },
         "invalidations": [],
@@ -312,6 +313,7 @@ def rich_graph() -> dict[str, object]:
             "presented": True,
             "confirmed": True,
             "stale": False,
+            "presentation": "Use the accepted validation contract at the existing configuration boundary and prove that contract.",
         },
         "U2": {
             "covers": ["T2", "T3", "J1", "P2", "P3", "P4"],
@@ -320,6 +322,7 @@ def rich_graph() -> dict[str, object]:
             "presented": True,
             "confirmed": True,
             "stale": False,
+            "presentation": "Implement the validation and fixture lanes, then prove integrated startup behavior at their join.",
         },
     }
     graph["invalidations"] = [
@@ -406,6 +409,9 @@ class PlanGraphRuntimeTests(unittest.TestCase):
         *,
         state_home: Path | None = None,
     ) -> object:
+        if operation == "refresh-audit" and value.get("independent"):
+            from tests.plan_audit_fixture import refresh_audit
+            return refresh_audit(self.helper, self.repo, "feature/config-validation", graph, value, state_home or self.state_home)
         version_field = (
             "version"
             if operation

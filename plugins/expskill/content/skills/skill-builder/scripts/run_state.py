@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import binascii
 import hashlib
 import fcntl
+import inspect
 import json
 import os
 import re
@@ -47,8 +49,15 @@ LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
 TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
 LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
 REVIEW_SCHEMA = "skill-builder-review.v2"
+FINAL_REVIEW_SCHEMA = "skill-builder-review.v3"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
 SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
+LEGACY_EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v1"
+EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v2"
+_SCORE_OBSERVATION_FIELDS = frozenset({
+    "output_digest", "tool_event_digest", "filesystem_result_digest",
+    "before_target_manifest_digest", "after_target_manifest_digest",
+})
 LOADABLE_CONTENT_SCHEMA = "skill-builder-loadable-content.v1"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -94,6 +103,10 @@ _ARTIFACT_TYPES = {
     "final-run-manifest",
     "invalidation-record",
 }
+_INDEPENDENCE_CONTRIBUTOR_TYPES = frozenset({
+    "research-pack", "design-record", "candidate-record", "trial-pack",
+    "builder-run-conformance-ledger", "target-scorecard",
+})
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 _STAGES = (
@@ -109,6 +122,7 @@ _STAGES = (
     "trials",
     "reviewed",
     "scored",
+    "final-reviewed",
     "verified",
     "finalized",
     "delivered",
@@ -126,7 +140,8 @@ _STAGE_TRANSITIONS = {
     "complete-trials": ("candidate", "trials"),
     "accept-review": ("trials", "reviewed"),
     "accept-scores": ("reviewed", "scored"),
-    "accept-verification": ("scored", "verified"),
+    "accept-final-review": ("scored", "final-reviewed"),
+    "accept-verification": ("final-reviewed", "verified"),
 }
 _EVENT_ARTIFACT_TYPES = {
     "capture-baseline": ("baseline-report",),
@@ -140,6 +155,7 @@ _EVENT_ARTIFACT_TYPES = {
     "complete-trials": ("trial-pack",),
     "accept-review": ("review-record",),
     "accept-scores": ("builder-run-conformance-ledger", "target-scorecard"),
+    "accept-final-review": ("review-record",),
     "accept-verification": ("verification-record",),
 }
 
@@ -150,7 +166,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "design-record": "skill-builder-design.v1",
     "skill-contract": "skill-builder-contract.v1",
     "user-confirmation-record": "skill-builder-user-confirmation.v1",
-    "evaluation-pack": "skill-builder-evaluation-pack.v1",
+    "evaluation-pack": {LEGACY_EVALUATION_SCHEMA, EVALUATION_SCHEMA},
     "candidate-record": {
         LEGACY_CANDIDATE_SCHEMA,
         PREVIOUS_CANDIDATE_SCHEMA,
@@ -159,7 +175,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     },
     "trial-pack": {LEGACY_TRIAL_SCHEMA, TRIAL_SCHEMA},
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
-    "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA},
+    "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA, FINAL_REVIEW_SCHEMA},
     "target-scorecard": {LEGACY_SCORECARD_SCHEMA, SCORECARD_SCHEMA},
     "verification-record": "skill-builder-verification.v1",
     "release-record": "skill-builder-release.v1",
@@ -1030,6 +1046,47 @@ def _mapping_list(value: object, label: str) -> list[dict[str, Any]]:
     return value
 
 
+def _validate_criterion_evidence_map(evaluation: dict[str, Any], case_ids: set[str]) -> None:
+    matrix = evaluation.get("criterion_evidence_map")
+    criteria = set().union(*_SCORE_CRITERIA.values())
+    if not isinstance(matrix, dict) or set(matrix) != criteria:
+        raise RunStateError("evaluation criterion evidence map must cover every target criterion exactly once")
+    parameters = set(evaluation["scoring_parameters"])
+    for parameter in parameters:
+        _text(parameter, "frozen scoring parameter")
+    covered_parameters: set[str] = set()
+    covered_cases: set[str] = set()
+    for criterion, binding in matrix.items():
+        if not isinstance(binding, dict) or set(binding) != {"frozen_parameter_identifiers", "case_evidence"}:
+            raise RunStateError("evaluation criterion binding fields are invalid")
+        selected_parameters = _text_list(binding["frozen_parameter_identifiers"], "criterion frozen parameters")
+        if not selected_parameters or selected_parameters != sorted(set(selected_parameters)) or not set(selected_parameters) <= parameters:
+            raise RunStateError("evaluation criterion parameters are missing, duplicate, or unrelated")
+        selected_cases = binding["case_evidence"]
+        if not isinstance(selected_cases, dict) or not selected_cases or not set(selected_cases) <= case_ids:
+            raise RunStateError("evaluation criterion cases are missing or unrelated")
+        for fields in selected_cases.values():
+            observations = _text_list(fields, "criterion observation fields")
+            if not observations or observations != sorted(set(observations)) or not set(observations) <= _SCORE_OBSERVATION_FIELDS:
+                raise RunStateError("evaluation criterion observations are missing, duplicate, or unsupported")
+        covered_parameters.update(selected_parameters)
+        covered_cases.update(selected_cases)
+    if covered_parameters != parameters or covered_cases != case_ids:
+        raise RunStateError("evaluation criterion evidence map omits frozen parameter or case coverage")
+
+
+def _versioned_payload_fields(artifact_type: str, schema_version: str) -> set[str]:
+    fields = set(_PAYLOAD_REQUIRED_FIELDS[artifact_type])
+    if artifact_type == "evaluation-pack" and schema_version == EVALUATION_SCHEMA:
+        fields.add("criterion_evidence_map")
+    if artifact_type == "candidate-record" and schema_version in {
+        HISTORICAL_CANDIDATE_SCHEMA,
+        CANDIDATE_SCHEMA,
+    }:
+        fields.add("loaded_skill_digest")
+    return fields
+
+
 def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
     """Apply the normative, versioned payload schema before accepting an artifact."""
     expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
@@ -1040,12 +1097,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         {expected_version} if isinstance(expected_version, str) else expected_version
     )
     schema_version = payload.get("schema_version")
-    versioned_fields = set(expected_fields)
-    if artifact_type == "candidate-record" and schema_version in {
-        HISTORICAL_CANDIDATE_SCHEMA,
-        CANDIDATE_SCHEMA,
-    }:
-        versioned_fields.add("loaded_skill_digest")
+    versioned_fields = _versioned_payload_fields(artifact_type, schema_version)
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
@@ -1250,6 +1302,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 _text(case["pass_fail_rule"], "evaluation pass/fail rule")
         if not case_ids:
             raise RunStateError("evaluation pack has no frozen cases")
+        if schema_version == EVALUATION_SCHEMA:
+            _validate_criterion_evidence_map(payload, case_ids)
         return
 
     if artifact_type == "candidate-record":
@@ -1595,29 +1649,24 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("invalidated artifact identifiers are not deterministic")
 
 
+_IDENTITY_REQUEST_PROPERTIES = {
+    "host_identity": ("kind", "canonical_id", "locator", "discovery_evidence"),
+    "target_identity": ("requested", "canonical", "name", "invocation_token", "locator"),
+    "authority": ("reads", "writes", "delegation", "candidate_effects", "delivery_effects"),
+}
+
+
 def _identity_records(
     host_identity: object, target_identity: object, authority: object
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     host = _nonempty_mapping(host_identity, "host identity")
     target = _nonempty_mapping(target_identity, "target identity")
     granted = _nonempty_mapping(authority, "authority")
-    if set(host) != {"kind", "canonical_id", "locator", "discovery_evidence"}:
+    if set(host) != set(_IDENTITY_REQUEST_PROPERTIES["host_identity"]):
         raise RunStateError("host identity schema is incomplete")
-    if set(target) != {
-        "requested",
-        "canonical",
-        "name",
-        "invocation_token",
-        "locator",
-    }:
+    if set(target) != set(_IDENTITY_REQUEST_PROPERTIES["target_identity"]):
         raise RunStateError("target identity schema is incomplete")
-    if set(granted) != {
-        "reads",
-        "writes",
-        "delegation",
-        "candidate_effects",
-        "delivery_effects",
-    }:
+    if set(granted) != set(_IDENTITY_REQUEST_PROPERTIES["authority"]):
         raise RunStateError("authority schema is incomplete")
     if any(not isinstance(host[field], str) or not host[field] for field in ("kind", "canonical_id", "locator")):
         raise RunStateError("host identity contains empty text")
@@ -2253,6 +2302,12 @@ def _validate_artifact_schema_pairing(
     if marker is None:
         return
     marker_name, default_schema = marker
+    if (
+        artifact_type == "review-record"
+        and payload["schema_version"] == FINAL_REVIEW_SCHEMA
+        and resolution.get(marker_name) == REVIEW_SCHEMA
+    ):
+        return
     if payload["schema_version"] != resolution.get(marker_name, default_schema):
         label = {
             "candidate-record": "candidate",
@@ -3312,6 +3367,23 @@ def _event_artifact(
     raise RunStateError(f"current {artifact_type} binding is missing")
 
 
+def _accepted_event_sequence(
+    run: Path,
+    event: str,
+    event_artifacts: dict[str, dict[str, Any]] | None,
+) -> int | None:
+    if event_artifacts is not None:
+        return event_artifacts.get(event, {}).get("sequence")
+    return next(
+        (
+            receipt["sequence"]
+            for receipt in reversed(_load_receipt_chain(run))
+            if receipt["event"] == event
+        ),
+        None,
+    )
+
+
 def _require_retained_raw_digests(
     run: Path,
     artifact_id: str,
@@ -3478,14 +3550,45 @@ def _require_valid_review(review: dict[str, Any]) -> None:
         raise RunStateError("invalid review cannot advance or be scored")
 
 
+def _require_independent_actor(
+    run: Path,
+    current: dict[str, Any],
+    envelope: dict[str, Any],
+    identity: str,
+    label: str,
+) -> None:
+    if identity != envelope["producer"]:
+        raise RunStateError(f"{label} identity does not match its envelope producer")
+    known_contributors: set[str] = set()
+    for artifact_id, record in current["artifact_index"].items():
+        if record["type"] not in _INDEPENDENCE_CONTRIBUTOR_TYPES:
+            continue
+        contributor, _ = _validate_envelope(run, artifact_id)
+        if record["digest"] != contributor["envelope_digest"]:
+            raise RunStateError("independence contributor history is stale")
+        known_contributors.add(contributor["producer"].strip())
+        if record["type"] == "trial-pack":
+            trials = _artifact_payload_json(run, artifact_id)
+            known_contributors.update(
+                case["fresh_context_identity"].strip() for case in trials["cases"]
+            )
+    if identity.strip() in known_contributors:
+        raise RunStateError(f"{label} is not independent of known contributor history")
+
+
 def _validate_review_binding(
     run: Path,
     current: dict[str, Any],
     review_id: str,
     event_artifacts: dict[str, dict[str, Any]] | None = None,
+    *,
+    final_review: bool = False,
 ) -> None:
     review_envelope, _ = _validate_envelope(run, review_id)
     review = _artifact_payload_json(run, review_id)
+    _require_independent_actor(
+        run, current, review_envelope, review["reviewer_identity"], "reviewer"
+    )
     baseline_id, baseline_envelope = _event_artifact(
         run, "capture-baseline", "baseline-report", event_artifacts
     )
@@ -3511,6 +3614,8 @@ def _validate_review_binding(
     required_review_schema = resolution.get(
         "review_record_schema", LEGACY_REVIEW_SCHEMA
     )
+    if final_review and required_review_schema == REVIEW_SCHEMA:
+        required_review_schema = FINAL_REVIEW_SCHEMA
     if review["schema_version"] != required_review_schema:
         raise RunStateError(
             "review schema does not match the run's versioned semantics"
@@ -3533,6 +3638,17 @@ def _validate_review_binding(
         candidate_id: candidate_envelope,
         trials_id: trials_envelope,
     }
+    final_sources: dict[str, tuple[str, dict[str, Any]]] = {}
+    if final_review:
+        for role, artifact_type in (
+            ("target_scorecard", "target-scorecard"),
+            ("builder_run_conformance", "builder-run-conformance-ledger"),
+        ):
+            artifact_id, envelope = _event_artifact(
+                run, "accept-scores", artifact_type, event_artifacts
+            )
+            sources[artifact_id] = envelope
+            final_sources[role] = (artifact_id, envelope)
     for artifact_id, envelope in sources.items():
         record = current["artifact_index"].get(artifact_id)
         if (
@@ -3656,6 +3772,10 @@ def _validate_review_binding(
                 evaluation["rubric_digest"],
             ),
         }
+        for role, (artifact_id, envelope) in final_sources.items():
+            expected_provenance[role] = binding(
+                artifact_id, envelope, envelope["payload_digest"]
+            )
         if review["input_artifacts"] != expected_provenance:
             raise RunStateError(
                 "review input provenance is missing, extra, substituted, or stale"
@@ -3688,6 +3808,10 @@ def _validate_review_binding(
                 evaluation_id: evaluation_envelope["envelope_digest"],
                 candidate_id: candidate_envelope["envelope_digest"],
                 trials_id: trials_envelope["envelope_digest"],
+                **{
+                    artifact_id: envelope["envelope_digest"]
+                    for artifact_id, envelope in final_sources.values()
+                },
             },
             "review record",
         )
@@ -3698,6 +3822,22 @@ def _validate_review_binding(
         for digest in finding["evidence"]
     )
     _require_retained_raw_digests(run, review_id, claims, "review record")
+    if final_review:
+        _require_input_bindings(
+            review_envelope,
+            {
+                artifact_id: envelope["envelope_digest"]
+                for artifact_id, envelope in final_sources.values()
+            },
+            "final review",
+        )
+        score_sequence = _accepted_event_sequence(
+            run, "accept-scores", event_artifacts
+        )
+        if score_sequence is None or review_envelope["created_sequence"] <= score_sequence:
+            raise RunStateError(
+                "final review must be retained after the current accepted scores"
+            )
 
 
 def _validate_score_bindings(
@@ -3781,15 +3921,13 @@ def _validate_score_bindings(
     if scorecard["schema_version"] == LEGACY_SCORECARD_SCHEMA:
         return
 
-    frozen_parameter_ids = sorted(evaluation["scoring_parameters"])
-    if not frozen_parameter_ids:
-        raise RunStateError("scorecard lacks frozen scoring-parameter evidence")
-    for parameter_id in frozen_parameter_ids:
-        _text(parameter_id, "evaluation scoring parameter identity")
+    if evaluation["schema_version"] != EVALUATION_SCHEMA:
+        raise RunStateError("per-criterion scoring requires a frozen criterion evidence map, refreeze acceptance before candidate work")
     cases_by_id = {case["case_id"]: case for case in trials["cases"]}
     frozen_case_ids = sorted(cases_by_id)
     if not frozen_case_ids:
         raise RunStateError("scorecard lacks frozen case evidence")
+    _validate_criterion_evidence_map(evaluation, set(frozen_case_ids))
     review_finding_ids: dict[str, list[str]] = {}
     for finding in review["findings"]:
         finding_id = raw_digest(canonical_json_bytes(finding))
@@ -3799,17 +3937,21 @@ def _validate_score_bindings(
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
-            selected_cases = [cases_by_id[case_id] for case_id in frozen_case_ids]
+            if criterion_id not in evaluation["criterion_evidence_map"]:
+                raise RunStateError("scorecard contains an unfrozen criterion")
+            frozen_binding = evaluation["criterion_evidence_map"][criterion_id]
+            selected_case_ids = sorted(frozen_binding["case_evidence"])
+            selected_cases = [cases_by_id[case_id] for case_id in selected_case_ids]
             expected_raw_digests = sorted(
-                {case["output_digest"] for case in selected_cases}
+                {case[field] for case in selected_cases for field in frozen_binding["case_evidence"][case["case_id"]]}
             )
             expected_trial_receipts = sorted(
                 raw_digest(canonical_json_bytes(case)) for case in selected_cases
             )
             expected_finding_ids = sorted(set(review_finding_ids.get(criterion_id, [])))
             if (
-                result["frozen_parameter_identifiers"] != frozen_parameter_ids
-                or result["case_ids"] != frozen_case_ids
+                result["frozen_parameter_identifiers"] != frozen_binding["frozen_parameter_identifiers"]
+                or result["case_ids"] != selected_case_ids
                 or result["raw_artifact_digests"] != expected_raw_digests
                 or result["trial_receipt_ids"] != expected_trial_receipts
                 or result["review_finding_ids"] != expected_finding_ids
@@ -3834,6 +3976,10 @@ def _validate_verification_binding(
 ) -> None:
     verification_envelope, _ = _validate_envelope(run, verification_id)
     verification = _artifact_payload_json(run, verification_id)
+    _require_independent_actor(
+        run, current, verification_envelope, verification["verifier_identity"],
+        "verifier",
+    )
     candidate_id, candidate_envelope = _event_artifact(
         run, "accept-candidate", "candidate-record", event_artifacts
     )
@@ -3841,8 +3987,27 @@ def _validate_verification_binding(
         run, "complete-trials", "trial-pack", event_artifacts
     )
     review_id, review_envelope = _event_artifact(
-        run, "accept-review", "review-record", event_artifacts
+        run, "accept-final-review", "review-record", event_artifacts
     )
+    _validate_score_release_readiness(run, current, event_artifacts)
+    _validate_review_binding(
+        run, current, review_id, event_artifacts, final_review=True
+    )
+    final_review_sequence = _accepted_event_sequence(
+        run, "accept-final-review", event_artifacts
+    )
+    if (
+        final_review_sequence is None
+        or verification_envelope["created_sequence"] <= final_review_sequence
+    ):
+        raise RunStateError("verification must follow the accepted final review")
+    review = _artifact_payload_json(run, review_id)
+    if review["verdict"] != "ready" or any(
+        finding["release_blocking"]
+        or finding["severity"] in _MATERIAL_REVIEW_SEVERITIES
+        for finding in review["findings"]
+    ):
+        raise RunStateError("final review is not ready for verification")
     conformance_id, conformance_envelope = _event_artifact(
         run, "accept-scores", "builder-run-conformance-ledger", event_artifacts
     )
@@ -3967,6 +4132,9 @@ def _validate_evaluation_binding(
     }
     if not required <= set(evaluation) or evaluation.get("frozen") is not True:
         raise RunStateError("evaluation pack is not frozen")
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    if resolution.get("scorecard_schema") == SCORECARD_SCHEMA and evaluation["schema_version"] != EVALUATION_SCHEMA:
+        raise RunStateError("current evaluation freeze requires a criterion evidence map")
     if (
         evaluation.get("contract_digest") != contract_envelope["envelope_digest"]
         or evaluation.get("confirmation_digest")
@@ -4184,6 +4352,15 @@ def _validate_transition_semantics(
             _artifact_id_of_type(run, artifact_ids, "target-scorecard"),
             event_artifacts,
         )
+    elif event == "accept-final-review":
+        _validate_score_release_readiness(run, current, event_artifacts)
+        _validate_review_binding(
+            run,
+            current,
+            _artifact_id_of_type(run, artifact_ids, "review-record"),
+            event_artifacts,
+            final_review=True,
+        )
     elif event == "accept-verification":
         _validate_verification_binding(
             run,
@@ -4390,6 +4567,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
             event_artifacts[event]["authority_event_digest"] = receipt[
                 "authority_event_digest"
             ]
+            event_artifacts[event]["sequence"] = receipt["sequence"]
     for artifact_id, record in artifact_status.items():
         if (
             record["type"] != "candidate-record"
@@ -5615,17 +5793,17 @@ _INVALIDATION_RULES = {
     },
     "verification-input": {
         "changed_types": {"verification-record"},
-        "destination": "scored",
+        "destination": "final-reviewed",
         "invalidates": {"release-record"},
     },
     "verification-result": {
         "changed_types": {"verification-record"},
-        "destination": "scored",
+        "destination": "final-reviewed",
         "invalidates": {"release-record"},
     },
     "verification": {
         "changed_types": {"verification-record"},
-        "destination": "scored",
+        "destination": "final-reviewed",
         "invalidates": {"release-record"},
     },
     "delivery-intent": {
@@ -5658,6 +5836,19 @@ def _require_selected_change_artifact(
     event_artifacts: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     event = _CURRENT_EVENT_BY_ARTIFACT_TYPE.get(artifact_type)
+    if artifact_type == "review-record":
+        try:
+            final_id, _ = _event_artifact(
+                run, "accept-final-review", "review-record", event_artifacts
+            )
+        except RunStateError:
+            final_id = None
+        if (
+            final_id is not None
+            and current["artifact_index"].get(final_id, {}).get("derived_status")
+            == "accepted"
+        ):
+            event = "accept-final-review"
     if event is not None:
         selected_id, selected_envelope = _event_artifact(
             run, event, artifact_type, event_artifacts
@@ -5940,33 +6131,19 @@ def _current_event_artifact(
     return artifact_id, envelope, _artifact_payload_json(run, artifact_id)
 
 
-def _validate_final_evidence(
+def _validate_score_release_readiness(
     run: Path,
     current: dict[str, Any],
-    release_artifact_id: str,
     event_artifacts: dict[str, dict[str, Any]] | None = None,
-) -> list[str]:
+) -> tuple[str, dict[str, Any], dict[str, Any], str, dict[str, Any], dict[str, Any]]:
     resolution, _ = _resolution_payload(run, current["workflow_id"])
-    legacy_final_semantics = (
-        resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
-    )
-    candidate_id, candidate_envelope, candidate = _current_event_artifact(
+    legacy_final_semantics = resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
+    _, candidate_envelope, candidate = _current_event_artifact(
         run, current, "accept-candidate", "candidate-record", event_artifacts
     )
     candidate_digest = candidate_envelope["envelope_digest"]
-    candidate_revision = candidate.get("candidate_revision")
-    if not isinstance(candidate_revision, str) or not candidate_revision:
-        raise RunStateError("candidate revision is missing")
-    trials_id, _, trials = _current_event_artifact(
-        run, current, "complete-trials", "trial-pack", event_artifacts
-    )
-    if (
-        trials.get("candidate_digest") != candidate_digest
-        or trials.get("candidate_revision") != candidate_revision
-        or trials.get("status") != "pass"
-    ):
-        raise RunStateError("trial evidence is stale or failing")
-    review_id, review_envelope, review = _current_event_artifact(
+    candidate_revision = candidate["candidate_revision"]
+    review_id, _, review = _current_event_artifact(
         run, current, "accept-review", "review-record", event_artifacts
     )
     _validate_review_binding(run, current, review_id, event_artifacts)
@@ -5993,7 +6170,7 @@ def _validate_final_evidence(
             for item in findings
         )
     ):
-        raise RunStateError("final review is stale, invalid, or not ready")
+        raise RunStateError("pre-score review is stale, invalid, or not ready")
     conformance_id, conformance_envelope, conformance = _current_event_artifact(
         run,
         current,
@@ -6031,7 +6208,6 @@ def _validate_final_evidence(
     if (
         scorecard.get("candidate_digest") != candidate_digest
         or scorecard.get("candidate_revision") != candidate_revision
-        or scorecard.get("review_digest") != review_envelope["envelope_digest"]
         or not isinstance(categories, list)
         or [item.get("name") if isinstance(item, dict) else None for item in categories]
         != list(_SCORE_CATEGORIES)
@@ -6069,6 +6245,72 @@ def _validate_final_evidence(
             or not criterion_results_pass
         ):
             raise RunStateError("every target score and binary criterion must pass at 10")
+    return (
+        conformance_id, conformance_envelope, conformance,
+        scorecard_id, scorecard_envelope, scorecard,
+    )
+
+
+def _validate_final_evidence(
+    run: Path,
+    current: dict[str, Any],
+    release_artifact_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    resolution, _ = _resolution_payload(run, current["workflow_id"])
+    legacy_final_semantics = (
+        resolution["schema_version"] == LEGACY_RESOLUTION_SCHEMA
+    )
+    candidate_id, candidate_envelope, candidate = _current_event_artifact(
+        run, current, "accept-candidate", "candidate-record", event_artifacts
+    )
+    candidate_digest = candidate_envelope["envelope_digest"]
+    candidate_revision = candidate.get("candidate_revision")
+    if not isinstance(candidate_revision, str) or not candidate_revision:
+        raise RunStateError("candidate revision is missing")
+    trials_id, _, trials = _current_event_artifact(
+        run, current, "complete-trials", "trial-pack", event_artifacts
+    )
+    if (
+        trials.get("candidate_digest") != candidate_digest
+        or trials.get("candidate_revision") != candidate_revision
+        or trials.get("status") != "pass"
+    ):
+        raise RunStateError("trial evidence is stale or failing")
+    review_id, review_envelope, review = _current_event_artifact(
+        run, current, "accept-final-review", "review-record", event_artifacts
+    )
+    _validate_review_binding(
+        run, current, review_id, event_artifacts, final_review=True
+    )
+    findings = review.get("findings")
+    reject_material_severity = not legacy_final_semantics
+    if (
+        review.get("candidate_digest") != candidate_digest
+        or review.get("candidate_revision") != candidate_revision
+        or review.get("independent") is not True
+        or review.get("read_only") is not True
+        or review.get("valid") is not True
+        or review.get("fresh") is not True
+        or review.get("verdict") != "ready"
+        or not isinstance(findings, list)
+        or any(
+            isinstance(item, dict)
+            and (
+                item.get("release_blocking") is True
+                or (
+                    reject_material_severity
+                    and item.get("severity") in _MATERIAL_REVIEW_SEVERITIES
+                )
+            )
+            for item in findings
+        )
+    ):
+        raise RunStateError("final review is stale, invalid, or not ready")
+    (
+        conformance_id, conformance_envelope, conformance,
+        scorecard_id, scorecard_envelope, scorecard,
+    ) = _validate_score_release_readiness(run, current, event_artifacts)
     verification_id, verification_envelope, verification = _current_event_artifact(
         run, current, "accept-verification", "verification-record", event_artifacts
     )
@@ -6956,158 +7198,270 @@ def _cli_json() -> dict[str, Any]:
     return value
 
 
+CLI_OPERATIONS = {
+    "initialize": initialize_run,
+    "discover": discover_run,
+    "load": load_run,
+    "snapshot": snapshot_target,
+    "retain": retain_artifact,
+    "transition": transition_run,
+    "invalidate": invalidate_run,
+    "pause": pause_run,
+    "resume": resume_run,
+    "recover": recover_run,
+    "finalize": finalize_run,
+    "deliver": record_delivery,
+    "cleanup-authority": record_cleanup_authority,
+    "cleanup": cleanup_run,
+    "activate-next": activate_next_target,
+}
+_CLI_ENCODED_FIELDS = {
+    "retain": {"files": ("files_base64", "mapping")},
+    "deliver": {
+        "authority_event": ("authority_event_base64", "bytes"),
+        "evidence_files": ("evidence_files_base64", "mapping"),
+    },
+    "cleanup-authority": {"authority_event": ("authority_event_base64", "bytes")},
+}
+_CLI_FLAG_PARAMETERS = {"state_root", "acknowledge_cleanup"}
+
+
+def describe_command(command: str) -> dict[str, Any]:
+    if command not in CLI_OPERATIONS:
+        raise RunStateError(f"unknown CLI operation: {command}")
+    encoded = _CLI_ENCODED_FIELDS.get(command, {})
+    fields: dict[str, dict[str, Any]] = {}
+    required: list[str] = []
+    optional: list[str] = []
+    for name, parameter in inspect.signature(CLI_OPERATIONS[command]).parameters.items():
+        if name.startswith("_") or name in _CLI_FLAG_PARAMETERS:
+            continue
+        wire_name = encoded[name][0] if name in encoded else name
+        is_required = parameter.default is inspect.Parameter.empty or name in encoded
+        entry: dict[str, Any] = {"required": is_required, "type": str(parameter.annotation)}
+        if name in encoded:
+            entry["type"] = "object of strings" if encoded[name][1] == "mapping" else "string"
+            entry["encoding"] = "strict base64 values keyed by run-relative path" if encoded[name][1] == "mapping" else "strict base64 encoding of exact raw bytes"
+        elif command == "snapshot":
+            entry["type"] = "string (absolute target path)"
+        if not is_required:
+            entry["default"] = parameter.default
+        if name in _IDENTITY_REQUEST_PROPERTIES:
+            entry["required_properties"] = list(_IDENTITY_REQUEST_PROPERTIES[name])
+            entry["additional_properties"] = False
+        fields[wire_name] = entry
+        (required if is_required else optional).append(wire_name)
+    result: dict[str, Any] = {
+        "schema_version": "skill-builder-cli-contract.v1",
+        "operation": command,
+        "input": "one strict JSON object on stdin. Duplicate keys and unknown fields are rejected",
+        "required_fields": required,
+        "optional_fields": optional,
+        "fields": fields,
+        "required_flags": ["--yes"] if command == "cleanup" else [],
+        "option_order": "--state-root PATH and --yes may appear before or after the operation. Request fields belong only in JSON stdin",
+        "usage": f"python3 /absolute/loaded-skill/scripts/run_state.py {command} [--state-root /absolute/isolated-state]" + (" --yes" if command == "cleanup" else "") + " < /absolute/request.json",
+        "description_usage": f"python3 /absolute/loaded-skill/scripts/run_state.py describe {command}. No stdin, state or target access",
+        "state_access": "target snapshot read" if command == "snapshot" else "validated private-state operation",
+        "status_codes": {"success": 0, "domain_error": 1, "usage_error": 2},
+        "success_output": "one canonical JSON value. Mutations bind their new receipt, load returns the validated index, discover returns its existing receipt locator, and snapshot returns the target manifest",
+        "failure_output": "error text on stderr. No success JSON. A failed gate never authorizes advancement",
+        "validation": "Field presence alone is insufficient. Nested payloads, current stage, receipt sequence, authority, digests and mode evidence remain subject to the existing domain validators and artifact contracts.",
+        "bounds": {"cli_input_bytes": MAX_CLI_JSON_BYTES, "artifact_items": MAX_ARTIFACT_ITEMS, "artifact_bytes": MAX_ARTIFACT_BYTES},
+    }
+    if command in {"initialize", "activate-next"}:
+        result["mode_requirements"] = {"create": ["absence_evidence", "overlap_map"], "improve": ["target_manifest"]}
+        result["mode_values"] = ["create", "improve"]
+    if command == "transition":
+        result["transitions"] = {
+            event: {"source": source, "destination": destination, "artifact_types": list(_EVENT_ARTIFACT_TYPES[event])}
+            for event, (source, destination) in _STAGE_TRANSITIONS.items()
+        }
+    if command == "invalidate":
+        result["change_kinds"] = {name: rule["destination"] for name, rule in _INVALIDATION_RULES.items()}
+    if command == "retain":
+        result["artifact_types"] = sorted(_ARTIFACT_TYPES)
+    if "workflow_id" in fields:
+        fields["workflow_id"]["format"] = "32 lowercase hexadecimal characters from the initialize result"
+    if "expected_sequence" in fields:
+        fields["expected_sequence"]["format"] = "nonnegative integer equal to current load.head_sequence. Refresh after each successful mutation"
+    return result
+
+
+def _decode_cli_fields(command: str, payload: dict[str, Any]) -> dict[str, Any]:
+    for name, (wire_name, kind) in _CLI_ENCODED_FIELDS.get(command, {}).items():
+        encoded = payload.pop(wire_name)
+        if kind == "mapping":
+            if not isinstance(encoded, dict) or any(not isinstance(path, str) or not isinstance(value, str) for path, value in encoded.items()):
+                raise RunStateError(f"{command} requires a {wire_name} object of base64 strings")
+        elif not isinstance(encoded, str):
+            raise RunStateError(f"{command} requires a {wire_name} base64 string")
+        try:
+            payload[name] = {path: base64.b64decode(value, validate=True) for path, value in encoded.items()} if kind == "mapping" else base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise RunStateError(f"{command} {wire_name} contains invalid base64") from error
+    return payload
+
+
+def _predicate_source(function: Any, selector: str | None = None, value: str | None = None) -> tuple[dict[str, Any], list[ast.AST]]:
+    lines, start = inspect.getsourcelines(function)
+    parsed = ast.parse("".join(lines)).body[0]
+    nodes = parsed.body
+    if selector is not None:
+        selected = []
+        for node in ast.walk(parsed):
+            if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+                continue
+            test = node.test
+            if isinstance(test.left, ast.Name) and test.left.id == selector and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq) and len(test.comparators) == 1 and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == value:
+                selected.append(node)
+        if len(selected) != 1:
+            raise RunStateError("authoritative artifact predicate is missing or ambiguous")
+        node = selected[0]
+        first, last = node.lineno, node.body[-1].end_lineno
+        nodes = node.body
+        source = "".join(lines[first - 1:last])
+    else:
+        first, last = 1, len(lines)
+        source = "".join(lines)
+    return {"function": function.__name__, "start_line": start + first - 1, "end_line": start + last - 1,
+            "source": source, "sha256": raw_digest(source.encode())}, nodes
+
+
+def _description_constant(value: Any) -> Any:
+    if isinstance(value, re.Pattern):
+        return {"pattern": value.pattern, "flags": value.flags}
+    if isinstance(value, dict):
+        return {str(key): _description_constant(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return [_description_constant(item) for item in sorted(value)]
+    if isinstance(value, (list, tuple)):
+        return [_description_constant(item) for item in value]
+    return value
+
+
+def describe_artifact(artifact_type: str | None = None) -> dict[str, Any]:
+    versions = {name: sorted([value] if isinstance(value, str) else value) for name, value in _PAYLOAD_SCHEMA_VERSIONS.items()}
+    if artifact_type is None:
+        return {"schema_version": "skill-builder-artifact-catalog.v1", "state_access": "none", "artifact_types": versions,
+                "helper_generated_record_types": sorted(_ARTIFACT_TYPES - set(versions)),
+                "usage": "python3 /absolute/loaded-skill/scripts/run_state.py describe-artifact TYPE"}
+    if artifact_type not in versions:
+        raise RunStateError(f"unknown authored artifact type: {artifact_type}")
+    predicate, nodes = _predicate_source(_validate_artifact_payload, "artifact_type", artifact_type)
+    predicates: dict[str, dict[str, Any]] = {}
+    constants: dict[str, Any] = {}
+    pending = list(nodes)
+    seen: set[str] = set()
+    while pending:
+        node = pending.pop()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id.isupper() and child.id in globals():
+                value = globals()[child.id]
+                if child.id == "_PAYLOAD_REQUIRED_FIELDS":
+                    value = {artifact_type: value[artifact_type]}
+                constants[child.id] = _description_constant(value)
+            if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Name):
+                continue
+            name = child.func.id
+            function = globals().get(name)
+            if name in seen or not name.startswith("_") or not inspect.isfunction(function) or function.__module__ != __name__:
+                continue
+            seen.add(name)
+            source, body = _predicate_source(function)
+            predicates[name] = source
+            pending.extend(body)
+    binding_predicates: dict[str, dict[str, Any]] = {}
+    transitions = {}
+    for event, types in _EVENT_ARTIFACT_TYPES.items():
+        if artifact_type not in types:
+            continue
+        source, body = _predicate_source(_validate_transition_semantics, "event", event)
+        transitions[event] = {"source": _STAGE_TRANSITIONS[event][0], "destination": _STAGE_TRANSITIONS[event][1], "artifact_types": list(types), "predicate": source}
+        for node in body:
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id.startswith("_validate"):
+                    function = globals()[child.func.id]
+                    binding_predicates[function.__name__] = _predicate_source(function)[0]
+    if artifact_type == "release-record":
+        binding_predicates["_validate_final_evidence"] = _predicate_source(_validate_final_evidence)[0]
+    for binding in list(binding_predicates.values()):
+        parsed = ast.parse(binding["source"])
+        for child in ast.walk(parsed):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id.startswith("_require"):
+                function = globals().get(child.func.id)
+                if inspect.isfunction(function) and function.__module__ == __name__:
+                    binding_predicates[function.__name__] = _predicate_source(function)[0]
+    return {
+        "schema_version": "skill-builder-artifact-contract.v1", "artifact_type": artifact_type, "state_access": "none",
+        "schema_versions": versions[artifact_type],
+        "required_fields_by_version": {version: sorted(_versioned_payload_fields(artifact_type, version)) for version in versions[artifact_type]},
+        "optional_fields": [], "additional_properties": False,
+        "contract_language": "Normative Python validation predicates from this exact helper source. This is not a portable JSON Schema or a semantic example.",
+        "versioned_field_rule": _predicate_source(_versioned_payload_fields)[0],
+        "validator_source": predicate, "type_predicates": predicates, "referenced_constants": constants,
+        "transitions": transitions, "binding_predicates": list(binding_predicates.values()),
+        "retention": "Author the primary JSON payload and retain its exact bytes through retain.files_base64 with producer, current input_bindings and limitations. Raw-source and other evidence digests must have matching retained bytes. The normal helper creates envelopes and manifests.",
+        "gate_rule": "A description does not validate, retain or accept an artifact. Current run versions, exact state, bindings, independence, authority and retained evidence remain enforced by the unchanged public retain and transition gates.",
+        "bounds": {"artifact_items": MAX_ARTIFACT_ITEMS, "artifact_bytes": MAX_ARTIFACT_BYTES, "json_bytes": MAX_JSON_BYTES},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    descriptions = {command: describe_command(command) for command in CLI_OPERATIONS}
     parser = argparse.ArgumentParser(
-        description=(
-            "Operate private Skill Builder run state. JSON payloads are read from "
-            "stdin. --state-root is for isolated tests only. Raw retain payloads "
-            f"are bounded to {MAX_ARTIFACT_ITEMS} items and {MAX_ARTIFACT_BYTES} bytes."
-        ),
+        add_help=False,
+        description="Operate private Skill Builder run state. Use describe OPERATION or OPERATION --help for exact JSON request fields without reading or writing state. --state-root is for isolated tests only.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "request schemas (one strict JSON object on stdin):\n"
-            "  initialize request: host_identity, target_identity, mode, authority, "
-            "and mode evidence, with an optional queue\n"
-            "  retain request: workflow_id, expected_sequence, artifact_id, "
-            "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
-            "  transition request: workflow_id, expected_sequence, event, "
-            "destination_stage, artifact_ids, and optional authority_event_digest\n"
-            "  deliver request: workflow_id, expected_sequence, delivery, "
-            "authority_event_digest, authority_event_base64, evidence_files_base64\n"
-            "  cleanup-authority request: workflow_id, expected_sequence, "
-            "authority_event_digest, authority_event_base64, actor\n"
-            "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
-            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence"
+        epilog="request schemas (one strict JSON object on stdin):\n" + "\n".join(
+            f"  {command} request: required {', '.join(value['required_fields'])}. Optional {', '.join(value['optional_fields']) or 'none'}"
+            for command, value in descriptions.items()
         ),
     )
-    parser.add_argument(
-        "command",
-        choices=(
-            "initialize",
-            "discover",
-            "load",
-            "snapshot",
-            "retain",
-            "transition",
-            "invalidate",
-            "pause",
-            "resume",
-            "recover",
-            "finalize",
-            "deliver",
-            "cleanup-authority",
-            "cleanup",
-            "activate-next",
-        ),
-    )
-    parser.add_argument(
-        "--state-root",
-        type=Path,
-        help="explicit absolute isolated state root (tests only)",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="explicitly acknowledge destructive cleanup of the exact live run",
-    )
+    parser.add_argument("command", nargs="?", choices=(*CLI_OPERATIONS, "describe", "describe-artifact"))
+    parser.add_argument("operation", nargs="?", help="operation after describe or authored artifact type after describe-artifact")
+    parser.add_argument("--state-root", type=Path, help="explicit absolute isolated state root (tests only)")
+    parser.add_argument("--yes", action="store_true", help="explicitly acknowledge destructive cleanup of the exact live run")
+    parser.add_argument("-h", "--help", action="store_true", help="show generic help or the selected operation's exact request contract")
     args = parser.parse_args(argv)
+    if args.command == "describe-artifact":
+        if args.operation is not None and args.operation not in _PAYLOAD_SCHEMA_VERSIONS:
+            parser.error(f"artifact type: invalid choice: {args.operation}")
+        sys.stdout.buffer.write(canonical_json_bytes(describe_artifact(args.operation)))
+        return 0
+    if args.command == "describe" and args.operation is not None and args.operation not in CLI_OPERATIONS:
+        parser.error(f"operation: invalid choice: {args.operation}")
+    if args.command != "describe" and args.operation is not None:
+        parser.error("only describe or describe-artifact accepts an operation argument")
+    if args.command == "describe" or args.help and args.command:
+        result = descriptions[args.operation] if args.command == "describe" and args.operation else descriptions[args.command] if args.command != "describe" else {"schema_version": "skill-builder-cli-catalog.v1", "state_access": "none", "operations": descriptions}
+        sys.stdout.buffer.write(canonical_json_bytes(result))
+        return 0
+    if args.help:
+        parser.print_help()
+        return 0
+    if args.command is None:
+        parser.error("an operation is required. Use --help or describe")
     if args.command == "cleanup" and not args.yes:
         parser.error("cleanup requires --yes")
     try:
         payload = _cli_json()
-        state_root = args.state_root
-        if args.command == "initialize":
-            result = initialize_run(state_root=state_root, **payload)
-        elif args.command == "discover":
-            result = discover_run(state_root=state_root, **payload)
-        elif args.command == "load":
-            result = load_run(state_root=state_root, **payload)
-        elif args.command == "snapshot":
-            if set(payload) != {"target"} or not isinstance(payload["target"], str):
+        description = descriptions[args.command]
+        unknown = set(payload) - set(description["fields"])
+        if unknown:
+            raise RunStateError("unsupported request fields: " + ", ".join(sorted(unknown)))
+        missing = set(description["required_fields"]) - set(payload)
+        if missing:
+            raise RunStateError("missing required request fields: " + ", ".join(sorted(missing)))
+        payload = _decode_cli_fields(args.command, payload)
+        if args.command == "snapshot":
+            if not isinstance(payload["target"], str):
                 raise RunStateError("snapshot requires one target path")
-            result = snapshot_target(Path(payload["target"]))
-        elif args.command == "retain":
-            encoded = payload.pop("files_base64", None)
-            if not isinstance(encoded, dict) or any(
-                not isinstance(name, str) or not isinstance(value, str)
-                for name, value in encoded.items()
-            ):
-                raise RunStateError("retain requires a files_base64 object")
-            files: dict[str, bytes] = {}
-            for name, value in encoded.items():
-                try:
-                    files[name] = base64.b64decode(value, validate=True)
-                except (ValueError, binascii.Error) as error:
-                    raise RunStateError("retained artifact contains invalid base64") from error
-            result = retain_artifact(state_root=state_root, files=files, **payload)
-        elif args.command == "transition":
-            result = transition_run(state_root=state_root, **payload)
-        elif args.command == "invalidate":
-            result = invalidate_run(state_root=state_root, **payload)
-        elif args.command == "pause":
-            result = pause_run(state_root=state_root, **payload)
-        elif args.command == "resume":
-            result = resume_run(state_root=state_root, **payload)
-        elif args.command == "recover":
-            result = recover_run(state_root=state_root, **payload)
-        elif args.command == "finalize":
-            result = finalize_run(state_root=state_root, **payload)
-        elif args.command == "deliver":
-            encoded_authority = payload.pop("authority_event_base64", None)
-            encoded_evidence = payload.pop("evidence_files_base64", None)
-            if not isinstance(encoded_authority, str) or not isinstance(
-                encoded_evidence, dict
-            ) or any(
-                not isinstance(name, str) or not isinstance(value, str)
-                for name, value in encoded_evidence.items()
-            ):
-                raise RunStateError(
-                    "deliver requires authority_event_base64 and an "
-                    "evidence_files_base64 object"
-                )
-            try:
-                authority_event = base64.b64decode(
-                    encoded_authority, validate=True
-                )
-                evidence_files = {
-                    name: base64.b64decode(value, validate=True)
-                    for name, value in encoded_evidence.items()
-                }
-            except (ValueError, binascii.Error) as error:
-                raise RunStateError("delivery evidence contains invalid base64") from error
-            result = record_delivery(
-                state_root=state_root,
-                authority_event=authority_event,
-                evidence_files=evidence_files,
-                **payload,
-            )
-        elif args.command == "cleanup-authority":
-            encoded_authority = payload.pop("authority_event_base64", None)
-            if not isinstance(encoded_authority, str):
-                raise RunStateError(
-                    "cleanup-authority requires authority_event_base64"
-                )
-            try:
-                authority_event = base64.b64decode(
-                    encoded_authority, validate=True
-                )
-            except (ValueError, binascii.Error) as error:
-                raise RunStateError(
-                    "cleanup-authority event contains invalid base64"
-                ) from error
-            result = record_cleanup_authority(
-                state_root=state_root,
-                authority_event=authority_event,
-                **payload,
-            )
-        elif args.command == "activate-next":
-            result = activate_next_target(state_root=state_root, **payload)
+            result = CLI_OPERATIONS[args.command](Path(payload["target"]))
         else:
-            result = cleanup_run(
-                state_root=state_root,
-                acknowledge_cleanup=True,
-                **payload,
-            )
+            if args.command == "cleanup":
+                payload["acknowledge_cleanup"] = True
+            result = CLI_OPERATIONS[args.command](state_root=args.state_root, **payload)
         sys.stdout.buffer.write(canonical_json_bytes(result))
         return 0
     except (RunStateError, TypeError, KeyError, OSError) as error:

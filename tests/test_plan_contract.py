@@ -136,7 +136,7 @@ class PlanContractTests(unittest.TestCase):
         boundary = _markdown_section(self.body, "Boundary")
         stopping = _markdown_section(self.body, "Stop and downstream boundary")
         self.assertIn("standalone", boundary)
-        self.assertRegex(boundary, r"do not route, invoke, open, select, or recommend another skill")
+        self.assertRegex(boundary, r"do not route, invoke, open, select, or recommend another lifecycle skill")
         self.assertRegex(boundary, r"do not begin .*implementation")
         self.assertIn("emit no typed handoff", stopping)
 
@@ -182,7 +182,7 @@ class PlanContractTests(unittest.TestCase):
         boundary = _markdown_section(self.body, "Boundary")
         branch_step = _numbered_workflow(self.body)[0]
         stopping = _markdown_section(self.body, "Stop and downstream boundary")
-        for phrase in ("source-read-only", "concept-read-only", "private graph operations through the helper"):
+        for phrase in ("source-read-only", "concept-read-only", "private graph and auditor-record operations through the helper"):
             self.assertIn(phrase, boundary)
         self.assertRegex(boundary, r"writes no production code, tests, executable configuration, or repository planning document")
         self.assertIn("explicit user confirmation", branch_step)
@@ -250,10 +250,10 @@ class PlanContractTests(unittest.TestCase):
             self.assertIn(phrase, research)
         for phrase in (
             "broad research only",
-            "exactly three",
+            "one to three",
             "gpt-6-luna",
             "max reasoning",
-            "at most one fourth lane",
+            "at most one targeted follow-up",
             "no repository access",
             "preferred answer",
             "sibling output",
@@ -264,6 +264,48 @@ class PlanContractTests(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, research)
+
+    def test_research_accounting_has_explicit_private_write_and_continuity_scope(self) -> None:
+        self.assertIn("private research accounting through `../../scripts/research_budget.py`", self.body)
+        self.assertIn("original run identity", _numbered_workflow(self.body)[6])
+        private = _markdown_section(self.body, "Canonical private graph")
+        for phrase in ("research-budgets", "initial research branch", "graph workflow id as the run id", "stop new research", "unique `dispatch_id`", "retains its open interval", "coordinator attestations"):
+            self.assertIn(phrase, private)
+        planner = (PLUGIN_ROOT / "content/agents/expskill-planner.md").read_text().lower()
+        self.assertIn("private cumulative research accounting through research_budget.py", planner)
+        self.assertIn("never reset its allowance", planner)
+
+    def test_routed_planner_can_run_only_bounded_evidence_services_and_relay_their_provenance(self) -> None:
+        planner = (PLUGIN_ROOT / "content/agents/expskill-planner.md").read_text().lower()
+        self.assertNotIn("do not delegate,", planner)
+        for phrase in ("delegate only evidence-only researchers and one independent plan auditor",
+                       "no repository access", "fresh conversation", "no inherited planner history",
+                       "only plan graph writer", "no product or git mutations", "no further delegation",
+                       "inherited lifecycle allowance", "five-minute", "dispatch id", "output locator and digest",
+                       "spent and outstanding", "router"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, planner)
+        validation = _numbered_workflow(self.body)[8]
+        for phrase in ("fresh read-only conversation", "frozen graph locator and digest",
+                       "no inherited planner history", "one initial five-minute auditor call",
+                       "inherited lifecycle allowance", "never certify your own audit as independent"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, validation)
+        self.assertIn("research or auditor dispatch id", self.body.lower())
+        self.assertIn("remaining allowance", self.body.lower())
+
+    def test_real_material_corrections_have_finite_fresh_independent_audit_capacity(self) -> None:
+        validation = _numbered_workflow(self.body)[8]
+        for phrase in ("one initial five-minute auditor call", "at most two fresh five-minute correction checks",
+                       "three calls and fifteen minutes", "actually corrected canonical graph",
+                       "fresh read-only conversation", "broader scope requires an explicitly named user-authorized extension",
+                       "retain every spent and outstanding call", "never attest that a correction was independently checked",
+                       "missing or stale evidence"):
+            self.assertIn(phrase, validation)
+        planner = (PLUGIN_ROOT / "content/agents/expskill-planner.md").read_text().lower()
+        for phrase in ("one initial audit", "at most two fresh correction checks", "retain spent and outstanding calls",
+                       "no speculative retry or replacement", "named user-authorized extension"):
+            self.assertIn(phrase, planner)
 
     def test_work_proof_and_parallelism_are_proportional_and_revision_bound(self) -> None:
         graph_step = _numbered_workflow(self.body)[7]
@@ -333,6 +375,18 @@ class PlanContractTests(unittest.TestCase):
                 self.assertIn(phrase, execution)
         for forbidden in ("plan creates task worktrees", "plan commits", "plan pushes"):
             self.assertNotIn(forbidden, self.normalized)
+
+    def test_auditor_dispatch_results_and_allowance_have_durable_public_recovery(self) -> None:
+        private = _markdown_section(self.body, "Canonical private graph")
+        for phrase in ("plan-audits", "reserve_plan_audit", "bind_plan_audit_actor", "record_plan_audit_result",
+                       "apply_plan_audit_result", "load_plan_audits", "close_plan_audit_dispatch", "extend_plan_audit_budget",
+                       "before dispatch", "before graph attachment", "retained finding descriptions", "never relaunch",
+                       "legacy audits", "cannot restore independent freshness", "coordinator attestations"):
+            self.assertIn(phrase, private)
+        role = (PLUGIN_ROOT / "content" / "agents" / "expskill-planner.md").read_text(encoding="utf-8").lower()
+        for phrase in ("private plan graph and durable auditor records", "reserve_plan_audit before launch",
+                       "record_plan_audit_result before apply_plan_audit_result", "load_plan_audits after pause or replacement"):
+            self.assertIn(phrase, role)
 
     def test_persistence_readiness_audit_pause_and_discard_are_explicit(self) -> None:
         graph = _markdown_section(self.body, "Canonical private graph")

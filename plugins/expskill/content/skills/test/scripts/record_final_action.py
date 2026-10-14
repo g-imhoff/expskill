@@ -20,12 +20,18 @@ import hashlib
 import json
 import os
 import re
+import signal
 import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+import append_ledger
 
 
 SCHEMA_VERSION = "test-final-action.v2"
@@ -54,7 +60,13 @@ CHARTER_FIELDS = {
     "exemption_grounding_artifact_ids",
 }
 PREDICATE_FIELDS = {"mode", "value"}
-OUTPUT_MODES = {"exact-text", "sha256"}
+EXECUTION_RECORD_FIELDS = {
+    "schema_version", "command", "exit_code", "output_sha256", "output_predicate",
+    "teardown", "teardown_status", "head", "branch", "integrity_paths", "source_diff",
+    "source_status", "integrity_status", "outcome", "run_id", "charter_sha256",
+    "observation_path", "execution_spec", "entry",
+}
+OUTPUT_MODES = {"exact-text", "sha256", "json-fields", "exit-only"}
 HEAD_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
@@ -144,12 +156,16 @@ def _read_charter_identity(repository: Path, root: Path) -> tuple[str, str]:
         _error("invalid-charter", f"cannot decode frozen charter: {error}")
     if (
         not isinstance(value, dict)
-        or set(value) != CHARTER_FIELDS
-        or value.get("schema_version") != "test-charter.v1"
+        or set(value) != (CHARTER_FIELDS | {"execution_budget"} if value.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS)
+        or value.get("schema_version") not in {"test-charter.v1", "test-charter.v2"}
         or value.get("run_id") != root.name
         or value.get("repository") != str(repository)
     ):
         _error("invalid-charter", "frozen charter shape or root binding is invalid")
+    try:
+        execution_budget.for_charter(value)
+    except ValueError as error:
+        _error("invalid-budget", str(error))
     head = value.get("head")
     branch = value.get("branch")
     if not isinstance(head, str) or HEAD_RE.fullmatch(head) is None:
@@ -312,6 +328,8 @@ def _git(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 def _validate_spec(
     repository: Path, root: Path, value: dict[str, object]
 ) -> dict[str, object]:
+    if (root / "successor.json").exists():
+        _error("closed-run", "product execution belongs to the allocated successor")
     if set(value) != SPEC_FIELDS:
         _error("invalid-spec-shape", "final-action.json fields are not exact")
     if value.get("schema_version") != SCHEMA_VERSION:
@@ -355,8 +373,14 @@ def _validate_spec(
         _error("invalid-predicate", "output_predicate fields are not exact")
     mode = predicate.get("mode")
     expected_output = predicate.get("value")
-    if mode not in OUTPUT_MODES or not isinstance(expected_output, str):
+    if not isinstance(mode, str) or mode not in OUTPUT_MODES:
         _error("invalid-predicate", "output predicate mode or value is invalid")
+    if mode == "json-fields":
+        _validate_json_assertions(expected_output)
+    elif not isinstance(expected_output, str):
+        _error("invalid-predicate", "text and exit predicates require a string value")
+    if mode == "exit-only" and expected_output != "":
+        _error("invalid-predicate", "exit-only value must be empty")
     if mode == "sha256" and not SHA256_RE.fullmatch(expected_output):
         _error("invalid-predicate", "sha256 predicate must be lowercase hexadecimal")
 
@@ -684,13 +708,229 @@ def _remove_created_path(path: Path) -> tuple[str, str]:
     return ("pass", "removed test-created state") if not os.path.lexists(path) else ("fail", "path remained after cleanup")
 
 
-def _output_matches(raw: bytes, mode: str, expected: str) -> bool:
+def _validate_json_assertions(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 64:
+        _error("invalid-predicate", "json-fields requires one to 64 assertions")
+    for assertion in value:
+        if not isinstance(assertion, dict) or set(assertion) != {"path", "operator", "value"}:
+            _error("invalid-predicate", "JSON assertion fields are not exact")
+        path = assertion["path"]
+        if not isinstance(path, list) or not 1 <= len(path) <= 16 or any(not isinstance(part, str) or not part or "\x00" in part for part in path):
+            _error("invalid-predicate", "JSON assertion path must contain one to sixteen literal keys")
+        operator = assertion["operator"]
+        expected = assertion["value"]
+        if not isinstance(operator, str):
+            _error("invalid-predicate", "JSON assertion operator must be a string")
+        if operator == "equals":
+            if expected is not None and not isinstance(expected, (str, bool)):
+                _error("invalid-predicate", "equals accepts a string, boolean, or null")
+        elif operator in {"integer-equals", "length-equals"}:
+            pattern = r"-?(?:0|[1-9][0-9]{0,17})" if operator == "integer-equals" else r"(?:0|[1-9][0-9]{0,17})"
+            if not isinstance(expected, str) or re.fullmatch(pattern, expected) is None:
+                _error("invalid-predicate", "numeric comparisons require bounded decimal strings")
+        elif operator == "type":
+            if not isinstance(expected, str) or expected not in {"object", "array", "string", "number", "integer", "boolean", "null"}:
+                _error("invalid-predicate", "JSON type assertion is invalid")
+        elif operator == "exists":
+            if not isinstance(expected, bool):
+                _error("invalid-predicate", "exists requires a boolean")
+        else:
+            _error("invalid-predicate", "unsupported JSON assertion operator")
+    return value
+
+
+def _json_matches(raw: bytes, assertions: object) -> bool:
+    try:
+        assertions = _validate_json_assertions(assertions)
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_reject_number)
+    except (RecorderError, ValueError, UnicodeDecodeError, RecursionError):
+        return False
+    missing = object()
+    for assertion in assertions:
+        actual = payload
+        for part in assertion["path"]:
+            if isinstance(actual, dict):
+                actual = actual.get(part, missing)
+            elif isinstance(actual, list) and part.isascii() and part.isdecimal() and len(part) <= 8 and int(part) < len(actual):
+                actual = actual[int(part)]
+            else:
+                actual = missing
+                break
+        operator = assertion["operator"]
+        expected = assertion["value"]
+        if operator == "exists":
+            matched = (actual is not missing) is expected
+        elif actual is missing:
+            matched = False
+        elif operator == "equals":
+            matched = type(actual) is type(expected) and actual == expected
+        elif operator == "integer-equals":
+            matched = type(actual) is int and actual == int(expected)
+        elif operator == "length-equals":
+            matched = isinstance(actual, (str, list, dict)) and len(actual) == int(expected)
+        else:
+            matched = {
+                "object": type(actual) is dict,
+                "array": type(actual) is list,
+                "string": type(actual) is str,
+                "number": type(actual) in {int, float},
+                "integer": type(actual) is int,
+                "boolean": type(actual) is bool,
+                "null": actual is None,
+            }[expected]
+        if not matched:
+            return False
+    return True
+
+
+def _output_matches(raw: bytes, mode: str, expected: object) -> bool:
+    if mode == "exit-only":
+        return expected == ""
+    if mode == "json-fields":
+        return _json_matches(raw, expected)
     if mode == "sha256":
         return hashlib.sha256(raw).hexdigest() == expected
+    if mode != "exact-text":
+        return False
     try:
         return raw.decode("utf-8") == expected
     except UnicodeDecodeError:
         return False
+
+
+def _execution_actual(record: dict[str, object]) -> str:
+    return (f"exit={record['exit_code']} output={record['output_predicate']} "
+            f"teardown={record['teardown_status']} integrity={record['integrity_status']}")
+
+
+def verify_execution_record(
+    record: object, entry: dict[str, object], charter_raw: bytes,
+    observation: bytes, observation_path: str,
+) -> bool:
+    if not isinstance(record, dict) or set(record) != EXECUTION_RECORD_FIELDS or record.get("schema_version") != "test-execution-record.v1":
+        return False
+    if record.get("entry") != entry or record.get("charter_sha256") != hashlib.sha256(charter_raw).hexdigest():
+        return False
+    try:
+        charter = json.loads(charter_raw.decode("utf-8"), object_pairs_hook=_pairs)
+        command = record["command"]
+        if not isinstance(command, list) or any(not isinstance(part, str) for part in command):
+            return False
+        _validate_command(list(command))
+        spec = record["execution_spec"]
+        if not isinstance(spec, dict) or set(spec) != SPEC_FIELDS or spec["schema_version"] != SCHEMA_VERSION:
+            return False
+        if spec["observation_path"] != observation_path or record["observation_path"] != observation_path:
+            return False
+        if record["run_id"] != charter["run_id"] or record["head"] != charter["head"] or record["branch"] != charter["branch"]:
+            return False
+        if record["output_sha256"] != hashlib.sha256(observation).hexdigest():
+            return False
+        predicate = spec["output_predicate"]
+        if not isinstance(predicate, dict) or set(predicate) != PREDICATE_FIELDS:
+            return False
+        expected_exit = spec["expected_exit_code"]
+        if not isinstance(expected_exit, str) or re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", expected_exit) is None or int(expected_exit) > 255:
+            return False
+        matches = record["exit_code"] == expected_exit and _output_matches(observation, predicate["mode"], predicate["value"])
+        if record["output_predicate"] != ("match" if matches else "mismatch"):
+            return False
+        if record["integrity_paths"] != spec["integrity_paths"] or not spec["integrity_paths"]:
+            return False
+        integrity_paths = _string_array(spec["integrity_paths"], label="integrity_paths", minimum=1)
+        cleanup_paths = _string_array(spec["cleanup_absent_paths"], label="cleanup_absent_paths")
+        for path in integrity_paths:
+            relative = _relative_path(path, label="integrity_paths")
+            if relative.parts[0] in {".git", ".test-evidence"}:
+                return False
+        for path in cleanup_paths:
+            relative = _relative_path(path, label="cleanup_absent_paths")
+            if not any(part in SAFE_CLEANUP_PARTS or part.startswith((".test-", ".e2e-")) for part in relative.parts):
+                return False
+        teardown = record["teardown"]
+        if not isinstance(teardown, list) or any(not isinstance(item, dict) or set(item) != {"path", "status", "detail"} for item in teardown):
+            return False
+        if [item["path"] for item in teardown] != cleanup_paths:
+            return False
+        teardown_pass = all(item.get("status") == "pass" for item in teardown)
+        if record["teardown_status"] != ("pass" if teardown_pass else "fail"):
+            return False
+        integrity_pass = record["integrity_status"] == "pass" and record["source_diff"] == "" and record["source_status"] == ""
+        passed = matches and teardown_pass and integrity_pass
+        return (record["outcome"] == ("match" if passed else "mismatch")
+                and entry["status"] == ("pass" if passed else "fail")
+                and entry["actual"] == _execution_actual(record))
+    except (KeyError, TypeError, ValueError, RecorderError):
+        return False
+
+
+def _execute(repository: Path, command: list[str], timeout: float) -> tuple[str, bytes]:
+    try:
+        process = subprocess.Popen(
+            command, cwd=repository, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=os.name == "posix",
+        )
+    except OSError as error:
+        return "launch-error", f"recorder_launch_error={type(error).__name__}: {error}\n".encode("utf-8")
+    try:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+            return str(process.returncode), output
+        except subprocess.TimeoutExpired as error:
+            output = error.stdout or b""
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                output, _ = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired as drain_error:
+                output = drain_error.stdout or output
+                if process.stdout is not None:
+                    process.stdout.close()
+                process.kill()
+                process.wait(timeout=2)
+            return "timeout", output
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def _postflight(repository: Path, values: dict[str, object]) -> dict[str, object]:
+    teardown: list[dict[str, str]] = []
+    for raw in values["cleanup_paths"]:
+        try:
+            status_value, detail = _remove_created_path(repository / raw)
+        except OSError as error:
+            status_value, detail = "fail", f"{type(error).__name__}: {error}"
+        teardown.append({"path": raw, "status": status_value, "detail": detail})
+
+    def capture(*arguments: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return _git(repository, *arguments)
+        except OSError as error:
+            return subprocess.CompletedProcess(["git", *arguments], 1, "", f"{type(error).__name__}: {error}")
+
+    head = capture("rev-parse", "HEAD")
+    branch = capture("branch", "--show-current")
+    diff = capture("diff", "--exit-code", "HEAD", "--", *values["integrity_paths"])
+    worktree = capture("status", "--short", "--untracked-files=all", "--", *values["integrity_paths"])
+    integrity_status = "pass" if (
+        head.returncode == 0 and head.stdout.strip() == values["expected_head"]
+        and branch.returncode == 0 and branch.stdout.strip() == values["expected_branch"]
+        and diff.returncode == 0 and worktree.returncode == 0 and not worktree.stdout.strip()
+    ) else "fail"
+    return {
+        "teardown": teardown,
+        "teardown_status": "pass" if all(item["status"] == "pass" for item in teardown) else "fail",
+        "head": head.stdout.strip(), "branch": branch.stdout.strip(),
+        "source_diff": diff.stdout + diff.stderr,
+        "source_status": worktree.stdout + worktree.stderr,
+        "integrity_status": integrity_status,
+    }
 
 
 def _run(repository: Path, values: dict[str, object], command: list[str]) -> bool:
@@ -713,14 +953,18 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
             label="metadata_path",
         )
         protected = _snapshot_run_root(root)
-        completed = subprocess.run(
-            command,
-            cwd=repository,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-        output = completed.stdout
+        charter = json.loads((root / CHARTER_FILENAME).read_text(encoding="utf-8"))
+        remaining = execution_budget.remaining_seconds(charter, root)
+        if remaining <= 0 and "execution_result" not in values:
+            _error("deadline-exhausted", "frozen run deadline expired before execution")
+        if "execution_result" in values:
+            exit_code, output = values["execution_result"]
+            postflight = values["postflight"]
+        else:
+            try:
+                exit_code, output = _execute(repository, command, remaining)
+            finally:
+                postflight = _postflight(repository, values)
         _verify_run_root_unchanged(root, protected)
         observation_metadata = _write_exclusive_at(
             observation_parent,
@@ -734,52 +978,34 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
             observation_metadata,
         )
 
-        teardown: list[dict[str, str]] = []
-        for raw in values["cleanup_paths"]:
-            status_value, detail = _remove_created_path(repository / raw)
-            teardown.append({"path": raw, "status": status_value, "detail": detail})
-        teardown_status = "pass" if all(item["status"] == "pass" for item in teardown) else "fail"
-
-        head = _git(repository, "rev-parse", "HEAD")
-        branch = _git(repository, "branch", "--show-current")
-        diff = _git(repository, "diff", "--exit-code", "HEAD", "--", *values["integrity_paths"])
-        worktree = _git(
-            repository,
-            "status",
-            "--short",
-            "--untracked-files=all",
-            "--",
-            *values["integrity_paths"],
-        )
-        integrity_status = "pass" if (
-            head.returncode == 0
-            and head.stdout.strip() == values["expected_head"]
-            and branch.returncode == 0
-            and branch.stdout.strip() == values["expected_branch"]
-            and diff.returncode == 0
-            and worktree.returncode == 0
-            and not worktree.stdout.strip()
-        ) else "fail"
-        predicate_match = completed.returncode == values["expected_exit"] and _output_matches(
-            output, str(values["predicate_mode"]), str(values["predicate_value"])
+        teardown_status = postflight["teardown_status"]
+        integrity_status = postflight["integrity_status"]
+        predicate_match = exit_code == str(values["expected_exit"]) and _output_matches(
+            output, str(values["predicate_mode"]), values["predicate_value"]
         )
         matched = predicate_match and teardown_status == "pass" and integrity_status == "pass"
         metadata = {
             "schema_version": "test-final-action-record.v1",
             "command": command,
-            "exit_code": str(completed.returncode),
+            "exit_code": exit_code,
             "output_sha256": hashlib.sha256(output).hexdigest(),
             "output_predicate": "match" if predicate_match else "mismatch",
-            "teardown": teardown,
-            "teardown_status": teardown_status,
-            "head": head.stdout.strip(),
-            "branch": branch.stdout.strip(),
             "integrity_paths": values["integrity_paths"],
-            "source_diff": diff.stdout + diff.stderr,
-            "source_status": worktree.stdout + worktree.stderr,
-            "integrity_status": integrity_status,
+            **postflight,
             "outcome": "match" if matched else "mismatch",
         }
+        if "execution_entry" in values:
+            entry = dict(values["execution_entry"])
+            entry.update({"head": values["expected_head"], "status": "pass" if matched else "fail", "actual": _execution_actual(metadata)})
+            metadata.update({
+                "schema_version": "test-execution-record.v1",
+                "run_id": root.name,
+                "charter_sha256": hashlib.sha256((root / CHARTER_FILENAME).read_bytes()).hexdigest(),
+                "observation_path": observation_path.relative_to(root).as_posix(),
+                "execution_spec": values["execution_spec"],
+                "entry": entry,
+            })
+            values["recorded_entry"] = entry
         raw_metadata = json.dumps(
             metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8") + b"\n"
@@ -814,11 +1040,104 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
         )
         print(f"observation_path={values['observation']}")
         print(f"metadata_path={values['metadata']}")
+        if "execution_entry" in values:
+            print("action_output_preview=" + json.dumps(output[:4000].decode("utf-8", errors="replace"), ensure_ascii=False))
         return matched
     finally:
         os.close(observation_parent)
         if metadata_parent is not None:
             os.close(metadata_parent)
+
+
+def _record_action(repository: Path, root: Path, supplied: str) -> int:
+    relative = _relative_path(supplied, label="spec")
+    spec_path = root / relative
+    if any(parent.is_symlink() for parent in (spec_path, *spec_path.parents) if parent != root.parent):
+        _error("invalid-spec-path", "action spec cannot contain a symbolic link")
+    manifest = _read_spec(spec_path)
+    if manifest.get("schema_version") == "test-recorded-wave.v1":
+        if set(manifest) != {"schema_version", "actions"} or not isinstance(manifest["actions"], list) or not 1 <= len(manifest["actions"]) <= 8:
+            _error("invalid-action-spec", "a recorded wave contains one to eight closed action manifests")
+        manifests = manifest["actions"]
+    else:
+        manifests = [manifest]
+    return _record_manifests(repository, root, manifests)
+
+
+def _prepare_recorded_manifest(repository: Path, root: Path, manifest: object) -> tuple[dict[str, object], list[str], dict[str, object]]:
+    if not isinstance(manifest, dict):
+        _error("invalid-action-spec", "recorded action must be an object")
+    if set(manifest) != {"schema_version", "entry", "command", "execution"} or manifest["schema_version"] != "test-recorded-action.v1":
+        _error("invalid-action-spec", "recorded action manifest fields or schema are invalid")
+    entry = manifest["entry"]
+    fields = append_ledger.BATCH_ENTRY_FIELDS - {"actual", "status"}
+    if not isinstance(entry, dict) or set(entry) != fields:
+        _error("invalid-action-spec", "entry supplies only predeclared action fields, never actual or status")
+    command = manifest["command"]
+    if not isinstance(command, list) or any(not isinstance(part, str) for part in command):
+        _error("invalid-action-spec", "command must be literal argv")
+    _validate_command(command)
+    if len(entry.get("artifact_ids", [])) != 2:
+        _error("invalid-action-spec", "artifact_ids must identify observation then metadata")
+    execution = manifest["execution"]
+    if not isinstance(execution, dict):
+        _error("invalid-action-spec", "execution must be a closed recorder spec")
+    values = _validate_spec(repository, root, execution)
+    values.update({"execution_entry": entry, "execution_spec": execution})
+    return values, command, dict(entry, actual="pending recorder observation", status="blocked")
+
+
+def _record_manifests(repository: Path, root: Path, manifests: list[object]) -> int:
+    prepared = [_prepare_recorded_manifest(repository, root, manifest) for manifest in manifests]
+    outputs = [values[label] for values, _, _ in prepared for label in ("observation", "metadata")]
+    if len(outputs) != len(set(outputs)) or any(left in right.parents for left in outputs for right in outputs if left != right):
+        _error("invalid-output-path", "wave recorder outputs must be distinct and non-overlapping")
+    cleanup = [Path(path) for values, _, _ in prepared for path in values["cleanup_paths"]]
+    if len(cleanup) != len(set(cleanup)) or any(left in right.parents for left in cleanup for right in cleanup if left != right):
+        _error("unsafe-cleanup-path", "parallel actions require disjoint cleanup ownership")
+    charter, _, _ = append_ledger._read_private_json(root / CHARTER_FILENAME, label="charter", missing_code="invalid-charter", permission_code="invalid-charter")
+    ledger, ledger_raw, ledger_metadata = append_ledger._read_private_json(root / "ledger.json", label="ledger", missing_code="invalid-ledger", permission_code="invalid-ledger")
+    if os.path.lexists(root / append_ledger.BATCH_FILENAME):
+        _error("invalid-batch", "consume or correct an existing ledger batch before recording")
+    append_ledger._validate_inputs(repository, root, charter, ledger, {"schema_version": append_ledger.BATCH_SCHEMA_VERSION, "entries": [pending for _, _, pending in prepared]})
+    budget = execution_budget.for_charter(charter)
+    if budget["waves"]:
+        indexes = [index for _, _, pending in prepared for index, wave in enumerate(budget["waves"]) if pending["action_id"] in wave]
+        if len(set(indexes)) != 1:
+            _error("unplanned-action", "one recorded batch cannot cross frozen dependency waves")
+    if len(prepared) > 1:
+        protected = _snapshot_run_root(root)
+        remaining = execution_budget.remaining_seconds(charter, root)
+        if remaining <= 0:
+            _error("deadline-exhausted", "frozen run deadline expired before execution")
+        try:
+            with ThreadPoolExecutor(max_workers=len(prepared)) as executor:
+                completed = list(executor.map(lambda command: _execute(repository, command, remaining), [command for _, command, _ in prepared]))
+        finally:
+            for values, _, _ in prepared:
+                values["postflight"] = _postflight(repository, values)
+        _verify_run_root_unchanged(root, protected)
+        for (values, _, _), result in zip(prepared, completed):
+            values["execution_result"] = result
+    outcomes = [_run(repository, values, command) for values, command, _ in prepared]
+    recorded_entries = [dict(values["recorded_entry"]) for values, _, _ in prepared]
+    for recorded in recorded_entries:
+        del recorded["head"]
+    batch = {"schema_version": append_ledger.BATCH_SCHEMA_VERSION, "entries": recorded_entries}
+    output, _ = append_ledger._validate_inputs(repository, root, charter, ledger, batch)
+    if (root / "ledger.json").read_bytes() != ledger_raw or not append_ledger._same_inode((root / "ledger.json").lstat(), ledger_metadata):
+        _error("input-race", "ledger changed during execution")
+    batch_path = root / append_ledger.BATCH_FILENAME
+    batch_metadata = append_ledger._write_exclusive(batch_path, append_ledger._canonical_bytes(batch))
+    append_ledger._publish(root, ledger_raw, ledger_metadata, batch_metadata, output)
+    for (values, _, _), recorded in zip(prepared, recorded_entries):
+        entry = values["execution_entry"]
+        execution = values["execution_spec"]
+        print("recorded_action=" + json.dumps({"action_id": recorded["action_id"], "status": recorded["status"], "artifacts": [
+            {"artifact_id": entry["artifact_ids"][0], "kind": "log", "path": execution["observation_path"]},
+            {"artifact_id": entry["artifact_ids"][1], "kind": "log", "path": execution["metadata_path"]},
+        ]}, sort_keys=True, separators=(",", ":")))
+    return 0 if all(outcomes) else 1
 
 
 def _relay_helper(arguments: list[str], repository: Path) -> int:
@@ -887,6 +1206,19 @@ def _bind_handoff_artifacts(root: Path, values: dict[str, object]) -> None:
                 "handoff-artifact-mismatch",
                 f"draft.artifacts must declare {label} path exactly once: {expected}",
             )
+    ledger_path = root / "ledger.json"
+    if ledger_path.exists():
+        ledger = _read_spec(ledger_path)
+        charter = _read_spec(root / CHARTER_FILENAME)
+        if ledger.get("entries") == [] and charter.get("material_oracles") == []:
+            return
+        artifact_by_path = {item["path"]: item["artifact_id"] for item in value["artifacts"]}
+        ids = {artifact_by_path[values[label].relative_to(root).as_posix()] for label in ("observation", "metadata")}
+        candidates = [entry for entry in ledger.get("entries", []) if isinstance(entry, dict) and ids <= set(entry.get("artifact_ids", []))]
+        if len(candidates) != 1:
+            _error("handoff-artifact-mismatch", "one final ledger entry must bind both recorder artifacts")
+        values["execution_entry"] = candidates[0]
+        values["execution_spec"] = _read_spec(root / SPEC_FILENAME)
 
 
 def _handoff(
@@ -952,6 +1284,9 @@ def _parser() -> argparse.ArgumentParser:
     handoff = subparsers.add_parser("handoff")
     handoff.add_argument("--root", required=True)
     handoff.add_argument("command", nargs=argparse.REMAINDER)
+    record = subparsers.add_parser("record")
+    record.add_argument("--root", required=True)
+    record.add_argument("--spec", required=True)
     return parser
 
 
@@ -960,6 +1295,8 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         repository = _repository()
         root = _run_root(repository, parsed.root)
+        if parsed.mode == "record":
+            return _record_action(repository, root, parsed.spec)
         spec = _read_spec(root / SPEC_FILENAME)
         values = _validate_spec(repository, root, spec)
         if parsed.mode == "validate":
@@ -969,6 +1306,9 @@ def main(arguments: list[str] | None = None) -> int:
             return _handoff(repository, root, values, list(parsed.command))
         return 0 if _run(repository, values, list(parsed.command)) else 1
     except RecorderError as error:
+        print(f"final_action_error={error.code} {error}", file=sys.stderr)
+        return 2
+    except append_ledger.LedgerError as error:
         print(f"final_action_error={error.code} {error}", file=sys.stderr)
         return 2
     except (OSError, subprocess.SubprocessError) as error:

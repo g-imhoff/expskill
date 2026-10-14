@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -230,6 +231,322 @@ print('consumer-result=pass')
         )
         self.assertEqual(metadata["outcome"], "mismatch")
 
+    def test_ordinary_record_derives_ledger_observation_from_actual_execution(self) -> None:
+        self.write_spec()
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        execution["observation_path"] = "artifacts/changed.raw"
+        execution["metadata_path"] = "artifacts/changed.record.json"
+        entry = {
+            "action_id": "changed", "role": "check", "ring": "inner",
+            "action": "Run the consumer", "path": [], "expected": "The consumer passes.",
+            "oracle_ids": ["changed-outcome"], "artifact_ids": ["changed-raw", "changed-record"],
+        }
+        manifest = {"schema_version": "test-recorded-action.v1", "entry": entry,
+                    "command": [sys.executable, "product_action.py"], "execution": execution}
+        for name, value in (("action-spec.json", manifest), ("ledger.json", {
+            "schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []
+        })):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "action-spec.json")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        recorded = json.loads((self.run_root / "ledger.json").read_text())["entries"][0]
+        self.assertEqual(recorded["status"], "pass")
+        self.assertEqual(recorded["actual"], "exit=0 output=match teardown=pass integrity=pass")
+        self.assertEqual((self.run_root / "artifacts/changed.raw").read_bytes(), b"consumer-result=pass\n")
+        receipt = json.loads((self.run_root / "artifacts/changed.record.json").read_text())
+        self.assertEqual(receipt["entry"], recorded)
+        self.assertEqual(receipt["schema_version"], "test-execution-record.v1")
+        from tests.test_test_evidence_finalizer import write_draft, invoke_finalizer
+        write_draft(self.run_root)
+        draft_path = self.run_root / "draft.json"
+        draft = json.loads(draft_path.read_text())
+        draft["artifacts"] = [
+            {"artifact_id": "changed-raw", "kind": "log", "path": "artifacts/changed.raw"},
+            {"artifact_id": "changed-record", "kind": "log", "path": "artifacts/changed.record.json"},
+        ]
+        draft_path.write_text(json.dumps(draft))
+        draft_path.chmod(0o600)
+        metadata_path = self.run_root / "artifacts/changed.record.json"
+        original = metadata_path.read_bytes()
+        receipt["entry"]["oracle_ids"] = []
+        metadata_path.write_text(json.dumps(receipt))
+        tampered = invoke_finalizer(self.run_root)
+        self.assertNotEqual(tampered.returncode, 0, tampered.stdout)
+        metadata_path.write_bytes(original)
+        batch_entry = {
+            "action_id": "final-proof", "role": "check", "ring": "inner", "action": "Repeat the changed consumer",
+            "path": [], "expected": "Consumer passes", "actual": "exit=0 output=match teardown=pass integrity=pass",
+            "status": "pass", "oracle_ids": ["changed-outcome"], "artifact_ids": ["final-raw", "final-record"],
+        }
+        batch_path = self.run_root / "ledger-batch.json"
+        batch_path.write_text(json.dumps({"schema_version": "test-ledger-batch.v1", "entries": [batch_entry]}))
+        batch_path.chmod(0o600)
+        appender = RECORDER.with_name("append_ledger.py")
+        appended = subprocess.run([sys.executable, str(appender), "--root", str(self.run_root)], cwd=self.repository, capture_output=True, text=True)
+        self.assertEqual(appended.returncode, 0, appended.stderr)
+        draft["artifacts"].extend([
+            {"artifact_id": "final-raw", "kind": "log", "path": "final-observation.raw"},
+            {"artifact_id": "final-record", "kind": "log", "path": "final-action-metadata.json"},
+        ])
+        active = [rule["rule_id"] for rule in draft.pop("rule_applicability") if rule["status"] == "active"]
+        preparation = {"schema_version": "test-draft-preparation.v3", "draft_candidate": draft,
+                       "rule_disposition": "evaluate", "active_rule_conditions": [],
+                       "rule_assessment_groups": [{"rule_ids": active, "outcome": "satisfied", "evidence_action_ids": ["changed", "final-proof"]}]}
+        draft_path.unlink()
+        for name, value in (("draft-preparation.json", preparation), ("draft-final-delta.json", {"schema_version": "test-draft-final-delta.v2", "resolutions": []})):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        finalized = self.recorder("handoff", "--root", str(self.run_root), "--", sys.executable, "product_action.py")
+        self.assertEqual(finalized.returncode, 0, finalized.stdout)
+
+    def test_recorded_wave_runs_independent_argv_before_publishing_results(self) -> None:
+        script = self.repository / "parallel_action.py"
+        script.write_text("""import sys
+import time
+from pathlib import Path
+root = Path('.test-parallel')
+root.mkdir(exist_ok=True)
+(root / sys.argv[1]).write_text('ready')
+end = time.monotonic() + 3
+while not (root / sys.argv[2]).exists():
+    if time.monotonic() >= end:
+        raise SystemExit(7)
+    time.sleep(0.01)
+print('consumer-result=pass')
+""")
+        subprocess.run(["git", "add", "parallel_action.py"], cwd=self.repository, check=True)
+        subprocess.run(["git", "commit", "-m", "parallel fixture"], cwd=self.repository, check=True, stdout=subprocess.PIPE)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repository, text=True).strip()
+        charter_path = self.run_root / "charter.json"
+        charter = json.loads(charter_path.read_text())
+        charter["head"] = head
+        charter_path.write_text(json.dumps(charter))
+        self.write_spec()
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        actions = []
+        for index, action_id in enumerate(("changed", "neighbor")):
+            spec = dict(execution, observation_path=f"artifacts/{action_id}.raw", metadata_path=f"artifacts/{action_id}.json",
+                        integrity_paths=["parallel_action.py"], cleanup_absent_paths=[".test-parallel"] if index == 0 else [])
+            entry = {"action_id": action_id, "role": "check", "ring": "inner", "action": "Observe a parallel consumer",
+                     "path": [], "expected": "Consumer passes", "oracle_ids": ["changed-outcome"],
+                     "artifact_ids": [action_id + "-raw", action_id + "-record"]}
+            actions.append({"schema_version": "test-recorded-action.v1", "entry": entry, "execution": spec,
+                            "command": [sys.executable, "parallel_action.py", str(index), str(1 - index)]})
+        for name, value in (("wave.json", {"schema_version": "test-recorded-wave.v1", "actions": actions}),
+                            ("ledger.json", {"schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []})):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "wave.json")
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+        entries = json.loads((self.run_root / "ledger.json").read_text())["entries"]
+        self.assertEqual([entry["status"] for entry in entries], ["pass", "pass"])
+        self.assertFalse((self.repository / ".test-parallel").exists())
+
+    def install_timeout_action(self) -> None:
+        script = self.repository / "timeout_action.py"
+        script.write_text("""import subprocess
+import sys
+import time
+from pathlib import Path
+runtime = Path('.test-' + sys.argv[1])
+runtime.mkdir()
+(runtime / 'owned').write_text('created')
+if len(sys.argv) > 2 and sys.argv[2] == 'mutate':
+    Path('product.txt').write_text('unexpected mutation')
+    Path('.test-cleanable').mkdir()
+    (runtime / 'link').symlink_to('owned')
+print('consumer-result=pass', flush=True)
+if len(sys.argv) > 2 and sys.argv[2] == 'spawn':
+    subprocess.Popen([sys.executable, 'timeout_action.py', 'descendant'])
+if sys.argv[1] in {'slow', 'descendant'}:
+    time.sleep(30)
+""")
+        subprocess.run(["git", "add", "timeout_action.py"], cwd=self.repository, check=True)
+        subprocess.run(["git", "commit", "-m", "timeout fixture"], cwd=self.repository, check=True, stdout=subprocess.PIPE)
+        charter_path = self.run_root / "charter.json"
+        charter = json.loads(charter_path.read_text())
+        charter["head"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repository, text=True).strip()
+        charter_path.write_text(json.dumps(charter))
+
+    def expire_action_after_one_second(self) -> None:
+        started = time.time() - 779
+        os.utime(self.run_root / "charter.json", (started, started))
+
+    def test_final_action_timeout_retains_partial_output_and_postflight(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py"], cleanup_absent_paths=[".test-slow"])
+        self.expire_action_after_one_second()
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "timeout_action.py", "slow")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual((self.run_root / "final-observation.raw").read_bytes(), b"consumer-result=pass\n")
+        record = json.loads((self.run_root / "final-action-metadata.json").read_text())
+        self.assertEqual(record["exit_code"], "timeout")
+        self.assertEqual(record["outcome"], "mismatch")
+        self.assertEqual(record["output_predicate"], "mismatch")
+        self.assertEqual(record["teardown_status"], "pass")
+        self.assertEqual(record["integrity_status"], "pass")
+        self.assertFalse((self.repository / ".test-slow").exists())
+
+    def test_timeout_retains_failed_cleanup_and_changed_source_without_skipping_other_cleanup(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py", "product.txt"], cleanup_absent_paths=[".test-slow", ".test-cleanable"])
+        self.expire_action_after_one_second()
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "timeout_action.py", "slow", "mutate")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        record = json.loads((self.run_root / "final-action-metadata.json").read_text())
+        self.assertEqual(record["exit_code"], "timeout")
+        self.assertEqual(record["teardown_status"], "fail")
+        self.assertEqual([item["status"] for item in record["teardown"]], ["fail", "pass"])
+        self.assertEqual(record["integrity_status"], "fail")
+        self.assertIn("unexpected mutation", record["source_diff"])
+        self.assertTrue((self.repository / ".test-slow").exists())
+        self.assertFalse((self.repository / ".test-cleanable").exists())
+
+    def test_timeout_terminates_descendants_holding_output_before_cleanup(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py"], cleanup_absent_paths=[".test-slow", ".test-descendant"])
+        self.expire_action_after_one_second()
+        completed = subprocess.run(
+            [sys.executable, str(RECORDER), "run", "--root", str(self.run_root), "--", sys.executable, "timeout_action.py", "slow", "spawn"],
+            cwd=self.repository, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual((self.run_root / "final-observation.raw").read_bytes(), b"consumer-result=pass\nconsumer-result=pass\n")
+        record = json.loads((self.run_root / "final-action-metadata.json").read_text())
+        self.assertEqual(record["exit_code"], "timeout")
+        self.assertEqual(record["teardown_status"], "pass")
+        self.assertFalse((self.repository / ".test-slow").exists())
+        self.assertFalse((self.repository / ".test-descendant").exists())
+
+    def test_mixed_wave_timeout_retains_both_outputs_and_truthful_ledger(self) -> None:
+        self.install_timeout_action()
+        self.write_spec(integrity_paths=["timeout_action.py"])
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        actions = []
+        for action_id, speed in (("changed", "slow"), ("neighbor", "fast")):
+            spec = dict(execution, observation_path=f"artifacts/{action_id}.raw", metadata_path=f"artifacts/{action_id}.json", cleanup_absent_paths=[f".test-{speed}"])
+            entry = {"action_id": action_id, "role": "check", "ring": "inner", "action": "Run consumer", "path": [],
+                     "expected": "Consumer passes", "oracle_ids": ["changed-outcome"], "artifact_ids": [action_id + "-raw", action_id + "-record"]}
+            actions.append({"schema_version": "test-recorded-action.v1", "entry": entry, "execution": spec,
+                            "command": [sys.executable, "timeout_action.py", speed]})
+        for name, value in (("wave.json", {"schema_version": "test-recorded-wave.v1", "actions": actions}),
+                            ("ledger.json", {"schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []})):
+            path = self.run_root / name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+        self.expire_action_after_one_second()
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "wave.json")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        entries = json.loads((self.run_root / "ledger.json").read_text())["entries"]
+        self.assertEqual([entry["status"] for entry in entries], ["fail", "pass"])
+        module = _load_recorder_module()
+        for entry in entries:
+            action_id = entry["action_id"]
+            observation_path = f"artifacts/{action_id}.raw"
+            observation = (self.run_root / observation_path).read_bytes()
+            record = json.loads((self.run_root / f"artifacts/{action_id}.json").read_text())
+            self.assertEqual(observation, b"consumer-result=pass\n")
+            self.assertEqual(record["entry"], entry)
+            self.assertEqual(record["teardown_status"], "pass")
+            self.assertEqual(record["integrity_status"], "pass")
+            self.assertTrue(module.verify_execution_record(record, entry, (self.run_root / "charter.json").read_bytes(), observation, observation_path))
+            if action_id == "changed":
+                self.assertEqual(record["exit_code"], "timeout")
+                forged = dict(entry, status="pass")
+                self.assertFalse(module.verify_execution_record(record, forged, (self.run_root / "charter.json").read_bytes(), observation, observation_path))
+        self.assertFalse((self.repository / ".test-slow").exists())
+        self.assertFalse((self.repository / ".test-fast").exists())
+        from tests.test_test_evidence_finalizer import write_draft, invoke_finalizer
+        draft_path = write_draft(self.run_root)
+        draft = json.loads(draft_path.read_text())
+        draft["artifacts"] = [{"artifact_id": action["entry"]["artifact_ids"][index], "kind": "log", "path": action["execution"][label]}
+                              for action in actions for index, label in enumerate(("observation_path", "metadata_path"))]
+        draft_path.write_text(json.dumps(draft))
+        draft_path.chmod(0o600)
+        finalized = invoke_finalizer(self.run_root)
+        self.assertNotEqual(finalized.returncode, 0, finalized.stdout)
+        self.assertIn("unsupported-result", finalized.stdout, finalized.stdout)
+        self.assertFalse((self.run_root / "terminal").exists())
+
+    def test_ordinary_mismatch_is_derived_as_fail_and_handwritten_result_fields_are_rejected(self) -> None:
+        self.write_spec(output_predicate={"mode": "exact-text", "value": "unobserved success\n"})
+        execution = json.loads((self.run_root / "final-action.json").read_text())
+        entry = {"action_id": "changed", "role": "check", "ring": "inner", "action": "Run consumer", "path": [],
+                 "expected": "Expected response", "oracle_ids": ["changed-outcome"], "artifact_ids": ["raw", "record"]}
+        manifest = {"schema_version": "test-recorded-action.v1", "entry": entry,
+                    "command": [sys.executable, "product_action.py"], "execution": execution}
+        ledger_path = self.run_root / "ledger.json"
+        ledger_path.write_text(json.dumps({"schema_version": "test-action-ledger.v2", "run_id": "run-1", "entries": []}))
+        ledger_path.chmod(0o600)
+        path = self.run_root / "action-spec.json"
+        entry["actual"] = "NOTRUN: expected success"
+        entry["status"] = "pass"
+        path.write_text(json.dumps(manifest))
+        path.chmod(0o600)
+        rejected = self.recorder("record", "--root", str(self.run_root), "--spec", "action-spec.json")
+        self.assertEqual(rejected.returncode, 2)
+        self.assertFalse((self.run_root / "final-observation.raw").exists())
+        del entry["actual"]
+        del entry["status"]
+        path.write_text(json.dumps(manifest))
+        completed = self.recorder("record", "--root", str(self.run_root), "--spec", "action-spec.json")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        recorded = json.loads(ledger_path.read_text())["entries"][0]
+        self.assertEqual(recorded["status"], "fail")
+        self.assertEqual(recorded["actual"], "exit=0 output=mismatch teardown=pass integrity=pass")
+
+    def test_json_predicate_accepts_stable_success_fields_with_variable_timing(self) -> None:
+        module = _load_recorder_module()
+        predicate = [
+            {"path": ["status"], "operator": "equals", "value": "pass"},
+            {"path": ["checks"], "operator": "integer-equals", "value": "3"},
+        ]
+        self.assertTrue(module._output_matches(b'{"status":"pass","checks":3,"elapsed":0.12,"run_id":"one"}', "json-fields", predicate))
+        self.assertTrue(module._output_matches(b'{"status":"pass","checks":3,"elapsed":8.91,"run_id":"two"}', "json-fields", predicate))
+        self.assertFalse(module._output_matches(b'{"status":"fail","checks":3,"elapsed":0.12}', "json-fields", predicate))
+
+    def test_json_predicate_rejects_missing_duplicate_and_wrongly_typed_fields(self) -> None:
+        module = _load_recorder_module()
+        predicate = [{"path": ["checks"], "operator": "integer-equals", "value": "3"}]
+        for output in (b'{}', b'{"checks":"3"}', b'{"checks":true}', b'{"checks":3,"checks":0}', b'{"checks":NaN}'):
+            with self.subTest(output=output):
+                self.assertFalse(module._output_matches(output, "json-fields", predicate))
+
+    def test_json_predicate_is_validated_without_regex_or_executable_expressions(self) -> None:
+        self.write_spec(output_predicate={"mode": "json-fields", "value": [{"path": ["status"], "operator": "equals", "value": "pass"}]})
+        validated = self.recorder("validate", "--root", str(self.run_root))
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        self.write_spec(output_predicate={"mode": "json-fields", "value": [{"path": ["status"], "operator": "regex", "value": ".*"}]})
+        rejected = self.recorder("validate", "--root", str(self.run_root))
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("invalid-predicate", rejected.stderr)
+
+    def test_exit_only_predicate_keeps_the_exact_exit_condition(self) -> None:
+        self.write_spec(output_predicate={"mode": "exit-only", "value": ""})
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "product_action.py")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_real_variable_json_command_matches_without_transcribing_output(self) -> None:
+        (self.repository / "json_action.py").write_text(
+            "import json, secrets, time\nprint(json.dumps({'status': 'pass', 'elapsed': time.monotonic(), 'run_id': secrets.token_hex(8)}))\n"
+        )
+        self.write_spec(
+            output_predicate={"mode": "json-fields", "value": [{"path": ["status"], "operator": "equals", "value": "pass"}]},
+            cleanup_absent_paths=[],
+        )
+
+        completed = self.recorder("run", "--root", str(self.run_root), "--", sys.executable, "json_action.py")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observation = json.loads((self.run_root / "final-observation.raw").read_text())
+        self.assertEqual(observation["status"], "pass")
+        self.assertIsInstance(observation["elapsed"], float)
+        self.assertEqual(len(observation["run_id"]), 16)
+
     def test_validation_rejects_a_dirty_integrity_path_before_product_execution(
         self,
     ) -> None:
@@ -306,6 +623,7 @@ print('consumer-result=pass')
         action = self.repository / "tamper_evidence.py"
         action.write_text(
             """from pathlib import Path
+Path('.runtime').mkdir()
 Path('.test-evidence/run-1/charter.json').write_text('{}\\n', encoding='utf-8')
 print('consumer-result=pass')
 """,
@@ -325,6 +643,7 @@ print('consumer-result=pass')
         self.assertIn("run-root-changed", completed.stderr)
         self.assertFalse((self.run_root / "final-observation.raw").exists())
         self.assertFalse((self.run_root / "final-action-metadata.json").exists())
+        self.assertFalse((self.repository / ".runtime").exists())
 
     def test_product_cannot_redirect_outputs_through_a_parent_symlink(self) -> None:
         """Recorder output stays beneath the authenticated run root."""

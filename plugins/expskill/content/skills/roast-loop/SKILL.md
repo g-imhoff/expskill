@@ -11,9 +11,17 @@ Run this before opening a PR or asking a person to review when fixes must land i
 
 Record the exact diff as commit IDs, never moving ref names. For uncommitted work record paths and content hashes. Reviewers and fixers use this pin. If scope drifts, keep the original pin and disclose both identities. Never mix revisions without saying so.
 
+## Bound the run
+
+Before any delegation, open one private ledger with run identity, spent calls and retries, outstanding reservations, and effective limits. A standalone loop allows 48 AI dispatches, eight retries, 30 minutes of wall-clock time, and at most four in flight. Take the minimum of local limits, inherited remainder, child allocation, and host limits for each launch. Every reviewer, fixer, retry, and follow-up that starts another AI turn counts as one dispatch. A follow-up that starts another AI turn keeps its reservation outstanding until accounted. Reserve required re-reviews before launching any fixer. Outstanding reservations persist across cycles. Counters never reset on a new pin, conversation, replacement actor, or cycle. Return a budget handoff on every terminal outcome with spent and remaining capacity.
+
 ## Run $roast for each review pass
 
 Load [the `$roast` skill](../roast/SKILL.md) and follow its pin, derive, review, and report steps for one pass. Keep the category list and weights from the first pass for the whole loop. Reviewers stay read only and follow the `$roast` reviewer contract and fail closed rule. A missing reply, invalid JSON, or a reply missing any field counts as score 0 for that category.
+
+## Keep every material blocker
+
+Each `$roast` reviewer returns findings with "findings" entries carrying "severity", "impact", and "correction". Reviewers run with no inherited or forked history. One reviewer covers one category and must not have implemented, repaired, or previously endorsed the candidate. A high score cannot cancel a High or Medium finding. The coordinator keeps a ledger across cycles. Omitting an earlier finding does not close it. A finding closes only on verified repair or evidence that disproves it. No High or Medium finding remains open at the gate. Every review is valid and current on the final pin. Never manufacture a code fix from missing review evidence.
 
 ## Fix each top issue
 

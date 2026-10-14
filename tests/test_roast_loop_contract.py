@@ -59,6 +59,22 @@ class RoastLoopContractTests(unittest.TestCase):
         for phrase in ("categor", "weight"):
             self.assertIn(phrase, self.body)
 
+    def test_all_material_blockers_survive_scores_and_later_omissions(self) -> None:
+        for phrase in (
+            '"findings"',
+            '"severity"',
+            '"impact"',
+            '"correction"',
+            "no inherited or forked history",
+            "must not have implemented, repaired, or previously endorsed",
+            "a high score cannot cancel",
+            "omitting an earlier finding does not close it",
+            "no high or medium finding remains open",
+            "every review is valid and current",
+            "never manufacture a code fix from missing review evidence",
+        ):
+            self.assertIn(phrase, self.body)
+
     def test_fixer_dispatch_uses_one_fixer_per_issue_with_worktrees(self) -> None:
         self.assertIn("one fixer", self.body)
         self.assertIn("worktree", self.body)
@@ -75,6 +91,23 @@ class RoastLoopContractTests(unittest.TestCase):
         self.assertRegex(self.body, r"(max|at most|no more than).*three.*cycl|three.*cycl.*(max|limit|total)")
         self.assertIn("fail closed", self.body)
         self.assertRegex(self.body, r"never.*fourth|never.*inflat|inflation")
+
+    def test_standalone_allowance_bounds_every_dispatch_and_returns_remaining_capacity(self) -> None:
+        for phrase in (
+            "before any delegation",
+            "48 ai dispatches",
+            "eight retries",
+            "30 minutes",
+            "at most four in flight",
+            "minimum of",
+            "follow-up that starts another ai turn",
+            "reserve required re-reviews before launching any fixer",
+            "every reviewer, fixer, retry, and follow-up",
+            "outstanding reservations",
+            "never reset",
+            "budget handoff on every terminal outcome",
+        ):
+            self.assertIn(phrase, self.body)
 
     def test_prose_stays_plain_and_bounded(self) -> None:
         self.assertLessEqual(len(self.raw.splitlines()), 220)

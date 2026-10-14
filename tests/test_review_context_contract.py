@@ -104,8 +104,8 @@ class ReviewContextContractTests(unittest.TestCase):
             "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
             "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
             "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
-            "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
-            "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+            "expskill-designer": ("gpt-6-luna", "max", None),
+            "expskill-implementer": ("gpt-6-luna", "max", None),
             "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
             "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
         }
@@ -116,7 +116,7 @@ class ReviewContextContractTests(unittest.TestCase):
             observed = (
                 profile["model"],
                 profile["model_reasoning_effort"],
-                profile["sandbox_mode"],
+                profile.get("sandbox_mode"),
             )
             with self.subTest(profile=name):
                 self.assertEqual(observed, settings)
@@ -132,7 +132,10 @@ class ReviewContextContractTests(unittest.TestCase):
             )
             for name, values in policy["profiles"].items()
         }
-        self.assertEqual(observed_policy, expected)
+        expected_policy = dict(expected)
+        expected_policy["expskill-designer"] = ("gpt-6-luna", "max", "workspace-write")
+        expected_policy["expskill-implementer"] = ("gpt-6-luna", "max", "workspace-write")
+        self.assertEqual(observed_policy, expected_policy)
 
     def test_repository_validator_rejects_a_removed_handoff_limit(self) -> None:
         guarded_paths = (

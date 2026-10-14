@@ -24,6 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import execution_budget
+import record_final_action
+
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 HEAD_RE = re.compile(r"[0-9a-f]{40,64}\Z")
@@ -846,7 +850,8 @@ def validate_inputs(
             "contract.finding_kinds",
             "packaged finding kinds differ from the fixed authoring protocol",
         )
-    charter = _closed_object_fields(charter_value, CHARTER_FIELDS, "charter", issues)
+    charter_fields = CHARTER_FIELDS | {"execution_budget"} if isinstance(charter_value, dict) and charter_value.get("schema_version") == "test-charter.v2" else CHARTER_FIELDS
+    charter = _closed_object_fields(charter_value, charter_fields, "charter", issues)
     ledger_fields = (
         DIRECT_LEDGER_FIELDS
         if isinstance(ledger_value, dict)
@@ -858,8 +863,14 @@ def validate_inputs(
     if charter is None or ledger is None or draft is None:
         return sorted(set(issues))
 
-    if charter.get("schema_version") != CHARTER_SCHEMA_VERSION:
+    if charter.get("schema_version") not in {CHARTER_SCHEMA_VERSION, "test-charter.v2"}:
         _add(issues, "unknown-state", "charter.schema_version", "unsupported charter schema version")
+    action_limit = MAX_SEMANTIC_ACTIONS
+    try:
+        budget = execution_budget.for_charter(charter)
+        action_limit = int(budget["semantic_actions_max"])
+    except ValueError as error:
+        _add(issues, "invalid-budget", "charter.execution_budget", str(error))
     run_id = _nonempty_string(charter.get("run_id"), "charter.run_id", issues)
     if run_id is not None and RUN_ID_RE.fullmatch(run_id) is None:
         _add(issues, "invalid-run-id", "charter.run_id", "run ID contains unsafe characters")
@@ -960,13 +971,22 @@ def validate_inputs(
                 action_ids.append(action_id)
         if len(action_ids) != len(set(action_ids)):
             _add(issues, "duplicate-id", "ledger.entries", "action IDs must be unique")
-        if len(entries) > MAX_SEMANTIC_ACTIONS:
+        if len(entries) > action_limit:
             _add(
                 issues,
                 "action-budget-exceeded",
                 "ledger.entries",
-                f"at most {MAX_SEMANTIC_ACTIONS} semantic actions are allowed",
+                f"at most {action_limit} semantic actions are allowed",
             )
+        if "budget" in locals():
+            try:
+                execution_budget.validate_actions(budget, action_ids, root=root, charter=charter)
+                context = execution_budget.successor_context(charter, root)
+                missing = set(context["rerun_action_ids"]) - set(action_ids)
+                if missing:
+                    raise ValueError("successor has not rerun the complete previously selected action scope")
+            except (OSError, ValueError) as error:
+                _add(issues, "invalid-budget", "ledger.entries", str(error))
 
     if draft.get("schema_version") != DRAFT_SCHEMA_VERSION:
         _add(issues, "unknown-state", "draft.schema_version", "unsupported draft schema version")
@@ -1109,6 +1129,37 @@ def validate_inputs(
 
     known_oracles = set(oracle_ids)
     known_artifacts = set(artifact_ids)
+    if result == "PASS" and artifacts_must_exist:
+        artifact_by_id = {item.get("artifact_id"): item for item in artifacts}
+        charter_raw = _read_regular_at(root_descriptor, Path("charter.json"), code="unreadable-json") if root_descriptor is not None else _read_regular_nofollow(root / "charter.json", code="unreadable-json")
+        for index, entry in enumerate(entries):
+            verified = 0
+            referenced = [artifact_by_id.get(key) for key in entry.get("artifact_ids", []) if isinstance(key, str)] if isinstance(entry.get("artifact_ids"), list) else []
+            for artifact in referenced:
+                if not isinstance(artifact, dict):
+                    continue
+                path, issue = _validate_artifact_path(root, artifact.get("path"), root_descriptor=root_descriptor)
+                if issue is not None or path is None:
+                    continue
+                try:
+                    raw = _read_regular_at(root_descriptor, path.relative_to(root), code="unreadable-json") if root_descriptor is not None else _read_regular_nofollow(path, code="unreadable-json")
+                    record = json.loads(raw.decode("utf-8"), object_pairs_hook=_closed_object, parse_int=_reject_number, parse_float=_reject_number, parse_constant=_reject_number)
+                except (FinalizerError, ValueError, UnicodeDecodeError, OSError):
+                    continue
+                if not isinstance(record, dict) or record.get("schema_version") != "test-execution-record.v1":
+                    continue
+                observation_path = record.get("observation_path")
+                observations = [item for item in referenced if isinstance(item, dict) and item.get("path") == observation_path]
+                spec = record.get("execution_spec")
+                if len(observations) != 1 or not isinstance(spec, dict) or spec.get("metadata_path") != artifact.get("path"):
+                    continue
+                observation, issue = _validate_artifact_path(root, observation_path, root_descriptor=root_descriptor)
+                if issue is None and observation is not None:
+                    raw = _read_regular_at(root_descriptor, observation.relative_to(root), code="unreadable-artifact") if root_descriptor is not None else _read_regular_nofollow(observation, code="unreadable-artifact")
+                    if record_final_action.verify_execution_record(record, entry, charter_raw, raw, observation_path):
+                        verified += 1
+            if verified != 1:
+                _add(issues, "unrecorded-execution", f"ledger.entries[{index}]", "PASS requires one recorder receipt with matching raw bytes, predicate, frozen charter and exact action bindings")
     for index, entry in enumerate(entries):
         for oracle_id in entry.get("oracle_ids", []) if isinstance(entry.get("oracle_ids"), list) else []:
             if not isinstance(oracle_id, str):
@@ -2798,7 +2849,7 @@ def _load_composition_charter_binding(
             "charter.json",
             "composition charter must be a JSON object",
         )
-    if value.get("schema_version") != CHARTER_SCHEMA_VERSION:
+    if value.get("schema_version") not in {CHARTER_SCHEMA_VERSION, "test-charter.v2"}:
         raise FinalizerError(
             "invalid-charter-binding",
             "charter.schema_version",

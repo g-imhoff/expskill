@@ -82,6 +82,66 @@ class ImplementContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.normalized)
 
+    def test_direct_criteria_oracle_and_causal_regressions_reach_every_judge(self) -> None:
+        for phrase in (
+            "before production edits",
+            "complete accepted criterion basis",
+            "never reconstruct missing criteria from the candidate",
+            "sole accepted-requirements exception",
+            "missing or incomplete basis makes the handoff invalid",
+            "acceptance oracle",
+            "test digest",
+            "observed failing assertion",
+            "cumulative regression obligations",
+            "alternating or recurring failures",
+        ):
+            self.assertIn(phrase, self.normalized)
+        for name in ("expskill-review", "expskill-spec"):
+            role = (PLUGIN / "content" / "agents" / f"{name}.md").read_text().lower()
+            for phrase in ("missing or truncated criteria", "material boundary counterexamples", "production baseline", "cumulative regression obligations"):
+                self.assertIn(phrase, role)
+
+    def test_plan_acceptance_basis_is_frozen_before_edits_and_carried_unchanged_to_judges(self) -> None:
+        for phrase in ("freeze_acceptance_basis", "freeze-acceptance", "outside rotating plan generations",
+                       "never use `current.yaml` or `previous.yaml`", "transport that same basis unchanged",
+                       "verify its retained byte digest", "rather than freeze the updated graph",
+                       "load_acceptance_basis", "cumulative regression obligations separate"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.normalized)
+        correct = (PLUGIN / "content" / "skills" / "correct" / "SKILL.md").read_text().lower()
+        for phrase in ("original frozen accepted criterion snapshot unchanged", "before the first production edit",
+                       "freeze_acceptance_basis", "if production edits already began", "does not invent approval"):
+            self.assertIn(phrase, correct)
+        spec = (PLUGIN / "content" / "agents" / "expskill-spec.md").read_text().lower()
+        for phrase in ("frozen pre-edit acceptance snapshot outside rotating plan generations",
+                       "verify its retained byte digest", "reject current.yaml or previous.yaml",
+                       "cannot be replaced by the updated graph"):
+            self.assertIn(phrase, spec)
+
+    def test_new_acceptance_epoch_is_explicit_and_cannot_replace_existing_actor_criteria(self) -> None:
+        for phrase in ("separate implementation epoch", "freeze_acceptance_epoch", "--previous-basis",
+                       "--previous-digest", "--reason", "changed covered meaning and a later typed projection approval",
+                       "keep every old worker and judge bound to its original basis",
+                       "never rebind prior receipts", "retain cumulative budgets and regression obligations across epochs"):
+            self.assertIn(phrase, self.normalized)
+        correct = (PLUGIN / "content" / "skills" / "correct" / "SKILL.md").read_text().lower()
+        self.assertIn("keep existing actors on their original basis", correct)
+        spec = (PLUGIN / "content" / "agents" / "expskill-spec.md").read_text().lower()
+        self.assertIn("inspect the new epoch receipt and its previous-basis binding", spec)
+
+    def test_run_budget_reserves_required_judges_and_reuses_only_identical_inputs(self) -> None:
+        for phrase in (
+            "3n + 2",
+            "standard 30-call implementation limit",
+            "reserve the final two judge calls",
+            "same run total",
+            "changed pin does not start a new budget",
+            "never omit a gate or silently reset",
+            "reviewer independence are unchanged",
+            "must not have implemented or edited the candidate",
+        ):
+            self.assertIn(phrase, self.normalized)
+
     def test_remote_and_protected_branch_boundary_is_closed(self) -> None:
         for phrase in (
             "exact non-protected target branch",
@@ -96,7 +156,7 @@ class ImplementContractTests(unittest.TestCase):
 
     def test_three_runtime_profiles_have_the_accepted_boundaries(self) -> None:
         expected = {
-            "expskill-implementer": ("workspace-write", "red-green-refactor"),
+            "expskill-implementer": (None, "red-green-refactor"),
             "expskill-review": ("read-only", "ready or not ready"),
             "expskill-spec": ("read-only", "criterion-by-criterion evidence"),
         }
@@ -104,7 +164,10 @@ class ImplementContractTests(unittest.TestCase):
             with self.subTest(profile=name):
                 profile = tomllib.loads(render_agents(ROOT)[f"agents/{name}.toml"])
                 self.assertEqual(profile["name"], name)
-                self.assertEqual(profile["sandbox_mode"], sandbox)
+                self.assertEqual(profile.get("sandbox_mode"), sandbox)
+                if sandbox is None:
+                    self.assertNotIn("sandbox_mode", profile)
+                    self.assertIn("parent-approved sandbox and approval policy", profile["developer_instructions"])
                 self.assertIn(boundary, profile["developer_instructions"].lower())
                 self.assertRegex(profile["developer_instructions"].lower(), r"\bno delegation\b|\bdo not delegate\b")
 

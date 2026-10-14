@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 
-from tests.design_state_test_support import passing_technical
+from tests.design_state_test_support import passing_technical, prepare_delivery_fixture, confirm_fixture_workflow, FIXTURE_BRIEF_DIGEST
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,8 @@ def _typed_updates(component_names: tuple[str, ...] = ("CheckoutForm",), code_su
             "dependency_ids": [dependency_id],
             "decision": "approved",
         }
+    for collection in (components, evidence, approvals):
+        for item in collection.values(): item["brief_digest"] = FIXTURE_BRIEF_DIGEST
     return {"components": components, "dependencies": dependencies, "evidence": evidence, "approvals": approvals}
 
 
@@ -131,6 +133,7 @@ class DesignStateTests(unittest.TestCase):
         self.assertIn("workflow_id", receipt)
         self.assertIn("revision", receipt)
         workflow_id = str(receipt["workflow_id"])
+        receipt = confirm_fixture_workflow(module, receipt, state_home)
         return receipt, repository, state_home, workflow_id
 
     def test_public_operations_are_present_and_dependency_free(self) -> None:
@@ -256,11 +259,13 @@ class DesignStateTests(unittest.TestCase):
             valid_receipt, _, valid_state_home, valid_workflow_id = self._initialize(module, valid_root)
             valid = _typed_updates(("CheckoutForm",))
             valid_revision = int(valid_receipt["revision"])
-            bound_revision = int(module.apply_updates(workflow_id=valid_workflow_id, expected_revision=valid_revision, updates=valid, state_home=valid_state_home)["revision"])
+            bound_revision = valid_revision
             component_digest = valid["components"]["CheckoutForm"]["code_digest"]
             candidate = {"files": [{"path": "CheckoutForm.tsx", "digest": component_digest, "classification": "component"}]}
             review = {"files": [{"path": "CheckoutForm-review.json", "digest": valid["evidence"]["CheckoutForm-render"]["digest"], "classification": "review"}]}
             manifest = {"files": [{"path": "manifest.json", "digest": valid["components"]["CheckoutForm"]["contract_digest"], "classification": "manifest"}]}
+            prepare_delivery_fixture(module, valid_receipt, valid_state_home, valid_workflow_id, valid, (candidate, review, manifest))
+            bound_revision = int(module.apply_updates(workflow_id=valid_workflow_id, expected_revision=valid_revision, updates=valid, state_home=valid_state_home)["revision"])
             delivered = module.deliver_workflow(workflow_id=valid_workflow_id, expected_revision=bound_revision, candidate_payload=candidate, review_evidence=review, manifest=manifest, state_home=valid_state_home)
             self.assertEqual(delivered["lifecycle"], "delivered")
             with self.assertRaises(Exception):

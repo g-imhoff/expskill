@@ -1,0 +1,44 @@
+{
+  "schema_version": "captured-native-research-state-read.v1",
+  "origin": {
+    "raw_events": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actors/research-1/attempt-1/events.jsonl",
+    "sha256": "7450336f8045ea5d579986e204afe9a9c3c2ed7500e36eeaf58a121517f98254",
+    "thread_id": "01a0fdfa-075d-7d33-a3d2-5b4f0c380bc8",
+    "framework_revision": "487c7f010b27f2b8c29689f331f8a6e026adb7db",
+    "framework_sources": {
+      "contracts": {
+        "path": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/framework-snapshot/plugins/expskill/content/skills/skill-builder/references/artifact-contracts.md",
+        "sha256": "2645dcddbc37f0bc0d5574dda15f30a9de1ccda0055ade1310e74250dd4b4ab8"
+      },
+      "helper": {
+        "path": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py",
+        "sha256": "f64f006578734880c46343782b5146f606ca93132d9abc1f3e32d4db338e7987"
+      },
+      "rubric": {
+        "path": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/framework-snapshot/plugins/expskill/content/skills/skill-builder/references/evaluation-rubric.md",
+        "sha256": "1224ad4ae2df93a37007552175fc1259ec14be86c1c4a600726394c08bbf4a56"
+      },
+      "skill": {
+        "path": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/framework-snapshot/plugins/expskill/content/skills/skill-builder/SKILL.md",
+        "sha256": "23bacf8f4bfe36ca845d48a004d53f8f6adcd1d73bf91b11733a5bb72b18d70b"
+      }
+    }
+  },
+  "helper": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py",
+  "root": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create",
+  "state_root": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actor-state/public-state",
+  "scratch": "/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actor-workspaces/research-1",
+  "events": [
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_29",
+        "type": "command_execution",
+        "command": "/usr/bin/zsh -lc 'python3 /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/framework-snapshot/plugins/expskill/content/skills/skill-builder/scripts/run_state.py --state-root /home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actor-state/public-state load < .research-lane1-load.json'",
+        "aggregated_output": "{\"active_target_lock\":{\"acquired_at\":\"2026-10-02T18:51:50.277702Z\",\"lock_nonce\":\"3559a1cea5b4cc02e8a042c7ff713568\",\"owner_identity\":\"create:resolve-baseline\",\"target_identity\":\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\"},\"artifact_index\":{\"baseline-create-resolve-baseline\":{\"artifact_id\":\"baseline-create-resolve-baseline\",\"dependency_identifiers\":[\"resolution\"],\"derived_status\":\"accepted\",\"digest\":\"27ef7436f6fb6af7f2fd3c8cc6f7b229b17f93180a06cf28162469923c2106b9\",\"path\":\"artifacts/baseline-create-resolve-baseline\",\"producing_sequence\":1,\"type\":\"baseline-report\"},\"resolution\":{\"artifact_id\":\"resolution\",\"dependency_identifiers\":[],\"derived_status\":\"accepted\",\"digest\":\"88f9a3cc867bd5f8fc58987af05bfc8300bb2dae64bf75186275e08236e3b1d2\",\"path\":\"artifacts/resolution\",\"producing_sequence\":0,\"type\":\"resolution-record\"}},\"authority\":{\"candidate_effects\":[],\"delegation\":[],\"delivery_effects\":[],\"reads\":[\"immutable framework snapshot\",\"controller input\",\"local skill metadata\",\"canonical target existence\"],\"writes\":[\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actor-workspaces/resolve-baseline\",\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actor-state/public-state via public helper only\"]},\"created_at\":\"2026-10-02T18:51:50.296840Z\",\"git_identity\":{\"present\":false},\"head_sequence\":2,\"head_transition_digest\":\"4d8a8110e8ad71bb4cb8b53bdc31b17a712efaf0314a06e8e9441d4ae7ac2b7d\",\"host_identity\":{\"canonical_id\":\"codex:isolated-skill-builder-create\",\"discovery_evidence\":[\"User supplied Codex workspace and immutable framework snapshot.\",\"baseline-observations.json inventories local and framework skill metadata.\"],\"kind\":\"codex\",\"locator\":\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/actor-workspaces/resolve-baseline\"},\"mode\":{\"evidence\":{\"absence_evidence_digest\":\"f413b618c559ddf423d9b65f73bfd976fd3b5a24a1c92d0828ccdbb41963b91f\",\"overlap_map_digest\":\"6f93f02f58be67c7eed38a7351c7d9d428f676c0fc8692bdd52416030c91dabe\"},\"name\":\"create\"},\"queue\":{\"order\":[\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\"],\"states\":{\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\":\"active\"}},\"schema_version\":\"skill-builder-index.v1\",\"stage\":\"baseline\",\"target_identity\":{\"canonical\":\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\",\"invocation_token\":\"$count-lines\",\"locator\":\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\",\"name\":\"count-lines\",\"requested\":\"count-lines\"},\"target_snapshot\":{\"absence_evidence_digest\":\"f413b618c559ddf423d9b65f73bfd976fd3b5a24a1c92d0828ccdbb41963b91f\",\"capture_sequence\":0,\"content_digest\":\"7925d3e9a9613a093e5eb4054b32aa39de910d2b03ba7e8046c3b4550b8de1e4\",\"exists\":false,\"manifest_digest\":null,\"overlap_map_digest\":\"6f93f02f58be67c7eed38a7351c7d9d428f676c0fc8692bdd52416030c91dabe\",\"searched_identity_scope\":[\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\",\"/home/gimhoff/projects/expskill-audit-fixes/live-builder-public-workflows-v2/create/canonical-target/count-lines\"],\"snapshot_digest\":\"601af0af38b164d3081e4f34a3f518e88e24c9ee915e359572b54cd200dce6b2\",\"snapshot_kind\":\"absent-target.v1\"},\"updated_at\":\"2026-10-02T18:52:55.309691Z\",\"workflow_id\":\"0257b8fdc48cf9ea18d823bacf5b2b50\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    }
+  ]
+}
