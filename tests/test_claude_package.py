@@ -114,7 +114,7 @@ class ClaudePackageTests(unittest.TestCase):
         self.assertEqual(
             sorted(path.name for path in skills.iterdir()), list(names)
         )
-        self.assertEqual(len(names), 16)
+        self.assertEqual(len(names), 17)
 
     def test_agents_match_pure_renderer(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)

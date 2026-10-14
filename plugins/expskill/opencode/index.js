@@ -18,6 +18,7 @@ const REQUIRED_COMMANDS = [
   "autonomous-run",
   "brainstorm",
   "correct",
+  "deep-research",
   "design",
   "grill-me",
   "implement",
