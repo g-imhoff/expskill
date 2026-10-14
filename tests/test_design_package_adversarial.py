@@ -32,7 +32,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
-        skill_wording = re.compile(r"\bfourteen independent skills and one optional lifecycle router\b", re.I)
+        skill_wording = re.compile(r"\bfifteen independent skills and one optional lifecycle router\b", re.I)
         self.assertRegex(" ".join(guide.split()), skill_wording)
         self.assertIn("$design", guide)
         self.assertIn("$test", guide)
@@ -40,7 +40,8 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$setup-design", guide)
         self.assertIn("$setup-test", guide)
         self.assertIn("$review", guide)
-        self.assertIn("$review-loop", guide)
+        self.assertIn("$roast", guide)
+        self.assertIn("$roast-loop", guide)
         self.assertIn("$correct", guide)
         self.assertIn("$autonomous-run", guide)
         self.assertIn("$test", long_description)
@@ -48,7 +49,8 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$setup-design", long_description)
         self.assertIn("$setup-test", long_description)
         self.assertIn("$review", long_description)
-        self.assertIn("$review-loop", long_description)
+        self.assertIn("$roast", long_description)
+        self.assertIn("$roast-loop", long_description)
         self.assertIn("$correct", long_description)
         self.assertIn("$autonomous-run", long_description)
         self.assertRegex(description, skill_wording)
@@ -78,7 +80,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-thirteen-skill-wording": ("guide", "fourteen independent skills"),
+            "stale-thirteen-skill-wording": ("guide", "fifteen independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
@@ -124,8 +126,8 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     guide = root / "docs" / "guide.md"
                     guide.write_text(
                         guide.read_text(encoding="utf-8").replace(
+                            "fifteen independent skills",
                             "fourteen independent skills",
-                            "thirteen independent skills",
                             1,
                         ),
                         encoding="utf-8",

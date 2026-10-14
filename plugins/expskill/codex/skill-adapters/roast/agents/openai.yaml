@@ -1,0 +1,6 @@
+interface:
+  display_name: "Roast"
+  short_description: "Category reviewers score a change to 9 of 10"
+  default_prompt: "Use $roast to review this change by category with scores and top issues."
+policy:
+  allow_implicit_invocation: false
