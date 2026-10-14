@@ -20,7 +20,7 @@ HERMES_PROVENANCE_SCHEMA_VERSION = "hermes-provenance.v1"
 PLATFORM_FILES = ("agents.json", "package.json", "README.md", "LICENSE", "index.js")
 PLATFORM_SOURCE_FILES = ("agents.json", "package.json", "LICENSE", "index.js")
 PLATFORM_PLUGIN_DIRECTORY = "plugins"
-PLATFORM_PLUGIN_FILES = ("authoring.js", "execution-policy.js", "unslop.js")
+PLATFORM_PLUGIN_FILES = ("authoring.js", "execution-policy.js", "unslop-v2.ts", "unslop.js")
 HERMES_PLATFORM_FILES = ("plugin.json", "agents.json", "plugin.yaml", "__init__.py")
 OPENCODE_README_SOURCE = Path("content/docs/opencode.md")
 # These are canonical source paths.  The target-relative paths are deliberately
