@@ -264,13 +264,19 @@ def _load_profile(
     body = _read_text(body_path, f"canonical agent body {name!r}").strip()
     if not body:
         raise RenderError(f"canonical agent body {name!r} is empty")
+    policy = _read_json(canonical_root / "content/policies/authoring-runtime.json", "authoring runtime policy")
+    instructions = policy.get("instructions")
+    if set(policy) != {"schema_version", "instructions"} or policy.get("schema_version") != "authoring-runtime.v1":
+        raise RenderError("authoring runtime policy has an unsupported schema")
+    if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 1000:
+        raise RenderError("authoring runtime instructions must contain 1-1000 characters")
     description = content_entry.get("description")
     if not isinstance(description, str) or not description.strip():
         raise RenderError(f"canonical agent metadata {name!r} has no description")
     return {
         "name": name,
         "description": description,
-        "developer_instructions": body,
+        "developer_instructions": f"{body}\n\n{instructions}",
     }
 
 

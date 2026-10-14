@@ -1,29 +1,19 @@
 ---
-name: review-loop
-description: Invoke $review-loop to run adversarial category reviewers over a change, fix each top issue, and repeat until every score reaches 9 of 10.
+name: roast-loop
+description: Invoke $roast-loop to run $roast category reviewers, fix each top issue, and repeat until every score reaches 9 of 10.
 ---
 
-# Review loop
+# Roast loop
 
-Run this before opening a PR or asking a person to review.
+Run this before opening a PR or asking a person to review when fixes must land inside the loop.
 
 ## Pin the scope
 
 Record the exact diff as commit IDs, never moving ref names. For uncommitted work record paths and content hashes. Reviewers and fixers use this pin. If scope drifts, keep the original pin and disclose both identities. Never mix revisions without saying so.
 
-## Derive categories from the diff
+## Run $roast for each review pass
 
-Read the pinned diff first. Name five to eight categories that fit this change, with one line each saying what good looks like. Let the diff decide the set. Write the list with weights that add to 100 percent. Every later score uses these weights.
-
-## Review each category
-
-Spawn one adversarial reviewer per category. Reviewers run in parallel and stay read only. Each reviewer tries to disprove the change from its angle and returns exactly this JSON with nothing else around it:
-
-{"category": "<name>", "score": <0-10 integer>, "top_issue": "<single most important fix, or empty string>", "evidence": "<file paths with lines or symbols>"}
-
-9 means ready for human review. 0 means broken. Judge from evidence in this run only. One reviewer covers one category. No reviewer edits code. Naming the top issue is the only fix shaped output.
-
-Fail closed. A missing reply, invalid JSON, or a reply missing any field counts as score 0 for that category. Never treat a broken review as a pass. Keep the 0.
+Load [the `$roast` skill](../roast/SKILL.md) and follow its pin, derive, review, and report steps for one pass. Keep the category list and weights from the first pass for the whole loop. Reviewers stay read only and follow the `$roast` reviewer contract and fail closed rule. A missing reply, invalid JSON, or a reply missing any field counts as score 0 for that category.
 
 ## Fix each top issue
 
@@ -35,7 +25,7 @@ Fixers rerun affected checks and report what ran and what passed. A fixer that c
 
 ## Gate the loop
 
-After fixes land, run reviewers again on the new pin. Overall is the sum of score times weight divided by 100. The gate passes when every category scores 9 or higher.
+After fixes land, run `$roast` again on the new pin. Overall is the sum of score times weight divided by 100. The gate passes when every category scores 9 or higher.
 
 Run at most three review cycles in total, including the first pass. If the third pass still has a category below 9, stop and hand the change to a person with the failing categories, top issues, and score history. Never run a fourth cycle. Never inflate a score to end the loop.
 

@@ -30,6 +30,13 @@ if name == "codex":
         step = "inspect-marketplace"
 elif name == "opencode" and args == ["plugin", "list"]:
     step = "inspect-opencode"
+elif name == "claude":
+    if args[:2] == ["plugin", "marketplace"]:
+        step = "marketplace"
+    elif args == ["plugin", "list", "--json"]:
+        step = "inspect-claude"
+    elif args[:2] in (["plugin", "install"], ["plugin", "update"]):
+        step = "plugin"
 if (os.environ.get("FAIL_STEP") == step or
         os.environ.get("FAIL_COMMAND") == " ".join([name, *args])):
     if name == "curl":
@@ -66,6 +73,26 @@ elif name == "hermes":
     if state.get("hermes-ref") and "--force" not in args:
         sys.exit("plugin already installed; use --force for a new pin")
     state["hermes-ref"] = args[args.index("--ref") + 1]
+elif name == "claude":
+    if args[:2] == ["plugin", "marketplace"]:
+        if args[2:3] == ["list"]:
+            entries = [{"name": "expskill"}] if state.get("claude-marketplace") else []
+            print(json.dumps(entries))
+        elif args[2:3] == ["add"]:
+            if state.get("claude-marketplace"):
+                sys.exit("marketplace already exists; refresh it before adding a new pin")
+            state["claude-marketplace"] = args[-1]
+        elif args[2:3] == ["update"]:
+            state["claude-marketplace-updated"] = True
+    elif args == ["plugin", "list", "--json"]:
+        entries = [{"id": "expskill@expskill"}] if state.get("claude-installed") else []
+        print(json.dumps(entries))
+    elif args[:2] == ["plugin", "install"]:
+        if state.get("claude-installed"):
+            sys.exit("plugin already installed; use update")
+        state["claude-installed"] = True
+    elif args[:2] == ["plugin", "update"]:
+        state["claude-updated"] = args[-1]
 elif name == "curl":
     print(pathlib.Path(os.environ["INSTALLER_SOURCE"]).read_text())
 state_path.write_text(json.dumps(state))
@@ -103,6 +130,11 @@ class InstallerTests(unittest.TestCase):
         self.commands("git", "codex")
         (self.bin / "python3").symlink_to(sys.executable)
 
+    def claude_commands(self):
+        self.commands("git", "claude")
+        if not (self.bin / "python3").exists():
+            (self.bin / "python3").symlink_to(sys.executable)
+
     def run_installer(self, selection, **env):
         return subprocess.run(["/bin/bash", str(INSTALLER)], input=selection, text=True,
                               capture_output=True, env={**self.env, **env}, timeout=15)
@@ -125,6 +157,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Codex", result.stdout)
         self.assertIn("OpenCode", result.stdout)
         self.assertIn("Hermes", result.stdout)
+        self.assertIn("Claude Code", result.stdout)
         self.assertEqual(self.calls(), [
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "add", "opencode-expskill"],
@@ -139,6 +172,50 @@ class InstallerTests(unittest.TestCase):
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", SHA, "--force"],
         ])
+
+    def test_claude_registers_branch_marketplace_and_installs_plugin(self):
+        self.claude_commands()
+        result = self.run_installer("4\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [
+            ["git", "ls-remote", REMOTE, "refs/heads/claude-dist"],
+            ["claude", "plugin", "marketplace", "list", "--json"],
+            ["claude", "plugin", "marketplace", "add", REMOTE + "#claude-dist"],
+            ["claude", "plugin", "list", "--json"],
+            ["claude", "plugin", "install", "expskill@expskill"],
+        ])
+        self.assertIn("installed or updated successfully for Claude Code", result.stdout)
+
+    def test_claude_name_selection_updates_registered_marketplace_and_plugin(self):
+        self.claude_commands()
+        first = self.run_installer("Claude\n")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.log.unlink()
+        rerun = self.run_installer("4\n")
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertEqual(self.calls(), [
+            ["git", "ls-remote", REMOTE, "refs/heads/claude-dist"],
+            ["claude", "plugin", "marketplace", "list", "--json"],
+            ["claude", "plugin", "marketplace", "update", "expskill"],
+            ["claude", "plugin", "list", "--json"],
+            ["claude", "plugin", "update", "expskill@expskill"],
+        ])
+
+    def test_claude_inspection_failure_stops_before_changes(self):
+        self.claude_commands()
+        self.assert_failed(self.run_installer("4\n", FAIL_STEP="inspect-claude"), "inspect")
+        self.assertEqual(len(self.calls()), 4)
+
+    def test_claude_install_failure_reports_remedy(self):
+        self.claude_commands()
+        self.assert_failed(self.run_installer("4\n", FAIL_STEP="plugin"), "installation failed")
+        self.assertEqual(len(self.calls()), 5)
+
+    def test_claude_missing_prerequisites_are_actionable(self):
+        self.assert_failed(self.run_installer("4\n"), "claude")
+        self.commands("claude")
+        self.assert_failed(self.run_installer("4\n"), "git")
+        self.assertEqual(self.calls(), [])
 
     def test_multiple_hosts_install_in_selection_order(self):
         self.commands("opencode", "git", "hermes")
@@ -161,11 +238,11 @@ class InstallerTests(unittest.TestCase):
 
     def test_all_hosts_installs_each_provider_once(self):
         self.codex_commands()
-        self.commands("opencode", "hermes")
+        self.commands("opencode", "hermes", "claude")
         result = self.run_installer("ALL\n")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([call[0] for call in self.calls()], ["git", "codex", "codex", "codex", "opencode", "opencode", "git", "hermes"])
-        for host in ("Codex", "OpenCode", "Hermes"):
+        self.assertEqual([call[0] for call in self.calls()], ["git", "codex", "codex", "codex", "opencode", "opencode", "git", "hermes", "git", "claude", "claude", "claude", "claude"])
+        for host in ("Codex", "OpenCode", "Hermes", "Claude Code"):
             self.assertIn("installed or updated successfully for " + host, result.stdout)
 
     def test_duplicate_hosts_are_not_reinstalled(self):
@@ -234,13 +311,14 @@ class InstallerTests(unittest.TestCase):
             destination = agents / f"expskill-{role}.toml"
             self.assertFalse(destination.is_symlink())
             self.assertEqual(destination.read_text(), f"# {role}\n")
-        backups = list(agents.glob("expskill-backup-*"))
+        backups = list((custom_home / "agent-backups").glob("expskill-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / edited.name).read_text(), "local customization\n")
         self.assertTrue((backups[0] / linked.name).is_symlink())
         self.assertTrue((backups[0] / dangling.name).is_symlink())
         self.assertEqual(external.read_text(), "external untouched\n")
         self.assertEqual((agents / "unrelated.toml").read_text(), "unrelated\n")
+        self.assertEqual(len(list(agents.rglob("*.toml"))), 8)
         self.assertFalse((self.home / ".codex").exists())
         self.assertIn("/hooks", result.stdout)
         self.assertIn("new Codex session", result.stdout)
@@ -252,11 +330,11 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         agents = self.home / ".codex" / "agents"
         self.assertEqual(len(list(agents.glob("*.toml"))), 7)
-        self.assertEqual(list(agents.glob("expskill-backup-*")), [])
+        self.assertFalse((agents.parent / "agent-backups").exists())
 
     def test_rerun_updates_all_hosts_to_new_release_and_backs_up_edited_profiles(self):
         self.codex_commands()
-        self.commands("opencode", "hermes")
+        self.commands("opencode", "hermes", "claude")
         first = self.run_installer("all\n")
         self.assertEqual(first.returncode, 0, first.stderr)
         agents = self.home / ".codex" / "agents"
@@ -276,14 +354,71 @@ class InstallerTests(unittest.TestCase):
             ["opencode", "plugin", "update", "opencode-expskill"],
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", next_sha, "--force"],
+            ["git", "ls-remote", REMOTE, "refs/heads/claude-dist"],
+            ["claude", "plugin", "marketplace", "list", "--json"],
+            ["claude", "plugin", "marketplace", "update", "expskill"],
+            ["claude", "plugin", "list", "--json"],
+            ["claude", "plugin", "update", "expskill@expskill"],
         ])
         self.assertEqual(self.state()["codex-marketplace"], next_sha)
         self.assertEqual(self.state()["hermes-ref"], next_sha)
         self.assertEqual(self.state()["opencode-updated"], "opencode-expskill")
+        self.assertEqual(self.state()["claude-marketplace"], REMOTE + "#claude-dist")
+        self.assertTrue(self.state()["claude-marketplace-updated"])
+        self.assertEqual(self.state()["claude-updated"], "expskill@expskill")
         self.assertEqual((agents / "expskill-designer.toml").read_text(), "new release\n")
-        backups = list(agents.glob("expskill-backup-*"))
+        backups = list((agents.parent / "agent-backups").glob("expskill-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / "expskill-designer.toml").read_text(), "local customization\n")
+        self.assertEqual(len(list(agents.rglob("*.toml"))), 7)
+
+    def test_codex_migrates_legacy_backups_without_losing_contents(self):
+        self.codex_commands()
+        custom_home = self.root / "custom codex"
+        agents = custom_home / "agents"
+        legacy = agents / "expskill-backup-previous"
+        legacy.mkdir(parents=True)
+        profile = legacy / "expskill-designer.toml"
+        profile.write_text("saved customization\n")
+        (legacy / "unrelated.txt").write_text("saved user data\n")
+        external = self.root / "external.toml"
+        external.write_text("external untouched\n")
+        (legacy / "expskill-explorer.toml").symlink_to(external)
+        for role in ROLES:
+            (agents / f"expskill-{role}.toml").write_bytes(
+                (self.package / "agents" / f"expskill-{role}.toml").read_bytes()
+            )
+        unrelated = agents / "other-roles"
+        unrelated.mkdir()
+        (unrelated / "custom.toml").write_text("custom role\n")
+        result = self.run_installer("1\n", CODEX_HOME=str(custom_home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(legacy.exists())
+        migrated = list((custom_home / "agent-backups").glob("*/" + legacy.name))
+        self.assertEqual(len(migrated), 1)
+        self.assertEqual((migrated[0] / profile.name).read_text(), "saved customization\n")
+        self.assertEqual((migrated[0] / "unrelated.txt").read_text(), "saved user data\n")
+        self.assertTrue((migrated[0] / "expskill-explorer.toml").is_symlink())
+        self.assertEqual(external.read_text(), "external untouched\n")
+        self.assertEqual((unrelated / "custom.toml").read_text(), "custom role\n")
+        self.assertEqual(len(list(agents.rglob("*.toml"))), 8)
+        again = self.run_installer("1\n", CODEX_HOME=str(custom_home))
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(list((custom_home / "agent-backups").glob("*/" + legacy.name)), migrated)
+
+    def test_codex_rejects_symlinked_backup_storage_without_changing_profiles(self):
+        self.codex_commands()
+        custom_home = self.root / "custom codex"
+        agents = custom_home / "agents"
+        agents.mkdir(parents=True)
+        profile = agents / "expskill-designer.toml"
+        profile.write_text("local customization\n")
+        external = self.root / "external backups"
+        external.mkdir()
+        (custom_home / "agent-backups").symlink_to(external)
+        self.assert_failed(self.run_installer("1\n", CODEX_HOME=str(custom_home)), "profiles")
+        self.assertEqual(profile.read_text(), "local customization\n")
+        self.assertEqual(list(external.iterdir()), [])
 
     def test_multiple_hosts_can_mix_an_update_and_fresh_install(self):
         self.commands("opencode", "git", "hermes")

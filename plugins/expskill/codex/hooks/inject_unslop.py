@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject the packaged Unslop body into a root SessionStart event."""
+"""Inject an instruction to load Unslop into a root SessionStart event."""
 
 from __future__ import annotations
 
@@ -8,12 +8,21 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from unslop_body import runtime_scope, skill_body
-
 
 ALLOWED_SOURCES = {"startup", "resume", "clear", "compact"}
+
+
+def _runtime_scope(path: Path, source: str) -> str:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema_version") != "unslop-runtime.v1":
+        raise ValueError("Unslop runtime policy has an unsupported schema")
+    if set(payload) != {"schema_version", "scope", "compaction_reminder"}:
+        raise ValueError("Unslop runtime policy has unexpected fields")
+    for field in ("scope", "compaction_reminder"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Unslop runtime policy has no {field}")
+    return payload["compaction_reminder" if source == "compact" else "scope"]
 
 
 def main() -> int:
@@ -42,8 +51,9 @@ def main() -> int:
     if not policy_path.is_file():
         policy_path = plugin_root / "assets" / "unslop-runtime.json"
     try:
-        body = skill_body(skill_path.read_text(encoding="utf-8"))
-        scope = runtime_scope(policy_path)
+        if not skill_path.is_file():
+            raise ValueError("Unslop skill is unavailable")
+        scope = _runtime_scope(policy_path, event["source"])
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(f"Unslop hook could not load its packaged skill: {error}", file=sys.stderr)
         return 1
@@ -51,7 +61,7 @@ def main() -> int:
     output = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": scope + body,
+            "additionalContext": scope,
         }
     }
     json.dump(output, sys.stdout, ensure_ascii=False)

@@ -59,13 +59,21 @@ class StubCtx:
 
 
 class CodexHookTests(unittest.TestCase):
-    def test_session_start_output_is_scope_plus_skill_body(self) -> None:
-        result = _run_inject({"hook_event_name": "SessionStart", "source": "startup"})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual(
-            payload["hookSpecificOutput"]["additionalContext"], _canonical_text()
-        )
+    def test_session_start_output_is_scope_instruction(self) -> None:
+        policy = json.loads(POLICY_JSON.read_text(encoding="utf-8"))
+        for source, expected in (
+            ("startup", policy["scope"]),
+            ("resume", policy["scope"]),
+            ("clear", policy["scope"]),
+            ("compact", policy["compaction_reminder"]),
+        ):
+            with self.subTest(source=source):
+                result = _run_inject({"hook_event_name": "SessionStart", "source": source})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(
+                    payload["hookSpecificOutput"]["additionalContext"], expected
+                )
 
     def test_non_session_start_is_silent(self) -> None:
         result = _run_inject({"hook_event_name": "UserPromptSubmit", "source": "startup"})
@@ -137,7 +145,7 @@ class OpencodePluginTests(unittest.TestCase):
 
 
 class SharedTextDriftTests(unittest.TestCase):
-    def test_hermes_and_codex_share_byte_identical_rule_text(self) -> None:
+    def test_hermes_carries_full_text_starting_with_codex_scope(self) -> None:
         expected = _canonical_text()
         result = _run_inject({"hook_event_name": "SessionStart", "source": "startup"})
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -152,8 +160,8 @@ class SharedTextDriftTests(unittest.TestCase):
             hermes.reset_cache()
         finally:
             os.environ.pop("EXPSKILL_HOME", None)
-        self.assertEqual(codex_text, expected)
         self.assertEqual(hermes_text, expected)
+        self.assertTrue(hermes_text.startswith(codex_text))
 
 
 if __name__ == "__main__":

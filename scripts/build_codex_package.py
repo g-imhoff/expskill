@@ -261,6 +261,7 @@ def build_codex_package(
         content / "policies" / "execution-policy.json",
         content / "policies" / "skills.json",
         content / "policies" / "unslop-runtime.json",
+        content / "policies" / "authoring-runtime.json",
         content / "third-party",
         codex / "skill-adapters",
         codex / "agents.json",
@@ -291,13 +292,16 @@ def build_codex_package(
         policy = content / "policies" / "execution-policy.json"
         skill_policy = content / "policies" / "skills.json"
         unslop_runtime = content / "policies" / "unslop-runtime.json"
+        authoring_runtime = content / "policies" / "authoring-runtime.json"
         _regular_file(policy, "canonical execution policy")
         _regular_file(skill_policy, "canonical skill policy")
         _regular_file(unslop_runtime, "canonical Unslop runtime policy")
+        _regular_file(authoring_runtime, "canonical authoring runtime policy")
         (staging / "assets").mkdir(parents=True, exist_ok=True)
         shutil.copyfile(policy, staging / "assets" / "execution-policy.json")
         shutil.copyfile(skill_policy, staging / "assets" / "skill-policies.json")
         shutil.copyfile(unslop_runtime, staging / "assets" / "unslop-runtime.json")
+        shutil.copyfile(authoring_runtime, staging / "assets" / "authoring-runtime.json")
         rendered = render_all(root)
         for relative, text in sorted(rendered.items()):
             _write_text(staging / relative, text)
