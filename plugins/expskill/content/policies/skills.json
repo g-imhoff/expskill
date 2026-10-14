@@ -4,6 +4,7 @@
     "autonomous-run": false,
     "brainstorm": false,
     "correct": false,
+    "deep-research": false,
     "design": false,
     "grill-me": false,
     "implement": false,

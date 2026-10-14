@@ -62,10 +62,10 @@ class ContentHostLayoutTests(unittest.TestCase):
                 Path(temporary) / "marketplace",
             )
             plugin = marketplace / "plugins" / "expskill"
-            self.assertEqual(len(tuple(plugin.glob("skills/*/SKILL.md"))), 16)
+            self.assertEqual(len(tuple(plugin.glob("skills/*/SKILL.md"))), 17)
             self.assertEqual(
                 len(tuple(plugin.glob("skills/*/agents/openai.yaml"))),
-                16,
+                17,
             )
             self.assertTrue(
                 (marketplace / ".agents" / "plugins" / "marketplace.json").is_file()

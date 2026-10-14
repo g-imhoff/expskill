@@ -30,6 +30,7 @@ EXPECTED_SKILLS = {
     "autonomous-run",
     "roast",
     "roast-loop",
+    "deep-research",
 }
 EXPECTED_DESIGN_FILES = {
     "SKILL.md",

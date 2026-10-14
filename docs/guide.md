@@ -1,6 +1,6 @@
 # ExpSkill guide
 
-ExpSkill is a Codex plugin with fifteen independent skills and one
+ExpSkill is a Codex plugin with sixteen independent skills and one
 optional lifecycle router. The same skill base also ships as the
 `opencode-expskill` npm package for OpenCode and as an Agent Plugins package for Hermes.
 
@@ -264,6 +264,7 @@ Invoke a skill directly when you know what you want:
   product paths and reports revision-bound evidence without repairing production
   code.
 - `$skill-builder` creates or improves one exact agent skill through evidence-gated research, trials, review, and verification.
+- `$deep-research` runs large online research with phased subagents, cited evidence, and a recorded stopping decision.
 - `$unslop` rewrites prose to remove common AI tells and remains directly
   invokable even when the conversation hook is unavailable.
 - `$grill-me` stress-tests a connected set of user-owned decisions through a
@@ -309,6 +310,7 @@ Use $roast to score this change by category before opening a PR.
 Use $roast-loop to drive this change to 9 of 10 before opening a PR.
 Use $test to exercise this implemented change through realistic product behavior.
 Use $skill-builder to create or improve one exact agent skill with retained evidence.
+Use $deep-research to research this topic with cited evidence and a recorded stopping decision.
 Use $unslop to rewrite this explanation in a natural voice.
 Use $grill-me to stress-test these connected product decisions.
 Use $autonomous-run to carry this idea to a review-ready draft PR.
@@ -328,7 +330,7 @@ Design works on one isolated candidate commit. The graph cannot become ready
 until Plan validates and records the approved Design receipt from that same
 baseline.
 
-`$brainstorm`, `$setup-design`, `$setup-test`, `$correct`, `$review`, `$roast`, `$roast-loop`, and
+`$brainstorm`, `$setup-design`, `$setup-test`, `$correct`, `$review`, `$roast`, `$roast-loop`, `$deep-research`, and
 `$test` remain
 independently usable
 without requiring the graph. Brainstorm produces a confirmed Concept Brief,
@@ -353,6 +355,10 @@ It reports scores with top issues and stops without fixes.
 `$roast-loop` coordinates `$roast` reviewers and fixers as the pre-PR gate.
 It runs up to three review cycles and passes when every category scores at
 least 9 of 10.
+
+`$deep-research` runs large online research through phased subagents.
+It cites evidence for each claim and records the stopping decision.
+It ends with a report and starts no follow-on work.
 
 The live certification chain is unfinished. Its required boundary must use
 fresh `codex exec --ephemeral --ignore-user-config --json` sessions in
