@@ -147,7 +147,7 @@ assert.ok(reminder.context.join("\n").includes(rule));
             self.assertIn("Avoid em dashes entirely", loaded)
             self.assertIn("Prefer the plain word", loaded)
             self.assertTrue(all(len(text) <= 4000 for text, _ in sections.values()))
-            self.assertEqual(len(skills), 16)
+            self.assertEqual(len(skills), 17)
             self.assertTrue(all(path.is_file() for path in skills.values()))
 
     def test_hermes_native_loader_and_core_preserve_the_section(self) -> None:

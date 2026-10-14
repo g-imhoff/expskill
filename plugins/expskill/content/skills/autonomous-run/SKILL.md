@@ -1,6 +1,6 @@
 ---
 name: autonomous-run
-description: Act as an AI user on the human's behalf, following $use-expskill to a draft PR, then running $review-loop directly before human review. Use only on explicit invocation.
+description: Act as an AI user on the human's behalf, following $use-expskill to a draft PR, then running $roast-loop directly before human review. Use only on explicit invocation.
 ---
 
 # Autonomous run
@@ -39,10 +39,10 @@ The requested result is a review-ready draft PR. Follow its requirements through
 
 Ask for a PR description that explains the goal, delegated AI decisions, rejected alternatives and their evidence, checks with results, retained risks, and anything still unproven. Include links to supporting records and the head SHA so the human can retrace the run.
 
-## Run the final review loop
+## Run the final roast loop
 
-Once the `$use-expskill` workflow has finished and delivered the draft PR, load [the `$review-loop` skill](../review-loop/SKILL.md) and run it yourself in this invoking conversation on the delivered PR diff. Do not launch a provider-CLI conversation or send this final step back to a workflow conversation. Follow the skill's procedure, including its reviewer and fixer agents. This final run is required even if the workflow used the skill earlier.
+Once the `$use-expskill` workflow has finished and delivered the draft PR, load [the `$roast-loop` skill](../roast-loop/SKILL.md) and run it yourself in this invoking conversation on the delivered PR diff. Do not launch a provider-CLI conversation or send this final step back to a workflow conversation. Follow the skill's procedure, including its reviewer and fixer agents. This final run is required even if the workflow used the skill earlier.
 
 If the loop makes fixes, commit and push them to the existing PR branch, refresh the affected checks, and update the PR description. Require its passing result to cover the final published revision. If it fails or stops blocked, report its result and unresolved issues without declaring the PR ready for human review.
 
-Report completion only when the draft PR exists, the workflow's completion requirements are satisfied, and this final review loop passes. Return the PR URL, final head SHA, review-loop report, checks with results, and retained risks. If blocked, report the cause, outstanding request, and relevant conversation identifiers so the run can resume. Then stop.
+Report completion only when the draft PR exists, the workflow's completion requirements are satisfied, and this final roast loop passes. Return the PR URL, final head SHA, roast-loop report, checks with results, and retained risks. If blocked, report the cause, outstanding request, and relevant conversation identifiers so the run can resume. Then stop.

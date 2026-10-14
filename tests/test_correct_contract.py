@@ -67,7 +67,7 @@ class CorrectContractTests(unittest.TestCase):
         self.assertIn("choose `correct`", body)
         self.assertIn("a selected `$correct` runs in the invoking coordinator", body)
         self.assertIn("without an agent profile or plan graph", body)
-        self.assertIn("do not apply this setup gate to an eligible `$correct` repair", body)
+        self.assertIn("do not apply any setup requirement to an eligible `$correct` repair", body)
 
 
 if __name__ == "__main__":
