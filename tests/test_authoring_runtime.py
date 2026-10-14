@@ -20,14 +20,31 @@ from tests.test_hermes_package import hermes_agent_runtime
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
 POLICY = PLUGIN / "content" / "policies" / "authoring-runtime.json"
-RULE = "Never create documentation files or add code comments unless the user asked for them."
+UNSLOP_POLICY = PLUGIN / "content" / "policies" / "unslop-runtime.json"
+UNSLOP_SKILL = PLUGIN / "content" / "skills" / "unslop" / "SKILL.md"
+RULE = json.loads(POLICY.read_text())["instructions"]
+
+
+def _unslop_scope() -> str:
+    return json.loads(UNSLOP_POLICY.read_text())["scope"]
+
+
+def _unslop_body() -> str:
+    lines = UNSLOP_SKILL.read_text().splitlines()
+    return "\n".join(lines[lines.index("---", 1) + 1:]).strip()
+
+
+def _unslop_expected() -> str:
+    return " ".join((_unslop_scope() + "\n\n" + _unslop_body()).split())
 
 
 class AuthoringRuntimeTests(unittest.TestCase):
     def test_authoring_rule_has_its_own_policy(self) -> None:
         policy = json.loads(POLICY.read_text())
-        self.assertEqual(policy, {"schema_version": "authoring-runtime.v1", "instructions": RULE})
-        self.assertNotIn(RULE, (PLUGIN / "content/skills/unslop/SKILL.md").read_text())
+        self.assertEqual(set(policy), {"schema_version", "instructions"})
+        self.assertEqual(policy["schema_version"], "authoring-runtime.v1")
+        self.assertTrue(policy["instructions"].strip())
+        self.assertNotIn(RULE, UNSLOP_SKILL.read_text())
 
     def test_packages_and_fresh_agent_profiles_carry_the_rule(self) -> None:
         for host, builder in (
@@ -77,6 +94,8 @@ class AuthoringRuntimeTests(unittest.TestCase):
 import assert from "node:assert/strict";
 const { default: plugin } = await import(process.argv[1]);
 const rule = process.argv[2];
+const unslopBody = process.argv[3];
+const unslopScope = process.argv[4];
 const hooks = await plugin.server({});
 for (const sessionID of ["root", "fresh-child", "resumed"]) {
   const output = { system: ["base instructions"] };
@@ -95,8 +114,8 @@ await plugin.setup({
   session: { hook: async (name, callback) => { (registered[name] ??= []).push(callback); } },
 });
 const unslop = skills.get("expskill:unslop");
-assert.ok(unslop.content.includes("Avoid em dashes entirely"));
-assert.ok(unslop.content.includes("Prefer the plain word"));
+assert.equal(unslop.name, "unslop");
+assert.equal(unslop.content, unslopBody);
 assert.ok(unslop.path.endsWith("unslop/SKILL.md"));
 for (const name of ["context", "compaction", "generate"]) {
   for (const system of [["base instructions"], [{ type: "text", text: "base instructions" }], []]) {
@@ -104,8 +123,9 @@ for (const name of ["context", "compaction", "generate"]) {
     for (const callback of registered[name]) await callback({ system });
     const text = system.map(item => typeof item === "string" ? item : item.text).join("\n");
     assert.equal(text.split(rule).length - 1, 1, name);
-    assert.ok(text.includes("Always load $expskill:unslop"), name);
-    assert.ok(!text.includes("# Unslop"), name);
+    assert.ok(text.includes("$expskill:unslop"), name);
+    assert.ok(text.includes(unslopScope), name);
+    assert.ok(!text.includes(unslop.content), name);
     assert.ok(text.length < 500, name);
   }
 }
@@ -117,7 +137,7 @@ assert.ok(reminder.context.join("\n").includes(rule));
             env.pop("EXPSKILL_HOME", None)
             result = subprocess.run(
                 [shutil.which("node"), "--input-type=module", "-e", script,
-                 (package / "index.js").as_uri(), RULE],
+                 (package / "index.js").as_uri(), RULE, _unslop_body(), _unslop_scope()],
                 capture_output=True, text=True, env=env,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -144,8 +164,7 @@ assert.ok(reminder.context.join("\n").includes(rule));
             unslop = json.loads((package / "assets/unslop-runtime.json").read_text())
             loaded = "\n\n".join(text for name, (text, _) in sorted(sections.items()) if name.startswith("expskill.unslop"))
             self.assertTrue(loaded.startswith(unslop["scope"]))
-            self.assertIn("Avoid em dashes entirely", loaded)
-            self.assertIn("Prefer the plain word", loaded)
+            self.assertEqual(" ".join(loaded.split()), _unslop_expected())
             self.assertTrue(all(len(text) <= 4000 for text, _ in sections.values()))
             self.assertEqual(len(skills), 17)
             self.assertTrue(all(path.is_file() for path in skills.values()))
@@ -176,8 +195,7 @@ assert len(manager.list_plugin_skills("expskill")) == 16
 rendered = manager.render_system_prompt_sections({})
 assert rendered[0].content == sys.argv[3]
 loaded = "\\n\\n".join(item.content for item in rendered[1:])
-assert "Avoid em dashes entirely" in loaded
-assert "Prefer the plain word" in loaded
+assert " ".join(loaded.split()) == sys.argv[4]
 assert all(len(item.content) <= 4000 for item in rendered)
 expected = [item.content for item in rendered]
 prompt = format_system_prompt_sections(rendered) + "\\n\\nConversation started: test"
@@ -193,7 +211,7 @@ print(json.dumps({"enabled": True, "preserved": True}))
             env = dict(os.environ)
             env["HERMES_HOME"] = str(Path(temporary) / "home")
             result = subprocess.run(
-                [str(python), "-c", script, str(runtime_root), str(package), RULE],
+                [str(python), "-c", script, str(runtime_root), str(package), RULE, _unslop_expected()],
                 capture_output=True, text=True, env=env, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

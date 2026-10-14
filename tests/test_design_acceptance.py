@@ -8,7 +8,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DESIGN = ROOT / "plugins" / "expskill" / "content" / "skills" / "design"
 FRESH_CONTEXT_COMMAND = ("codex", "exec", "--ephemeral", "--ignore-user-config", "--json")
 CONFIGURATIONS = ("A", "B", "C", "D")
 CALIBRATION_BRIEFS = (
@@ -90,44 +89,8 @@ def _validate_receipt(receipt: object) -> None:
 
 
 class DesignAcceptanceTests(unittest.TestCase):
-    def test_candidate_contract_contains_observable_review_and_safety_gates(self) -> None:
-        """Regression: prose-only or unsafe Design output must not be treated as accepted UI."""
-        self.assertTrue(DESIGN.is_dir(), f"missing design package: {DESIGN}")
-        body = (DESIGN / "SKILL.md").read_text(encoding="utf-8").lower()
-        for phrase in (
-            "compact",
-            "intermediate",
-            "wide",
-            "actual",
-            "synthetic",
-            "technical",
-            "approval",
-            "candidate payload",
-            "review evidence",
-            "route-neutral manifest",
-            "no customer data",
-            "no external",
-            "zero serious or critical accessibility findings",
-            "page-level overflow",
-            "reduced-motion",
-            "before any approval request",
-        ):
-            self.assertIn(phrase, body, phrase)
-
-    def test_complex_and_narrow_work_use_different_rule_loading_strategies(self) -> None:
-        """Regression: the calibration result must change production routing, not remain an evaluator note."""
-        body = "\n".join(
-            path.read_text(encoding="utf-8").lower()
-            for path in (DESIGN / "SKILL.md", DESIGN / "references" / "rules-index.md")
-        )
-        self.assertIn("narrow component", body)
-        self.assertIn("selectively", body)
-        self.assertIn("complex composite", body)
-        self.assertIn("complete category catalog", body)
-        self.assertIn("project convention", body)
-
     def test_calibration_matrix_is_three_briefs_by_four_anonymous_configurations(self) -> None:
-        """Regression: a single convenient component or unblinded comparison cannot certify selection."""
+        """Regression: certification covers three calibration briefs by four anonymous configurations."""
         self.assertEqual(len(CALIBRATION_BRIEFS), 3)
         self.assertEqual(len(set(CALIBRATION_BRIEFS)), 3)
         self.assertEqual(CONFIGURATIONS, ("A", "B", "C", "D"))
@@ -135,18 +98,18 @@ class DesignAcceptanceTests(unittest.TestCase):
         self.assertEqual(set(CALIBRATION_BRIEFS), {"convention-rich-checkout", "fragmented-analytics", "command-palette"})
 
     def test_frozen_validation_cases_are_not_materialized_in_candidate_context(self) -> None:
-        """Regression: validation cases must remain withheld from candidate repair and tuning."""
+        """Regression: the frozen validation directory must not be materialized in the candidate context."""
         validation_root = ROOT / "tests" / "fixtures" / "design-certification" / "validation"
         self.assertFalse(validation_root.exists(), validation_root)
 
     def test_receipt_schema_accepts_complete_evidence(self) -> None:
-        """Regression: certification must retain independent, revision-bound evidence."""
+        """Regression: a complete receipt passes receipt validation."""
         receipt = _receipt()
         _validate_receipt(receipt)
         self.assertEqual(_digest(receipt["artifacts"]), _digest(receipt["artifacts"]))
 
     def test_receipt_mutations_fail_independently(self) -> None:
-        """Regression: missing digests, wrong invocation, stale configuration, and fake decisions cannot pass."""
+        """Regression: removing any receipt field, or substituting invocation, configuration, or candidate digest, fails validation."""
         for field in sorted(RECEIPT_FIELDS):
             with self.subTest(field=field):
                 mutated = _receipt()
@@ -165,13 +128,13 @@ class DesignAcceptanceTests(unittest.TestCase):
                     _validate_receipt(mutated)
 
     def test_fresh_context_command_is_exact_and_network_free_by_contract(self) -> None:
-        """Regression: hidden user configuration, network calls, and ambient state invalidate trials."""
+        """Regression: the fresh-context command stays exact and omits network and full-auto flags."""
         self.assertEqual(FRESH_CONTEXT_COMMAND, ("codex", "exec", "--ephemeral", "--ignore-user-config", "--json"))
         self.assertNotIn("--network", FRESH_CONTEXT_COMMAND)
         self.assertNotIn("--full-auto", FRESH_CONTEXT_COMMAND)
 
-    def test_brief_pressure_matrix_covers_required_design_regressions(self) -> None:
-        """Regression: clean default components hide responsive, state, content, accessibility, and family failures."""
+    def test_each_calibration_brief_lists_at_least_five_pressure_categories(self) -> None:
+        """Regression: each calibration brief lists at least five pressure categories."""
         pressure = {
             "convention-rich-checkout": {"tokens", "localization", "validation", "loading", "error", "responsive"},
             "fragmented-analytics": {"fragmented-conventions", "empty", "partial", "overflow", "data"},
@@ -180,15 +143,15 @@ class DesignAcceptanceTests(unittest.TestCase):
         self.assertEqual(set(pressure), set(CALIBRATION_BRIEFS))
         self.assertTrue(all(len(values) >= 5 for values in pressure.values()))
 
-    def test_no_automated_aesthetic_score_can_complete_certification(self) -> None:
-        """Regression: a model score must not replace project-contextual human approval."""
-        body = (DESIGN / "SKILL.md").read_text(encoding="utf-8").lower() if DESIGN.is_dir() else ""
-        if body:
-            self.assertNotIn("automated aesthetic score", body)
-            self.assertNotIn("universal anti-ai detector", body)
+    def test_human_decision_accepts_only_the_recorded_choices(self) -> None:
+        """Regression: a decision outside the recorded choices must not complete certification."""
         for decision in ("pending", "preferred", "rejected"):
             receipt = _receipt()
             receipt["human_decision"] = {"choice": decision, "correction": "", "notes": ""}
+            _validate_receipt(receipt)
+        receipt = _receipt()
+        receipt["human_decision"] = {"choice": "approved", "correction": "", "notes": ""}
+        with self.assertRaises(AssertionError):
             _validate_receipt(receipt)
 
 

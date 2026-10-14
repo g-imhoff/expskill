@@ -493,7 +493,10 @@ class TestEvidenceFinalizer(unittest.TestCase):
             self.assertEqual(bundle["bundle_digest"], _digest(digest_input))
             self.assertEqual(receipt["bundle_digest"], bundle["bundle_digest"])
             self.assertEqual(receipt["selected_scope_digest"], _digest(bundle["scope"]))
-            self.assertEqual(receipt["environment_digest"], _digest({"isolation": "temporary-repository", "runner": "python-unittest"}))
+            self.assertEqual(
+                receipt["environment_digest"],
+                _digest({"isolation": "temporary-repository", "runner": "python-unittest"}),
+            )
             self.assertEqual(payload["receipt"], receipt)
             self.assertEqual(payload["bundle_digest"], bundle["bundle_digest"])
             self.assertEqual(payload["bundle_path"], str(terminal / "bundle.json"))

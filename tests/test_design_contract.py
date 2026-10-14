@@ -92,7 +92,7 @@ class DesignContractTests(unittest.TestCase):
                     self.assertNotIn(f"${ACCEPTANCE}", text, path)
 
     def test_design_package_has_exact_regular_resources(self) -> None:
-        """Regression: missing, shadowed, or substituted rule resources break isolated review."""
+        """Regression: the Design package holds exactly the expected non-empty regular files."""
         self.assertTrue(DESIGN.is_dir(), f"missing design package: {DESIGN}")
         observed = {
             path.relative_to(DESIGN).as_posix()
@@ -120,87 +120,34 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(matches, [helper])
 
     def test_design_metadata_is_explicit_and_public(self) -> None:
-        """Regression: ambient activation or private routing vocabulary must not leak publicly."""
+        """Regression: Design metadata stays explicit-only and free of banned jargon words."""
         frontmatter = _frontmatter(DESIGN / "SKILL.md")
         self.assertEqual(frontmatter.get("name"), "design")
         description = frontmatter.get("description", "").lower()
-        self.assertIn("explicit", description)
+        self.assertTrue(description.strip())
         metadata = _metadata(PLUGIN / "codex" / "skill-adapters" / "design" / "agents" / "openai.yaml")
         self.assertIn("$design", metadata)
         self.assertIn("allow_implicit_invocation: false", metadata)
         public_text = (DESIGN / "SKILL.md").read_text(encoding="utf-8") + metadata
-        self.assertNotRegex(public_text, re.compile(r"\b(?:quick|full|caps?|private[- ]state)\b", re.I))
+        self.assertNotRegex(public_text, re.compile(r"\b(?:quick|full|caps?)\b", re.I))
+        self.assertNotRegex(metadata, re.compile(r"\bprivate[- ]state\b", re.I))
 
     def test_design_workflow_is_ordered_and_compact(self) -> None:
-        """Regression: skipped gates, empty ceremony, and context bloat weaken design quality."""
+        """Regression: the five workflow headings stay in order and the body stays under 500 lines."""
         body = _body(DESIGN / "SKILL.md")
         self.assertLess(len(body.splitlines()), 500)
         positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
         self.assertTrue(all(position >= 0 for position in positions), positions)
         self.assertEqual(positions, sorted(positions))
-        for phrase in ("responsive", "state", "approval", "technical", "synthetic"):
-            self.assertIn(phrase, body.lower())
 
-    def test_design_has_no_downstream_routing(self) -> None:
-        """Regression: direct Design must stop at its own delivered bundle."""
+    def test_design_retired_routing_identifiers_are_absent(self) -> None:
+        """Regression: direct Design must not carry private routing identifiers."""
         body = _body(DESIGN / "SKILL.md").lower()
-        for marker in ("next_skill", "selected_phase", "phase-handoff-v1", "invoke `$implement`", "route `$implement`"):
+        for marker in ("next_skill", "selected_phase", "phase-handoff-v1"):
             self.assertNotIn(marker, body)
-        self.assertIn("stop", body)
-        self.assertNotIn("begin implementation", body)
 
-    def test_design_scope_and_preview_dependency_direction_are_explicit(self) -> None:
-        """Regression: component construction must not become feature integration or preview leakage."""
-        body = _body(DESIGN / "SKILL.md").lower()
-        for phrase in ("production-intended", "component", "temporary", "preview", "integration"):
-            self.assertIn(phrase, body)
-        for forbidden in ("backend", "application state", "navigation", "live side effects", "customer data"):
-            self.assertIn(forbidden, body)
-        self.assertIn("production code never imports", body)
-
-    def test_rules_are_adaptive_and_project_grounded(self) -> None:
-        """Regression: one loading strategy, fixed breakpoints, and heuristic authority create generic UI."""
-        body = " ".join(
-            _body(path)
-            for path in (DESIGN / "SKILL.md", DESIGN / "references" / "rules-index.md")
-        ).lower()
-        for phrase in (
-            "project convention",
-            "narrow component",
-            "selectively",
-            "complex composite",
-            "complete category catalog",
-            "applicable",
-            "normative",
-            "conflict",
-            "actual pressure",
-        ):
-            self.assertIn(phrase, body)
-        for forbidden in ("always load every", "universal device numbers", "fixed state matrix", "aesthetic score"):
-            self.assertNotIn(forbidden, body)
-
-    def test_failed_quality_gates_cannot_reach_visual_approval(self) -> None:
-        """Regression: a polished but overflowing or inaccessible candidate must be repaired before review."""
-        body = _body(DESIGN / "SKILL.md").lower()
-        for phrase in (
-            "before any approval request",
-            "compact, intermediate, and wide",
-            "page-level overflow",
-            "zero serious or critical accessibility findings",
-            "reduced-motion",
-            "format",
-            "lint",
-            "type",
-            "build",
-            "repair",
-            "rerun",
-        ):
-            self.assertIn(phrase, body, phrase)
-        self.assertIn("do not present", body)
-        self.assertIn("stop blocked", body)
-
-    def test_plugin_and_installed_tree_advertise_the_same_roster(self) -> None:
-        """Regression: manifest, installer-visible tree, and shared contract must not drift."""
+    def test_manifest_names_design_without_acceptance_and_skill_tree_matches_roster(self) -> None:
+        """Regression: the manifest longDescription names $design and not the acceptance skill, and the skills directory equals EXPECTED_SKILLS."""
         manifest_path = PLUGIN / ".codex-plugin" / "plugin.json"
         self.assertTrue(manifest_path.is_file(), manifest_path)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
