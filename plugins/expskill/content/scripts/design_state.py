@@ -1,4 +1,11 @@
-"""Strict dependency-free private state for the route-neutral Design phase."""
+"""Strict dependency-free private state for the route-neutral Design phase.
+
+The Design to Plan handoff contract lives in the sibling
+``design_plan_handoff.py`` module and ``docs/specs/design-plan-handoff-contract.md``.
+This helper stays dependency-free (it loads standalone), so the field names
+used below mirror that contract and
+``tests/test_design_plan_handoff_contract.py`` fails on drift.
+"""
 from __future__ import annotations
 import fcntl, hashlib, json, os, re, secrets, subprocess, sys, threading
 from contextlib import contextmanager
@@ -495,12 +502,29 @@ def _inventory(value):
     paths=[x["path"] for x in value["files"]]
     if len(paths)!=len(set(paths)) or len({p.casefold() for p in paths})!=len(paths): raise ValueError("duplicate inventory path")
 
+def _delivery_result(s):
+    """Derive the same delivery result from the immutable saved generation."""
+    def dg(x): return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    result={"schema_version":1,"workflow_id":s["workflow_id"],"revision":s["revision"],"lifecycle":"delivered","identity":s["identity"],"ui_contract":s["ui_contract"],"candidate_digest":hashlib.sha256(json.dumps(s["candidate_payload"],sort_keys=True).encode()).hexdigest(),"candidate_inventory_digest":dg(s["candidate_payload"]),"review_evidence_digest":dg(s["review_evidence"]),"manifest_digest":dg(s["manifest"]),"evidence_digest":dg(s["evidence"]),"approval_digest":dg(s["approvals"]),"dependency_digest":dg(s["dependencies"])}
+    if s["brief"]["confirmed"]:
+        result["brief_digest"]=s["brief"]["digest"]
+        if s["candidate"] is not None:
+            result["candidate_commit"]=s["candidate"]["commit"]
+    return result
+
 def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_evidence,manifest,state_home):
     with _locked(Path(state_home)) as root:
         s=_load(root,workflow_id)
         _revalidate(s)
-        if s["lifecycle"]=="delivered" or s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
+        if s["lifecycle"]=="delivered":
+            if (type(expected_revision) is not int or expected_revision != s["revision"] - 1
+                    or candidate_payload != s["candidate_payload"]
+                    or review_evidence != s["review_evidence"] or manifest != s["manifest"]):
+                raise ValueError("immutable or stale workflow: retry the identical delivery request")
+            return _delivery_result(s)
+        if s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
         if s["invocation_mode"] == "routed" and s["candidate"] is None: raise ValueError("routed delivery requires candidate checkpoint")
+        if s["invocation_mode"] == "routed" and not s["brief"]["confirmed"]: raise ValueError("confirmed design brief required for routed delivery; the Plan join needs brief_digest")
         for x in (candidate_payload,review_evidence,manifest): _inventory(x)
         if not s["components"]: raise ValueError("current approvals required")
         for name, comp in s["components"].items():
@@ -526,23 +550,56 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
         expected_delivery={"classifications":{"candidate":"component","review":"review","manifest":"manifest"},"candidate":inv(candidate_payload),"review":inv(review_evidence),"manifest":inv(manifest)}
         if isinstance(s["delivery"], dict) and s["delivery"].get("candidate") is not None and s["delivery"] != expected_delivery: raise ValueError("delivery does not match predeclared inventories")
         s["candidate_payload"],s["review_evidence"],s["manifest"]=candidate_payload,review_evidence,manifest
+        s["delivery"]=expected_delivery
         s["lifecycle"]="delivered"; s["revision"]+=1; _durable_write(root,workflow_id,s)
-        digest=hashlib.sha256(json.dumps(candidate_payload,sort_keys=True).encode()).hexdigest()
-        def dg(x): return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-        result={"schema_version":1,"workflow_id":workflow_id,"revision":s["revision"],"lifecycle":"delivered","identity":s["identity"],"ui_contract":s["ui_contract"],"candidate_digest":digest,"candidate_inventory_digest":dg(candidate_payload),"review_evidence_digest":dg(review_evidence),"manifest_digest":dg(manifest),"evidence_digest":dg(s["evidence"]),"approval_digest":dg(s["approvals"]),"dependency_digest":dg(s["dependencies"])}
-        if s["brief"]["confirmed"]:
-            result["brief_digest"]=s["brief"]["digest"]
-            if s["candidate"] is not None:
-                result["candidate_commit"]=s["candidate"]["commit"]
-        return result
+        return _delivery_result(s)
+
+def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_target_branch=None):
+    """Read-only check of what the Plan typed Design join will demand.
+
+    Returns ``{"workflow_id", "revision", "eligible", "problems"}`` without
+    mutating state. Every problem names the exact missing or mismatched
+    receipt field (``brief_digest``, ``candidate_commit``, ``lifecycle``,
+    ``baseline``, ``branch``, approvals) so a mismatch fails here, before
+    delivery, instead of late at the join. Before delivery, an active
+    lifecycle is expected to be the sole remaining problem; fix every other
+    problem first. The CLI returns status 1 for that pending lifecycle.
+    After delivery, require status 0 and ``eligible`` true with no problems.
+    Only the delivered CLI receipt is ready for the Plan join shape checks.
+    """
+    with _locked(Path(state_home)) as root:
+        s = _load(root, workflow_id)
+        _revalidate(s)
+        problems = []
+        if s["lifecycle"] != "delivered":
+            problems.append(f"lifecycle is {s['lifecycle']!r}; the Plan join needs 'delivered' (deliver first)")
+        if s["invocation_mode"] != "routed":
+            problems.append("invocation_mode is 'direct'; the Plan join needs a routed candidate checkpoint (candidate_commit)")
+        if not s["brief"]["confirmed"]:
+            problems.append("brief is unconfirmed; the Plan join needs brief_digest")
+        candidate = s["candidate"]
+        if candidate is None:
+            problems.append("no candidate checkpoint; the Plan join needs candidate_commit one commit above baseline")
+        elif candidate.get("brief_digest") != s["brief"].get("digest"):
+            problems.append("candidate brief_digest is stale; re-checkpoint after the brief change")
+        try:
+            _validate_domains(s)
+        except ValueError as exc:
+            problems.append(f"approvals and evidence are not join-ready: {exc}")
+        identity = s["identity"]
+        if plan_baseline is not None and identity["baseline"] != plan_baseline:
+            problems.append(f"baseline {identity['baseline']!r} differs from Plan baseline {plan_baseline!r}")
+        if plan_target_branch is not None and identity["branch"] == plan_target_branch:
+            problems.append(f"branch {identity['branch']!r} must stay isolated from the Plan target branch")
+        return {"workflow_id": workflow_id, "revision": s["revision"], "eligible": not problems, "problems": problems}
 
 def _cli():
     if len(sys.argv)>1 and sys.argv[1] == "--help":
-        print("initialize discover load confirm-brief checkpoint-candidate apply pause resume recover discard deliver")
+        print("initialize discover load confirm-brief checkpoint-candidate apply pause resume recover discard deliver preflight")
         return 0
     if len(sys.argv)<2 or len(sys.argv)>4 or (len(sys.argv)>2 and sys.argv[2] != "--state-home"): return 2
     command=sys.argv[1]
-    allowed={"initialize","discover","load","confirm-brief","checkpoint-candidate","apply","pause","resume","recover","discard","deliver"}
+    allowed={"initialize","discover","load","confirm-brief","checkpoint-candidate","apply","pause","resume","recover","discard","deliver","preflight"}
     if command not in allowed: return 2
     raw=sys.stdin.read(1024*1024+1)
     if len(raw)>1024*1024: return 2
@@ -551,6 +608,9 @@ def _cli():
         if not isinstance(payload,dict): raise ValueError()
         home=Path(sys.argv[3]) if len(sys.argv)==4 else Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state"))) / "expskill"
         if len(sys.argv)==4: payload.pop("state_home",None)
+        if command=="preflight":
+            result=preflight_plan_join(state_home=home,**payload)
+            print(json.dumps({"schema_version":1,"operation":command,**result},sort_keys=True)); return 0 if result["eligible"] else 1
         if command=="initialize": result=initialize_workflow(state_home=home,**payload)
         elif command=="discover": result=discover_workflow(state_home=home,**payload)
         elif command=="load": result=load_workflow(state_home=home,**payload)

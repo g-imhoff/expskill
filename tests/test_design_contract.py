@@ -28,7 +28,8 @@ EXPECTED_SKILLS = {
     "unslop",
     "use-expskill",
     "autonomous-run",
-    "review-loop",
+    "roast",
+    "roast-loop",
     "deep-research",
 }
 EXPECTED_DESIGN_FILES = {

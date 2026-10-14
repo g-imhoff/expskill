@@ -34,7 +34,8 @@ PHASE_ROOTS = {
         "test",
         "unslop",
         "autonomous-run",
-        "review-loop",
+        "roast",
+        "roast-loop",
     )
 }
 PUBLIC_SKILL_ROOTS = {
@@ -44,13 +45,13 @@ PUBLIC_SKILL_ROOTS = {
     "deep-research": DEEP_RESEARCH_ROOT,
 }
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-5.6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-5.6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-5.6-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 EXPECTED_SKILLS = {
     "use-expskill",
@@ -67,7 +68,8 @@ EXPECTED_SKILLS = {
     "skill-builder",
     "unslop",
     "autonomous-run",
-    "review-loop",
+    "roast",
+    "roast-loop",
     "deep-research",
 }
 REMOVED_PUBLIC_SKILL = "accept" + "ance"
@@ -451,7 +453,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("fifteen", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("sixteen", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})
@@ -566,7 +568,7 @@ class ContractTests(unittest.TestCase):
         """Regression: public documentation must expose the lean skill surface."""
 
         expected = re.compile(
-            r"\bfifteen independent skills and one optional lifecycle router\b"
+            r"\bsixteen independent skills and one optional lifecycle router\b"
         )
         paths = (
             ROOT / "docs" / "guide.md",
@@ -996,7 +998,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = root / "plugins" / "expskill" / "codex" / "agents.json"
         metadata = json.loads(path.read_text(encoding="utf-8"))
-        metadata["agents"]["expskill-explorer"]["model"] = "gpt-5.6-not-allowed"
+        metadata["agents"]["expskill-explorer"]["model"] = "gpt-6-not-allowed"
         path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("explorer" in error.lower() and "model" in error.lower() for error in errors))
@@ -1242,10 +1244,10 @@ class ContractTests(unittest.TestCase):
         self.assertFalse((PLUGIN_ROOT / "content" / "scripts" / "read_only_agent.py").exists())
         self.assertFalse((ROOT / "tests" / "test_read_only_agent.py").exists())
 
-    def test_repository_docs_describe_context_free_named_agent_isolation(self) -> None:
+    def test_shipped_skills_describe_context_free_named_agent_isolation(self) -> None:
         for relative_path in (
-            "docs/specs/2026-08-09-expskill-design.md",
-            "docs/plans/2026-08-09-expskill-implementation.md",
+            "plugins/expskill/content/skills/implement/SKILL.md",
+            "plugins/expskill/content/skills/skill-builder/SKILL.md",
         ):
             body = (ROOT / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
