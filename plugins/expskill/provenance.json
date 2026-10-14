@@ -1,0 +1,285 @@
+{
+  "inputs": [
+    {
+      "path": "plugins/expskill/claude/.claude-plugin/plugin.json",
+      "sha256": "02a3dab2abeb49e0bac68e10ec7855f122d6503d6cdd92f56200b938f101d86d"
+    },
+    {
+      "path": "plugins/expskill/claude/agents.json",
+      "sha256": "d8d72a96c6a790de292f0b5ba9f1c6b45ac5572e73e98efbdcb20e0ad6dc17d9"
+    },
+    {
+      "path": "plugins/expskill/claude/hooks/hooks.json",
+      "sha256": "ee05bf18e97fedc8cd27b211f3b91a2557725202a7291782e0b1ef77c7132648"
+    },
+    {
+      "path": "plugins/expskill/claude/hooks/inject_authoring.py",
+      "sha256": "e1ae47fa070fecff1d07321ed75deb1d9e9d1f49c8c90e1b4ad0d450b847209f"
+    },
+    {
+      "path": "plugins/expskill/claude/hooks/inject_unslop.py",
+      "sha256": "f9e49d37c95e6ac29a3c58f13883371f563fc2b3c0aa9a36e1c9a7c5f6baeb23"
+    },
+    {
+      "path": "plugins/expskill/content/agents.json",
+      "sha256": "8613f3e13210e3b79ec8e4cb0672f6782b4f8f43e548b7cfbe1504391f102303"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-designer.md",
+      "sha256": "0b7ec93f6fa1c318553e12dd4d47446130e9dbb99fa7a727fbd1702890788ab2"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-explorer.md",
+      "sha256": "5c5004325f030473c618ac634619eea57e4e2b2eef02459cc9fa2d746c9a7240"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-implementer.md",
+      "sha256": "44c06049fa1d0a5baef2f4591f87117fa4676b5a60e489bb3f27fe899f123716"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-planner.md",
+      "sha256": "187e9b7ae4df78b30a5d2009cc16577b6f0b9c1db3745ac0b9afa934612c7eef"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-review.md",
+      "sha256": "c9c841cc2f68802b7e956ae737561461ebd5eed48726290efa6d7774d712b0b8"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-spec.md",
+      "sha256": "97e7b61c6a20ad801cc814da47d1a4aca22fe5f9d85b170178fe4eb20293aa5a"
+    },
+    {
+      "path": "plugins/expskill/content/agents/expskill-test-engineer.md",
+      "sha256": "7db7bea7f92597fd8cec6c474404531f7c8f09906d5abf5e3d56472c6355c985"
+    },
+    {
+      "path": "plugins/expskill/content/policies/authoring-runtime.json",
+      "sha256": "5906b51436670c2ba6384ee2e7e709491887bb2c366d076598386d4496e9b87a"
+    },
+    {
+      "path": "plugins/expskill/content/policies/execution-policy.json",
+      "sha256": "97d8719d4fd64d4f6a48a86a73d8c359881e0e296d1eee7821f421bc632f552c"
+    },
+    {
+      "path": "plugins/expskill/content/policies/skills.json",
+      "sha256": "747e302b7778a4f8aafe8669649cf9ff2ab892ffe011a44afb3868e458ae204f"
+    },
+    {
+      "path": "plugins/expskill/content/policies/unslop-runtime.json",
+      "sha256": "a3116e300171d4086c6ebe7400fe2e225c58f90f73a3854ad5d60cb40f530a0e"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/design_plan_handoff.py",
+      "sha256": "db79a34dd24fc9e372af6c5c8d8804bb846b9b1382192d56ad5f4a4a9376c16d"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/design_state.py",
+      "sha256": "5ca0a428d50510bb054becb2a1c6fcd83dbabf41a763dcaf0d340ac1388c1172"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/hermes_unslop.py",
+      "sha256": "2965243cacab8f0b25a91429961958d93be3723b9d77ba4e200c775d0132dc03"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/plan_graph.py",
+      "sha256": "e7141c74a0c579a7be9e0ac3960cf510e85f9b108d3cd87aee4044e9dbf14c16"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/worktrees.py",
+      "sha256": "cd11f4bc48205387a3b65092bdd69187b21ae22340fde56ee2498d90f7a582c0"
+    },
+    {
+      "path": "plugins/expskill/content/skills/autonomous-run/SKILL.md",
+      "sha256": "052de5ab3f44f389b2b9f851d14e287ef5b677d864f4532fd495f603cdd8a0a2"
+    },
+    {
+      "path": "plugins/expskill/content/skills/brainstorm/SKILL.md",
+      "sha256": "77d7c53d259b03612854cf56bb199eca8ff7812312d0ec603456115aeb8ab253"
+    },
+    {
+      "path": "plugins/expskill/content/skills/brainstorm/references/brainstorm-techniques.csv",
+      "sha256": "d007f32f53572a128d5c9cb97b14f120f7b7cf610612aef35bdf4b8af2fabef1"
+    },
+    {
+      "path": "plugins/expskill/content/skills/correct/SKILL.md",
+      "sha256": "9a468a3660925b1c0839f8d9030b45caf38365295110108e67fda8caf75f07a4"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/SKILL.md",
+      "sha256": "be7547a08823d2df861d5fc4a9f401a84e137b407baa96287f6c2faab3511bdf"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/accessibility.md",
+      "sha256": "e41c2810e4587a701ea16d94621d0334d65a7ecc4f1b9dbbca0b834db6fa1362"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/data-display.md",
+      "sha256": "665dbec4756227f88cb76b5ae3a64a27aaf3ab871da6480ad114a039df5d16a5"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/forms.md",
+      "sha256": "ab7d7f0c8c3441b18d39e8c14d4d4354dd14389007b9bcdf26335567f486d5b0"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/geometry.md",
+      "sha256": "9306e8ac99e6a4f4e231fb98fab7b97e2a799acf119ca9b66b72d50cb6130e6e"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/interaction.md",
+      "sha256": "0956b35ed060896260d0780080afc3f619a54569e7d01eb7df4587f378febbe1"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/motion.md",
+      "sha256": "ba9754907080ad2f8b3c0560583a5d3582b634874263ecd58549ba53247ec8ae"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/responsive.md",
+      "sha256": "d34377411fef46442c029dfa24bf21226950aac02d7830e88a7d184ed6f2516c"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/rules-index.md",
+      "sha256": "d11ab121ea24231691516251e23fd8b93c7a901733c1cfd80e880b8c73ff2121"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/typography.md",
+      "sha256": "9492a66d37edd7c2101f8477691ccaaa46122e9395129e62de48a28b76067db8"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/yodea-preview.md",
+      "sha256": "8398edb958b54a1dbfc0a05c4536fcf1781740e5a2134ddf709ecbbb0fc84dba"
+    },
+    {
+      "path": "plugins/expskill/content/skills/grill-me/SKILL.md",
+      "sha256": "12480936945e61f35b95f2dfc70279f778b51b0d8a71437aa39e8feaa83dad93"
+    },
+    {
+      "path": "plugins/expskill/content/skills/implement/SKILL.md",
+      "sha256": "d312b5d1b3c5804b0b9110369ca400c0732ddb8812e3c5061eb95f7fd836a5d1"
+    },
+    {
+      "path": "plugins/expskill/content/skills/plan/SKILL.md",
+      "sha256": "8b287d71b374c7ef22c87e2f3059bb4b74301a9a94019ed8012e69aa2f191692"
+    },
+    {
+      "path": "plugins/expskill/content/skills/review/SKILL.md",
+      "sha256": "2118a07beaa333633921c72bba58762521ee4aa34241fbabeffa4d2023def4cf"
+    },
+    {
+      "path": "plugins/expskill/content/skills/roast-loop/SKILL.md",
+      "sha256": "c0f708d0417e33142ee63b9918cc532efb89ba38e4c3bf7a9172443d13ced001"
+    },
+    {
+      "path": "plugins/expskill/content/skills/roast/SKILL.md",
+      "sha256": "a451f6e5f6eecc093915f2272461d75f7a4aeb2e75f661be023139b2be00e79f"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-design/SKILL.md",
+      "sha256": "99919366773dc3fa0e90dceee544600c89a558649680482183cfb12554b75ed0"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-design/references/record-format.md",
+      "sha256": "87aeecd2cd829b6fcda2f9eb2ea76ad9eec6b7bc389ae17cf7de173f47ad49ff"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-test/SKILL.md",
+      "sha256": "4e5d940eecb07a6abb039ff981bf1800fbf626c67c7ac62e738b514396164c75"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-test/references/record-format.md",
+      "sha256": "fa3d8fcf77605ea8409b3ead76d42b8f06d24c8c5a83c488ce89955c0442ac48"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/SKILL.md",
+      "sha256": "8ef28fa378426fa72255b5794ffa9503a27b4ae618036ff927b56a881a3dc82d"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/artifact-contracts.md",
+      "sha256": "2e7c1b33f0bd5c9218453faf1ace637c4b242c5a3c6607ee6fa9dcdaccb5af8b"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/evaluation-rubric.md",
+      "sha256": "f8a7caf3ca43f7e20d4854a06d9de55f94c89da6e3cbd8c5f1c163510c00d78e"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/scripts/run_state.py",
+      "sha256": "3acfa439b199118985474b266a6bead89b8aaa8460878258f42080b5b6c6f52b"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/SKILL.md",
+      "sha256": "cf293c71b38cbb3aeaaa4a4215b65192456a73100f39499093ff553d7225b9e1"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/references/evidence-contract.json",
+      "sha256": "00a0e16d98e05efef2d58a3892806c5602f50a9071f77b6c47d13bb801493097"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/references/quality-rules.json",
+      "sha256": "dd6aba0155e8221bcd55ad2c125bd985dc5bcd198dbfc34bc96b8f0ebb1f8eeb"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/append_ledger.py",
+      "sha256": "dd55b238981feb0c7a1d26ec9b0b76102225852b2425d72ceda00149af7755bc"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/bootstrap_run.py",
+      "sha256": "fffe1a1fa784753422e893bf3e6e7032096c4e64527ba5968508245dd2ac67db"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/finalize_evidence.py",
+      "sha256": "972c32b00c1c19f3048d56a2a69ebf5d0d2565a1a1aa9b92d2278bebc9f2c7db"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/freeze_charter.py",
+      "sha256": "dc0a7e2372c5a4f17757fc0ad20246e0837fdc458366fc4b8d325cefe0448675"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/record_final_action.py",
+      "sha256": "f9ff2653a92c6ba9ebc343fda1d7b9d6c6339a88ba64d963969713372647a8ee"
+    },
+    {
+      "path": "plugins/expskill/content/skills/unslop/SKILL.md",
+      "sha256": "c11709019d3b7770a1231b3787201fc5fe3f9f64d3dd994c2b39b7e7044c948b"
+    },
+    {
+      "path": "plugins/expskill/content/skills/use-expskill/SKILL.md",
+      "sha256": "cd94e0a0730948b585fc63bc765c054f9fbcf76f5953df8a707a15a10de307f7"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/licenses/mattpocock-skills-MIT.txt",
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/licenses/pstack-MIT.txt",
+      "sha256": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/sources/mattpocock/grill-me/SKILL.md",
+      "sha256": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/sources/mattpocock/grilling/SKILL.md",
+      "sha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/sources/pstack/unslop/SKILL.md",
+      "sha256": "2789ab80477b7e382292e4d7acca1057784df19713fffb74622ff0f83b2f3733"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/upstream-lock.json",
+      "sha256": "633fb084ec873837bb07b69a0cf7fb2b286fad9824c44581d05184a5a1ca347d"
+    },
+    {
+      "path": "scripts/artifact_contract.py",
+      "sha256": "5e107f1304e491a6625d648aa3803c610a044a8da34f9a4bc8b714b0d4cc6ef6"
+    },
+    {
+      "path": "scripts/build_claude_package.py",
+      "sha256": "89b8a767e83608876e9546d4a8302dae9db855241b4af2bdeaed0d21a548f9f5"
+    },
+    {
+      "path": "scripts/render_claude.py",
+      "sha256": "6b7137a59f44f899843d9becbfeb74502bdaa487c4bc15d8f27a50707c9831ac"
+    }
+  ],
+  "schema_version": "claude-provenance.v1"
+}
