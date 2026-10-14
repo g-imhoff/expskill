@@ -86,9 +86,9 @@ Each phase:
    reassembly, saved copy, or file in between. Dispatch independent
    assignments in parallel waves up to the host's safe concurrency. Lower
    capacity means more waves, not fewer questions. Mark assignments
-   `running` when dispatched. A running assignment's question, branches,
-   worker, queries, and budget are fixed. Add a new assignment instead of
-   changing them.
+   `running` when dispatched. Once an assignment runs, its question,
+   branches, worker, queries, and budget are fixed. Add a new assignment
+   instead of changing them.
 3. When a worker replies, `capture` the reply before you read anything from
    it into the record.
 4. Check the evidence yourself. Open cited pages where support is unclear,
@@ -120,8 +120,8 @@ be added only during a later phase, or right after `change_scope` or a resume
 after saturation. Give every branch a worker proposes a recorded decision: a
 new branch, a note on the existing branch it restates, or a branch with
 status `out_of_scope` and an `out_of_scope_reason`. Only `change_scope` moves
-an existing branch into or out of scope, and only for a user-approved change
-with the user's reason on record (Example 8). There is no default limit on
+an existing branch into or out of scope, with the user's reason on record.
+`change_scope` is only for a user-approved scope change (Example 8). There is no default limit on
 phases, sources, or workers. Only the user's limits and the host's real
 constraints apply.
 
@@ -132,7 +132,8 @@ Worker rules:
   method, branch titles and questions, one bounded assignment question with
   its queries and budget, accepted claims from earlier phases on its branches
   and their parents, and the return format. Keep private supplied context out
-  of all of those. Sibling findings stay out. `assumptions` and
+  of all of those. Sibling findings and unrelated private context stay out of
+  the brief. `assumptions` and
   `known_evidence` reach workers only when `share_context_with_workers` is
   `true`.
 - A worker's whole job is searching the listed queries, reading pages, and

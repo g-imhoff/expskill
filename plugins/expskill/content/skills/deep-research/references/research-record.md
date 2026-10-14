@@ -89,7 +89,9 @@ when `apply` fails.
 - `change_scope` takes `reason`, an optional partial `brief`,
   `affected_branch_ids` to requeue, and `out_of_scope` as `[{"id", "reason"}]`.
 
-| Type | Required | Optional |
+Required fields when adding:
+
+| Type | Required | Common optional fields |
 |---|---|---|
 | branch | `title`, `question`, `rationale` | `parent_ids`, `next_questions`, `status`, `out_of_scope_reason` |
 | assignment | `branch_ids`, `question` | `worker` (`subagent` or `coordinator`), `queries`, `budget`, `retry_of`, `continuation_of` |
@@ -99,7 +101,7 @@ when `apply` fails.
 | failure | `kind`, `detail` | `assignment_id`, `resolved`, `resolution`, `resolved_by` |
 
 `found_by` is an assignment ID or `"coordinator"`. A support item is
-`{"source_id", "locator", "excerpt"}` with an excerpt of at most 500
+`{"source_id", "locator", "excerpt"}` with a short excerpt of at most 500
 characters. Any record also accepts a free-text `notes` string.
 
 ## Rules the helper enforces
@@ -178,11 +180,11 @@ unresolved and finish `incomplete`.
 
 - Material scope change: stop affected work, then run `change_scope`. It
   needs no running phase, archives the old brief, requeues the affected
-  branches, moves listed branches out of scope, and resets closure. Reopen
-  only the affected branches. Revalidate each old-scope accepted claim on an
-  in-scope branch: set its `scope_id` to the new scope (adding in-scope
-  `branch_ids` in the same update when its old branches left scope) or
-  reject it. Unrelated valid evidence keeps its original provenance and is
+  branches, moves listed branches out of scope, and resets closure. Then
+  revalidate each old-scope accepted claim on an in-scope branch: set its
+  `scope_id` to the new scope (adding in-scope `branch_ids` in the same update
+  when its old branches left scope) or reject it. Then reopen only the
+  affected branches. Unrelated valid evidence keeps its original provenance and is
   not presented as new research.
 - Explicit pause: stop owned workers, then `finish --status paused`.
 - Explicit cancel or stop: interrupt owned workers right away, then
