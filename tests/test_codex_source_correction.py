@@ -131,16 +131,15 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             set(policy),
             {"schema_version", "scope", "compaction_reminder"},
         )
-        self.assertIn("Always load $expskill:unslop", policy["scope"])
-        self.assertIn("after each compaction", policy["scope"])
-        self.assertIn("reload $expskill:unslop", policy["compaction_reminder"])
+        skill_lines = (PLUGIN_ROOT / "content" / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        skill_body = "\n".join(skill_lines[skill_lines.index("---", 1) + 1:]).strip()
         for adapter in (
             PLUGIN_ROOT / "codex" / "hooks" / "inject_unslop.py",
             PLUGIN_ROOT / "opencode" / "plugins" / "unslop.js",
         ):
             source = adapter.read_text(encoding="utf-8")
             self.assertNotIn(policy["scope"].strip(), source)
-            self.assertNotIn("Cut grand claims", source)
+            self.assertNotIn(skill_body, source)
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -196,11 +195,11 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             output = build_codex_package(ROOT, Path(temporary) / "package")
             environment = dict(os.environ)
             environment.pop("PLUGIN_ROOT", None)
+            policies = PLUGIN_ROOT / "content" / "policies"
+            authoring_rule = json.loads((policies / "authoring-runtime.json").read_text(encoding="utf-8"))["instructions"]
+            unslop_policy = json.loads((policies / "unslop-runtime.json").read_text(encoding="utf-8"))
             skill = (output / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8")
-            self.assertNotIn(
-                "Never create documentation files or add code comments unless the user asked for them.",
-                skill,
-            )
+            self.assertNotIn(authoring_rule, skill)
             for source in ("startup", "compact"):
                 with self.subTest(source=source):
                     result = subprocess.run(
@@ -214,8 +213,8 @@ class CodexSourceCorrectionTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
                     self.assertIn("$expskill:unslop", context)
-                    self.assertIn("reload" if source == "compact" else "Always load", context)
-                    self.assertNotIn("# Unslop", context)
+                    expected = unslop_policy["compaction_reminder" if source == "compact" else "scope"]
+                    self.assertEqual(context, expected)
                     self.assertLess(len(context), 500)
 
 

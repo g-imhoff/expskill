@@ -90,7 +90,7 @@ REQUIREMENTS = (
     "The candidate is exactly one commit above the baseline, and the isolated "
     "branch tip stays the candidate commit until integration.",
     "approval_digest and manifest_digest in the join match the delivery "
-    "receipt. Copy them from the receipt, never retype them.",
+    "receipt. Copy them programmatically from the receipt.",
 )
 
 

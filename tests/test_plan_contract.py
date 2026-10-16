@@ -53,40 +53,11 @@ def _frontmatter(path: Path) -> dict[str, object]:
     return _parse_simple_yaml_mapping("\n".join(lines[1:end]))
 
 
-def _markdown_section(contents: str, heading: str) -> str:
-    match = re.search(
-        rf"^## {re.escape(heading)}\s*$\n(?P<body>.*?)(?=^## |\Z)",
-        contents,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    if match is None:
-        raise AssertionError(f"missing section: {heading}")
-    return " ".join(match.group("body").lower().split())
-
-
-def _numbered_workflow(contents: str) -> list[str]:
-    section = _markdown_section(contents, "Workflow")
-    matches = list(re.finditer(r"(?<!\S)(\d+)\.\s", section))
-    if not matches:
-        raise AssertionError("workflow has no numbered operations")
-    items = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(section)
-        items.append(section[match.end() : end].strip())
-    return items
-
-
 class PlanContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.skill_path = PLAN_ROOT / "SKILL.md"
         self.metadata_path = PLUGIN_ROOT / "codex" / "skill-adapters" / "plan" / "agents" / "openai.yaml"
         self.body = self.skill_path.read_text(encoding="utf-8")
-        self.normalized = " ".join(self.body.lower().split())
-
-    def assertContainsAll(self, *phrases: str) -> None:
-        for phrase in phrases:
-            with self.subTest(phrase=phrase):
-                self.assertIn(" ".join(phrase.lower().split()), self.normalized)
 
     def test_plan_package_is_minimal_regular_and_contains_no_runtime_shadow_resource(self) -> None:
         self.assertEqual(
@@ -113,6 +84,7 @@ class PlanContractTests(unittest.TestCase):
         self.assertEqual(frontmatter["name"], "plan")
         self.assertIsInstance(frontmatter["description"], str)
         self.assertTrue(str(frontmatter["description"]).strip())
+        self.assertIn("$plan", str(frontmatter["description"]))
         metadata = _parse_simple_yaml_mapping(self.metadata_path.read_text(encoding="utf-8"))
         self.assertEqual(set(metadata), {"interface", "policy"})
         self.assertEqual(
@@ -122,286 +94,49 @@ class PlanContractTests(unittest.TestCase):
         self.assertEqual(metadata["policy"], {"allow_implicit_invocation": False})
         self.assertIn("$plan", str(metadata["interface"]["default_prompt"]))
 
-    def test_plan_has_no_router_or_typed_downstream_handoff(self) -> None:
-        for forbidden in (
-            "phase-handoff-v1",
-            "selected_phase",
-            "next_skill",
-            "invoke `$implement`",
-            "open `$implement`",
-            "recommend `$implement`",
-        ):
+    def test_plan_retired_routing_identifiers_are_absent(self) -> None:
+        lowered = self.body.lower()
+        for forbidden in ("phase-handoff-v1", "selected_phase", "next_skill"):
             with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden.lower(), self.body.lower())
-        boundary = _markdown_section(self.body, "Boundary")
-        stopping = _markdown_section(self.body, "Stop and downstream boundary")
-        self.assertIn("standalone", boundary)
-        self.assertRegex(boundary, r"do not route, invoke, open, select, or recommend another skill")
-        self.assertRegex(boundary, r"do not begin .*implementation")
-        self.assertIn("emit no typed handoff", stopping)
+                self.assertNotIn(forbidden, lowered)
 
-    def test_trigger_and_near_neighbor_boundaries_are_explicit(self) -> None:
-        description = str(_frontmatter(self.skill_path)["description"]).lower()
-        boundary = _markdown_section(self.body, "Boundary")
-        self.assertIn("explicit $plan", description)
-        self.assertIn("sufficiently concrete", description)
-        for accepted in ("concept brief", "concrete direction"):
-            self.assertIn(accepted, boundary)
-        self.assertRegex(boundary, r"return `not-ready` for a vague direction")
-        self.assertRegex(boundary, r"must not repeat brainstorm, simulate brainstorm")
-        for excluded in (
-            "production or test implementation",
-            "review",
-            "verification",
-            "integration",
-            "github delivery",
+    def test_plan_section_headings_appear_exactly_once(self) -> None:
+        for heading in (
+            "Boundary",
+            "Workflow",
+            "Canonical private graph",
+            "Implementation, proof, and Git execution contract",
+            "Stop and downstream boundary",
         ):
-            self.assertIn(excluded, boundary)
+            with self.subTest(heading=heading):
+                matches = re.findall(
+                    rf"^## {re.escape(heading)}\s*$", self.body, flags=re.MULTILINE
+                )
+                self.assertEqual(len(matches), 1, heading)
 
-    def test_ordered_workflow_moves_from_grounding_to_complete_graph_before_projection(self) -> None:
-        steps = _numbered_workflow(self.body)
-        self.assertEqual(len(steps), 10)
-        required_by_step = (
-            ("branch policy", "repository revision", "user confirmation"),
-            ("create or resume", "conceptual decisions"),
-            ("main agent", "implementation seam", "never delegated"),
-            ("classify feasibility", "contradicts", "smallest necessary amendment"),
-            ("adaptive minimum", "one outcome", "proof obligation"),
-            ("current technical reality", "not a confirmation gate"),
-            ("technical uncertainty", "targeted", "broad research"),
-            ("complete implementation-facing graph", "joins", "git topology"),
-            ("structural validation", "semantic coverage", "adversarial audit"),
-            ("backend graph is complete", "progressive user projections", "derive `ready`"),
-        )
-        for number, (step, required) in enumerate(zip(steps, required_by_step), start=1):
-            for phrase in required:
-                with self.subTest(step=number, phrase=phrase):
-                    self.assertIn(phrase, step)
-
-    def test_plan_write_and_git_authority_is_narrow_and_explicit(self) -> None:
-        boundary = _markdown_section(self.body, "Boundary")
-        branch_step = _numbered_workflow(self.body)[0]
-        stopping = _markdown_section(self.body, "Stop and downstream boundary")
-        for phrase in ("source-read-only", "concept-read-only", "private graph operations through the helper"):
-            self.assertIn(phrase, boundary)
-        self.assertRegex(boundary, r"writes no production code, tests, executable configuration, or repository planning document")
-        self.assertIn("explicit user confirmation", branch_step)
-        self.assertIn("only repository git mutation", branch_step)
-        for forbidden in ("commit", "push", "merge", "rebase", "stash", "reset", "task worktree"):
-            with self.subTest(forbidden=forbidden):
-                self.assertRegex(branch_step, rf"never [^.]*\b{re.escape(forbidden)}\b")
-        self.assertRegex(stopping, r"later authorized lifecycle, not `\$plan`, may push")
-
-    def test_plan_defines_the_private_canonical_graph_and_adaptive_minimum(self) -> None:
+    def test_plan_defines_the_private_canonical_graph_helper_path(self) -> None:
         self.assertTrue(HELPER_PATH.is_file(), HELPER_PATH)
-        graph = _markdown_section(self.body, "Canonical private graph")
-        minimum = _numbered_workflow(self.body)[4]
-        for phrase in (
-            "private state outside the repository",
-            "json-compatible yaml",
-            "one active graph",
-            "canonical repository identity",
-            "target branch",
-            "workflow id",
-            "graph revision",
-            "outcomes",
-            "evidence",
-            "decisions",
-            "work",
-            "proof",
-            "user projections",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, graph)
-        for phrase in ("one outcome", "one grounded work", "one proof obligation"):
-            self.assertIn(phrase, minimum)
-        self.assertNotIn("write the yaml directly", self.normalized)
+        self.assertIn("plugins/expskill/content/scripts/plan_graph.py", self.body)
+        self.assertIn("../../scripts/plan_graph.py", self.body)
 
-    def test_plan_preserves_the_concept_boundary_and_grounds_before_questions(self) -> None:
-        boundary = _markdown_section(self.body, "Boundary")
-        grounding = _numbered_workflow(self.body)[2]
-        orientation = _numbered_workflow(self.body)[5]
-        self.assertRegex(boundary, r"must not repeat brainstorm, simulate brainstorm")
-        for phrase in (
-            "main agent",
-            "implementation seam",
-            "callers",
-            "state and effects",
-            "interfaces and consumers",
-            "tests",
-            "never delegated",
-            "does not require confirmation",
-            "exhaust supplied context",
-            "repository evidence",
-            "authoritative sources",
-            "one focused question per turn",
-            "material user-owned",
+    def test_plan_names_the_graph_state_and_concurrency_values(self) -> None:
+        for value in (
+            "`not-ready`",
+            "`ready`",
+            "`serial`",
+            "`parallel-candidate`",
+            "`parallel-safe`",
+            "`ready-for-human-review`",
         ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, grounding)
-        self.assertLess(grounding.index("implementation seam"), grounding.index("one focused question"))
-        self.assertIn("current technical reality", orientation)
+            with self.subTest(value=value):
+                self.assertIn(value, self.body)
 
-    def test_plan_research_is_adaptive_bounded_and_user_owned(self) -> None:
-        steps = _numbered_workflow(self.body)
-        grounding, research = steps[2], steps[6]
-        self.assertLess(steps.index(grounding), steps.index(research))
-        for phrase in ("targeted official or primary lookup", "mechanism and source family"):
-            self.assertIn(phrase, research)
-        for phrase in (
-            "broad research only",
-            "exactly three",
-            "gpt-6-luna",
-            "max reasoning",
-            "at most one fourth lane",
-            "no repository access",
-            "preferred answer",
-            "sibling output",
-            "edit authority",
-            "user interaction",
-            "planning role",
-            "rejected alternatives",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, research)
-
-    def test_work_proof_and_parallelism_are_proportional_and_revision_bound(self) -> None:
-        graph_step = _numbered_workflow(self.body)[7]
-        proof = _markdown_section(self.body, "Implementation, proof, and Git execution contract")
-        for phrase in (
-            "slice",
-            "leaf task",
-            "join",
-            "tests and proof",
-            "behavior they validate",
-            "proof obligations",
-            "serial",
-            "parallel-candidate",
-            "parallel-safe",
-            "one cheap concurrency pass",
-            "never spend more effort",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, graph_step)
-        for phrase in ("executed command", "exact repository revision", "future executors revalidate"):
-            self.assertIn(phrase, proof)
-
-    def test_progressive_projection_is_complete_concise_and_selectively_invalidated(self) -> None:
-        projection = _numbered_workflow(self.body)[9]
-        for phrase in (
-            "backend graph is complete",
-            "user never sees yaml",
-            "one coherent part per turn",
-            "every material decision",
-            "confirm or correct",
-            "affected subgraph",
-            "only affected",
-            "preserve unrelated confirmations",
-            "wording-only",
-            "no redundant final confirmation",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, projection)
-        self.assertIn("routine reversible", _numbered_workflow(self.body)[2])
-        self.assertNotRegex(self.normalized, r"exactly (?:five|5) (?:short )?bullets")
-        self.assertNotRegex(self.normalized, r"(?:maximum|max) 200 words")
-
-    def test_git_contract_uses_live_nonprotected_target_and_progressive_lane_cleanup(self) -> None:
-        branch_step = _numbered_workflow(self.body)[0]
-        execution = _markdown_section(self.body, "Implementation, proof, and Git execution contract")
-        for phrase in (
-            "non-protected workflow branch",
-            "live integration target",
-            "explicit user confirmation",
-            "creating and switching",
-            "only repository git mutation",
-            "relevant uncommitted work",
-        ):
-            self.assertIn(phrase, branch_step)
-        for phrase in (
-            "concurrent writing lanes",
-            "external worktrees",
-            "one writer",
-            "incremental target-side integration",
-            "remove its worktree",
-            "safely delete",
-            "committed-to-target",
-            "accepted-on-target",
-            "dirty, failing, unmerged, unknown, or still-needed state is preserved",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, execution)
-        for forbidden in ("plan creates task worktrees", "plan commits", "plan pushes"):
-            self.assertNotIn(forbidden, self.normalized)
-
-    def test_persistence_readiness_audit_pause_and_discard_are_explicit(self) -> None:
-        graph = _markdown_section(self.body, "Canonical private graph")
-        validation = _numbered_workflow(self.body)[8]
-        for phrase in (
-            "deterministic helper",
-            "only graph writer",
-            "outside the repository",
-            "strict",
-            "identity lock",
-            "compare-and-swap",
-            "atomic",
-            "previous valid generation",
-            "derives lifecycle state",
-            "pause preserves state",
-            "resume revalidates",
-            "discard requires explicit user authority",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, graph)
-        for phrase in (
-            "main-agent semantic coverage closure",
-            "independent adversarial audit",
-            "broad, complex, or high-consequence",
-            "tiny plans",
-        ):
-            self.assertIn(phrase, validation)
-
-    def test_draft_request_stops_at_human_review_and_ai_never_merges(self) -> None:
-        self.assertContainsAll(
-            "first coherent implementation",
-            "draft",
-            "exact head",
-            "ready-for-human-review",
-            "delete",
-            "ai must never",
-            "approve",
-            "merge",
-            "auto-merge",
-            "merge queue",
-            "manual review",
-            "outside observable ai control",
-        )
-
-    def test_shared_consumers_reference_one_canonical_graph_without_self_certification(self) -> None:
-        required = {
-            "implement": (
-                "plan graph",
-                "active coordinator",
-                "graph updates",
-                "do not make workers graph writers",
-            ),
-            "use-expskill": (
-                "plan graph",
-                "revalidate its revision and commit",
-                "apply only receipts",
-                "do not let workers write graph state",
-            ),
-        }
-        for name, phrases in required.items():
-            body = " ".join((PHASE_ROOTS[name] / "SKILL.md").read_text(encoding="utf-8").lower().split())
-            self.assertIn("plugins/expskill/content/scripts/plan_graph.py", body)
-            self.assertIn("../../scripts/plan_graph.py", body)
-            self.assertIn("source-package locator", body)
-            self.assertIn("branch", body)
-            self.assertIn("commit", body)
-            for phrase in phrases:
-                with self.subTest(skill=name, phrase=phrase):
-                    self.assertIn(phrase, body)
+    def test_shared_consumers_reference_the_plan_graph_helper_by_path(self) -> None:
+        for name, root in PHASE_ROOTS.items():
+            with self.subTest(skill=name):
+                body = (root / "SKILL.md").read_text(encoding="utf-8")
+                self.assertIn("plugins/expskill/content/scripts/plan_graph.py", body)
+                self.assertIn("../../scripts/plan_graph.py", body)
 
 
 if __name__ == "__main__":

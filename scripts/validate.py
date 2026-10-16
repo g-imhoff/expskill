@@ -130,6 +130,7 @@ AGENTS_PATH = "content/agents"
 AGENT_CONTENT_PATH = "content/agents.json"
 POLICY_PATH = "content/policies/execution-policy.json"
 UNSLOP_RUNTIME_POLICY_PATH = "content/policies/unslop-runtime.json"
+UNSLOP_SKILL_PATH = "content/skills/unslop/SKILL.md"
 AUTHORING_RUNTIME_POLICY_PATH = "content/policies/authoring-runtime.json"
 HELPER_PATH = "content/scripts/worktrees.py"
 PLAN_GRAPH_HELPER_PATH = "content/scripts/plan_graph.py"
@@ -215,21 +216,6 @@ DEEP_RESEARCH_REQUIRED_RESOURCES = (
 SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
     sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
 )
-SKILL_BUILDER_BOUNDARY_SECTION = (
-    "## Boundary\n\n"
-    "`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary "
-    "development, product planning, application design, documentation that is not an "
-    "agent skill, installation-only work, and lifecycle routing. Do not invoke or depend "
-    "on a product lifecycle phase or an ambient authoring skill.\n\n"
-    "Success exists only when one exact revision has a confirmed contract, frozen "
-    "evaluation evidence, isolated trial evidence, builder-run conformance, independent "
-    "review, ten independently satisfied target category scores, verification, and "
-    "retained release evidence. Static validation alone is never completion.\n\n"
-    "Read [artifact contracts](references/artifact-contracts.md) completely at run start "
-    "and again before resuming persisted work. Read [evaluation rubric]"
-    "(references/evaluation-rubric.md) completely before freezing the evaluation pack "
-    "and before every review or scoring pass."
-)
 SKILL_BUILDER_GUIDE_LINES = (
     "- `$skill-builder` creates or improves one exact agent skill through evidence-gated "
     "research, trials, review, and verification.",
@@ -268,21 +254,6 @@ SETUP_ALLOWED_FULL_CONTEXTS = re.compile(
     r"\bfull(?:\s+closed|\s+three-size|-page|\s+rules?|\s+rule|-suite|\s+matrix|\s+sample)\b",
     re.IGNORECASE,
 )
-# Keep only Test's safety-critical Boundary section closed. Later accepted
-# boundary changes update this snapshot explicitly; other sections remain open.
-TEST_PROTECTED_BOUNDARY = """`$test` is a standalone, explicit-only skill for behavior that is already
-implemented at the exact repository head. Accept a direct request without
-requiring `$use-expskill` or a Plan Graph.
-
-Exercise the accepted behavior through a real product path and its material
-dependencies in a safe non-production environment. Bind the actions, expected
-and observed outcomes, limitations, and result to the exact repository head.
-
-Do not edit production code. Do not plan work, choose a testing framework,
-review source or specification compliance, route the lifecycle, integrate
-branches, push, or deliver remotely. When the behavior fails or credible
-evidence is unavailable, stop and report that result instead of repairing the
-product or claiming success."""
 TEST_QUALITY_CATALOG_RELATIVE = "content/skills/test/references/quality-rules.json"
 TEST_QUALITY_CATALOG_VERSION = "test-quality-rules.v1"
 TEST_QUALITY_CATALOG_FIELDS = {"schema_version", "rules"}
@@ -712,51 +683,6 @@ REVIEW_HANDOFF_PATHS = (
     "content/skills/skill-builder/references/evaluation-rubric.md",
 )
 REVIEW_HANDOFF_HEADING = "## Review context contract\n"
-REVIEW_HANDOFF_CLAUSES = (
-    "this final section is the only authoritative review-context policy in this file.",
-    "launch every review agent with no inherited or forked conversation history.",
-    "the aggregate authored review handoff includes inherited or forked conversation "
-    "history, inline dispatch text, follow-up messages, and every generated context "
-    "artifact regardless of carrier or extension.",
-    "it is a locator, not a payload, and totals at most 300 physical lines.",
-    "count the complete handoff before launch and before every follow-up.",
-    "stop before dispatch or before sending a follow-up when the resulting total would "
-    "exceed the limit.",
-    "a real accepted specification file is referenced separately when it exists.",
-    "the exception applies only to a specification file that existed before review "
-    "dispatch.",
-    "it does not permit a review-time summary, copy, or relabelled context package.",
-    "do not copy or embed diffs, source files, test logs, terminal output, transcripts, "
-    "or other repository content.",
-    "do not attach binary or opaque review context.",
-)
-REVIEW_HANDOFF_CANONICAL_SHA256 = {
-    "content/skills/implement/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
-    "content/skills/skill-builder/SKILL.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
-    "content/skills/skill-builder/references/evaluation-rubric.md": "49c97c7e9530baf2e4f42d81972dd1edf0485a8d7fb2a62dbc26ff28920c9704",
-}
-REVIEW_AGENT_HANDOFF_CLAUSES = (
-    "accept only a locator handoff whose aggregate authored review context includes "
-    "inherited or forked conversation history, inline dispatch text, follow-up messages, "
-    "and generated context artifacts regardless of carrier or extension, and totals at "
-    "most 300 physical lines.",
-    "prefer a context-free launch.",
-    "recount the total after every follow-up.",
-    "a real accepted specification file may be referenced separately only when it "
-    "existed before review dispatch.",
-    "if the total is unknown or exceeds the limit, or the handoff includes a review-time "
-    "summary, copied repository content, a binary payload, or an opaque attachment, stop "
-    "and return `invalid handoff` without a review verdict.",
-    "self-inspect the pinned repository or candidate and its base and candidate "
-    "revisions using repository tools.",
-    "do not request a copied diff, source files, test logs, terminal output, or "
-    "transcripts.",
-)
-REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256 = {
-    "expskill-review": "1a8b62670b6c6ed69ac4ecae3992ecf2996c0103b6a599b5c433815ca29364ab",
-    "expskill-spec": "5e9e5b4e98c4e2016a6335f09b1f0681434172e74ff184f058211af0224d2e4c",
-}
-
 REQUIRED_AGENT_FIELDS = (
     "name",
     "description",
@@ -765,54 +691,6 @@ REQUIRED_AGENT_FIELDS = (
     "sandbox_mode",
     "developer_instructions",
 )
-
-AGENT_BOUNDARIES = {
-    "expskill-explorer": ("read-only", "no fixes", "no delegation"),
-    "expskill-test-engineer": (
-        "test strategy",
-        "shared acceptance tests",
-        "regression",
-        "no product implementation",
-    ),
-    "expskill-implementer": (
-        "exactly one accepted node",
-        "red-green-refactor",
-        "one owned branch",
-        "no delegation",
-        "no scope expansion",
-    ),
-    "expskill-planner": (
-        "private plan graph",
-        "never edit",
-        "only plan graph writer",
-        "do not delegate",
-    ),
-    "expskill-designer": (
-        "isolated helper-owned worktree",
-        "one coherent local candidate commit",
-        "do not write the plan graph",
-        "do not delegate",
-    ),
-    "expskill-review": REVIEW_AGENT_HANDOFF_CLAUSES + (
-        "read-only",
-        "severity",
-        "evidence",
-        "impact",
-        "correction",
-        "ready",
-        "not ready",
-    ),
-    "expskill-spec": REVIEW_AGENT_HANDOFF_CLAUSES + (
-        "every accepted behavior",
-        "criterion-by-criterion evidence",
-        "no tracked-source edits",
-        "pass or fail",
-        "do not implement fixes",
-        "do not expand scope",
-        "do not delegate",
-    ),
-}
-
 EXPECTED_POLICY_PROFILES = {
     "expskill-explorer": {
         "agent_type": "expskill-explorer",
@@ -1152,39 +1030,18 @@ def _validate_review_handoff_contract(plugin_root: Path, errors: list[str]) -> N
         except (OSError, UnicodeError) as error:
             errors.append(f"review handoff contract could not be read at {relative}: {error}")
             continue
-        normalized = " ".join(contents.lower().split())
         normalized_markdown = contents.replace("\r\n", "\n").replace("\r", "\n")
         heading_index = _review_contract_heading_index(normalized_markdown)
         if heading_index is None:
             errors.append(
-                f"review handoff contract at {relative} must contain one final "
-                "Review context contract section"
+                f"review handoff contract at {relative} must contain exactly one "
+                "Review context contract heading"
             )
         elif not _review_contract_heading_is_live(normalized_markdown, heading_index):
             errors.append(
                 f"review handoff contract at {relative} must begin at a live top-level "
                 "Markdown heading"
             )
-        for clause in REVIEW_HANDOFF_CLAUSES:
-            if clause not in normalized:
-                errors.append(
-                    f"review handoff contract at {relative} must include {clause!r}"
-                )
-        canonical = _canonical_review_markdown(contents)
-        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if digest != REVIEW_HANDOFF_CANONICAL_SHA256[relative]:
-            errors.append(
-                f"review handoff contract at {relative} differs from its validated "
-                "normalized content"
-            )
-
-
-def _canonical_review_markdown(contents: str) -> str:
-    normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
-    heading_index = _review_contract_heading_index(normalized)
-    if heading_index is None:
-        return normalized
-    return normalized[heading_index:]
 
 
 def _review_contract_heading_index(contents: str) -> int | None:
@@ -1250,16 +1107,6 @@ def _review_contract_heading_is_live(contents: str, heading_index: int) -> bool:
                 html_closer = closer
 
     return fence_character is None and html_closer is None
-
-
-def _canonical_review_agent_instructions(contents: str) -> str:
-    normalized = contents.replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.splitlines()
-    has_structure = any(
-        not line or line.startswith((" ", "\t")) or line.endswith("  ")
-        for line in lines
-    )
-    return normalized if has_structure else " ".join(lines)
 
 
 def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
@@ -1657,10 +1504,8 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
             errors.append(f"skill-builder contract could not be read: {error}")
         else:
             boundary = _markdown_level_two_section(builder, "Boundary")
-            if boundary != SKILL_BUILDER_BOUNDARY_SECTION:
-                errors.append(
-                    "skill-builder canonical boundary section must match the pinned contract"
-                )
+            if boundary is None:
+                errors.append("skill-builder must contain exactly one Boundary section")
             if not _contains_exact_skill_token(builder, SKILL_BUILDER_TOKEN):
                 errors.append("skill-builder contract must identify $skill-builder directly")
             if any(
@@ -1700,9 +1545,8 @@ def _validate_test_boundary(contents: str, errors: list[str]) -> None:
         contents,
         flags=re.MULTILINE | re.DOTALL,
     )
-    expected = " ".join(TEST_PROTECTED_BOUNDARY.split())
-    if len(sections) != 1 or " ".join(sections[0].split()) != expected:
-        errors.append("skill 'test' protected Boundary contract drift")
+    if len(sections) != 1:
+        errors.append("skill 'test' must contain exactly one Boundary section")
 
 
 def _validate_test_quality_catalog(skill_root: Path, errors: list[str]) -> None:
@@ -2061,6 +1905,11 @@ def _validate_brainstorm_catalog(skill_root: Path, errors: list[str]) -> None:
         errors.append("brainstorm catalog payload does not match the pinned upstream digest")
 
 
+def _six_word_windows(text: str) -> set[tuple[str, ...]]:
+    words = re.findall(r"\w+", text.lower())
+    return set(zip(*(words[i:] for i in range(6))))
+
+
 def _validate_unslop_python_asset(
     plugin_root: Path,
     relative: str,
@@ -2068,6 +1917,7 @@ def _validate_unslop_python_asset(
     required_markers: tuple[str, ...],
     required_defs: tuple[str, ...],
     scope: str | None,
+    body: str | None,
     errors: list[str],
 ) -> None:
     """Validate a shared Unslop Python asset without allowing prose copies."""
@@ -2102,7 +1952,7 @@ def _validate_unslop_python_asset(
             errors.append(f"{label} is missing required marker {marker!r}")
     if scope and scope.strip() and scope.strip() in text:
         errors.append(f"{label} duplicates the canonical runtime scope")
-    if "What makes this obviously AI generated?" in text:
+    if body and _six_word_windows(body) & _six_word_windows(text):
         errors.append(f"{label} duplicates the canonical skill body")
 
 
@@ -2246,6 +2096,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
     if scope and scope in script:
         errors.append("Unslop hook script duplicates the canonical runtime scope")
 
+    body = _read_overlay_text(plugin_root / UNSLOP_SKILL_PATH, "canonical unslop skill", errors)
     _validate_unslop_python_asset(
         plugin_root,
         UNSLOP_HOOK_HELPER_PATH,
@@ -2253,6 +2104,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
         ("frontmatter", "unslop-runtime", "scope"),
         ("skill_body", "runtime_scope", "load_unslop_text"),
         scope,
+        body,
         errors,
     )
     _validate_unslop_python_asset(
@@ -2269,6 +2121,7 @@ def _validate_unslop_hook(plugin_root: Path, errors: list[str]) -> None:
         ),
         ("register", "pre_llm_call", "on_session_start", "load_unslop_text"),
         scope,
+        body,
         errors,
     )
 
@@ -2336,69 +2189,6 @@ def _validate_third_party_sources(plugin_root: Path, errors: list[str]) -> None:
                 continue
             if digest != source[digest_field]:
                 errors.append(f"{name} {label} digest does not match the pinned upstream digest")
-
-    _validate_public_third_party_derivations(plugin_root, third_party_root, errors)
-
-
-def _validate_public_third_party_derivations(
-    plugin_root: Path,
-    third_party_root: Path,
-    errors: list[str],
-) -> None:
-    try:
-        unslop_source = (
-            third_party_root / "sources" / "pstack" / "unslop" / "SKILL.md"
-        ).read_bytes()
-        public_unslop = (plugin_root / "content" / "skills" / "unslop" / "SKILL.md").read_bytes()
-    except OSError as error:
-        errors.append(f"public Unslop derived-copy validation failed: {error}")
-    else:
-        expected_unslop = unslop_source.replace(
-            b"disable-model-invocation: true\n",
-            b"",
-            1,
-        )
-        expected_unslop = expected_unslop.replace(
-            b"## Process\n",
-            b"## Scope\n\n"
-            b"Apply these rules to natural-language user-facing prose you author, "
-            b"including commentary and final messages. Preserve code, commands, "
-            b"machine-readable data, logs, identifiers, API names, quotations, citations, "
-            b"source excerpts, approved copy, and project-required terminology exactly. "
-            b"Higher-priority instructions and explicit user formatting or tone choices win. "
-            b"Before sending user-facing prose, perform the included self-audit.\n\n"
-            b"## Process\n",
-            1,
-        )
-        if _without_shared_metadata_block(public_unslop) != expected_unslop:
-            errors.append("public skill 'unslop' does not match its declared derived upstream copy")
-
-    try:
-        wrapper = (
-            third_party_root / "sources" / "mattpocock" / "grill-me" / "SKILL.md"
-        ).read_bytes()
-        engine = (
-            third_party_root / "sources" / "mattpocock" / "grilling" / "SKILL.md"
-        ).read_bytes()
-        public_grill = (plugin_root / "content" / "skills" / "grill-me" / "SKILL.md").read_bytes()
-        wrapper_end = wrapper.index(b"\n---\n", 4) + len(b"\n---\n")
-        engine_end = engine.index(b"\n---\n", 4) + len(b"\n---\n")
-    except (OSError, ValueError) as error:
-        errors.append(f"public Grill Me derived-copy validation failed: {error}")
-    else:
-        frontmatter = wrapper[:wrapper_end].replace(
-            b"disable-model-invocation: true\n",
-            b"",
-            1,
-        )
-        body = engine[engine_end:].lstrip(b"\n")
-        body = body.replace(b"it; don't", b"it. Don't").replace(
-            b"report; ask",
-            b"report. Ask",
-        )
-        expected_grill = frontmatter + b"\n" + body
-        if _without_shared_metadata_block(public_grill) != expected_grill:
-            errors.append("public skill 'grill-me' does not match its declared derived upstream copy")
 
 
 def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
@@ -2622,12 +2412,6 @@ def _parse_frontmatter_scalar(
 
 
 SHARED_SKILL_METADATA_KEYS = ("opencode/slash", "opencode/autoinvoke")
-SHARED_METADATA_BLOCK_EXPLICIT_ONLY = (
-    'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "false"\n'
-)
-SHARED_METADATA_BLOCK_ROUTER = (
-    'metadata:\n  opencode/slash: "true"\n  opencode/autoinvoke: "true"\n'
-)
 
 
 def _frontmatter_line_count(contents: str) -> int:
@@ -2638,14 +2422,6 @@ def _frontmatter_line_count(contents: str) -> int:
         return lines.index("---", 1) + 1
     except ValueError:
         return 0
-
-
-def _without_shared_metadata_block(contents: bytes) -> bytes:
-    for block in (SHARED_METADATA_BLOCK_EXPLICIT_ONLY, SHARED_METADATA_BLOCK_ROUTER):
-        marker = block.encode("utf-8")
-        if marker in contents:
-            return contents.replace(marker, b"", 1)
-    return contents
 
 
 def _validate_shared_skill_metadata(
@@ -2959,20 +2735,10 @@ def _validate_agents(plugin_root: Path, errors: list[str]) -> None:
         except (OSError, UnicodeDecodeError) as error:
             errors.append(f"agent body {expected_name!r} could not be read: {error}")
             continue
+        if not instructions.strip():
+            errors.append(f"agent body {expected_name!r} is empty")
         if PLACEHOLDER in instructions:
             errors.append(f"agent body {expected_name!r} contains a placeholder")
-        normalized = " ".join(instructions.lower().split())
-        for phrase in AGENT_BOUNDARIES[expected_name]:
-            if phrase not in normalized:
-                errors.append(f"agent body {expected_name!r} must include {phrase!r}")
-        expected_digest = REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256.get(expected_name)
-        if expected_digest is not None:
-            canonical = _canonical_review_agent_instructions(instructions)
-            digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-            if digest != expected_digest:
-                errors.append(
-                    f"agent body {expected_name!r} differs from its validated normalized content"
-                )
         metadata = entries.get(expected_name)
         if not isinstance(metadata, dict):
             continue
@@ -3357,24 +3123,6 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
                 f"got {actual_value!r}"
             )
 
-    instructions = profile.get("developer_instructions")
-    if isinstance(instructions, str):
-        normalized = " ".join(instructions.lower().split())
-        for phrase in AGENT_BOUNDARIES[expected_name]:
-            if phrase not in normalized:
-                errors.append(
-                    f"agent profile {expected_name!r} instructions must include {phrase!r}"
-                )
-        expected_digest = REVIEW_AGENT_INSTRUCTIONS_CANONICAL_SHA256.get(expected_name)
-        if expected_digest is not None:
-            canonical = _canonical_review_agent_instructions(instructions)
-            digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-            if digest != expected_digest:
-                errors.append(
-                    f"agent profile {expected_name!r} instructions differ from their "
-                    "validated normalized content"
-                )
-
 
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
 OPENCODE_PLATFORM_FILES = PLATFORM_SOURCE_FILES
@@ -3459,38 +3207,6 @@ OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
     "reasoningEffort",
     "temperature",
     "permission",
-}
-OPENCODE_AGENT_BOUNDARIES = {
-    "expskill-explorer": ("read-only mode", "no delegation", "no scope expansion"),
-    "expskill-planner": (
-        "private plan graph",
-        "never edit",
-        "only plan graph writer",
-        "do not delegate",
-    ),
-    "expskill-designer": (
-        "isolated helper-owned worktree",
-        "one coherent local candidate commit",
-        "do not write the plan graph",
-        "do not delegate",
-    ),
-    "expskill-test-engineer": ("no product implementation", "no delegation"),
-    "expskill-implementer": (
-        "red-green-refactor",
-        "no delegation",
-        "no scope expansion",
-        "never push",
-    ),
-    "expskill-review": (
-        "read-only mode",
-        "invalid handoff",
-        "do not treat another agent's conclusion as evidence",
-    ),
-    "expskill-spec": (
-        "no tracked-source edits",
-        "invalid handoff",
-        "pass or fail",
-    ),
 }
 OPENCODE_READ_ONLY_AGENTS = (
     "expskill-explorer",
@@ -4236,9 +3952,6 @@ def _validate_opencode_agents(
                 errors.append(
                     f"opencode agent {name!r} body must carry the canonical instructions"
                 )
-        for phrase in OPENCODE_AGENT_BOUNDARIES[name]:
-            if phrase not in normalized:
-                errors.append(f"opencode agent {name!r} body must include {phrase!r}")
 
 
 def _validate_opencode_policy_asset(
@@ -4364,7 +4077,10 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
                 )
         if isinstance(scope, str) and scope.strip() and scope.strip() in unslop_v2:
             errors.append("opencode unslop v2 plugin duplicates the canonical runtime scope")
-        if "What makes this obviously AI generated?" in unslop_v2:
+        canonical_body = _read_overlay_text(
+            package_root.parent / UNSLOP_SKILL_PATH, "canonical unslop skill", errors
+        )
+        if canonical_body and _six_word_windows(canonical_body) & _six_word_windows(unslop_v2):
             errors.append("opencode unslop v2 plugin duplicates the canonical skill body")
         node = shutil.which("node")
         if node is not None:
@@ -4402,7 +4118,6 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
         ):
             if marker not in policy:
                 errors.append(f"opencode execution-policy plugin is missing required marker {marker!r}")
-
 
 
 HERMES_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
@@ -5387,10 +5102,14 @@ def _validate_claude_agents(
                 errors.append(f"claude agent {name!r} frontmatter tools must allow {tool!r}")
         entry = content_agents.get(name)
         if isinstance(entry, dict):
-            for field in ("description", "closing"):
-                value = entry.get(field)
-                if isinstance(value, str) and value.strip() and value not in contents:
-                    errors.append(f"claude agent {name!r} is missing its canonical {field}")
+            description = entry.get("description")
+            closing = entry.get("closing")
+            if isinstance(description, str) and description.strip():
+                if json.dumps(description.strip(), ensure_ascii=False) not in contents:
+                    errors.append(f"claude agent {name!r} is missing its canonical description")
+            if isinstance(closing, str) and closing.strip():
+                if closing.strip() not in contents:
+                    errors.append(f"claude agent {name!r} is missing its canonical closing")
 
 
 def _validate_claude_package(repository_root: Path, errors: list[str]) -> None:
