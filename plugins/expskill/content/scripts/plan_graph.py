@@ -1078,7 +1078,7 @@ def _normalize_graph(graph: dict[str, Any], context: _RepoContext, workflow_id: 
         "record_version": 1,
         "evidence": list(value.get("evidence", {}).keys()) if required and isinstance(value.get("evidence"), dict) else [],
         "independent": False,
-        "constraints": ["no research", "no redesign", "no edit", "no question", "no approve"],
+        "constraints": ["audit only: check the plan's claims against the repository and report findings to the Plan agent"],
         "findings": [],
         "resolutions": [],
         "fresh": not required,

@@ -39,7 +39,7 @@ python3 scripts/build_hermes_package.py "$artifact_root"
 hermes plugins validate "$artifact_root"
 ```
 
-The output directory must be explicit and must not already exist. A successful
+The output directory must be explicit and absent. A successful
 build contains `plugin.json`, `provenance.json`, generated `agents/`, the
 `skills/` mirror, shared `scripts/`, `assets/`, and third-party licenses.
 The checked-in source directory is not the generated artifact.

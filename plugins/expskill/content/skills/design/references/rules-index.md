@@ -6,9 +6,9 @@ Read this index before choosing references. Revisit it after the first isolated 
 
 - **Narrow component:** one bounded responsibility and a small concern set. Selectively load the category references that materially apply, load another category as soon as the render exposes its trigger.
 - **Complex composite:** interacting regions, multiple behavior modes, state families, dense or structured data, breakpoint composition, or several dependent components. Load the complete category catalog, cross-category failures are easy to miss one concern at a time.
-- **Uncertain boundary:** load the broader relevant set. Reading a rule does not activate it, applicability still depends on the project, platform, confirmed intent, and stated trigger.
+- **Uncertain boundary:** load the broader relevant set. Reading a rule leaves its activation unchanged, and applicability still depends on the project, platform, confirmed intent, and stated trigger.
 
-This strategy changes evidence coverage, not authority. Project convention wins over a heuristic, and activated normative obligations cannot be silently discarded.
+This strategy changes evidence coverage only. Project convention wins over a heuristic, and activated normative obligations stay in force.
 
 ## Precedence
 
@@ -17,7 +17,7 @@ This strategy changes evidence coverage, not authority. Project convention wins 
 3. Conditional catalog rules whose activation criteria hold.
 4. Heuristics where project evidence leaves room.
 
-Never import a public system's exact values merely because its guidance is reputable. A project convention overrides heuristics. An activated normative requirement cannot be silently overridden.
+Import a public system's exact values only when project adoption, platform convention, or an activated norm calls for them. A project convention overrides heuristics. An activated normative requirement stands, and any conflict is surfaced.
 
 ## Always retain in the core skill
 
@@ -47,10 +47,10 @@ Never import a public system's exact values merely because its guidance is reput
 
 - **Activated norm:** binding only when platform, level, trigger, and exceptions hold.
 - **Project convention:** evidence from the current repository or an explicitly adopted design system.
-- **Platform convention:** official guidance for the named platform. Never silently translate units.
+- **Platform convention:** official guidance for the named platform. State every unit translation explicitly.
 - **Conditional constraint:** binding only when its prerequisites hold.
 - **Heuristic:** a useful default that project or rendered evidence may reject.
 
-## Rule loading is not a receipt
+## Rule loading stays internal
 
-Do not emit capability JSON, selection traces, query results, or a declaration of every skipped category. Load what is useful, explain only consequential conflicts, and return to the index if the rendered artifact changes the concern set.
+Report only consequential conflicts, in prose. Load what is useful, and return to the index if the rendered artifact changes the concern set.
