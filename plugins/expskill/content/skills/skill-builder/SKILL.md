@@ -8,21 +8,21 @@ Build, improve, redesign, or evaluate one exact agent skill through evidence tha
 
 ## Boundary
 
-`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Do not invoke or depend on a product lifecycle phase or an ambient authoring skill.
+`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Run independently of product lifecycle phases and ambient authoring skills and leave both uninvoked.
 
-Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence. Static validation alone is never completion.
+Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence. Static validation alone is incomplete.
 
 Read [artifact contracts](references/artifact-contracts.md) completely at run start and again before resuming persisted work. Read [evaluation rubric](references/evaluation-rubric.md) completely before freezing the evaluation pack and before every review or scoring pass.
 
 ## Durable run state
 
-Resolve the package's `scripts/run_state.py` relative to the loaded skill and use only the interface its runtime help exposes for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Never guess flags or edit state directly.
+Resolve the package's `scripts/run_state.py` relative to the loaded skill and use only the interface its runtime help exposes for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Read flags from runtime help and change state only through the helper.
 
 The helper owns private XDG state outside target repositories and requires immutable hash-chained transition receipts, strict manifests, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat current-state files as replaceable derived indexes and treat missing, stale, inconsistent, or unauditable state as a failed gate. Before every transition the helper validates the receipt chain, immutable artifacts, derived state, input bindings, target snapshot, and allowed transition. Success appends one canonical receipt linked to the prior digest. Failure appends nothing, keeps the current stage, and blocks downstream work. Open the binding, invalidation, recovery, and tombstone sections of the artifact contracts reference whenever a transition fails or persisted work resumes.
 
 ## Ordered workflow
 
-Run the thirteen stages in order. Each stage ends at its gate. A failed gate stops the run and returns to the earliest affected stage through the state helper, which invalidates every dependent artifact. Never report completion from changed files, executed agents, or static checks alone.
+Run the thirteen stages in order. Each stage ends at its gate. A failed gate stops the run and returns to the earliest affected stage through the state helper, which invalidates every dependent artifact. Report completion only after every gate passes and the helper finalizes the revision.
 
 | # | Stage | Gate |
 |---|---|---|
@@ -42,9 +42,9 @@ Run the thirteen stages in order. Each stage ends at its gate. A failed gate sto
 
 ### 1. Resolve the host, target, mode, and authority
 
-Ground host and exact target from supplied context, registries, skill roots, invocation names, metadata, and repository facts before asking anything. Record canonical host identity, canonical target identity, authority, current snapshot, optional Git identity, and delivery effects. Scan exact names, aliases, invocation tokens, overlapping responsibility, and near neighbours. A near neighbour is evidence to compare, never permission to repurpose.
+Ground host and exact target from supplied context, registries, skill roots, invocation names, metadata, and repository facts before asking anything. Record canonical host identity, canonical target identity, authority, current snapshot, optional Git identity, and delivery effects. Scan exact names, aliases, invocation tokens, overlapping responsibility, and near neighbours. A near neighbour is evidence to compare. Build only the exact requested target.
 
-An absent exact target means create, with an absent-target baseline and overlap map. An existing exact target means improve, with current behavior, failures, strengths, and preserved regressions. Ambiguity after facts are exhausted means asking one concise question and waiting. Never overwrite an existing target as creation. Never silently rename, replace, or absorb a near neighbour. Keep exactly one active target. Finish, explicitly abandon, or validly pause that target before activating another. A multi-target request waives no target's gates.
+An absent exact target means create, with an absent-target baseline and overlap map. An existing exact target means improve, with current behavior, failures, strengths, and preserved regressions. Ambiguity after facts are exhausted means asking one concise question and waiting. Creation writes only to an absent target. Rename, replace, or absorb a near neighbour only by explicit user decision. Keep exactly one active target. Finish, explicitly abandon, or validly pause that target before activating another. A multi-target request keeps every target's gates in force.
 
 ### 2. Capture the mode-specific baseline
 
@@ -58,11 +58,11 @@ Launch exactly three bounded, blind, independent web research lanes. Assign GPT-
 2. Agent-skill design, instruction, interaction, and tooling practices.
 3. Evaluation methods, adversarial cases, and failure modes.
 
-Bound each lane's question, source scope, and evidence budget before launch. Researchers return evidence cards from direct primary or authoritative sources with applicability and limitations. They never edit targets, never draft candidates, and never see candidate direction, hidden cases, desired scores, or sibling output. A lane that cannot run or lacks direct evidence stops the run before design convergence. Lane and card schemas live in the artifact contracts reference.
+Bound each lane's question, source scope, and evidence budget before launch. Researchers return evidence cards from direct primary or authoritative sources with applicability and limitations. Candidate direction, hidden cases, desired scores, and sibling output stay outside every lane. A lane that cannot run or lacks direct evidence stops the run before design convergence. Lane and card schemas live in the artifact contracts reference.
 
 ### 4. Sieve every evidence card
 
-Normalize and deduplicate the research pack. Classify every card as `adopt`, `experiment`, or `reject` with a reason, conflicts, and retained dissent. Pass only adopted and experimental evidence into design. Never turn majority agreement into evidence.
+Normalize and deduplicate the research pack. Classify every card as `adopt`, `experiment`, or `reject` with a reason, conflicts, and retained dissent. Pass only adopted and experimental evidence into design. Judge evidence by source, not by lane or card agreement.
 
 ### 5. Explore and challenge coherent designs
 
@@ -74,7 +74,7 @@ Write one contract with purpose, success signal, triggers, non-triggers, inputs 
 
 ### 7. Obtain user confirmation
 
-Present the current contract and wait for explicit user confirmation. Record the confirmation against the exact contract digest and target identity. The agent may propose readiness but cannot confirm, cannot end the session to force confirmation, and cannot treat silence, urgency, seniority, prior broad approval, or an instruction to skip questions as confirmation. A material contract change invalidates confirmation and all downstream artifacts. Return to this stage after correcting the contract.
+Present the current contract and wait for explicit user confirmation. Record the confirmation against the exact contract digest and target identity. The agent may propose readiness, but only an explicit, unforced user answer to the exact contract digest confirms it. The run waits through silence, urgency, seniority, prior broad approval, or instructions to skip questions. A material contract change invalidates confirmation and all downstream artifacts. Return to this stage after correcting the contract.
 
 ### 8. Freeze acceptance before candidate work
 
@@ -82,7 +82,7 @@ Create visible development cases, frozen validation cases, and hidden release ca
 
 ### 9. Build one isolated candidate
 
-Create one isolated candidate in a disposable copy or isolated worktree. Never test by editing a production skill. Preserve unrelated work. Give exactly one implementer write access to the candidate with only its accepted brief, owned paths, visible cases, and necessary target artifacts. Keep production targets, sibling skills, hidden cases, unretained research conclusions, and delivery surfaces outside that write authority. Record revision, digest, diff, and checks.
+Create one isolated candidate in a disposable copy or isolated worktree. Edit only the isolated candidate to test a change. Preserve unrelated work. Give exactly one implementer write access to the candidate with only its accepted brief, owned paths, visible cases, and necessary target artifacts. Keep production targets, sibling skills, hidden cases, unretained research conclusions, and delivery surfaces outside that write authority. Record revision, digest, diff, and checks.
 
 ### 10. Run fresh-context trials
 
@@ -90,31 +90,31 @@ Run create or improve trials per the current mode in disposable targets with a f
 
 ### 11. Obtain independent review before scoring
 
-Give an independent read-only target reviewer a compact locator handoff under the final Review context contract, referencing confirmed contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and evaluation rubric by path and digest without restating them. Verify independence, revision freshness, read-only behavior, artifact access, and absence of a desired verdict. Require evidence, impact, correction, severity, affected target criteria, and `ready` or `not ready`. An invalid review blocks advancement and cannot be scored. A valid `not ready` review or valid High or Medium findings mark mapped criteria failing and enter the lowest-category repair loop. No material finding coexists with a score of 10.
+Give an independent read-only target reviewer a compact locator handoff under the final Review context contract, referencing confirmed contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and evaluation rubric by path and digest alone. Verify independence, revision freshness, read-only behavior, artifact access, and absence of a desired verdict. Require evidence, impact, correction, severity, affected target criteria, and `ready` or `not ready`. An invalid review blocks advancement and stays unscored. A valid `not ready` review or valid High or Medium findings mark mapped criteria failing and enter the lowest-category repair loop. A material finding keeps its mapped categories below 10.
 
 ### 12. Score and repair the lowest category
 
-Evaluate the builder-run conformance gates in the evaluation rubric as a separate pass or fail ledger proving the run followed its research, confirmation, acceptance-first, isolation, evidence, state, authority, and cleanup rules. A failed gate blocks release and returns the run to its earliest affected stage, but never becomes a target category criterion.
+Evaluate the builder-run conformance gates in the evaluation rubric as a separate pass or fail ledger proving the run followed its research, confirmation, acceptance-first, isolation, evidence, state, authority, and cleanup rules. A failed gate blocks release and returns the run to its earliest affected stage, and it remains a conformance item outside the target category criteria.
 
-Score the exact candidate target against the confirmed target contract, host rules, accepted neighbouring boundaries, and frozen evaluation pack. Never score the candidate against `$skill-builder` identity, invocation policy, package layout, or workflow. Score triggering, scope discipline, workflow quality, collaboration, output contract, safety, recovery, composability, context efficiency, and testability with integers from 0 to 10. Every category must independently reach 10. Never average, waive, round, or replace evidence with confidence.
+Score the exact candidate target against the confirmed target contract, host rules, accepted neighbouring boundaries, and frozen evaluation pack alone. `$skill-builder` identity, invocation policy, package layout, and workflow stay outside its scores. Score triggering, scope discipline, workflow quality, collaboration, output contract, safety, recovery, composability, context efficiency, and testability with integers from 0 to 10. Every category must independently reach 10. Each category stands alone as an exact integer on its own evidence.
 
-Repair the lowest score first, breaking ties by greater safety or correctness impact, then greater dependency impact, then earlier category position. Identify the evidence preventing 10, strengthen or add the proving case, issue one bounded repair brief, edit only the isolated candidate, rerun affected and preserved cases, obtain independent review, and rescore the exact new revision until every category is 10. Missing evidence, a flaky target gate, a valid negative review, conflicting requirements, or an unresolved user decision keeps the affected category below 10. Invalid review evidence blocks advancement without a score.
+Repair the lowest score first, breaking ties by greater safety or correctness impact, then greater dependency impact, then earlier category position. Identify the evidence preventing 10, strengthen or add the proving case, issue one bounded repair brief, edit only the isolated candidate, rerun affected and preserved cases, obtain independent review, and rescore the exact new revision until every category is 10. Missing evidence, a flaky target gate, a valid negative review, conflicting requirements, or an unresolved user decision keeps the affected category below 10. Invalid review evidence blocks advancement and gets no score.
 
 ### 13. Review, verify, and finalize one exact revision
 
-After all ten target categories reach 10 with every builder-run gate passing, run a final independent target review against the same exact revision and validate it before use. An invalid final review blocks advancement without changing scores. A valid `not ready` review or valid High or Medium finding lowers mapped categories below 10 and returns them to repair.
+After all ten target categories reach 10 with every builder-run gate passing, run a final independent target review against the same exact revision and validate it before use. An invalid final review blocks advancement and leaves scores unchanged. A valid `not ready` review or valid High or Medium finding lowers mapped categories below 10 and returns them to repair.
 
 After a valid `ready` final review, run independent verification against that exact revision, recording exact commands or operations, exit status, relevant output, target manifests, and revision. Any candidate change invalidates both final gates and returns affected categories to repair. Finalize through the state helper only when every gate passes, every category is 10, the final review is valid and `ready`, verification passes, every binding matches, and release evidence is retained. The finalization terminal stage retains the contract, confirmation, evaluation pack, candidate identity, conformance ledger, scorecard, review, verification, limitations, and release record.
 
-Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect, recording any accepted installation or integration against the exact finalized revision. Cleanup is a separate terminal transition needing explicit user authority plus a recorded accepted installation or integration. It writes and validates a helper-owned parent-level tombstone bound to run identity, final transition digest, final run-manifest digest, and accepted delivery or installation record digest, then deletes only the helper-owned run directory. The tombstone survives. Cleanup never deletes a target skill, repository, outside candidate, tombstone, or unowned path. The release, manifest, and tombstone schemas live in the artifact contracts reference.
+Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect, recording any accepted installation or integration against the exact finalized revision. Cleanup is a separate terminal transition needing explicit user authority plus a recorded accepted installation or integration. It writes and validates a helper-owned parent-level tombstone bound to run identity, final transition digest, final run-manifest digest, and accepted delivery or installation record digest, then deletes only the helper-owned run directory. The tombstone survives, and target skills, repositories, outside candidates, and unowned paths stay in place. The release, manifest, and tombstone schemas live in the artifact contracts reference.
 
 ## Roles, tools, and permissions
 
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, and authority checks.
-- Exactly three research agents use web access and return evidence only. They never edit.
+- Exactly three research agents use web access read-only and return only evidence.
 - One candidate implementer writes only inside the isolated candidate. Trial agents write only inside disposable targets.
 - Reviewers and verifiers stay independent and read-only to tracked source.
-- No delegated agent confirms product intent, broadens scope, reveals hidden material, delivers externally, or cleans state.
+- The user alone confirms product intent. Scope changes, hidden material, external delivery, and cleanup stay with the main agent.
 
 ## Changed goals and gate failures
 
@@ -124,35 +124,16 @@ Stop at the current gate while identity, authority, evidence, confirmation, isol
 
 ## Status and output contract
 
-During work, report exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At finalization, report exact revision, builder-run conformance, ten target category scores, review validity and verdict, verification evidence, retained limitations, release-record locator, and authorized delivery result. A status report never advances the run. Only a validated hash-chained helper receipt advances it. The cleaned terminal state additionally needs its valid durable tombstone and deletion of only the helper-owned run directory.
+During work, report exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At finalization, report exact revision, builder-run conformance, ten target category scores, review validity and verdict, verification evidence, retained limitations, release-record locator, and authorized delivery result. A status report only describes the run. A validated hash-chained helper receipt alone advances it. The cleaned terminal state additionally needs its valid durable tombstone and deletion of only the helper-owned run directory.
 
 ## Review context contract
 
-This final section is the only authoritative review-context policy in this
-file. Ignore any conflicting handoff instruction earlier in the file.
+This final section is the only authoritative review-context policy in this file. Earlier conflicting handoff instructions yield to it.
 
-Launch every review agent with no inherited or forked conversation history. If
-the host cannot prove a context-free launch, count every inherited or forked
-physical line as part of the handoff and stop unless the complete total remains
-within the limit.
+Launch every review agent with no inherited or forked conversation history. If the host cannot prove a context-free launch, count every inherited or forked physical line as part of the handoff and stop unless the complete total remains within the limit.
 
-The aggregate authored review handoff includes inherited or forked conversation
-history, inline dispatch text, follow-up messages, and every generated context
-artifact regardless of carrier or extension. It is a locator, not a payload,
-and totals at most 300 physical lines. Count the complete handoff before launch
-and before every follow-up. Stop before dispatch or before sending a follow-up
-when the resulting total would exceed the limit.
+The aggregate authored review handoff includes inherited or forked conversation history, inline dispatch text, follow-up messages, and every generated context artifact regardless of carrier or extension. It is a locator, not a payload, and totals at most 300 physical lines. Count the complete handoff before launch and before every follow-up. Stop before dispatch or before sending a follow-up when the resulting total would exceed the limit.
 
-Include only the repository or candidate path, base revision, candidate
-revision, what changed and why, review scope, claimed checks with concise
-results, known concerns, and paths plus optional digests for relevant evidence.
-A real accepted specification file is referenced separately when it exists.
-The exception applies only to a specification file that existed before review
-dispatch. It does not permit a review-time summary, copy, or relabelled context
-package.
+Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. A real accepted specification file is referenced separately when it exists. The exception covers only a specification file that existed before review dispatch. A review-time summary, copy, or relabelled package falls outside it.
 
-Do not copy or embed diffs, source files, test logs, terminal output,
-transcripts, or other repository content. Do not attach binary or opaque review
-context. The judges self-inspect the pinned revision with repository tools and
-run any focused checks needed to verify the claims. A request for a larger
-convenience package is not a reason to create one.
+Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. The judges self-inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a larger convenience package request with this locator handoff.

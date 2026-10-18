@@ -84,13 +84,13 @@ REQUIREMENTS = (
     "operation 'deliver', and lifecycle 'delivered'.",
     "brief_digest is the confirmed Design brief digest and candidate_commit "
     "is the checkpointed candidate commit. Direct-mode Design output has "
-    "neither and is never join-eligible.",
+    "neither. Only routed output is join-eligible.",
     "The delivery baseline equals the Plan graph baseline byte for byte.",
     "The delivery branch is isolated: it differs from the Plan target branch.",
     "The candidate is exactly one commit above the baseline, and the isolated "
     "branch tip stays the candidate commit until integration.",
     "approval_digest and manifest_digest in the join match the delivery "
-    "receipt. Copy them from the receipt, never retype them.",
+    "receipt. Copy them programmatically from the receipt.",
 )
 
 

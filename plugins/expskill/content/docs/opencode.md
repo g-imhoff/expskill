@@ -39,7 +39,7 @@ python3 scripts/build_opencode_package.py "$artifact_root"
 npm pack --dry-run --json "$artifact_root"
 ```
 
-The output directory must be explicit and must not already exist. A successful
+The output directory must be explicit and absent. A successful
 build contains `catalog.json`, `provenance.json`, generated `agents/` and
 `commands/`, copied universal assets, and the native OpenCode source files.
 The output is the directory passed to `npm pack`. The checked-in source
