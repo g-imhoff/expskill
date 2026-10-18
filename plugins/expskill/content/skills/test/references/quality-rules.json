@@ -20,7 +20,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Assert an outcome visible through the real user or consumer surface, not only an internal signal.",
+      "requirement": "Assert an outcome visible through the real user or consumer surface, using internal signals as support only.",
       "failure_prevented": "False confidence from implementation-detail assertions.",
       "required_evidence": [
         "Consumer action and independently observed outcome."
@@ -46,7 +46,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Synchronize on observable application state, do not use fixed sleeps or retries to manufacture success.",
+      "requirement": "Synchronize on observable application state through state-based or retrying assertions on that state.",
       "failure_prevented": "Timing-dependent flakes and retry-to-green results.",
       "required_evidence": [
         "Observable state, event, or retrying assertion used for synchronization."
@@ -59,7 +59,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Exercise material dependencies through realistic composition, do not replace the behavior under test with a double.",
+      "requirement": "Exercise material dependencies through realistic composition, running the behavior under test for real.",
       "failure_prevented": "Passing checks that bypass the assembled product path.",
       "required_evidence": [
         "Product path and material dependency boundaries exercised."
@@ -111,7 +111,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Treat contradictory or unexplained outcomes as unresolved failures, retries may diagnose but cannot erase them.",
+      "requirement": "Treat contradictory or unexplained outcomes as unresolved failures, and let retries only diagnose them.",
       "failure_prevented": "A flaky rerun being reported as reliable success.",
       "required_evidence": [
         "All contradictory outcomes and their product, test-system, environment, or unresolved classification."
@@ -204,7 +204,7 @@
       "applies_when": [
         "persistence-material"
       ],
-      "requirement": "Verify persisted outcomes through an independent read path rather than trusting the write response.",
+      "requirement": "Verify persisted outcomes through an independent read path, with the write response as acknowledgement only.",
       "failure_prevented": "Acknowledged writes that did not create the required durable state.",
       "required_evidence": [
         "Independent read path and observed persisted state."
@@ -217,7 +217,7 @@
       "applies_when": [
         "messaging-material"
       ],
-      "requirement": "Exercise the material broker, queue, or asynchronous boundary instead of replacing it with an in-process double.",
+      "requirement": "Exercise the material broker, queue, or asynchronous boundary itself, with a real or sandboxed instance.",
       "failure_prevented": "Delivery behavior being bypassed by synchronous test wiring.",
       "required_evidence": [
         "Messaging boundary identity and message path exercised."
@@ -230,7 +230,7 @@
       "applies_when": [
         "messaging-material"
       ],
-      "requirement": "Wait for a domain-observable eventual outcome with state-based assertions, not elapsed time.",
+      "requirement": "Wait for a domain-observable eventual outcome through state-based assertions.",
       "failure_prevented": "Timing-sensitive asynchronous assertions.",
       "required_evidence": [
         "Eventual domain state and synchronization condition."
@@ -295,7 +295,7 @@
       "applies_when": [
         "external-service-material"
       ],
-      "requirement": "Exercise an observable external failure and the accepted recovery outcome without unsafe real effects.",
+      "requirement": "Exercise an observable external failure and the accepted recovery outcome with only safe effects.",
       "failure_prevented": "Unverified degradation, error handling, or recovery behavior.",
       "required_evidence": [
         "Injected or sandboxed failure and observed recovery outcome."
@@ -321,7 +321,7 @@
       "applies_when": [
         "parallel-run"
       ],
-      "requirement": "Isolate worker state, ports, files, sessions, and service instances so parallel checks cannot cross-contaminate.",
+      "requirement": "Isolate worker state, ports, files, sessions, and service instances so parallel checks change only their own outcomes.",
       "failure_prevented": "Concurrent workers changing one another's outcomes.",
       "required_evidence": [
         "Worker and environment isolation boundaries."

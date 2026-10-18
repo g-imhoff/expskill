@@ -139,7 +139,7 @@ characters. Any record also accepts a free-text `notes` string.
 ## Worker replies
 
 Paste each reply directly on stdin inside a quoted heredoc whose delimiter
-does not occur in the reply. Copy it character for character. Writing-style
+appears nowhere in the reply. Copy it character for character. Writing-style
 rules shape only your own prose, and the captured bytes stay byte-identical.
 The heredoc adds one final newline, which is expected.
 
@@ -184,12 +184,12 @@ unresolved and finish `incomplete`.
   revalidate each old-scope accepted claim on an in-scope branch: set its
   `scope_id` to the new scope (adding in-scope `branch_ids` in the same update
   when its old branches left scope) or reject it. Then reopen only the
-  affected branches. Unrelated valid evidence keeps its original provenance and is
-  not presented as new research.
+  affected branches. Unrelated valid evidence keeps its original provenance and
+  is credited to its original phase.
 - Explicit pause: stop owned workers, then `finish --status paused`.
 - Explicit cancel or stop: interrupt owned workers right away, then
-  `finish --status cancelled`. Start no new research. Cancelled is terminal:
-  start a new run instead of resuming.
+  `finish --status cancelled` and stop research. Cancelled is terminal: later
+  research needs a new run.
 - `finish --status paused` or `cancelled` marks running assignments
   `interrupted`.
 - `resume` first validates the whole run: owner, checkpoint chain, digests,

@@ -9,7 +9,7 @@ Run this before opening a PR or asking a person to review when a single review p
 
 ## Pin the scope
 
-Record the exact diff as commit IDs, never moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. If scope drifts, keep the original pin and disclose both identities. Never mix revisions without saying so.
+Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. If scope drifts, keep the original pin and disclose both identities. Disclose any mix of revisions.
 
 ## Derive categories from the diff
 
@@ -21,9 +21,9 @@ Spawn one adversarial reviewer per category. Reviewers run in parallel and stay 
 
 {"category": "<name>", "score": <0-10 integer>, "top_issue": "<single most important fix, or empty string>", "evidence": "<file paths with lines or symbols>"}
 
-9 means ready for human review. 0 means broken. Judge from evidence in this run only. One reviewer covers one category. No reviewer edits code. Naming the top issue is the only fix shaped output.
+9 means ready for human review. 0 means broken. Judge from evidence in this run only. One reviewer covers one category. Naming the top issue is the only fix shaped output.
 
-Fail closed. A missing reply, invalid JSON, or a reply missing any field counts as score 0 for that category. Never treat a broken review as a pass. Keep the 0.
+Fail closed. A missing reply, invalid JSON, or a reply missing any field counts as score 0 for that category, so the broken review fails. Keep the 0.
 
 ## Report
 
