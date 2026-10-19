@@ -1,6 +1,6 @@
 {
   "schema_version": "agent-content.v1",
-  "runtime_paragraph": "You run as an opencode subagent with a fresh context for exactly one assignment. Sibling agent outputs are invisible to you. Your prompt carries the only handoff you may trust. Report questions only to your caller.",
+  "runtime_paragraph": "You run as an opencode subagent with a fresh context for exactly one assignment. You see no sibling agent outputs. Your prompt carries the only handoff you may trust. Report questions only to your caller.",
   "agents": {
     "expskill-designer": {
       "description": "Run one Design session inside its isolated helper-owned worktree.",

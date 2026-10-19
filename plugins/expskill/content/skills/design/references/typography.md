@@ -2,7 +2,7 @@
 
 ### TYPE-01: Use semantic project text roles
 - Scope: headings, body, labels, captions, code, numeric, display text. Brand/display work, code, data numerals, or scripts needing a distinct style excepted. Project roles, fonts, hierarchy are authoritative.
-- Rule: use only project text styles, which bind family, size, weight, line height, and tracking by semantic role.
+- Rule: use the project type scale through text styles that bind family, size, weight, line height, and tracking by semantic role.
 - Check: render beside existing hierarchy with long labels, fallback fonts, all supported themes.
 - Sources: [Carbon typography](https://carbondesignsystem.com/elements/typography/type-sets/).
 
@@ -21,7 +21,7 @@
 ### TYPE-04: Treat line measure as scoped guidance
 - Scope: long-form blocks, short labels, code, tables, script-specific presentation excluded. When AAA is not active the project decides, GOV.UK's ~75 characters applies only where the project adopts it.
 - Rule: keep reading measure comfortable for the content and script. If WCAG AAA is active, provide the criterion's mechanism for no more than 80 characters or glyphs, 40 for CJK, plus its other presentation controls.
-- Check: measure real localized content at zoom and supported widths, inspect the reading flow across all lines.
+- Check: measure real localized content at zoom and supported widths, inspect reading flow across all lines.
 - Sources: [WCAG Visual Presentation](https://www.w3.org/TR/WCAG22/#visual-presentation).
 
 ### TYPE-05: Keep essential meaning reachable under truncation
@@ -31,13 +31,13 @@
 - Sources: [Apple typography](https://developer.apple.com/design/human-interface-guidelines/typography).
 
 ### TYPE-06: Scope minimum sizes and weights to the platform
-- Scope: custom type styles on a named platform. Brand/display work may deviate when readability and scaling are proven. Each platform's own guidance sets its minimum.
+- Scope: custom type styles on a named platform. Brand/display work may deviate when readability and scaling are proven. Each platform's guidance sets its minimum.
 - Rule: follow the project's or platform's recommended sizes and weights. Small text needs adequate weight and rendering.
 - Check: real devices/renderers, smallest size, light weights, low/high contrast, fallback fonts.
 - Sources: [Apple typography](https://developer.apple.com/design/human-interface-guidelines/typography).
 
 ### TYPE-07: Validate with real language and data
-- Scope: all text-bearing UI. Early structural probes may use marked synthetic content, and final approval evidence is realistic. Locales and domain data come from the project.
+- Scope: all text-bearing UI. Early structural probes may use marked synthetic content. Locales and domain data come from the project.
 - Rule: use realistic domain vocabulary, lengths, numerals, plural forms, errors, and at least the relevant supported locale/direction boundaries. Approve typography only on realistic content.
 - Check: deterministic fixtures covering long, empty, numeric, error, and RTL cases where supported.
 - Sources: [Unicode CLDR](https://cldr.unicode.org/).

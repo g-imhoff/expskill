@@ -1,6 +1,6 @@
 ---
 name: setup-design
-description: Establish, inspect, repair, or update a repo isolated design-sketch setup only when user explicitly asks or invokes $setup-design. Other skills own feature sketches, production UI edits, routine tests.
+description: Set up, inspect, repair, or update a repo's isolated design-sketch setup. Only the user can load $setup-design.
 ---
 # Setup Design
 Establish a reusable isolated real production UI sketch method in tracked `.expskill/setup-design.md` with a verified ready-for-review merge request. Independent of `$design`, `$test`, and `$use-expskill`. Keep setup gates out of every other workflow.

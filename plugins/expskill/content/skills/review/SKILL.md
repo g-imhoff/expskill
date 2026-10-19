@@ -1,14 +1,14 @@
 ---
 name: review
-description: Explicitly invoke $review to adversarially inspect a user-defined code scope and save an evidence-backed Markdown report with ratings. Review reports defects, structural risks, and testing gaps without fixes or fix advice.
+description: Inspect a code scope and save a rated, evidence-backed report of defects, risks, and test gaps. Only the user can load $review.
 ---
 
 # Review
 
-Try to disprove the correctness of the supplied scope. Report every supported
+Try to disprove the supplied scope's correctness. Report every supported
 issue without inventing findings. The invoking agent performs every step of this
-standalone review itself. `expskill-review` belongs to Implement. Implement's
-own review and spec gates run separately.
+standalone review itself. `expskill-review` belongs to Implement, whose
+review and spec gates run separately.
 
 ## Anchor scope and evidence
 
@@ -52,15 +52,14 @@ storage access stays unresolved, ask the user and wait. Check access by reading
 metadata only, leaving permissions, ownership, and permission configuration to
 the user.
 
-Announce the resolved report directory. Create only the requested Markdown
-report and its necessary `tmp/reports/` directories. Reports are user data, not
+Announce the resolved report directory. Reports are user data, not
 shipped skill assets. The user deletes them manually, and existing reports stay
-as they are. Treat retention across plugin updates as unguaranteed.
+unchanged. Plugin updates may delete reports.
 
 ## Stay read-only
 
 Your only writes are the report and its directories. Files, Git state,
-dependencies, services, and external systems stay untouched throughout. Run only
+dependencies, services, and external systems stay untouched. Run only
 checks known to be read-only, caches and side effects included. Otherwise
 inspect existing evidence and record the check as not run and why. A skipped
 check does not prove a defect.
@@ -109,7 +108,7 @@ location, what behavior-preserving change would break it or which stronger proof
 already covers the contract, and why the overlap is not a distinct risk. Apply
 the retention bar before calling any existing test removable, and leave removal
 to a separately requested task that decides only on evidence. Establish what
-failure the test can actually detect, the non-test callers of any seam it
+failure the test can detect, the non-test callers of any seam it
 covers, and the stronger remaining owner-boundary proof, or why no proof is
 needed. Slowness or static-only grounds alone supply none of that evidence. When
 that evidence is missing, flag the gap for that task.
@@ -127,13 +126,11 @@ without further investigation and outside scoped issue counts and ratings.
 ## Rate and save the report
 
 Judge each category 0 to 10, higher better, during this run. Explain each
-judgment from issue count, severity, and evidence, case by case rather than by
-fixed deductions or severity ceilings. Score only reviewed content. Show scores,
-supporting issue references, and the weighted overall calculation with actual
-terms:
+judgment from issue count, severity, and evidence, case by case. Score only
+reviewed content. Show scores, supporting issue references, and the weighted
+overall calculation with actual terms:
 `overall = sum(category score * category weight) / 100`. If evidence cannot
-support a category or whole-scope rating, mark it unavailable and explain why
-rather than imply unreviewed content was assessed.
+support a category or whole-scope rating, mark it unavailable and explain why.
 
 Write a Markdown report containing:
 
@@ -149,19 +146,19 @@ Write a Markdown report containing:
 
 If no supported issue remains, say so with the evidence limits and residual
 risk. Claim only the certainty and review provenance the evidence supports. The
-report has no finding-count or physical-line limit.
+report has no physical-line limit.
 
 Include the report date, time through seconds, and timezone. Use a filename such
 as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive-create write.
-Recheck destination containment before writing. On collision, choose a new
-suffix and exclusive-create the file. If writing fails, disclose it and request
-the access needed. Confirm the saved file by reading it before claiming it
+Recheck destination containment before writing. On collision, retry the
+exclusive-create with a new suffix. If writing fails, disclose it and request
+the access needed. Read the saved file back before claiming it
 exists.
 
 Return the exact absolute report path, then stop. The user may later give it to
 Correct. This report is not an agent-dispatch payload. Any separate reviewer
 handoff stays below 300 physical lines, with any existing specification
-referenced separately, and the report is kept intact.
+referenced separately, and the report stays intact.
 
 After context loss, reconstruct scope and pinned evidence only from records,
 asking the user for anything missing. A requested scope or revision change

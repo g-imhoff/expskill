@@ -7,7 +7,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Bind each check to the canonical repository, full head revision, isolated environment, accepted behavior, and an explicit expected-versus-actual oracle.",
+      "requirement": "Bind each check to canonical repository, full head revision, isolated environment, accepted behavior, and explicit expected-versus-actual oracle.",
       "failure_prevented": "Stale, wrong-revision, or assumption-based results.",
       "required_evidence": [
         "Repository, branch, full head, environment identity, accepted behavior, and oracle used."
@@ -33,7 +33,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Use owned synthetic data in an isolated, resettable environment and prove teardown or a repeatable reset.",
+      "requirement": "Use owned synthetic data in isolated, resettable environment and prove teardown or repeatable reset.",
       "failure_prevented": "Cross-run contamination, unsafe data use, and irreproducible results.",
       "required_evidence": [
         "Environment boundary, synthetic data ownership, and teardown or reset result."
@@ -46,7 +46,7 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Synchronize on observable application state through state-based or retrying assertions on that state.",
+      "requirement": "Synchronize through state-based or retrying assertions on observable application state.",
       "failure_prevented": "Timing-dependent flakes and retry-to-green results.",
       "required_evidence": [
         "Observable state, event, or retrying assertion used for synchronization."
@@ -75,7 +75,7 @@
       "requirement": "Keep checks independent of execution order and shared mutable state.",
       "failure_prevented": "Order-dependent or suite-dependent passes.",
       "required_evidence": [
-        "Owned fixtures and isolation boundary for each check."
+        "Owned fixtures and isolation boundary per check."
       ],
       "allowed_exceptions": []
     },
@@ -86,7 +86,7 @@
         "always"
       ],
       "requirement": "Retain enough exact-head action, expected, actual, and artifact evidence to reproduce a failure.",
-      "failure_prevented": "Opaque failures that cannot be classified or reproduced.",
+      "failure_prevented": "Opaque failures impossible to classify or reproduce.",
       "required_evidence": [
         "Reproduction steps and scoped diagnostic artifacts."
       ],
@@ -111,8 +111,8 @@
       "applies_when": [
         "always"
       ],
-      "requirement": "Treat contradictory or unexplained outcomes as unresolved failures, and let retries only diagnose them.",
-      "failure_prevented": "A flaky rerun being reported as reliable success.",
+      "requirement": "Treat contradictory or unexplained outcomes as unresolved failures, with retries only diagnosing them.",
+      "failure_prevented": "A flaky rerun reported as reliable success.",
       "required_evidence": [
         "All contradictory outcomes and their product, test-system, environment, or unresolved classification."
       ],
@@ -124,12 +124,12 @@
       "applies_when": [
         "durable-test-added"
       ],
-      "requirement": "Add a durable test only for stable, valuable regression behavior, asserting public outcomes instead of implementation details or duplicate coverage. Reject a new durable test matching a junk pattern unless it independently guards a named contract: assertion-free coverage probes, self-comparisons, copied fixtures, manifests, or export lists, exact source, import, or string greps, private-predicate or call-shape tests duplicated at a real boundary, duplicate invocations of the same contract, mocks that implement the asserted behavior, expected values produced by the code under test, tests whose only purpose is preserving test-only seams (exports, flags, wrappers, injection hooks no production caller needs), negative controls that pass for an unrelated reason. A test that would break under behavior-preserving refactoring asserts implementation, not behavior. Answer before adding: what observable behavior, invariant, or independent contract it protects, what credible regression makes it fail, why existing coverage does not already catch that failure, whether it needs a test-only production seam.",
+      "requirement": "Add a durable test only for stable, valuable regression behavior, asserting public outcomes instead of implementation details or duplicate coverage. Reject a new durable test matching a junk pattern unless it independently guards a named contract: assertion-free coverage probes, self-comparisons, copied fixtures, manifests, or export lists, exact source, import, or string greps, private-predicate or call-shape tests duplicated at a real boundary, duplicate invocations of the same contract, mocks that implement the asserted behavior, expected values produced by the code under test, tests whose only purpose is preserving test-only seams (exports, flags, wrappers, injection hooks no production caller needs), negative controls that pass for an unrelated reason. A test that would break under behavior-preserving refactoring asserts implementation, not behavior. Answer before adding: what observable behavior, invariant, or independent contract it protects, what credible regression makes it fail, why existing coverage misses that failure, whether it needs a test-only production seam.",
       "failure_prevented": "Brittle, redundant, or low-value durable tests.",
       "required_evidence": [
-        "Protected regression and why existing coverage did not already protect it.",
-        "The four authoring answers: protected contract, credible failing regression, coverage gap versus the primary test owner, and test-only seam assessment.",
-        "Junk-pattern screening result for the new durable test."
+        "Protected regression and why existing coverage missed it.",
+        "The four authoring answers: protected contract, credible failing regression, coverage gap versus primary test owner, and test-only seam assessment.",
+        "Junk-pattern screening result for new durable test."
       ],
       "allowed_exceptions": []
     },
@@ -139,7 +139,7 @@
       "applies_when": [
         "ui-material"
       ],
-      "requirement": "Drive the client through semantic or user-facing interactions and locators.",
+      "requirement": "Drive client through semantic or user-facing interactions and locators.",
       "failure_prevented": "Checks coupled to private structure instead of usable interaction.",
       "required_evidence": [
         "Semantic or user-facing interaction path and locator basis."
@@ -153,9 +153,9 @@
         "ui-material"
       ],
       "requirement": "Assert rendered or otherwise user-visible state, including relevant negative behavior.",
-      "failure_prevented": "A client check that proves only an internal callback or request.",
+      "failure_prevented": "A client check proving only an internal callback or request.",
       "required_evidence": [
-        "Visible expected and observed state at the client surface."
+        "Visible expected and observed state at client surface."
       ],
       "allowed_exceptions": []
     },
@@ -181,7 +181,7 @@
       "requirement": "Use the production persistence engine or a production-equivalent engine for the semantics under test.",
       "failure_prevented": "Engine-specific behavior escaping an inexact substitute.",
       "required_evidence": [
-        "Engine identity and equivalence to the production semantics exercised."
+        "Engine identity and equivalence to production semantics exercised."
       ],
       "allowed_exceptions": []
     },
@@ -204,7 +204,7 @@
       "applies_when": [
         "persistence-material"
       ],
-      "requirement": "Verify persisted outcomes through an independent read path, with the write response as acknowledgement only.",
+      "requirement": "Verify persisted outcomes through independent read path, with write response as acknowledgement only.",
       "failure_prevented": "Acknowledged writes that did not create the required durable state.",
       "required_evidence": [
         "Independent read path and observed persisted state."
@@ -217,8 +217,8 @@
       "applies_when": [
         "messaging-material"
       ],
-      "requirement": "Exercise the material broker, queue, or asynchronous boundary itself, with a real or sandboxed instance.",
-      "failure_prevented": "Delivery behavior being bypassed by synchronous test wiring.",
+      "requirement": "Exercise the material broker, queue, or asynchronous boundary itself, with real or sandboxed instance.",
+      "failure_prevented": "Delivery behavior bypassed by synchronous test wiring.",
       "required_evidence": [
         "Messaging boundary identity and message path exercised."
       ],
@@ -230,7 +230,7 @@
       "applies_when": [
         "messaging-material"
       ],
-      "requirement": "Wait for a domain-observable eventual outcome through state-based assertions.",
+      "requirement": "Wait for domain-observable eventual outcome through state-based assertions.",
       "failure_prevented": "Timing-sensitive asynchronous assertions.",
       "required_evidence": [
         "Eventual domain state and synchronization condition."
@@ -256,7 +256,7 @@
       "applies_when": [
         "contract-material"
       ],
-      "requirement": "Exercise the actual consumer-provider boundary with request and response evidence.",
+      "requirement": "Exercise actual consumer-provider boundary with request and response evidence.",
       "failure_prevented": "Provider and consumer assumptions passing only in isolation.",
       "required_evidence": [
         "Consumer request, provider response, and observed consumer outcome."
@@ -282,7 +282,7 @@
       "applies_when": [
         "external-service-material"
       ],
-      "requirement": "Use an isolated sandbox or approved substitute that preserves the external protocol and material effects.",
+      "requirement": "Use isolated sandbox or approved substitute preserving the external protocol and material effects.",
       "failure_prevented": "Unsafe live effects or unrealistic external-service behavior.",
       "required_evidence": [
         "Sandbox identity, protocol boundary, synthetic data, and effect scope."
@@ -347,7 +347,7 @@
       "applies_when": [
         "visual-material"
       ],
-      "requirement": "Exercise representative normal, loading, empty, error, and interaction states that are material to the claim.",
+      "requirement": "Exercise representative normal, loading, empty, error, and interaction states material to the claim.",
       "failure_prevented": "Visual regressions hidden outside a single happy-path state.",
       "required_evidence": [
         "Representative material states observed and compared."

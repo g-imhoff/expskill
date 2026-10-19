@@ -1,7 +1,7 @@
 # Accessibility rules
 
 ### A11Y-00: Activate normative rules explicitly
-- Scope: any rule sourced from a normative standard. Binding only when target, level, trigger, supported technology, and no exception are established, otherwise a conditional baseline. Project evidence defines applicability, but an activated requirement prevails, surfacing any conflict.
+- Scope: any rule sourced from a normative standard. Project evidence defines applicability, but an activated requirement prevails, surfacing any conflict.
 - Rule: mark it binding only when the project target, conformance level, trigger, supported technology path, and lack of an exception are established. Otherwise retain it as a conditional baseline.
 - Check: record target/level/scope and which part is verifiable locally, full page/process proof later where the standard requires it.
 - Sources: [WCAG Conformance](https://www.w3.org/TR/WCAG22/#conformance).
@@ -13,7 +13,7 @@
 - Sources: [WCAG Non-text Content](https://www.w3.org/TR/WCAG22/#non-text-content).
 
 ### A11Y-02: Expose information and relationships programmatically
-- Scope: headings, lists, tables, labels, groups, states, visually encoded relationships, an equivalent textual expression is permitted. Markup may differ, relationships stay exposed.
+- Scope: headings, lists, tables, labels, groups, states, visually encoded relationships. Markup may differ, relationships stay exposed.
 - Rule: make visual information, structure, and relationships programmatically determinable or available in text.
 - Check: remove styling, linearize, inspect DOM/accessibility tree. Page landmarks and surrounding relationships need later proof.
 - Sources: [WCAG Info and Relationships](https://www.w3.org/TR/WCAG22/#info-and-relationships).
@@ -37,8 +37,8 @@
 - Sources: [Language of Page](https://www.w3.org/TR/WCAG22/#language-of-page).
 
 ### A11Y-06: Treat automated checks as partial evidence
-- Scope: accessibility review of rendered components, where depth scales with risk. Use the project's approved tools and assistive-technology targets.
-- Rule: combine automated findings with manual keyboard, focus, semantic, zoom, contrast, and assistive-technology inspection appropriate to the risk. A clean scanner is partial evidence only.
+- Scope: accessibility review of rendered components. Use the project's approved tools and assistive-technology targets.
+- Rule: combine automated findings with manual keyboard, focus, semantic, zoom, contrast, and assistive-technology inspection appropriate to the risk.
 - Check: record which claims were mechanically checked and which received contextual human review.
 - Sources: [WAI Easy Checks](https://www.w3.org/WAI/test-evaluate/preliminary/).
 

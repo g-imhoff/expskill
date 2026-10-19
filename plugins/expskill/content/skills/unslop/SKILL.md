@@ -9,7 +9,7 @@ Edit text to remove AI patterns and add human voice.
 
 ## Scope
 
-Apply these rules to natural-language user-facing prose you author, including commentary and final messages. Preserve code, commands, machine-readable data, logs, identifiers, API names, quotations, citations, source excerpts, approved copy, and project-required terminology exactly. Higher-priority instructions and explicit user formatting or tone choices win. Before sending user-facing prose, perform the included self-audit.
+Apply these rules to natural-language user-facing prose you author, including commentary and final messages. Preserve code, commands, machine-readable data, logs, identifiers, API names, quotations, citations, source excerpts, approved copy, and project-required terminology exactly. Higher-priority instructions and explicit user formatting or tone choices win. Before sending user-facing prose, perform the self-audit.
 
 ## Process
 
@@ -43,18 +43,18 @@ Removing patterns is half the job. Sterile, voiceless writing is just as obvious
 ### Language
 
 7. **AI vocabulary.** Additionally, crucial, delve, enduring, enhance, fostering, garner, interplay, intricate, landscape (abstract), pivotal, showcase, tapestry (abstract), testament, underscore, vibrant. Replace with plain words.
-8. **Fancy ways to say "is".** "serves as", "stands as", "boasts", "features". Just say "is" or "has".
-9. **"Not just X, but Y."** State the point directly instead.
+8. **Fancy ways to say "is".** "serves as", "stands as", "boasts", "features". Say "is" or "has".
+9. **"Not just X, but Y."** State the point directly.
 10. **Rule of three.** Forcing ideas into groups of three. Use the natural number.
 11. **Synonym cycling.** Protagonist, main character, central figure, hero all in one paragraph. Pick one, repeat it.
 12. **False ranges.** "from X to Y" where X and Y aren't on a meaningful scale. List topics directly.
 
 ### Style
 
-13. **Em dash overuse.** Use periods or commas only, in place of em dashes, parentheses, en dashes, and hyphen-as-dash substitutes. Em dashes are an AI tell, and reaching for parentheses instead just trades one tell for another. If a thought needs separation, end the sentence or use a comma.
+13. **Em dash overuse.** Replace em dashes, parentheses, en dashes, and hyphen-as-dash substitutes with periods or commas. Em dashes are an AI tell, and reaching for parentheses instead trades one tell for another. If a thought needs separation, end the sentence or use a comma.
 14. **Colon overuse.** Use colons before a list or example, not mid-sentence. "If you're coming from traditional automation: instead of registering event handlers, you describe conditions" adds nothing with the colon. Rewrite so the point stands on its own without comparison framing. "Describing when the scheduler should fire works best as plain English." Same meaning, no crutch punctuation.
 15. **Boldface overuse.** Keep most proper nouns and acronyms unbolded.
-16. **Inline-header lists.** The tell is a bold label and colon that restates the line: "**Performance:** Performance improved...". Convert those to prose. A bold lead-in that ends in a period, names the item, and is followed by genuinely new detail ("**Schema in TypeScript.** Tables live in one file.") is fine, not a tell.
+16. **Inline-header lists.** The tell is a bold label and colon that restates the line: "**Performance:** Performance improved...". Convert those to prose. A bold lead-in that ends in a period, names the item, and is followed by genuinely new detail ("**Schema in TypeScript.** Tables live in one file.") is fine.
 17. **Title case headings.** Use sentence case.
 18. **Decorative emojis.** Remove from headings and bullets.
 19. **Curly quotes.** Replace with straight quotes.

@@ -1,12 +1,12 @@
 ---
 name: correct
-description: Repair a concrete bug, regression, failing test, or Review finding within the existing design. For structural or breaking changes, let the user choose a sound limited fix or Brainstorm.
+description: Repair a concrete bug, regression, failing test, or Review finding within the existing design. Only the user or another ExpSkill skill can load $correct.
 ---
 
 # Correct
 
 Complete the smallest sound repair of the requested defects within the existing
-design. Keep Correct explicit-only. Activate it only for explicit `$correct`,
+design. Activate Correct only for explicit `$correct`,
 `$expskill:correct`, a request for the named skill, or deliberate selection by
 the optional ExpSkill router, and treat a matching topic as context only.
 General audits, feature discovery, product design, and architectural
@@ -60,8 +60,8 @@ the user's request.
   cause in the final report, next to any workaround.
 - Choosing Brainstorm authorizes a same-conversation handoff carrying the
   report, known diagnosis, relevant files, limitations, partial edits, and
-  unresolved goal. Offer it even when the larger direction is already defined.
-  Brainstorm owns its own entry rules, so describe any downstream Design or Plan
+  unresolved goal. Offer it even when the larger direction is defined.
+  Brainstorm owns its entry rules, so describe any downstream Design or Plan
   step as Brainstorm's call. The handoff ends Correct ownership without meaning
   the larger issue is fixed.
 
@@ -75,10 +75,10 @@ current files and whether the repair still fits Correct.
 
 ## Check and finish
 
-Check your own repair with the smallest meaningful checks covering the reported
+Check your repair with the smallest meaningful checks covering the reported
 behavior, plus project-required checks. Add a regression test when it protects
-behavior, or an equivalent check when more suitable. A passing run of that check
-is sufficient evidence.
+behavior, or an equivalent check when more suitable. One passing run of all these
+checks is enough evidence.
 
 If a check fails, investigate and repair within the accepted scope, retrying
 only when changed input, diagnosis, or setup gives a reason. Rerun an unchanged
@@ -98,7 +98,7 @@ Use available repository search/read, edit, shell, Git inspection, and project
 check tools. Follow host requirements for technical documentation lookup. Run
 Correct with the existing project setup alone. A diagnostic or test command
 authorizes only its own check, so destructive setup and external communication
-need the user's own authority. For checks that launch AI
+need the user's authority. For checks that launch AI
 agents, use the lowest sufficient scope and announce the expected count before a
 costly run.
 

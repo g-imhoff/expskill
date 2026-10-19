@@ -2,25 +2,25 @@
 
 ### INT-01: Reuse project or native behavior before rebuilding it
 - Scope: buttons, links, inputs, dialogs, menus, tabs, disclosure, selection, standard patterns. A genuine requirement the existing/native control cannot meet excepted. Custom choice may vary. Keep active name/role/state/value and operability.
-- Rule: prefer an established project component or native host-language feature that supplies the required behavior. Custom UI must preserve the active semantic and interaction contract.
-- Check: compare keyboard, pointer, accessibility tree, focus, state behavior with the established/native equivalent.
+- Rule: prefer an established project component or native host-language feature supplying the required behavior. Custom UI must preserve the active semantic and interaction contract.
+- Check: compare keyboard, pointer, accessibility tree, focus, state behavior with established/native equivalent.
 - Sources: [WAI-ARIA 1.2](https://www.w3.org/TR/wai-aria/).
 
 ### INT-02: Keep functionality keyboard-operable
 - Scope: web functionality not inherently requiring a movement path, genuine path-dependent functions excepted.
-- Rule: every function must be operable through a keyboard interface without timing-specific keystrokes.
-- Check: complete open, select, edit, cancel, submit, recover, close using only the keyboard.
+- Rule: every function must be keyboard-operable without timing-specific keystrokes.
+- Check: complete open, select, edit, cancel, submit, recover, close by keyboard only.
 - Sources: [WCAG Keyboard](https://www.w3.org/TR/WCAG22/#keyboard).
 
 ### INT-03: Preserve focus escape and meaningful order
 - Scope: dialogs, composites, editors, custom widgets, sequential navigation, responsive reordering. Nonstandard exits only when communicated, irrelevant ordering unconstrained. Verify within page navigation and overlays later.
-- Rule: users can leave any entered component by keyboard. Where order affects meaning/operation, the sequential focus order preserves it.
+- Rule: users can leave any entered component by keyboard. Where order affects meaning/operation, sequential focus order preserves it.
 - Check: record Tab, Shift+Tab, arrows, Escape, documented exits in every state.
 - Sources: [No Keyboard Trap](https://www.w3.org/TR/WCAG22/#no-keyboard-trap).
 
 ### INT-04: Keep focus visible and unobscured
-- Scope: keyboard-operable web UI, sticky regions, overlays, drawers, nested clipping, exact standard exceptions and reveal mechanisms apply. Tokens may define style, but visibility outcomes stay. Surrounding host overlays need later proof.
-- Rule: provide a visible focus mode, and keep the focused component partly unobscured by author-created content.
+- Scope: keyboard-operable web UI, sticky regions, overlays, drawers, nested clipping, exact standard exceptions and reveal mechanisms apply. Tokens may define style, visibility outcomes stay. Surrounding host overlays need later proof.
+- Rule: provide a visible focus mode and keep the focused component partly unobscured by author-created content.
 - Check: keyboard traversal in light, dark, high-contrast, forced-colors, zoomed, clipped, overlay states.
 - Sources: [Focus Visible](https://www.w3.org/TR/WCAG22/#focus-visible).
 
@@ -44,7 +44,7 @@
 
 ### INT-08: Bind target size to the active standard and unit
 - Scope: pointer/touch targets, only documented active criterion/platform exceptions apply. Larger project targets are fine, smaller ones need a valid exception. Keep CSS px, pt, dp distinct.
-- Rule: use 24 by 24 CSS px plus its exceptions for WCAG 2.2 AA, 44 CSS px for WCAG AAA, Apple point guidance on Apple platforms, and Android dp guidance on Android. Each number stays with its own standard and unit.
+- Rule: use 24 by 24 CSS px plus its exceptions for WCAG 2.2 AA, 44 CSS px for WCAG AAA, Apple point guidance on Apple platforms, and Android dp guidance on Android. Each number keeps its own standard and unit.
 - Check: measure actual hit bounds and adjacent-target spacing with each supported input.
 - Sources: [WCAG Target Size Minimum](https://www.w3.org/TR/WCAG22/#target-size-minimum).
 
@@ -61,13 +61,13 @@
 - Sources: [On Input](https://www.w3.org/TR/WCAG22/#on-input).
 
 ### INT-11: Expose qualifying status messages without stealing focus
-- Scope: async success, progress, filtering, loading, error messages meeting the status-message definition, other visual changes excluded. Mechanism may vary, the outcome stays. Host assistive-technology behavior needs later proof.
+- Scope: async success, progress, filtering, loading, error messages meeting the status-message definition, other visual changes excluded. Mechanism may vary, outcome stays. Host assistive-technology behavior needs later proof.
 - Rule: expose the status programmatically so assistive technology can present it without moving focus. Choose a role per status or another conforming mechanism.
 - Check: delayed update with accessibility-tree and announcement inspection, focus remains expected.
 - Sources: [WCAG Status Messages](https://www.w3.org/TR/WCAG22/#status-messages).
 
 ### INT-12: Distinguish native disabled, aria-disabled, and read-only
-- Scope: unavailable or noneditable controls, host-language support and composite conventions apply. Focusability may vary with discoverability. Keep native semantics as the host defines them.
+- Scope: unavailable or noneditable controls, host-language support and composite conventions apply. Focusability may vary with discoverability. Keep host-defined native semantics.
 - Rule: native disabled behavior follows the host language. Aria-disabled only exposes state and requires authors to suppress activation. Custom disabled items may remain focusable for discoverability. Read-only data remains readable and reviewable.
 - Check: tab order, pointer/keyboard suppression, accessible state, contrast, discoverability, readable value.
 - Sources: [WAI-ARIA aria-disabled](https://www.w3.org/TR/wai-aria/#aria-disabled).
