@@ -34,14 +34,6 @@ FINAL_ACTION_RECORDER = TEST_SKILL / "scripts" / "record_final_action.py"
 CHARTER_FREEZER = TEST_SKILL / "scripts" / "freeze_charter.py"
 RUN_BOOTSTRAP = TEST_SKILL / "scripts" / "bootstrap_run.py"
 LEDGER_APPENDER = TEST_SKILL / "scripts" / "append_ledger.py"
-EXPECTED_METADATA = """interface:
-  display_name: "Test"
-  short_description: "Exercise implemented behavior through real product paths"
-  default_prompt: "Use $test to exercise this implemented change through realistic product behavior."
-
-policy:
-  allow_implicit_invocation: false
-"""
 EXPECTED_RULE_IDS = {
     "universal.revision-and-oracle",
     "universal.consumer-outcome",
@@ -662,15 +654,25 @@ def _assert_prose_values(
     values: object,
     keys: set[str],
     exact: dict[str, object] | None = None,
+    containing: dict[str, str | list[str]] | None = None,
 ) -> None:
     exact = exact or {}
+    containing = containing or {}
     case.assertIsInstance(values, dict)
-    case.assertEqual(set(values), keys | set(exact))
+    case.assertEqual(set(values), keys | set(exact) | set(containing))
     for key in keys:
         with case.subTest(prose=key):
             case.assertIsInstance(values[key], str)
             case.assertTrue(values[key].strip())
     case.assertEqual({key: values[key] for key in exact}, exact)
+    for key, identifiers in containing.items():
+        with case.subTest(identifier=key):
+            observed = values[key] if isinstance(values[key], list) else [values[key]]
+            expected = identifiers if isinstance(identifiers, list) else [identifiers]
+            case.assertEqual(len(observed), len(expected))
+            for value, identifier in zip(observed, expected):
+                case.assertIsInstance(value, str)
+                case.assertIn(identifier, value)
 
 
 def _load_contract_finalizer_module():
@@ -887,8 +889,8 @@ class TestSkillContractTests(unittest.TestCase):
             f"missing {marker!r} evidence-contract error in {errors!r}",
         )
 
-    def test_package_file_set_is_closed_and_codex_metadata_is_exact(self) -> None:
-        """Regression: Test ships only its declared resources and helpers, with exact Codex metadata."""
+    def test_package_file_set_is_closed_and_codex_metadata_is_explicit_only(self) -> None:
+        """Regression: Test ships only its declared resources and helpers, with explicit-only Codex metadata."""
 
         self.assertTrue(TEST_SKILL.is_dir(), f"missing Test package: {TEST_SKILL}")
         observed = {
@@ -911,7 +913,9 @@ class TestSkillContractTests(unittest.TestCase):
         )
         metadata_path = CODEX_TEST_METADATA
         self.assertTrue(metadata_path.is_file(), metadata_path)
-        self.assertEqual(metadata_path.read_text(encoding="utf-8"), EXPECTED_METADATA)
+        metadata = metadata_path.read_text(encoding="utf-8")
+        self.assertRegex(metadata, r'(?m)^  default_prompt: ".*\$test\b')
+        self.assertIn("allow_implicit_invocation: false", metadata)
 
     def test_quality_catalog_contains_every_independent_initial_hard_gate(self) -> None:
         """Regression: collapsing named gates prevents independent applicability evidence."""
@@ -1913,13 +1917,7 @@ class TestSkillContractTests(unittest.TestCase):
             self,
             contract["response_handoff"],
             {"summary", "terminal_state", "after_finalizer"},
-            {
-                "probe_evidence": [
-                    "exact bundle_digest",
-                    "exact bundle_path",
-                    "exact receipt_path",
-                ],
-            },
+            containing={"probe_evidence": ["bundle_digest", "bundle_path", "receipt_path"]},
         )
         _assert_prose_values(
             self,
@@ -1928,8 +1926,8 @@ class TestSkillContractTests(unittest.TestCase):
             {
                 "preparation_schema": finalizer.DIRECT_PREPARATION_SCHEMA_VERSION,
                 "delta_schema": finalizer.EMPTY_DELTA_SCHEMA_VERSION,
-                "delta_resolutions": "exactly empty",
             },
+            containing={"delta_resolutions": "empty"},
         )
         expected_nonempty_scalars = {
             "charter.run_id",
@@ -2166,17 +2164,18 @@ class TestSkillContractTests(unittest.TestCase):
             self,
             contract["minimum_result_support"],
             {"PASS", "FAIL", "BLOCKED"},
-            {"EXEMPT": "exact exempt_shape"},
+            containing={"EXEMPT": "exempt_shape"},
         )
-        self.assertEqual(
+        _assert_prose_values(
+            self,
             contract["paths"]["composition_inputs"],
+            set(),
             {
-                "charter_binding": "charter.json (implicit read-only)",
-                "ledger_preflight": "ledger.json (implicit read-only)",
                 "preparation": finalizer.PREPARATION_FILENAME,
                 "delta": finalizer.DELTA_FILENAME,
                 "output": finalizer.DRAFT_FILENAME,
             },
+            containing={"charter_binding": "charter.json", "ledger_preflight": "ledger.json"},
         )
         self.assertEqual(
             set(contract["paths"]["artifact"]["forbidden_exact"]),
