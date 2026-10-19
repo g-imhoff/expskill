@@ -4,12 +4,10 @@ description: Repair a concrete bug, regression, failing test, or Review finding 
 ---
 
 # Correct
-
-Complete the smallest sound repair of the requested defects within the existing
-design. Activate Correct only for explicit `$correct`,
-`$expskill:correct`, a request for the named skill, or deliberate selection by
-the optional ExpSkill router, and treat a matching topic as context only.
-General audits, feature discovery, product design, and architectural
+ Complete the smallest sound repair. Activate Correct only for explicit
+`$correct`, `$expskill:correct`, a request for the named skill, or deliberate
+selection by the optional ExpSkill router, and treat a matching topic as context
+only. General audits, feature discovery, product design, and architectural
 implementation are outside scope.
 
 Only the invoking agent diagnoses, edits, and checks, tracking the repair in

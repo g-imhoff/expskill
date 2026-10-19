@@ -5,14 +5,13 @@ description: Route a request to change code or executable configuration to the r
 
 # Use ExpSkill
 
-The router only chooses and coordinates the smallest appropriate product skill
-for a development request, and the selected skill does the work. A routed UI
-request may use the bounded Plan and Design conversation pair below.
+The router only chooses and coordinates the smallest appropriate product skill,
+and the selected skill does the work.
 
 ## Stay inactive
 
 Stay inactive when the user names a skill, requests read-only analysis, or asks
-for non-code work. Let that direct request proceed.
+for non-code work.
 
 ## Route by missing decision
 
@@ -35,9 +34,9 @@ for non-code work. Let that direct request proceed.
   `$roast` reviewers and fixers for up to three review cycles, passing
   when every category reaches 9 of 10.
 
-Except for the bounded Plan and Design conversation pair, open only the selected
-skill for the current transition and explain the choice in plain language. A
-direct skill stays independent of this router throughout.
+Except for the bounded Plan and Design conversation pair below, open only the
+selected skill for the current transition and explain the choice in plain
+language. A direct skill stays independent of this router throughout.
 
 A selected `$correct` runs alone in the invoking coordinator, outside any agent
 profile or Plan Graph, from diagnosis through check. If diagnosis reveals a
@@ -57,7 +56,6 @@ implementation in that transition. A ready `.expskill/setup-design.md` or
 `.expskill/setup-test.md` record is read only by its owning
 skill, and routing ignores its contents. Eligible `$correct` repairs that
 restore accepted UI behavior without redesign skip every setup requirement.
-Direct `$setup-design` and `$setup-test` remain independently usable.
 
 When setup is ready and only one of technical planning or production UI approval
 is unresolved, select its standalone skill. When both are unresolved, use
@@ -136,11 +134,10 @@ or entering a merge queue.
 
 ## Resolve a decision frontier
 
-Use `$grill-me` only for connected user choices. Let the owning
-skill handle one isolated user decision. Keep discovering facts and
-resolving quality problems autonomously.
+Let the owning skill handle one isolated user decision. Keep discovering
+facts and resolving quality problems autonomously.
 
-Use `$grill-me` when every condition below is true:
+Use `$grill-me` only when every condition below is true:
 
 - Facts are exhausted.
 - The owning skill cannot continue because multiple consequential decisions

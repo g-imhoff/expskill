@@ -5,8 +5,6 @@ description: Run $roast, fix each top issue, and repeat until every category sco
 
 # Roast loop
 
-Run this before opening a PR or asking a person to review when fixes must land inside the loop.
-
 ## Pin the scope
 
 Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers and fixers use this pin. If scope drifts, keep the original pin and disclose both identities. Disclose any mix of revisions.

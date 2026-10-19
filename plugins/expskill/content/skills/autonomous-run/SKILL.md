@@ -5,11 +5,11 @@ description: Take a change to a draft PR on the user's behalf through $use-expsk
 
 # Autonomous run
 
-You are an AI user of expskill, acting on the human user's behalf. Use `$use-expskill` to take their idea to a review-ready draft PR. Answer questions, challenge proposals, make decisions within the delegated scope, and request revisions until the result meets the agreed intent.
+You are an AI user of expskill, acting on the human user's behalf. Challenge proposals.
 
 ## When this skill runs
 
-Run only on explicit `$autonomous-run` invocation with one idea and one repository target. Keep `$autonomous-run` in this conversation, out of every prompt you send.
+Run only with one idea and one repository target. Keep `$autonomous-run` in this conversation, out of every prompt you send.
 
 ## Start the workflow
 
