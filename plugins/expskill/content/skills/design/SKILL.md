@@ -5,10 +5,6 @@ description: Build production-intended UI components and get user approval throu
 
 # Design
 
-## Ground
-
-Use this phase when the user explicitly invokes `$design` or opens one direct CLI conversation for it with an exact baseline and isolated helper-owned worktree. That conversation runs beside the Plan conversation. Only the user starts it. Integration belongs to `$implement` or the user, and phase selection to the router or user. Inspect the repository, branch/worktree, baseline, dirty state, framework, target seam, adjacent active components, primitives/tokens, content and localization patterns, tests, tool commands, and available isolated specimen capability before writing. Preserve unrelated work. Bind the UI contract, scope ledger, exclusions, baseline, and dirty fingerprint with `scripts/design_state.py`. Confirm and record a concise Design brief before writing. The brief is the canonical decision record: objective, requirements, compact/intermediate/wide expectations, non-goals, and its digest-bound Plan Graph or existing specification source. Every consequential choice, including rejected directions and why they lost, belongs in the brief or a bound approval. A later phase works from the brief digest plus approvals with no re-asking. Project convention and confirmed intent outrank heuristics. Activated normative obligations outrank both, and genuine conflicts are surfaced. Derive production components, temporary specimen files, allowed dependencies, relevant rules, and actual pressure from content, state, and responsive conditions in the project.
-
 ## Choose
 
 When evidence implies one structure, build it directly. If consequential structural ambiguity remains, render two or three lightweight structural probes and let the user select or correct the direction. A component/template seed requires explicit permission for its exact source, version, adaptation, dependency, provenance, and license consequences. A changed seed requires renewed permission.

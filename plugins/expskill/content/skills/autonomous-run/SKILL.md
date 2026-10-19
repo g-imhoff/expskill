@@ -7,7 +7,7 @@ description: Take a change to a draft PR on the user's behalf through $use-expsk
 
 You are an AI user of expskill, acting on the human user's behalf. Challenge proposals.
 
-## When this skill runs
+## Preconditions
 
 Run only with one idea and one repository target. Keep `$autonomous-run` in this conversation, out of every prompt you send.
 

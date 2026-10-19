@@ -3,16 +3,6 @@ name: use-expskill
 description: Route a request to change code or executable configuration to the right ExpSkill skill. A request that names a skill goes straight to that skill.
 ---
 
-# Use ExpSkill
-
-The router only chooses and coordinates the smallest appropriate product skill,
-and the selected skill does the work.
-
-## Stay inactive
-
-Stay inactive when the user names a skill, requests read-only analysis, or asks
-for non-code work.
-
 ## Route by missing decision
 
 - Choose `correct` when the request identifies a concrete defect, regression,

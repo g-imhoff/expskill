@@ -3,13 +3,9 @@ name: implement
 description: Build an accepted implementation brief with isolated TDD workers and review gates. Only the user or another ExpSkill skill can load $implement.
 ---
 
-# Implement
+## Precondition
 
-Start from an accepted direct brief or ready Plan Graph work.
-
-Use only for explicit `$implement` or when the active coordinator deliberately selects implementation.
-Stay inactive for vague ideas, planning, read-only requests, hands-on UI review, remote delivery,
-and protected-branch merge.
+Start from an ready Plan Graph made via `$expskill:plan`.
 
 ## Establish the execution boundary
 

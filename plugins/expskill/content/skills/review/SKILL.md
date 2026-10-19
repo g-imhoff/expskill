@@ -3,12 +3,6 @@ name: review
 description: Inspect a code scope and save a rated, evidence-backed report of defects, risks, and test gaps. Only the user can load $review.
 ---
 
-# Review
-
-Try to disprove the supplied scope's correctness. The invoking agent performs
-every step of this standalone review itself. `expskill-review` belongs to
-Implement, whose review and spec gates run separately.
-
 ## Anchor scope and evidence
 
 Require a user-defined scope: a diff, refs, branch, commit, PR or MR, file set,

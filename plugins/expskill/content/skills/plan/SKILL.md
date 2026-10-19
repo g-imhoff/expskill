@@ -2,16 +2,12 @@
 name: plan
 description: Turn a concrete direction into an accepted technical plan. Only the user or another ExpSkill skill can load $plan.
 ---
-# Plan
 
-## Boundary
+## Precondition
 
-Accept a completed Concept Brief or another sufficiently concrete direction.
-Preserve settled conceptual decisions. If technical evidence exposes a
-contradiction, propose the smallest amendment for approval. Concept ideation
-stays with Brainstorm.
+Accept a completed Concept Brief coming from `$expskill:brainstorm` or another sufficiently concrete direction. 
 
-Return `not-ready` for a vague direction. Plan may invoke, open, select, or recommend only `$grill-me` at step 7 for choosing between feasible options. Its only writes are private graph operations through the helper and the one confirmed branch operation defined below.
+If the precondition are not followed redirect the user to `$expskill:brainstorm`
 
 ## Workflow
 

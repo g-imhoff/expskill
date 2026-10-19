@@ -3,17 +3,6 @@ name: correct
 description: Repair a concrete bug, regression, failing test, or Review finding within the existing design. Only the user or another ExpSkill skill can load $correct.
 ---
 
-# Correct
- Complete the smallest sound repair. Activate Correct only for explicit
-`$correct`, `$expskill:correct`, a request for the named skill, or deliberate
-selection by the optional ExpSkill router, and treat a matching topic as context
-only. General audits, feature discovery, product design, and architectural
-implementation are outside scope.
-
-Only the invoking agent diagnoses, edits, and checks, tracking the repair in
-conversation alone. The user-selected Brainstorm route below is its only handoff
-and the only other skill Correct reaches.
-
 ## Establish the repair
 
 Before editing, inspect the selected repository, applicable instructions,
