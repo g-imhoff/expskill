@@ -36,6 +36,7 @@ jobs:
           tests/test_claude_package.py
           tests/test_opencode_contract.py
           tests/test_opencode_package.py
+          tests/test_skill_structure.py
 
   publish-codex-dist:
     needs: validate

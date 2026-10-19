@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -27,6 +28,11 @@ def _load_module(name: str, path: Path):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _windows(*paths):
+    words = re.findall(r"\w+", "".join(p.read_text("utf-8") for p in paths).lower())
+    return set(zip(*(words[i:] for i in range(6))))
 
 
 def _canonical_text() -> str:
@@ -136,12 +142,8 @@ class OpencodePluginTests(unittest.TestCase):
         self.assertIn("unslop-scope", text)
         self.assertIn("frontmatter", text)
 
-    def test_v2_plugin_does_not_bake_in_rule_text(self) -> None:
-        text = OPENCODE_V2_PLUGIN.read_text(encoding="utf-8")
-        self.assertNotIn("What makes this obviously AI generated?", text)
-        policy = json.loads(POLICY_JSON.read_text(encoding="utf-8"))
-        scope = policy["scope"].strip()
-        self.assertNotIn(scope, text)
+    def test_v2_plugin_has_no_windows(self) -> None:
+        self.assertFalse(_windows(SKILL_MD, POLICY_JSON) & _windows(OPENCODE_V2_PLUGIN))
 
 
 class SharedTextDriftTests(unittest.TestCase):

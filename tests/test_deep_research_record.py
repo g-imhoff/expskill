@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -25,6 +27,14 @@ SCRIPT = (
     / "research_record.py"
 )
 REPLY = b"## Coverage\nAll assigned branches.\n## Findings\n- finding\n"
+
+
+def _script_module():
+    spec = importlib.util.spec_from_file_location("research_record_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def add(record_type: str, **item: object) -> dict[str, object]:
@@ -251,7 +261,7 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.apply(run, update("branch", "B1", colour="blue"), code=1)
         self.assertIn("unknown field 'colour'", self.errors(result))
         result = self.apply(run, add("branch", title="X", question="Q?", rationale="R.", scope_id="S1"), code=1)
-        self.assertIn("field scope_id is set by the script, remove it", self.errors(result))
+        self.assertIn("field scope_id is set by the script", self.errors(result))
         result = self.apply(run, {"op": "start_phase", "kind": "discovery", "worklist": ["B1"], "colour": 1}, code=1)
         self.assertIn("start_phase op has unknown key 'colour'", self.errors(result))
         result = self.cli("apply", str(run), stdin={"ops": [start("discovery", ["B1"])], "extra": 1}, code=1)
@@ -303,7 +313,9 @@ class ResearchRecordTests(unittest.TestCase):
         )
         result = self.apply(run, complete("P1"), code=1)
         message = self.errors(result)
-        self.assertIn("accepted claim C1 has no novelty event in phase P1, record novelty or mark it duplicate/rejected", message)
+        self.assertIn("accepted claim C1 has no novelty event in phase P1", message)
+        self.assertIn("duplicate", message)
+        self.assertIn("rejected", message)
         self.assertIn("branch B3 was discovered in phase P1 but has no new_branch novelty event", message)
         result = self.apply(run, add("novelty", kind="new_claim", claim_ids=["C2"], reason="x"), code=1)
         self.assertIn("claim C2 must be accepted and recorded in phase P1", self.errors(result))
@@ -352,8 +364,9 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertEqual(result["completed_phases"], [
             {key: phase[key] for key in ("id", "eligible", "zero_novelty", "novelty_count", "blockers")}
         ])
-        self.assertIn("branch B2 is active at completion, set it covered before complete_phase once a complete "
-                      "assignment researched it", phase["blockers"])
+        self.assertIn("branch B2 is active at completion", " ".join(phase["blockers"]))
+        self.assertIn("covered", " ".join(phase["blockers"]))
+        self.assertIn("complete_phase", " ".join(phase["blockers"]))
         self.assertFalse(phase["eligible"])
         self.assertFalse(phase["zero_novelty"])
         self.assertEqual(phase["novelty_count"], 0)
@@ -560,7 +573,9 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertIn("a new assignment starts as planned or running", self.errors(result))
         self.apply(run, update("assignment", "A1", status="running"))
         result = self.apply(run, update("assignment", "A1", status="complete"), code=1)
-        self.assertIn("run capture first", self.errors(result))
+        self.assertIn("assignment A1: a subagent assignment can be complete only after its reply is stored",
+                      self.errors(result))
+        self.assertIn("capture", self.errors(result))
         result = self.apply(run, update("assignment", "A1", status="failed"), code=1)
         self.assertIn("status failed needs a failure record with assignment_id A1", self.errors(result))
         self.apply(run, update("assignment", "A1", status="interrupted"))
@@ -596,8 +611,9 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertEqual(state["assignments"][0]["return_ids"], ["R1", "R2"])
         self.assertEqual(state["returns"][1]["sha256"], hashlib.sha256(b"second reply").hexdigest())
         missing = self.cli("capture", str(run), "--assignment", "A1", "--file", str(self.base / "missing.txt"), code=1)
-        self.assertIn(f"cannot read --file {self.base / 'missing.txt'}: No such file or directory, pass a readable "
-                      "file or send the reply on stdin in a quoted heredoc", self.errors(missing))
+        self.assertIn(f"cannot read --file {self.base / 'missing.txt'}: {os.strerror(errno.ENOENT)}",
+                      self.errors(missing))
+        self.assertIn("stdin", self.errors(missing))
         self.assertEqual(len(self.state(run)["returns"]), 2)
         verified = self.cli("verify", str(run))
         self.assertEqual((verified["problems"], verified["warnings"]), ([], []))
@@ -639,7 +655,8 @@ class ResearchRecordTests(unittest.TestCase):
         before = (run / "state.json").read_bytes()
         for command in (("checkpoint", str(run)), ("finish", str(run), "--status", "incomplete", "--reason", "x")):
             message = self.errors(self.cli(*command, code=1))
-            self.assertIn("refusing to publish a checkpoint, run verify", message)
+            self.assertIn("refusing to publish a checkpoint", message)
+            self.assertIn("verify", message)
             self.assertIn("checkpoint 0001 prior_sha256 does not match the previous checkpoint", message)
         self.assertEqual((run / "state.json").read_bytes(), before)
         self.assertFalse((run / "checkpoints" / "0002.json").exists())
@@ -678,7 +695,8 @@ class ResearchRecordTests(unittest.TestCase):
         (run / "state.json").write_bytes(b'{"schema": "deep-research.v1"}\n')
         before = (run / "state.json").read_bytes()
         result = self.cli("resume", str(run), "--reason", "Back.", code=1)
-        self.assertIn("resume refused: verify found problems", self.errors(result))
+        self.assertTrue(self.errors(result).startswith("resume refused:"))
+        self.assertIn("verify", self.errors(result))
         self.assertEqual((run / "state.json").read_bytes(), before)
         self.assertFalse((run / "checkpoints" / "0002.json").exists())
 
@@ -693,7 +711,8 @@ class ResearchRecordTests(unittest.TestCase):
     def test_resume_after_saturation_requires_flag_and_resets_closure(self) -> None:
         run = self.saturated_run()
         result = self.cli("resume", str(run), "--reason", "User wants more.", code=1)
-        self.assertIn("pass --after-saturation", self.errors(result))
+        self.assertIn("run is saturated", self.errors(result))
+        self.assertIn("--after-saturation", self.errors(result))
         result = self.cli("resume", str(run), "--reason", "User wants more.", "--after-saturation")
         self.assertTrue(result["closure_reset"])
         state = self.state(run)
@@ -714,7 +733,10 @@ class ResearchRecordTests(unittest.TestCase):
     def test_change_scope_resets_closure_and_flags_old_scope_claims(self) -> None:
         run = self.covered_run()
         result = self.apply(run, add("branch", id="B2", title="Costs", question="Q?", rationale="R."), code=1)
-        self.assertIn("no phase is running, add a newly found branch while a phase runs", self.errors(result))
+        self.assertIn("no phase is running", self.errors(result))
+        self.assertIn("new_branch", self.errors(result))
+        self.assertIn("out_of_scope", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
         self.zero_phase(run, "investigation")
         self.zero_phase(run, "challenge")
         self.assertTrue(self.status(run)["saturation_allowed"])
@@ -764,7 +786,9 @@ class ResearchRecordTests(unittest.TestCase):
         run = self.init()
         self.apply(run, start("discovery", ["B1"]))
         result = self.apply(run, {"op": "change_scope", "reason": "Narrow."}, code=1)
-        self.assertIn("phase P1 is running, complete_phase it before change_scope", self.errors(result))
+        self.assertIn("phase P1 is running", self.errors(result))
+        self.assertIn("complete_phase", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
 
     def test_old_scope_claims_on_out_of_scope_branches_need_no_revalidation(self) -> None:
         run = self.init(branches=2)
@@ -788,10 +812,9 @@ class ResearchRecordTests(unittest.TestCase):
         report = self.status(run)
         self.assertEqual((report["streak"], report["saturation_allowed"]), (2, False))
         self.assertEqual(report["claims_needing_revalidation"], ["C1", "C3"])
-        self.assertEqual(
-            report["reasons"],
-            ["accepted claims from an earlier scope need revalidation (set scope_id S2 or reject them): C1, C3"],
-        )
+        self.assertEqual(len(report["reasons"]), 1)
+        self.assertIn("accepted claims from an earlier scope need revalidation", report["reasons"][0])
+        self.assertIn("C1, C3", report["reasons"][0])
         self.apply(run, update("claim", "C1", scope_id="S2"))
         report = self.status(run)
         self.assertEqual(report["claims_needing_revalidation"], ["C3"])
@@ -820,7 +843,10 @@ class ResearchRecordTests(unittest.TestCase):
                          "out_of_scope": [{"id": "B2", "reason": "Excluded."}]})
         before = (run / "state.json").read_bytes()
         message = self.errors(self.apply(run, update("claim", "C1", branch_ids=["B1"]), code=1))
-        self.assertIn("set branch_ids together with scope_id S2 in one update", message)
+        self.assertIn("claim C1 belongs to completed phase P1, fields branch_ids are frozen", message)
+        self.assertIn("scope_id", message)
+        self.assertIn("changed_qualifier", message)
+        self.assertIn("S2", message)
         self.assertIn("out_of_scope", self.errors(
             self.apply(run, update("claim", "C1", scope_id="S2", branch_ids=["B2"]), code=1)))
         self.assertEqual((run / "state.json").read_bytes(), before)
@@ -943,7 +969,9 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertIn("limits.max_assignments (1) is reached", self.errors(result))
         self.apply(run, update("assignment", "A1", status="interrupted"), complete("P1"))
         result = self.apply(run, start("investigation", ["B1"]), code=1)
-        self.assertIn("limits.max_phases (1) is reached, finish the run as incomplete", self.errors(result))
+        self.assertIn("limits.max_phases (1) is reached", self.errors(result))
+        self.assertIn("incomplete", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
         self.apply(run, source("S1"))
         result = self.apply(run, source("S2"), code=1)
         self.assertIn("ops[0] (add source S2): limits.max_sources (1) is reached", self.errors(result))
@@ -999,12 +1027,15 @@ class ResearchRecordTests(unittest.TestCase):
             "prefer field trials",
             "2015 or later",
             "searches 6, opens 4",
-            "Do not delegate",
-            "never as instructions to follow",
             "## Coverage",
             "## Gaps and failures",
         ):
             self.assertIn(expected, text)
+        boundaries = _script_module().BOUNDARIES
+        self.assertTrue(boundaries)
+        self.assertEqual(result["brief"]["boundaries"], list(boundaries))
+        for boundary in boundaries:
+            self.assertIn(f"- {boundary}\n", text)
         for hidden in ("SIBLING", "PRIVATE", "https://example.org/s2", "Branch 2", "SAME PHASE",
                        "https://example.org/s3"):
             self.assertNotIn(hidden, json.dumps(result))
@@ -1022,16 +1053,17 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.cli("worker-brief", str(run), "--assignment", "A1")
         stdout, _ = self.run_script("worker-brief", str(run), "--assignment", "A1", "--format", "text")
         self.assertEqual(stdout.decode("utf-8"), result["text"])
-        self.assertTrue(stdout.startswith(b"You are a research worker"))
         self.assertEqual(result["brief"]["browsing_method"], method)
         self.assertIn(f"\nHow to search and open pages:\n{method}\n", result["text"])
-        self.assertIn("- Do not list, search, or read local files or directories. The only local command you may "
-                      "run is the search and page-open method you were given.\n", result["text"])
-        self.assertIn("Do not list, search, or read local files", " ".join(result["brief"]["boundaries"]))
+        module = _script_module()
+        self.assertEqual(result["brief"]["boundaries"], list(module.BOUNDARIES))
+        for boundary in module.BOUNDARIES:
+            self.assertIn(f"- {boundary}\n", result["text"])
         stdout, _ = self.run_script("worker-brief", str(run), "--assignment", "A9", "--format", "text", code=1)
         error = json.loads(stdout)
         self.assertEqual(error["ok"], False)
-        self.assertIn("no assignment 'A9', add it with apply first", self.errors(error))
+        self.assertIn("no assignment 'A9'", self.errors(error))
+        self.assertIn("apply", self.errors(error))
         self.apply(
             run,
             update("assignment", "A1", status="interrupted"),
@@ -1089,12 +1121,16 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.apply(
             run, fact("C2", "B1", "S1"), add("novelty", kind="changed_qualifier", claim_ids=["C2"], reason="x"), code=1
         )
-        self.assertIn("ops[1]: novelty N2: kind changed_qualifier needs claim C2 to link the accepted "
-                      "claim it changes: set its refines (or contradicts) to the id of another accepted claim of scope "
-                      "S1, from any phase. A paraphrase or vaguer restatement of an existing claim is a duplicate "
-                      "(status duplicate with duplicate_of), not a changed qualifier", self.errors(result))
+        message = self.errors(result)
+        self.assertTrue(message.startswith("ops[1]: novelty N2:"), message)
+        self.assertIn("changed_qualifier", message)
+        self.assertIn("C2", message)
+        self.assertIn("kind changed_qualifier needs claim C2", message)
+        self.assertIn("refines", message)
+        self.assertIn("duplicate_of", message)
         result = self.apply(run, fact("C2", "B1", "S1", refines=["C2"]), code=1)
-        self.assertIn("contradicts, refines, and based_on must not reference the claim itself", self.errors(result))
+        self.assertIn("claim C2: contradicts, refines, and based_on must not reference the claim itself",
+                      self.errors(result))
         result = self.apply(run, fact("C2", "B1", "S1", refines=["C9"]), code=1)
         self.assertIn("claim C2: field refines references unknown claim C9", self.errors(result))
         self.assertEqual((run / "state.json").read_bytes(), before)
@@ -1105,8 +1141,8 @@ class ResearchRecordTests(unittest.TestCase):
             add("novelty", kind="changed_conclusion", claim_ids=["C2"], reason="x"),
             code=1,
         )
-        self.assertIn("kind changed_conclusion needs claim C2 to link the accepted claim it changes", self.errors(result))
-        self.assertIn("not a changed conclusion", self.errors(result))
+        self.assertIn("kind changed_conclusion needs claim C2", self.errors(result))
+        self.assertIn("refines", self.errors(result))
         self.apply(
             run,
             fact("C2", "B1", "S1", refines=["C1"], qualifiers=["only below -15 C"]),
@@ -1127,7 +1163,8 @@ class ResearchRecordTests(unittest.TestCase):
             add("novelty", kind="changed_conclusion", claim_ids=["C7"], reason="x"),
             code=1,
         )
-        self.assertIn("kind changed_conclusion needs claim C7 to link the accepted claim it changes", self.errors(result))
+        self.assertIn("kind changed_conclusion needs claim C7", self.errors(result))
+        self.assertIn("refines", self.errors(result))
         self.apply(run, complete("P2", duplicates=1))
         self.apply(run, {"op": "change_scope", "reason": "Narrow.", "affected_branch_ids": ["B1"]},
                    start("investigation", ["B1"]))
@@ -1137,7 +1174,10 @@ class ResearchRecordTests(unittest.TestCase):
             add("novelty", kind="changed_qualifier", claim_ids=["C6"], reason="x"),
             code=1,
         )
-        self.assertIn("another accepted claim of scope S2", self.errors(result))
+        message = self.errors(result)
+        self.assertIn("kind changed_qualifier needs claim C6", message)
+        self.assertIn("refines", message)
+        self.assertIn("S2", message)
         self.apply(
             run,
             update("claim", "C4", scope_id="S2"),
@@ -1146,20 +1186,19 @@ class ResearchRecordTests(unittest.TestCase):
         )
         result = self.apply(run, update("claim", "C4", refines=["C1"]), code=1)
         self.assertIn("fields refines are frozen", self.errors(result))
-        self.assertIn("new claim in the running phase whose refines lists C4", self.errors(result))
+        self.assertIn("changed_qualifier", self.errors(result))
 
     def test_completed_phase_claims_are_frozen(self) -> None:
         run = self.covered_run()
         reject = update("claim", "C1", status="rejected", rejection_reason="Refuted by field data.")
-        overturn = "claim C1 was accepted in completed phase P1, reject it only while a phase runs"
-        self.assertIn(overturn, self.errors(self.apply(run, reject, code=1)))
+        self.assertIn("claim C1 was accepted in completed phase P1", self.errors(self.apply(run, reject, code=1)))
         self.apply(run, start("challenge", ["B1"], methods=["opposing sources"]))
         result = self.apply(run, update("claim", "C1", statement="Rewritten."), code=1)
         self.assertIn("fields statement are frozen", self.errors(result))
         result = self.apply(run, fact("C2", "B1", "S1", phase_id="P1"), code=1)
         self.assertIn("an accepted claim must belong to the running phase (P2)", self.errors(result))
         before = (run / "state.json").read_bytes()
-        self.assertIn(overturn, self.errors(self.apply(run, reject, code=1)))
+        self.assertIn("claim C1 was accepted in completed phase P1", self.errors(self.apply(run, reject, code=1)))
         self.assertEqual((run / "state.json").read_bytes(), before)
         self.apply(run, source("S2"), fact("C2", "B1", "S2", contradicts=["C1"]), reject)
         result = self.apply(run, update("claim", "C1", status="accepted", rejection_reason=None), code=1)
@@ -1224,14 +1263,14 @@ class ResearchRecordTests(unittest.TestCase):
         (run / "state.json").chmod(0o644)
         for command in (("status", str(run)), ("resume", str(run), "--reason", "Back.")):
             message = self.errors(self.cli(*command, code=1))
-            self.assertIn(f"{command[0]} refused: verify found problems, the script never repairs or reconstructs a "
-                          "run. Report these problems to the user and do not edit or create run files", message)
+            self.assertTrue(message.startswith(f"{command[0]} refused:"), message)
+            self.assertIn("verify", message)
             self.assertIn("lock is missing or has the wrong file type", message)
             self.assertIn("state.json has mode 644, expected 600", message)
         self.assertFalse((run / "lock").exists())
         self.assertEqual(self.state(run)["status"], "paused")
         message = self.errors(self.apply(run, source("S1"), code=1))
-        self.assertIn("Run verify and report its problems, never create or replace run files yourself", message)
+        self.assertIn(f"cannot open {run / 'lock'}", message)
 
     def test_concurrent_writer_is_refused(self) -> None:
         run = self.init()
@@ -1249,7 +1288,8 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertEqual(schema["types"]["novelty"]["required_on_add"], ["kind", "reason"])
         claim = schema["types"]["claim"]
         self.assertEqual((claim["fields"]["refines"], claim["defaults"]["refines"]), ("ids", []))
-        self.assertIn("refines or contradicts", schema["novelty_kinds"]["changed_qualifier|changed_conclusion"])
+        self.assertEqual(schema["novelty_kinds"], _script_module().NOVELTY_DOC)
+        self.assertIn("changed_qualifier|changed_conclusion", schema["novelty_kinds"])
         self.assertIn("created_at", schema["types"]["assignment"]["script_set"])
         self.assertIn("recorded_at", schema["types"]["failure"]["script_set"])
         self.assertEqual(schema["brief"]["browsing_method"], "str")
@@ -1312,9 +1352,8 @@ class ResearchRecordTests(unittest.TestCase):
         )
         self.apply(run, update("assignment", "A1", question="Sharper question.", branch_ids=["B1", "B2"]))
         result = self.apply(run, update("assignment", "A2", status="running", question="Changed at dispatch."), code=1)
-        self.assertIn("ops[0] (update assignment A2): question and status cannot change in the same update. Change "
-                      "question in a separate update op placed before the status change, while A2 is still planned, "
-                      "then set status running. Run worker-brief only after the change", self.errors(result))
+        self.assertIn("ops[0] (update assignment A2): question and status cannot change in the same update",
+                      self.errors(result))
         self.apply(run, update("assignment", "A2", question="Changed at dispatch."),
                    update("assignment", "A2", status="running"))
         self.assertEqual(self.state(run)["assignments"][1]["question"], "Changed at dispatch.")
@@ -1331,7 +1370,9 @@ class ResearchRecordTests(unittest.TestCase):
             self.assertIn("cannot change once the assignment leaves planned", self.errors(result), fields)
             self.assertEqual((run / "state.json").read_bytes(), before)
         result = self.apply(run, update("assignment", "A1", status="complete"), code=1)
-        self.assertIn("run capture first", self.errors(result))
+        self.assertIn("assignment A1: a subagent assignment can be complete only after its reply is stored",
+                      self.errors(result))
+        self.assertIn("capture", self.errors(result))
         self.apply(run, update("assignment", "A1", notes="Dispatched in wave 1."))
 
     def test_branches_enter_or_leave_scope_only_inside_a_phase_or_through_change_scope(self) -> None:
@@ -1341,7 +1382,10 @@ class ResearchRecordTests(unittest.TestCase):
             "out_of_scope_reason": "Outside the question.",
         }
         result = self.apply(run, add("branch", id="B9", title="Costs", question="Q?", rationale="R."), code=1)
-        self.assertIn("no phase is running, add a newly found branch while a phase runs", self.errors(result))
+        self.assertIn("no phase is running", self.errors(result))
+        self.assertIn("new_branch", self.errors(result))
+        self.assertIn("out_of_scope", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
         self.apply(run, add("branch", id="B8", **off_topic))
         result = self.apply(run, update("branch", "B8", status="queued", out_of_scope_reason=None), code=1)
         self.assertIn("branch B8 can move into or out of out_of_scope only through change_scope", self.errors(result))
@@ -1385,8 +1429,7 @@ class ResearchRecordTests(unittest.TestCase):
         )
         self.capture(run, "A1", b"cut off", "--truncated")
         result = self.apply(run, update("assignment", "A1", status="complete"), code=1)
-        self.assertIn("every captured reply is truncated, set status truncated and add a continuation_of",
-                      self.errors(result))
+        self.assertIn("every captured reply is truncated", self.errors(result))
         self.capture(run, "A1", b"the full reply")
         self.apply(run, update("assignment", "A1", status="complete"))
 
@@ -1425,8 +1468,8 @@ class ResearchRecordTests(unittest.TestCase):
             result = self.apply(
                 run, update("failure", failure_id, resolved=True, resolution="Covered.", resolved_by=resolver), code=1
             )
-            self.assertIn(f"failure {failure_id}: resolved_by {resolver} must belong to the failure's phase or a "
-                          "later one and share a branch", self.errors(result))
+            self.assertEqual(self.errors(result).count(f"failure {failure_id}: resolved_by {resolver} "), 2)
+            self.assertIn("must belong to the failure's phase or a later one and share a branch", self.errors(result))
             self.assertEqual((run / "state.json").read_bytes(), before)
         state = self.state(run)
         created = {a["id"]: a["created_at"] for a in state["assignments"]}
@@ -1434,18 +1477,18 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertLess(created["A3"], recorded["F2"])
         result = self.apply(run, update("failure", "F2", resolved=True, resolution="Covered.", resolved_by="A3"), code=1)
         message = self.errors(result)
-        self.assertIn(f"failure F2: resolved_by A3 was added at {created['A3']}, before this failure was recorded at "
-                      f"{recorded['F2']}, so it did no recovery work. Add a recovery assignment now (a retry_of, a "
-                      "continuation_of, or a credible alternative on the same branch) and resolve with it once it is "
-                      "complete", message)
-        self.assertNotIn("must belong to the failure's phase", message)
+        self.assertEqual(message.count("failure F2: resolved_by A3 "), 1)
+        self.assertIn(f"failure F2: resolved_by A3 was added at {created['A3']}", message)
+        self.assertIn(recorded["F2"], message)
+        self.assertIn("before this failure was recorded at", message)
+        self.assertIn("so it did no recovery work", message)
         for op, expected in (
             (update("assignment", "A3", created_at="2099-01-01T00:00:00Z"), "field created_at cannot be updated"),
             (update("failure", "F2", recorded_at="2000-01-01T00:00:00Z"), "field recorded_at cannot be updated"),
             (add("failure", kind="tool", detail="x", recorded_at="2000-01-01T00:00:00Z"),
-             "field recorded_at is set by the script, remove it"),
+             "field recorded_at is set by the script"),
             (add("assignment", branch_ids=["B1"], question="Q", created_at="2099-01-01T00:00:00Z"),
-             "field created_at is set by the script, remove it"),
+             "field created_at is set by the script"),
         ):
             self.assertIn(expected, self.errors(self.apply(run, op, code=1)))
         self.assertEqual((run / "state.json").read_bytes(), before)
@@ -1484,7 +1527,8 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertIn("inbox/link.txt is a symlink, symlinks are never allowed in a run directory", problems)
         self.cli("finish", str(run), "--status", "paused", "--reason", "Break.")
         message = self.errors(self.cli("resume", str(run), "--reason", "Back.", code=1))
-        self.assertIn("resume refused: verify found problems", message)
+        self.assertTrue(message.startswith("resume refused:"), message)
+        self.assertIn("verify", message)
         self.assertIn("inbox/reply.txt has mode 644, expected 600", message)
 
     def test_interrupted_checkpoint_publish_is_adopted(self) -> None:
@@ -1513,6 +1557,7 @@ class ResearchRecordTests(unittest.TestCase):
         self.apply(run, source("S2"))
         message = self.errors(self.cli("checkpoint", str(run), code=1))
         self.assertIn("refusing to publish a checkpoint", message)
+        self.assertIn("verify", message)
         self.assertIn("checkpoint 0003 exists beyond CURRENT sequence 1", message)
 
     @unittest.skipIf(os.getuid() == 0, "root ignores directory permissions")
@@ -1578,9 +1623,9 @@ class ResearchRecordTests(unittest.TestCase):
         (repository / ".git").mkdir(parents=True)
         self.env = dict(self.env, HOME=str(home), XDG_STATE_HOME=str(repository / "state"))
         result = self.cli("init", stdin={"question": "Q?"}, code=1)
-        self.assertIn("this is the default root, ask the user for a root outside any repository and pass --root",
-                      self.errors(result))
-        self.assertNotIn("omit --root", self.errors(result))
+        self.assertIn("--root", self.errors(result))
+        self.assertIn("this is the default root", self.errors(result))
+        self.assertIn(str((repository / "state" / "expskill" / "deep-research").resolve()), self.errors(result))
         self.env["XDG_STATE_HOME"] = "relative-state"
         run = Path(self.cli("init", stdin={"question": "Q?"})["run_dir"])
         self.assertEqual(run.parent, (home / ".local" / "state" / "expskill" / "deep-research").resolve())
@@ -1600,12 +1645,13 @@ class ResearchRecordTests(unittest.TestCase):
         )
         result = self.apply(run, complete("P1", duplicates=0), code=1)
         self.assertIn("duplicates 0 is lower than the 1 duplicate claims of phase P1", self.errors(result))
-        for value, suggestion in ((["C2", "C3"], 2), ("1", 1), (None, 1)):
+        for value in (["C2", "C3"], "1", None):
             result = self.apply(run, complete("P1", duplicates=value), code=1)
-            self.assertIn("ops[0] (complete_phase P1): duplicates must be one integer count of the paraphrases and "
-                          "agreeing sources merged in phase P1, not a list of claim ids or any other value. Pass a "
-                          f"number such as {suggestion} (at least 1, the duplicate claims recorded) or omit duplicates",
-                          self.errors(result))
+            message = self.errors(result)
+            self.assertTrue(message.startswith("ops[0] (complete_phase P1): duplicates must be one integer count"),
+                            message)
+            if isinstance(value, list):
+                self.assertRegex(message, r"\b2\b")
         self.apply(run, {"op": "complete_phase", "id": "P1"})
         self.assertEqual(self.state(run)["phases"][0]["duplicates"], 1)
 

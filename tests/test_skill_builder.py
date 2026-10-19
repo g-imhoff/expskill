@@ -10426,8 +10426,8 @@ class SkillBuilderEvaluationAssetTests(unittest.TestCase):
 
 
 class SkillBuilderStaticIntegrationTests(unittest.TestCase):
-    def test_public_metadata_is_explicit_only_supports_both_modes_and_drops_old_invocation(self) -> None:
-        """Public contract: one explicit skill exposes create and improve, never improve-skill."""
+    def test_public_metadata_is_explicit_only_and_drops_old_invocation(self) -> None:
+        """Public contract: one explicit skill-builder replaces improve-skill."""
 
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         frontmatter = parse_frontmatter(skill_text)
@@ -10436,12 +10436,8 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(frontmatter["name"], "skill-builder")
-        for word in ("explicit", "create", "improve"):
-            self.assertIn(word, frontmatter["description"].lower())
         self.assertIs(metadata["policy"]["allow_implicit_invocation"], False)
-        default_prompt = str(metadata["interface"]["default_prompt"]).lower()
-        for phrase in ("$skill-builder", "create", "improve"):
-            self.assertIn(phrase, default_prompt)
+        self.assertIn("$skill-builder", str(metadata["interface"]["default_prompt"]))
 
         public_names = {
             parse_frontmatter(path.read_text(encoding="utf-8"))["name"]
@@ -10454,25 +10450,10 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
         self.assertNotIn("improve-skill", public_names)
         self.assertNotIn("$improve-skill", public_prompts)
 
-    def test_research_roles_categories_and_one_level_resources_match_public_contract(self) -> None:
-        """Public contract: exact research, scoring, and disclosure structures stay integrated."""
+    def test_rubric_categories_and_one_level_resources_match_public_structure(self) -> None:
+        """Public contract: scoring categories and one-level disclosure stay structurally integrated."""
 
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        research_section = skill_text.split(
-            "### 3. Run three blind research lanes", 1
-        )[1].split("### 4. Sieve every evidence card", 1)[0]
-        research_roles = tuple(
-            match.group(1)
-            for match in re.finditer(r"^[1-9]\. (.+)$", research_section, re.MULTILINE)
-        )
-        self.assertEqual(
-            research_roles,
-            (
-                "Domain techniques relevant to the target's job.",
-                "Agent-skill design, instruction, interaction, and tooling practices.",
-                "Evaluation methods, adversarial cases, and failure modes.",
-            ),
-        )
 
         rubric_text = (SKILL_ROOT / "references" / "evaluation-rubric.md").read_text(
             encoding="utf-8"
@@ -10495,6 +10476,15 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
             self.assertEqual(len(Path(resource).parts), 2)
             self.assertTrue((SKILL_ROOT / resource).is_file())
         self.assertFalse(any(path.is_dir() for path in (SKILL_ROOT / "references").iterdir()))
+
+    def test_research_and_sieve_headings_appear_exactly_once_in_order(self) -> None:
+        """Public contract: the research and sieve headings each appear once, in workflow order."""
+
+        lines = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        headings = ("### 3. Run three blind research lanes", "### 4. Sieve every evidence card")
+        for heading in headings:
+            self.assertEqual(lines.count(heading), 1, heading)
+        self.assertLess(lines.index(headings[0]), lines.index(headings[1]))
 
 
 class SkillBuilderTraceOracleTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 # Research record
 
-Type the full command and the full run directory in every call, as
+Type the full command and run directory in every call, as
 self-contained lines. Shell variables and functions may not persist between
 calls, and zsh does not split a variable holding a whole command. `RUN` below
 is the absolute `run_dir` that `init` prints. Pass it verbatim to every later
@@ -9,8 +9,8 @@ call and to the final report.
 Each command prints one JSON object, except `worker-brief --format text`,
 which prints only the worker prompt. Run commands one at a time, or chain
 them with `&&` so a rejected step stops the rest. On `"ok": false`, nothing
-was written and the `errors` list names the op, record, field, and fix. Read
-the errors, correct the input, and rerun the same command. If the helper
+was written and the `errors` list names the op, record, field, and fix. Correct
+the input from the errors and rerun the same command. If the helper
 keeps rejecting a step you cannot correct, stop the run as `incomplete` and
 say why.
 
@@ -32,8 +32,7 @@ say why.
 - `verify RUN`: read-only integrity check of the whole run.
 - `resume RUN --reason TEXT [--after-saturation]`: reopen a paused,
   incomplete, or saturated run.
-- `schema`: the field and op reference, printing every field, default, enum,
-  and op shape.
+- `schema`: print every field, default, enum, and op shape.
 
 ## Brief
 
@@ -126,8 +125,8 @@ characters. Any record also accepts a free-text `notes` string.
   can be `complete` only after a capture not marked `--truncated`. A
   `failed` assignment needs a failure record with its `assignment_id`.
 - `complete_phase` refuses while assignments of the phase are planned or
-  running, while an accepted claim of the phase has no novelty event, or
-  while a branch discovered in the phase has no `new_branch` event.
+  running, an accepted claim of the phase has no novelty event, or
+  a branch discovered in the phase has no `new_branch` event.
 - A completed phase is eligible only when every worklist branch has a
   complete assignment in it, the worklist includes every in-scope branch that
   existed at its start, no in-scope branch is queued, active, or blocked,
@@ -139,8 +138,8 @@ characters. Any record also accepts a free-text `notes` string.
 ## Worker replies
 
 Paste each reply directly on stdin inside a quoted heredoc whose delimiter
-does not occur in the reply. Copy it character for character. Writing-style
-rules shape only your own prose, and the captured bytes stay byte-identical.
+appears nowhere in the reply. Copy it character for character. Writing-style
+rules shape only your own prose.
 The heredoc adds one final newline, which is expected.
 
 ```bash
@@ -170,7 +169,7 @@ assignment (one corrective retry per lineage), or cover it through a credible
 alternative assignment on the same branch in the same or a later phase.
 `continuation_of` names a truncated or interrupted assignment. Continue
 truncated work that way until it completes. Resolve a failure by setting
-`resolved`, a `resolution`, and `resolved_by` naming the completed recovery
+`resolved`, a `resolution`, and `resolved_by` naming the recovery
 assignment, which must be a different complete assignment, added at or after
 the failure was recorded, from the same or a later phase, that shares a
 branch with the failed one. When no recovery is possible, leave the failure
@@ -184,12 +183,12 @@ unresolved and finish `incomplete`.
   revalidate each old-scope accepted claim on an in-scope branch: set its
   `scope_id` to the new scope (adding in-scope `branch_ids` in the same update
   when its old branches left scope) or reject it. Then reopen only the
-  affected branches. Unrelated valid evidence keeps its original provenance and is
-  not presented as new research.
+  affected branches. Unrelated valid evidence keeps its original provenance and
+  phase credit.
 - Explicit pause: stop owned workers, then `finish --status paused`.
-- Explicit cancel or stop: interrupt owned workers right away, then
-  `finish --status cancelled`. Start no new research. Cancelled is terminal:
-  start a new run instead of resuming.
+- Explicit cancel or stop: interrupt owned workers immediately, then
+  `finish --status cancelled` and stop research. Cancelled is terminal: later
+  research needs a new run.
 - `finish --status paused` or `cancelled` marks running assignments
   `interrupted`.
 - `resume` first validates the whole run: owner, checkpoint chain, digests,

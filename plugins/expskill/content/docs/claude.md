@@ -48,7 +48,7 @@ claude plugin validate "$artifact_root/plugins/expskill" --strict
 claude plugin validate "$artifact_root" --strict
 ```
 
-The output directory must be explicit and must not already exist. A successful
+The output directory must be explicit and absent. A successful
 build contains `.claude-plugin/marketplace.json`, the plugin with
 `plugin.json`, `provenance.json`, generated `agents/`, the `skills/` mirror,
 shared `scripts/`, `hooks/`, `assets/`, and third-party licenses.

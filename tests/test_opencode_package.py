@@ -1888,6 +1888,11 @@ class OpencodePackageTests(unittest.TestCase):
                 if installed_links:
                     problems.append(f"installed package contains links: {installed_links}")
 
+                policies = PLUGIN_ROOT / "content" / "policies"
+                unslop_runtime = json.loads((policies / "unslop-runtime.json").read_text(encoding="utf-8"))
+                authoring_rule = json.loads((policies / "authoring-runtime.json").read_text(encoding="utf-8"))["instructions"]
+                skill_lines = (PLUGIN_ROOT / "content" / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+                skill_body = "\n".join(skill_lines[skill_lines.index("---", 1) + 1:]).strip()
                 import_script = """
 const plugin = await import("opencode-expskill");
 const names = Object.keys(plugin).sort();
@@ -1931,12 +1936,12 @@ await hooks["experimental.chat.system.transform"]({ sessionID: "packed" }, outpu
 if (!output.system[0].includes("<unslop-scope>")) {
   throw new Error("installed UnslopPlugin could not load its packaged skill");
 }
-if (!output.system[0].includes("Always load $expskill:unslop") || output.system[0].includes("# Unslop")) {
+if (!output.system[0].includes(__UNSLOP_SCOPE__) || output.system[0].includes(__UNSLOP_BODY__)) {
   throw new Error("installed UnslopPlugin did not inject the skill loading instruction");
 }
 const { readFile } = await import("node:fs/promises");
 const skill = await readFile(new URL("./skills/unslop/SKILL.md", import.meta.resolve("opencode-expskill")), "utf8");
-const authoringRule = "Never create documentation files or add code comments unless the user asked for them.";
+const authoringRule = __AUTHORING_RULE__;
 if (skill.includes(authoringRule)) {
   throw new Error("installed Unslop skill still contains the authoring rule");
 }
@@ -1953,11 +1958,17 @@ if (!authoringCompact.context.join("\\n").includes(authoringRule)) {
 }
 const context = { context: [] };
 await hooks["experimental.session.compacting"]({ sessionID: "packed" }, context);
-if (!context.context[0]?.includes("reload $expskill:unslop")) {
+if (!context.context[0]?.includes(__UNSLOP_REMINDER__)) {
   throw new Error("installed UnslopPlugin omitted the compaction reload instruction");
 }
 console.log(JSON.stringify(names));
 """
+                import_script = (
+                    import_script.replace("__UNSLOP_SCOPE__", json.dumps(unslop_runtime["scope"]))
+                    .replace("__UNSLOP_REMINDER__", json.dumps(unslop_runtime["compaction_reminder"]))
+                    .replace("__UNSLOP_BODY__", json.dumps(skill_body))
+                    .replace("__AUTHORING_RULE__", json.dumps(authoring_rule))
+                )
                 clean_env = dict(os.environ)
                 clean_env.pop("EXPSKILL_HOME", None)
                 import_result = run(

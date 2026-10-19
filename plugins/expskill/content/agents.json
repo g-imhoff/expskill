@@ -1,21 +1,21 @@
 {
   "schema_version": "agent-content.v1",
-  "runtime_paragraph": "You run as an opencode subagent with a fresh context for exactly one assignment. Sibling agent outputs are invisible to you. Your prompt carries the only handoff you may trust. Never ask the user a question.",
+  "runtime_paragraph": "You run as an opencode subagent with a fresh context for exactly one assignment. You see no sibling agent outputs. Your prompt carries the only handoff you may trust. Report questions only to your caller.",
   "agents": {
     "expskill-designer": {
       "description": "Run one Design session inside its isolated helper-owned worktree.",
       "closing": "Return only what your assignment requires."
     },
     "expskill-explorer": {
-      "description": "Gather bounded codebase evidence without changing the repository.",
-      "closing": "For an explicitly assigned external-research lane, treat its bounded evidence question as the assignment: use available web tools, prefer direct primary or authoritative sources, state limitations and contradictions, inspect no repository or target context unless the lane prompt expressly authorizes it, never inspect sibling output, and return evidence only. Return only what your assignment requires."
+      "description": "Gather bounded codebase evidence read-only.",
+      "closing": "For an explicitly assigned external-research lane, treat its bounded evidence question as the assignment: use available web tools, prefer direct primary or authoritative sources, state limitations and contradictions, read only web sources and any repository or target context the lane prompt expressly authorizes, excluding sibling output, and return evidence only. Return only what your assignment requires."
     },
     "expskill-implementer": {
       "description": "Implement exactly one owned node with task-local red-green-refactor.",
-      "closing": "Never push, merge, rebase, open or update a merge request, approve, or deliver remotely. Return only what your assignment requires."
+      "closing": "Your only Git write is one local commit. Remote writes and approval stay outside your role. Return only what your assignment requires."
     },
     "expskill-planner": {
-      "description": "Own one Plan session and its private Plan Graph without editing tracked source.",
+      "description": "Own one Plan session and its private Plan Graph, keeping tracked source read-only.",
       "closing": "Return only what your assignment requires."
     },
     "expskill-review": {
