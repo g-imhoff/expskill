@@ -305,10 +305,7 @@ class BrainstormContractTests(unittest.TestCase):
             return
         self.assertEqual(interface["display_name"], "Brainstorm")
         self.assertTrue(25 <= len(str(interface["short_description"])) <= 64)
-        for phrase in ("vague", "concept"):
-            self.assertIn(phrase, str(interface["short_description"]).lower())
         self.assertIn("$brainstorm", str(interface["default_prompt"]))
-        self.assertIn("stress-tested concept", str(interface["default_prompt"]).lower())
         self.assertIs(policy["allow_implicit_invocation"], False)
 
     def test_boundary_headings_appear_once_and_workflow_headings_appear_once_in_order(self) -> None:

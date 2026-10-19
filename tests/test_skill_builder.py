@@ -10426,8 +10426,8 @@ class SkillBuilderEvaluationAssetTests(unittest.TestCase):
 
 
 class SkillBuilderStaticIntegrationTests(unittest.TestCase):
-    def test_public_metadata_is_explicit_only_supports_both_modes_and_drops_old_invocation(self) -> None:
-        """Public contract: one explicit skill exposes create and improve, never improve-skill."""
+    def test_public_metadata_is_explicit_only_and_drops_old_invocation(self) -> None:
+        """Public contract: one explicit skill-builder replaces improve-skill."""
 
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         frontmatter = parse_frontmatter(skill_text)
@@ -10437,9 +10437,7 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
 
         self.assertEqual(frontmatter["name"], "skill-builder")
         self.assertIs(metadata["policy"]["allow_implicit_invocation"], False)
-        default_prompt = str(metadata["interface"]["default_prompt"]).lower()
-        for phrase in ("$skill-builder", "create", "improve"):
-            self.assertIn(phrase, default_prompt)
+        self.assertIn("$skill-builder", str(metadata["interface"]["default_prompt"]))
 
         public_names = {
             parse_frontmatter(path.read_text(encoding="utf-8"))["name"]

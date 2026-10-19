@@ -24,7 +24,7 @@ class ImplementContractTests(unittest.TestCase):
         }
         self.assertEqual(files, {"SKILL.md"})
         metadata = (PLUGIN / "codex" / "skill-adapters" / "implement" / "agents" / "openai.yaml").read_text(encoding="utf-8")
-        self.assertIn('default_prompt: "Use $implement', metadata)
+        self.assertRegex(metadata, r'(?m)^  default_prompt: ".*\$implement\b')
         self.assertIn("allow_implicit_invocation: false", metadata)
 
     def test_retired_implement_state_helper_stays_absent(self) -> None:

@@ -314,6 +314,8 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.apply(run, complete("P1"), code=1)
         message = self.errors(result)
         self.assertIn("accepted claim C1 has no novelty event in phase P1", message)
+        self.assertIn("duplicate", message)
+        self.assertIn("rejected", message)
         self.assertIn("branch B3 was discovered in phase P1 but has no new_branch novelty event", message)
         result = self.apply(run, add("novelty", kind="new_claim", claim_ids=["C2"], reason="x"), code=1)
         self.assertIn("claim C2 must be accepted and recorded in phase P1", self.errors(result))
@@ -363,6 +365,8 @@ class ResearchRecordTests(unittest.TestCase):
             {key: phase[key] for key in ("id", "eligible", "zero_novelty", "novelty_count", "blockers")}
         ])
         self.assertIn("branch B2 is active at completion", " ".join(phase["blockers"]))
+        self.assertIn("covered", " ".join(phase["blockers"]))
+        self.assertIn("complete_phase", " ".join(phase["blockers"]))
         self.assertFalse(phase["eligible"])
         self.assertFalse(phase["zero_novelty"])
         self.assertEqual(phase["novelty_count"], 0)
@@ -571,6 +575,7 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.apply(run, update("assignment", "A1", status="complete"), code=1)
         self.assertIn("assignment A1: a subagent assignment can be complete only after its reply is stored",
                       self.errors(result))
+        self.assertIn("capture", self.errors(result))
         result = self.apply(run, update("assignment", "A1", status="failed"), code=1)
         self.assertIn("status failed needs a failure record with assignment_id A1", self.errors(result))
         self.apply(run, update("assignment", "A1", status="interrupted"))
@@ -608,6 +613,7 @@ class ResearchRecordTests(unittest.TestCase):
         missing = self.cli("capture", str(run), "--assignment", "A1", "--file", str(self.base / "missing.txt"), code=1)
         self.assertIn(f"cannot read --file {self.base / 'missing.txt'}: {os.strerror(errno.ENOENT)}",
                       self.errors(missing))
+        self.assertIn("stdin", self.errors(missing))
         self.assertEqual(len(self.state(run)["returns"]), 2)
         verified = self.cli("verify", str(run))
         self.assertEqual((verified["problems"], verified["warnings"]), ([], []))
@@ -650,6 +656,7 @@ class ResearchRecordTests(unittest.TestCase):
         for command in (("checkpoint", str(run)), ("finish", str(run), "--status", "incomplete", "--reason", "x")):
             message = self.errors(self.cli(*command, code=1))
             self.assertIn("refusing to publish a checkpoint", message)
+            self.assertIn("verify", message)
             self.assertIn("checkpoint 0001 prior_sha256 does not match the previous checkpoint", message)
         self.assertEqual((run / "state.json").read_bytes(), before)
         self.assertFalse((run / "checkpoints" / "0002.json").exists())
@@ -689,6 +696,7 @@ class ResearchRecordTests(unittest.TestCase):
         before = (run / "state.json").read_bytes()
         result = self.cli("resume", str(run), "--reason", "Back.", code=1)
         self.assertTrue(self.errors(result).startswith("resume refused:"))
+        self.assertIn("verify", self.errors(result))
         self.assertEqual((run / "state.json").read_bytes(), before)
         self.assertFalse((run / "checkpoints" / "0002.json").exists())
 
@@ -704,6 +712,7 @@ class ResearchRecordTests(unittest.TestCase):
         run = self.saturated_run()
         result = self.cli("resume", str(run), "--reason", "User wants more.", code=1)
         self.assertIn("run is saturated", self.errors(result))
+        self.assertIn("--after-saturation", self.errors(result))
         result = self.cli("resume", str(run), "--reason", "User wants more.", "--after-saturation")
         self.assertTrue(result["closure_reset"])
         state = self.state(run)
@@ -725,6 +734,9 @@ class ResearchRecordTests(unittest.TestCase):
         run = self.covered_run()
         result = self.apply(run, add("branch", id="B2", title="Costs", question="Q?", rationale="R."), code=1)
         self.assertIn("no phase is running", self.errors(result))
+        self.assertIn("new_branch", self.errors(result))
+        self.assertIn("out_of_scope", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
         self.zero_phase(run, "investigation")
         self.zero_phase(run, "challenge")
         self.assertTrue(self.status(run)["saturation_allowed"])
@@ -775,6 +787,8 @@ class ResearchRecordTests(unittest.TestCase):
         self.apply(run, start("discovery", ["B1"]))
         result = self.apply(run, {"op": "change_scope", "reason": "Narrow."}, code=1)
         self.assertIn("phase P1 is running", self.errors(result))
+        self.assertIn("complete_phase", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
 
     def test_old_scope_claims_on_out_of_scope_branches_need_no_revalidation(self) -> None:
         run = self.init(branches=2)
@@ -830,6 +844,8 @@ class ResearchRecordTests(unittest.TestCase):
         before = (run / "state.json").read_bytes()
         message = self.errors(self.apply(run, update("claim", "C1", branch_ids=["B1"]), code=1))
         self.assertIn("claim C1 belongs to completed phase P1, fields branch_ids are frozen", message)
+        self.assertIn("scope_id", message)
+        self.assertIn("changed_qualifier", message)
         self.assertIn("S2", message)
         self.assertIn("out_of_scope", self.errors(
             self.apply(run, update("claim", "C1", scope_id="S2", branch_ids=["B2"]), code=1)))
@@ -954,6 +970,8 @@ class ResearchRecordTests(unittest.TestCase):
         self.apply(run, update("assignment", "A1", status="interrupted"), complete("P1"))
         result = self.apply(run, start("investigation", ["B1"]), code=1)
         self.assertIn("limits.max_phases (1) is reached", self.errors(result))
+        self.assertIn("incomplete", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
         self.apply(run, source("S1"))
         result = self.apply(run, source("S2"), code=1)
         self.assertIn("ops[0] (add source S2): limits.max_sources (1) is reached", self.errors(result))
@@ -1045,6 +1063,7 @@ class ResearchRecordTests(unittest.TestCase):
         error = json.loads(stdout)
         self.assertEqual(error["ok"], False)
         self.assertIn("no assignment 'A9'", self.errors(error))
+        self.assertIn("apply", self.errors(error))
         self.apply(
             run,
             update("assignment", "A1", status="interrupted"),
@@ -1107,6 +1126,8 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertIn("changed_qualifier", message)
         self.assertIn("C2", message)
         self.assertIn("kind changed_qualifier needs claim C2", message)
+        self.assertIn("refines", message)
+        self.assertIn("duplicate_of", message)
         result = self.apply(run, fact("C2", "B1", "S1", refines=["C2"]), code=1)
         self.assertIn("claim C2: contradicts, refines, and based_on must not reference the claim itself",
                       self.errors(result))
@@ -1121,6 +1142,7 @@ class ResearchRecordTests(unittest.TestCase):
             code=1,
         )
         self.assertIn("kind changed_conclusion needs claim C2", self.errors(result))
+        self.assertIn("refines", self.errors(result))
         self.apply(
             run,
             fact("C2", "B1", "S1", refines=["C1"], qualifiers=["only below -15 C"]),
@@ -1142,6 +1164,7 @@ class ResearchRecordTests(unittest.TestCase):
             code=1,
         )
         self.assertIn("kind changed_conclusion needs claim C7", self.errors(result))
+        self.assertIn("refines", self.errors(result))
         self.apply(run, complete("P2", duplicates=1))
         self.apply(run, {"op": "change_scope", "reason": "Narrow.", "affected_branch_ids": ["B1"]},
                    start("investigation", ["B1"]))
@@ -1153,6 +1176,7 @@ class ResearchRecordTests(unittest.TestCase):
         )
         message = self.errors(result)
         self.assertIn("kind changed_qualifier needs claim C6", message)
+        self.assertIn("refines", message)
         self.assertIn("S2", message)
         self.apply(
             run,
@@ -1162,6 +1186,7 @@ class ResearchRecordTests(unittest.TestCase):
         )
         result = self.apply(run, update("claim", "C4", refines=["C1"]), code=1)
         self.assertIn("fields refines are frozen", self.errors(result))
+        self.assertIn("changed_qualifier", self.errors(result))
 
     def test_completed_phase_claims_are_frozen(self) -> None:
         run = self.covered_run()
@@ -1239,6 +1264,7 @@ class ResearchRecordTests(unittest.TestCase):
         for command in (("status", str(run)), ("resume", str(run), "--reason", "Back.")):
             message = self.errors(self.cli(*command, code=1))
             self.assertTrue(message.startswith(f"{command[0]} refused:"), message)
+            self.assertIn("verify", message)
             self.assertIn("lock is missing or has the wrong file type", message)
             self.assertIn("state.json has mode 644, expected 600", message)
         self.assertFalse((run / "lock").exists())
@@ -1346,6 +1372,7 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.apply(run, update("assignment", "A1", status="complete"), code=1)
         self.assertIn("assignment A1: a subagent assignment can be complete only after its reply is stored",
                       self.errors(result))
+        self.assertIn("capture", self.errors(result))
         self.apply(run, update("assignment", "A1", notes="Dispatched in wave 1."))
 
     def test_branches_enter_or_leave_scope_only_inside_a_phase_or_through_change_scope(self) -> None:
@@ -1356,6 +1383,9 @@ class ResearchRecordTests(unittest.TestCase):
         }
         result = self.apply(run, add("branch", id="B9", title="Costs", question="Q?", rationale="R."), code=1)
         self.assertIn("no phase is running", self.errors(result))
+        self.assertIn("new_branch", self.errors(result))
+        self.assertIn("out_of_scope", self.errors(result))
+        self.assertIn("change_scope", self.errors(result))
         self.apply(run, add("branch", id="B8", **off_topic))
         result = self.apply(run, update("branch", "B8", status="queued", out_of_scope_reason=None), code=1)
         self.assertIn("branch B8 can move into or out of out_of_scope only through change_scope", self.errors(result))
@@ -1498,6 +1528,7 @@ class ResearchRecordTests(unittest.TestCase):
         self.cli("finish", str(run), "--status", "paused", "--reason", "Break.")
         message = self.errors(self.cli("resume", str(run), "--reason", "Back.", code=1))
         self.assertTrue(message.startswith("resume refused:"), message)
+        self.assertIn("verify", message)
         self.assertIn("inbox/reply.txt has mode 644, expected 600", message)
 
     def test_interrupted_checkpoint_publish_is_adopted(self) -> None:
@@ -1526,6 +1557,7 @@ class ResearchRecordTests(unittest.TestCase):
         self.apply(run, source("S2"))
         message = self.errors(self.cli("checkpoint", str(run), code=1))
         self.assertIn("refusing to publish a checkpoint", message)
+        self.assertIn("verify", message)
         self.assertIn("checkpoint 0003 exists beyond CURRENT sequence 1", message)
 
     @unittest.skipIf(os.getuid() == 0, "root ignores directory permissions")
