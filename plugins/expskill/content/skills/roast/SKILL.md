@@ -5,15 +5,13 @@ description: Score a change with adversarial category reviewers and report each 
 
 # Roast
 
-Run this before opening a PR or asking a person to review when one review pass is enough.
-
 ## Pin the scope
 
 Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. If scope drifts, keep the original pin and disclose both identities. Disclose any mix of revisions.
 
 ## Derive categories from the diff
 
-Read the pinned diff first. Name five to eight categories that fit this change, with one line each saying what good looks like. Let the diff decide the set. Write the list with weights totaling 100 percent. Every later score uses these weights.
+Read the pinned diff first. Name five to eight categories that fit this change, with one line each saying what good looks like. Write the list with weights totaling 100 percent. Every later score uses these weights.
 
 ## Review each category
 

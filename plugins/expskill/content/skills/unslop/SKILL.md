@@ -20,8 +20,6 @@ Apply these rules to natural-language user-facing prose you author, including co
 
 ## Adding soul
 
-Removing patterns is half the job. Sterile, voiceless writing is just as obvious.
-
 - **Have opinions.** React to facts instead of neutrally listing pros and cons.
 - **Vary rhythm.** Short sentences. Then longer ones that take their time. Mix it up.
 - **Acknowledge complexity.** "Impressive but also kind of unsettling" beats "impressive."

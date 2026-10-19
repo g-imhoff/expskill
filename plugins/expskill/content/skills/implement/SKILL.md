@@ -5,8 +5,7 @@ description: Build an accepted implementation brief with isolated TDD workers an
 
 # Implement
 
-Turn an accepted direct brief or ready Plan Graph work into a locally integrated reviewed
-implementation. This skill coordinates the work. Fresh agents implement and judge it.
+Start from an accepted direct brief or ready Plan Graph work.
 
 Use only for explicit `$implement` or when the active coordinator deliberately selects implementation.
 Stay inactive for vague ideas, planning, read-only requests, hands-on UI review, remote delivery,

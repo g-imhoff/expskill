@@ -6,15 +6,12 @@ description: Turn a concrete direction into an accepted technical plan. Only the
 
 ## Boundary
 
-`$plan` is a standalone, concept- and source-read-only planning skill
-that the user can also run as one direct CLI conversation beside Design.
-Accept a
-completed Concept Brief or another sufficiently concrete direction. Preserve
-settled conceptual decisions. If technical evidence exposes a contradiction,
-propose the smallest amendment for approval. Concept
-ideation stays with Brainstorm.
+Accept a completed Concept Brief or another sufficiently concrete direction.
+Preserve settled conceptual decisions. If technical evidence exposes a
+contradiction, propose the smallest amendment for approval. Concept ideation
+stays with Brainstorm.
 
-Return `not-ready` for a vague direction. Plan may invoke, open, select, or recommend only `$grill-me` at step 7 for choosing between feasible options. Its work is planning alone: implementation, review, verification, integration, and GitHub delivery belong to later phases. Its only writes are private graph operations through the helper and the one confirmed branch operation defined below.
+Return `not-ready` for a vague direction. Plan may invoke, open, select, or recommend only `$grill-me` at step 7 for choosing between feasible options. Its only writes are private graph operations through the helper and the one confirmed branch operation defined below.
 
 ## Workflow
 
@@ -74,4 +71,4 @@ The graph records later Git execution as planned topology. The non-protected wor
 
 On standalone success, say concisely that the plan is ready, summarize its high-level execution shape, material protections, proof intent, and workflow branch in human terms, and disclose honest non-blocking risks. Name the workflow branch, the baseline commit, and the confirmed material decisions so a later phase continues from that summary plus the graph with no re-asking. Keep the private graph for later direct phases or `use-expskill`. Hand off only that plain summary and the kept graph, then stop before implementation.
 
-A later authorized lifecycle, not `$plan`, may push after the first coherent implementation commit, open a draft request against a protected destination, and bind checks to its exact head. It may reach `ready-for-human-review` only after planned work, review findings, independent verification, target and join proof, required checks, and lane cleanup are current. At that terminal gate the helper emits a durable receipt and deletes owned graph generations. The human alone approves, merges, enables auto-merge, and enters the merge queue. Manual review and merge remain outside observable AI control.
+A later authorized lifecycle, not `$plan`, may push after the first coherent implementation commit, open a draft request against a protected destination, and bind checks to its exact head. It may reach `ready-for-human-review` only after planned work, review findings, independent verification, target and join proof, required checks, and lane cleanup are current. At that terminal gate the helper emits a durable receipt and deletes owned graph generations. The human alone approves, merges, enables auto-merge, and enters the merge queue.

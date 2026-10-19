@@ -6,10 +6,10 @@ description: Run large online research with phased subagents, cited evidence, an
 ## Selection and authority
 
 - Activate only for `$deep-research`, `$expskill:deep-research`, the host's
-  slash command for this skill, or an explicit request to use this named
-  skill. Ordinary lookups, generic research, summaries, explanations,
-  brainstorming, planning, code work, skill authoring, and requests for a
-  "deep" answer select nothing on their own.
+  slash command for this skill, or an explicit request to use this named skill.
+  Passing or negated mentions of the name, ordinary lookups, generic research,
+  summaries, explanations, brainstorming, planning, code work, skill authoring,
+  and requests for a "deep" answer select nothing on their own.
 - Confirm you loaded this skill. This one keeps its record in
   `scripts/research_record.py` and stops only after two quiet phases ending
   with a challenge. A loaded skill that describes researchers and a report
@@ -72,8 +72,7 @@ and leave validation and schema parsing to the helper.
 ## Research in phases
 
 You are the single coordinator and own the record, source acceptance, branch
-scheduling, user interaction, and the final synthesis. Workers only gather
-evidence.
+scheduling, user interaction, and the final synthesis.
 
 Each phase:
 

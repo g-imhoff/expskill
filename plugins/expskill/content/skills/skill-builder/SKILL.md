@@ -4,19 +4,17 @@ description: Create, improve, redesign, or evaluate an agent skill. Only the use
 ---
 # Skill Builder
 
-Build, improve, redesign, or evaluate one exact agent skill through evidence bound to the user's confirmed intent.
-
 ## Boundary
 
-`$skill-builder` is standalone and explicit-only. Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Run independently of product lifecycle phases and ambient authoring skills, invoking neither.
+Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Run independently of product lifecycle phases and ambient authoring skills, invoking neither.
 
-Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence. Static validation alone is incomplete.
+Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence.
 
 Read [artifact contracts](references/artifact-contracts.md) completely at run start and again before resuming persisted work. Read [evaluation rubric](references/evaluation-rubric.md) completely before freezing the evaluation pack and before every review or scoring pass.
 
 ## Durable run state
 
-Resolve the package's `scripts/run_state.py` relative to the loaded skill and use only the interface its runtime help exposes for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Read flags from runtime help and change state only through the helper.
+Resolve the package's `scripts/run_state.py` relative to the loaded skill and use only the interface its runtime help exposes for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Change state only through the helper.
 
 The helper owns private XDG state outside target repositories and requires immutable hash-chained transition receipts, strict manifests, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat current-state files as replaceable derived indexes and missing, stale, inconsistent, or unauditable state as a failed gate. Before every transition the helper validates the receipt chain, immutable artifacts, derived state, input bindings, target snapshot, and allowed transition. Success appends one canonical receipt linked to the prior digest. Failure appends nothing, keeps the current stage, and blocks downstream work. Open the artifact contracts' binding, invalidation, recovery, and tombstone sections whenever a transition fails.
 

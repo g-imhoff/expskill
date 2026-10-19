@@ -5,10 +5,9 @@ description: Inspect a code scope and save a rated, evidence-backed report of de
 
 # Review
 
-Try to disprove the supplied scope's correctness. Report every supported
-issue without inventing findings. The invoking agent performs every step of this
-standalone review itself. `expskill-review` belongs to Implement, whose
-review and spec gates run separately.
+Try to disprove the supplied scope's correctness. The invoking agent performs
+every step of this standalone review itself. `expskill-review` belongs to
+Implement, whose review and spec gates run separately.
 
 ## Anchor scope and evidence
 
