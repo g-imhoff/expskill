@@ -160,8 +160,8 @@ class CliInstallIntegrationTests(unittest.TestCase):
             self.assertEqual(plugin.get("pluginId"), "expskill@expskill")
             installed_path = Path(str(plugin.get("installedPath")))
             self.assertEqual(
-                len(tuple(installed_path.glob("skills/*/agents/openai.yaml"))),
-                16,
+                {path.parents[1].name for path in installed_path.glob("skills/*/agents/openai.yaml")},
+                {path.parent.name for path in (ROOT / "plugins" / "expskill" / "content" / "skills").glob("*/SKILL.md")},
             )
 
             # Codex plugins do not register agent profiles: copy the seven
