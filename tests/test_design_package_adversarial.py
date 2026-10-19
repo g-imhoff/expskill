@@ -27,7 +27,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         return temporary
 
     def test_guide_and_manifest_expose_sixteen_skills_including_correct(self) -> None:
-        """Regression: stale phase language hides a direct skill or contradicts the public roster."""
+        """Regression: stale phase wording in the guide or manifest contradicts the public roster."""
         guide = (ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
@@ -56,11 +56,17 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$autonomous-run", long_description)
         self.assertIn("$deep-research", long_description)
         self.assertRegex(description, skill_wording)
-        self.assertNotRegex(guide, re.compile(r"\b(?:six|seven|eight|nine) independent development phases\b", re.I))
-        self.assertNotRegex(description, re.compile(r"\b(?:six|seven|eight|nine) standalone development phases\b", re.I))
+        self.assertNotRegex(
+            guide,
+            re.compile(r"\b(?:six|seven|eight|nine) independent development phases\b", re.I),
+        )
+        self.assertNotRegex(
+            description,
+            re.compile(r"\b(?:six|seven|eight|nine) standalone development phases\b", re.I),
+        )
 
-    def test_validator_accepts_skill_builder_maximum_package_shape(self) -> None:
-        """Regression: the joined state helper is allowed without becoming required in this lane."""
+    def test_validator_accepts_an_optional_skill_builder_state_helper(self) -> None:
+        """A run_state.py helper added to the Skill Builder scripts directory validates."""
 
         root = self._copy_repository()
         scripts = root / "plugins" / "expskill" / "content" / "skills" / "skill-builder" / "scripts"
@@ -87,7 +93,8 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 "skill-builder",
                 "another product skill invocation token",
             ),
-            "lifecycle-coupling": ("skill-builder", "canonical boundary section"),
+            "lifecycle-coupling": ("skill-builder", "lifecycle wording outside"),
+            "duplicate-boundary": ("skill-builder", "exactly one boundary section"),
             "router-coupling": (
                 "use-expskill",
                 "must not name skill-builder",
@@ -106,7 +113,10 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 elif mutation == "unexpected-directory":
                     (builder / "scratch").mkdir()
                 elif mutation == "implicit-invocation":
-                    metadata = root / "plugins" / "expskill" / "codex" / "skill-adapters" / "skill-builder" / "agents" / "openai.yaml"
+                    metadata = (
+                        root / "plugins" / "expskill" / "codex" / "skill-adapters"
+                        / "skill-builder" / "agents" / "openai.yaml"
+                    )
                     metadata.write_text(
                         metadata.read_text(encoding="utf-8").replace(
                             "allow_implicit_invocation: false",
@@ -143,12 +153,20 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     )
                 elif mutation == "lifecycle-coupling":
                     contract = builder / "SKILL.md"
+                    original = contract.read_text(encoding="utf-8")
+                    changed = original.replace(
+                        "## Boundary\n",
+                        "## Lifecycle routing\n\nRun the lifecycle after finalization.\n\n"
+                        "## Boundary\n",
+                        1,
+                    )
+                    self.assertNotEqual(changed, original)
+                    contract.write_text(changed, encoding="utf-8")
+                elif mutation == "duplicate-boundary":
+                    contract = builder / "SKILL.md"
                     contract.write_text(
-                        contract.read_text(encoding="utf-8").replace(
-                            "Do not invoke or depend on a product lifecycle phase",
-                            "Invoke and depend on a product lifecycle phase",
-                            1,
-                        ),
+                        contract.read_text(encoding="utf-8")
+                        + "\n## Boundary\n\nSecond boundary section.\n",
                         encoding="utf-8",
                     )
                 elif mutation == "router-coupling":
@@ -247,57 +265,6 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         for error in errors
                     ),
                     f"Skill Builder name escaped router validation: {addition!r}: {errors}",
-                )
-
-    def test_validator_pins_the_canonical_skill_builder_boundary_section(self) -> None:
-        """Regression: arbitrary negative prose cannot replace or extend the pinned boundary."""
-
-        mutations = (
-            (
-                "replace",
-                "Do not invoke or depend on a product lifecycle phase",
-                "Remain separate from the product lifecycle",
-            ),
-            (
-                "append",
-                "",
-                "\nRemain separate from the lifecycle.\n",
-            ),
-            (
-                "append",
-                "",
-                "\nExclude lifecycle routing.\n",
-            ),
-        )
-        for operation, original, replacement in mutations:
-            with self.subTest(operation=operation, replacement=replacement):
-                root = self._copy_repository()
-                contract = (
-                    root
-                    / "plugins"
-                    / "expskill"
-                    / "content"
-                    / "skills"
-                    / "skill-builder"
-                    / "SKILL.md"
-                )
-                contents = contract.read_text(encoding="utf-8")
-                if operation == "replace":
-                    contents = contents.replace(original, replacement, 1)
-                else:
-                    contents += replacement
-                contract.write_text(contents, encoding="utf-8")
-                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
-                self.assertTrue(
-                    any(
-                        "skill-builder" in error
-                        and (
-                            "canonical boundary section" in error
-                            or "lifecycle wording outside" in error
-                        )
-                        for error in errors
-                    ),
-                    f"boundary drift escaped validation: {errors}",
                 )
 
     def test_manifest_requires_the_exact_skill_builder_token(self) -> None:
@@ -442,7 +409,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     f"Guide token collision {replacement!r} escaped validation: {errors}",
                 )
 
-    def test_guide_allows_only_the_two_canonical_skill_builder_mentions(self) -> None:
+    def test_guide_rejects_extra_skill_builder_mentions(self) -> None:
         """Regression: unmarked Skill Builder prose is structural drift regardless of sentiment."""
 
         additions = (

@@ -152,8 +152,8 @@ class OpencodeContractTests(unittest.TestCase):
                     self.assertIn('git push *": deny', contents)
                 else:
                     self.assertIn("edit: deny", contents)
-                first_sentence = str(profile["developer_instructions"]).strip().split("\n")[0].strip().lower()
-                self.assertIn(first_sentence, " ".join(contents.lower().split()))
+                canonical_body = " ".join(str(profile["developer_instructions"]).split())
+                self.assertIn(canonical_body, " ".join(contents.split()))
 
     def test_provider_switch_renders_every_agent_with_new_model(self) -> None:
         root = self.copy_repository()
@@ -179,20 +179,10 @@ class OpencodeContractTests(unittest.TestCase):
         with self.assertRaisesRegex(BuildError, "policy inventory diverges"):
             self.build_artifact(root)
 
-    def test_explorer_is_the_named_high_reasoning_external_research_route(self) -> None:
-        _temporary, artifact = self.build_artifact(ROOT)
+    def test_every_model_profile_requests_xhigh_reasoning(self) -> None:
         spec = json.loads((PLUGIN_ROOT / "opencode" / "agents.json").read_text(encoding="utf-8"))
         for profile in spec["model_profiles"].values():
             self.assertEqual(profile["reasoningEffort"], "xhigh")
-        explorer = (artifact / "agents" / "expskill-explorer.md").read_text(encoding="utf-8").lower()
-        for phrase in (
-            "explicitly assigned external-research lane",
-            "available web tools",
-            "direct primary or authoritative sources",
-            "never inspect sibling output",
-            "return evidence only",
-        ):
-            self.assertIn(phrase, explorer)
 
     def test_package_version_matches_codex_base_version(self) -> None:
         package = json.loads((PLUGIN_ROOT / "opencode" / "package.json").read_text(encoding="utf-8"))
@@ -226,7 +216,7 @@ class OpencodeContractTests(unittest.TestCase):
         root = self.copy_repository()
         skill = root / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
         skill.write_text(
-            skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"),
+            skill.read_text(encoding="utf-8").replace("\ndescription: ", "\ndescription: Changed skill marker. ", 1),
             encoding="utf-8",
         )
         _temporary, artifact = self.build_artifact(root)

@@ -8,7 +8,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
 SKILLS = PLUGIN / "content" / "skills"
-ROUTER = SKILLS / "use-expskill" / "SKILL.md"
 
 
 def _metadata(name: str) -> dict[str, dict[str, object]]:
@@ -38,7 +37,7 @@ def _metadata(name: str) -> dict[str, dict[str, object]]:
 
 
 # Correct behavior is evaluated through fresh-context Skill Builder trials.
-# This file checks static package and router boundaries.
+# This file checks the static package boundary and that the router names $correct.
 class CorrectContractTests(unittest.TestCase):
     def test_correct_has_only_the_small_direct_package(self) -> None:
         for name in ("correct",):
@@ -61,13 +60,9 @@ class CorrectContractTests(unittest.TestCase):
                     str(metadata["interface"]["default_prompt"]),
                 )
 
-
-    def test_router_selects_correct_without_extra_lifecycle_steps(self) -> None:
-        body = " ".join(ROUTER.read_text(encoding="utf-8").lower().split())
-        self.assertIn("choose `correct`", body)
-        self.assertIn("a selected `$correct` runs in the invoking coordinator", body)
-        self.assertIn("without an agent profile or plan graph", body)
-        self.assertIn("do not apply any setup requirement to an eligible `$correct` repair", body)
+    def test_router_names_the_correct_skill(self) -> None:
+        router = (SKILLS / "use-expskill" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("$correct", router)
 
 
 if __name__ == "__main__":

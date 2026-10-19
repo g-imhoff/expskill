@@ -177,9 +177,7 @@ class FoundationLayoutTests(unittest.TestCase):
             shutil.copytree(source / "plugins" / "expskill", legacy, dirs_exist_ok=True)
             legacy_skill = legacy / "content" / "skills" / "unslop" / "SKILL.md"
             legacy_skill.write_text(
-                legacy_skill.read_text(encoding="utf-8").replace(
-                    "Cut AI tells", "legacy package mirror marker"
-                ),
+                legacy_skill.read_text(encoding="utf-8").replace("\ndescription: ", "\ndescription: legacy package mirror marker. ", 1),
                 encoding="utf-8",
             )
 
@@ -248,9 +246,9 @@ class FoundationLayoutTests(unittest.TestCase):
             source = temporary_root / "source"
             shutil.copytree(ROOT, source)
             skill = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
-            skill.write_text(skill.read_text(encoding="utf-8").replace("Cut AI tells", "Changed skill marker"), encoding="utf-8")
+            skill.write_text(skill.read_text(encoding="utf-8").replace("\ndescription: ", "\ndescription: Changed skill marker. ", 1), encoding="utf-8")
             profile = source / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
-            profile.write_text(profile.read_text(encoding="utf-8").replace("Review exactly", "Changed agent marker"), encoding="utf-8")
+            profile.write_text(profile.read_text(encoding="utf-8") + "\nChanged agent marker\n", encoding="utf-8")
             changed = temporary_root / "changed"
             build_opencode_package(source, changed)
             self.assertIn("Changed skill marker", (changed / "commands" / "unslop.md").read_text(encoding="utf-8"))
@@ -510,11 +508,14 @@ class FoundationLayoutTests(unittest.TestCase):
             "permission",
             "prompt",
         }
+        runtime = json.loads((ROOT / "plugins" / "expskill" / "content" / "agents.json").read_text(encoding="utf-8"))["runtime_paragraph"]
         for name, entry in catalog["agents"].items():
             with self.subTest(agent=name):
                 self.assertEqual(set(entry), expected_agents | ({"temperature"} if "temperature" in entry else set()))
                 self.assertNotIn("closing", entry)
-                self.assertIn("You run as an opencode subagent", entry["prompt"])
+                canonical_body = (ROOT / "plugins" / "expskill" / "content" / "agents" / f"{name}.md").read_text(encoding="utf-8").strip()
+                self.assertIn(canonical_body, entry["prompt"])
+                self.assertIn(" ".join(runtime.split()), " ".join(entry["prompt"].split()))
         for name, entry in catalog["commands"].items():
             with self.subTest(command=name):
                 self.assertEqual(set(entry), {"description", "template"})

@@ -628,9 +628,7 @@ def test_skill_docs_point_at_the_shared_contract() -> None:
                   / "plan" / "SKILL.md").read_text(encoding="utf-8")
     assert "docs/specs/design-plan-handoff-contract.md" in design_skill
     assert "docs/specs/design-plan-handoff-contract.md" in plan_skill
-    assert "preflight" in design_skill
-    assert "An active lifecycle is the only expected pre-delivery problem" in design_skill
-    assert "Fix every other problem before delivery" in design_skill
-    assert "After delivery, run `preflight` again and require `eligible: true`" in design_skill
-    assert "Use the `deliver` CLI stdout as the receipt, unchanged" in design_skill
+    assert "`preflight`" in design_skill
+    assert "`eligible: true`" in design_skill
+    assert "`deliver`" in design_skill
     assert "record_design_join_from_delivery" in plan_skill

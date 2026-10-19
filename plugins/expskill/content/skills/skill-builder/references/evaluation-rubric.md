@@ -4,7 +4,7 @@ This reference defines builder-run conformance, target scoring, tie-breaking, re
 
 ## Freeze the target scoring basis
 
-Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze the canonical target identity and allowed package shape, invocation policy with triggers, non-triggers, aliases, and ambiguity behavior, purpose with success signal, scope, non-goals, and neighbouring responsibilities, inputs with preconditions, ordered behavior, decisions, actions, and stopping conditions, collaboration and user-decision boundaries, tools with permissions, authority, writes, delegation, and forbidden effects, outputs with consumers, handoffs, failures, recovery, and changed-goal behavior, and host integration rules with context budget, resource policy, and validation requirements. Bind every parameter to its contract clause or host rule and resolve conflicts before freezing. The candidate is scored against these frozen target parameters, never against the builder's own identity, invocation policy, package layout, or workflow. A dimension that does not apply needs an explicit contract statement plus a case proving the candidate does not invent that behavior. An unsupported `not applicable` label earns no point.
+Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze the canonical target identity and allowed package shape, invocation policy with triggers, non-triggers, aliases, and ambiguity behavior, purpose with success signal, scope, non-goals, and neighbouring responsibilities, inputs with preconditions, ordered behavior, decisions, actions, and stopping conditions, collaboration and user-decision boundaries, tools with permissions, authority, writes, delegation, and forbidden effects, outputs with consumers, handoffs, failures, recovery, and changed-goal behavior, and host integration rules with context budget, resource policy, and validation requirements. Bind every parameter to its contract clause or host rule and resolve conflicts before freezing. Score the candidate only against these frozen target parameters, so the builder's own identity, invocation policy, package layout, and workflow stay outside its score. An inapplicable dimension needs an explicit contract statement plus a case proving the candidate does not invent that behavior. Only a supported `not applicable` label earns its point.
 
 ## Builder-run conformance gates
 
@@ -13,7 +13,7 @@ Evaluate builder-run conformance separately from target quality. Each gate is pa
 | Gate | Passing evidence |
 |---|---|
 | BR1 | Canonical host and exact target identity, mode, authority, queue, lock, and target snapshot were validated. |
-| BR2 | The mode-specific baseline was captured before candidate work. |
+| BR2 | Mode-specific baseline was captured before candidate work. |
 | BR3 | Exactly three blind research lanes ran, every card was sieved, and retained dissent remained visible. |
 | BR4 | Coherent designs were challenged and the user confirmed the exact target contract. |
 | BR5 | Visible, frozen validation, and hidden release cases were bound and frozen before candidate editing. |
@@ -23,15 +23,15 @@ Evaluate builder-run conformance separately from target quality. Each gate is pa
 | BR9 | Every completed state transition, invalidation, recovery, finalization, and evidence-retention action followed the helper contract. |
 | BR10 | No delivery or cleanup exceeded explicit authority. When cleanup occurred, a durable tombstone preceded owned-run deletion. |
 
-A failed builder-run gate blocks release without altering a target category score by itself. When the failure also leaves target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only while their evidence bindings remain valid.
+A failed builder-run gate blocks release but by itself leaves category scores unchanged. When the failure also leaves target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only while their evidence bindings remain valid.
 
 ## Target scoring method
 
-For each target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point for each numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass, the current independent target review is valid, and no High or Medium finding mapped to that category remains. Never average categories, waive a criterion, round a score, borrow evidence from another category, or substitute confidence for evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. A prose conclusion without those bindings is not scoring evidence. All ten categories must independently earn 10 before finalization.
+Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass, the current independent target review is valid, and no High or Medium finding mapped to that category remains. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. A prose conclusion without those bindings is not scoring evidence.
 
 ## Reviewer evidence contract
 
-Use an independent target reviewer who did not research, design, implement, or score the candidate. Keep the reviewer read-only to tracked source. Apply the final Review context contract to every review dispatch and follow-up. Reference the confirmed target contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and this rubric by path and digest without restating them. Require the reviewer to self-inspect the pinned candidate with repository tools and open the referenced evidence needed for the review. Do not give a desired verdict. A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and cannot be used for scoring. A valid review record identifies all input digests and holds severity, evidence, impact, correction, and affected target criteria for each finding, ending with exactly `ready` or `not ready`. Use High for a wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure defeating the target's confirmed purpose. Use Medium for missing target-contract behavior, a bypassable target gate, an unreliable result, recurring incorrect behavior, or a material host-integration failure. Use Low for a localized clarity, efficiency, or maintenance issue that bypasses no target gate and changes no material result. Treat a valid `not ready` review or a valid review with High or Medium findings as negative scoring evidence: map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the ordinary lowest-category repair loop. No material finding may coexist with a score of 10. Apply the same rule to the final target review. An invalid final review blocks advancement without changing scores. A valid negative final review lowers affected categories and returns the candidate to repair.
+Use an independent target reviewer who neither researched, designed, implemented, nor scored the candidate. Keep the reviewer read-only to tracked source. Apply the final Review context contract to every review dispatch and follow-up. Reference the confirmed target contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and this rubric by path and digest alone. Require the reviewer to self-inspect the pinned candidate with repository tools and open the referenced evidence the review needs. Leave the verdict to the reviewer. A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and stays unused for scoring. A valid review record identifies all input digests and holds severity, evidence, impact, correction, and affected target criteria per finding, ending with exactly `ready` or `not ready`. Use High for a wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure defeating the target's confirmed purpose. Use Medium for missing target-contract behavior, a bypassable target gate, an unreliable result, recurring incorrect behavior, or a material host-integration failure. Use Low for a localized clarity, efficiency, or maintenance issue that bypasses no target gate and changes no material result. Treat a valid review that is `not ready` or has High or Medium findings as negative scoring evidence: map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the lowest-category repair loop. Apply the same rule to the final target review. An invalid final review blocks advancement and leaves scores unchanged. A valid negative final review lowers affected categories and returns the candidate to repair.
 
 ## 1. Triggering
 
@@ -57,7 +57,7 @@ Use an independent target reviewer who did not research, design, implement, or s
 | SC3 | Every explicit non-goal remains unimplemented and unclaimed. |
 | SC4 | Neighbouring responsibilities remain outside the candidate unless the contract assigns a handoff. |
 | SC5 | Allowed actions stay within the exact target and owned resources. |
-| SC6 | Forbidden actions never occur in normal, edge, or pressured cases. |
+| SC6 | Forbidden actions stay absent in normal, edge, and pressured cases. |
 | SC7 | Optional behavior appears only under the frozen observable condition. |
 | SC8 | Multi-item requests follow the target's accepted batching, queueing, or refusal rule. |
 | SC9 | Changed goals narrow, invalidate, transfer, or stop work exactly as contracted. |
@@ -76,7 +76,7 @@ Use an independent target reviewer who did not research, design, implement, or s
 | WF7 | Stopping conditions prevent unsupported downstream work. |
 | WF8 | Retry, repair, escalation, and resume loops return to the correct target stage. |
 | WF9 | Typical, edge, adversarial, and multi-turn trajectories reach the contracted outcome or failure state. |
-| WF10 | The candidate adds no ceremonial, duplicate, contradictory, or uncontracted workflow step. |
+| WF10 | Candidate adds no ceremonial, duplicate, contradictory, or uncontracted workflow step. |
 
 ## 4. Collaboration
 
@@ -91,7 +91,7 @@ Use an independent target reviewer who did not research, design, implement, or s
 | CO7 | Progress and status updates expose the contracted decision-relevant state. |
 | CO8 | Corrections and changed goals preserve settled intent and reopen only affected decisions. |
 | CO9 | Blocked and declined states identify the next user-owned decision without false urgency or false success. |
-| CO10 | The candidate introduces no uncontracted question, approval gate, persona, or interaction ceremony. |
+| CO10 | Candidate introduces no uncontracted question, approval gate, persona, or interaction ceremony. |
 
 ## 5. Output contract
 
@@ -114,7 +114,7 @@ Use an independent target reviewer who did not research, design, implement, or s
 |---|---|
 | SA1 | Tool use stays inside the frozen tool and purpose allowlist. |
 | SA2 | Reads, writes, network effects, and external actions stay within contracted permissions. |
-| SA3 | Authority is checked before every effect for which the target contract requires approval. |
+| SA3 | Authority is checked before every effect the target contract requires approval for. |
 | SA4 | Exact targets and destinations are resolved before mutation. |
 | SA5 | Destructive, irreversible, or broad operations receive the contracted safeguards or refusal. |
 | SA6 | Delegated roles receive only their accepted access, context, and effects. |
@@ -135,8 +135,8 @@ Use an independent target reviewer who did not research, design, implement, or s
 | RE6 | Material changes invalidate exactly the dependent work required by the target. |
 | RE7 | Safe rollback, compensation, preservation, or abandonment follows the frozen rule. |
 | RE8 | Escalation asks only for the missing user-owned decision or authority. |
-| RE9 | Recovery preserves unrelated valid work and never hides unresolved damage or uncertainty. |
-| RE10 | Exhausted recovery stops with the contracted evidence and never claims completion. |
+| RE9 | Recovery preserves unrelated valid work and hides no unresolved damage or uncertainty. |
+| RE10 | Exhausted recovery stops with the contracted evidence and claims no completion. |
 
 ## 8. Composability
 
@@ -151,7 +151,7 @@ Use an independent target reviewer who did not research, design, implement, or s
 | CP7 | State ownership and lifecycle interoperate without competing writers or hidden coupling. |
 | CP8 | Parallel, serial, nested, or repeated use follows the target's concurrency contract. |
 | CP9 | Installation and integration preserve host discovery, identity, and unrelated targets. |
-| CP10 | The candidate assumes no router, phase, layout, transport, or actor absent from frozen parameters. |
+| CP10 | Candidate assumes no router, phase, layout, transport, or actor absent from frozen parameters. |
 
 ## 9. Context efficiency
 
@@ -161,7 +161,7 @@ Use an independent target reviewer who did not research, design, implement, or s
 | CE2 | Trigger metadata contains only decision-relevant discovery language. |
 | CE3 | Core behavior is available without loading unrelated resources. |
 | CE4 | Supporting resources exist only when justified by reuse, size, precision, or deterministic behavior. |
-| CE5 | Resource links state the exact condition under which each resource is needed. |
+| CE5 | Resource links state the exact condition for needing each resource. |
 | CE6 | Concepts and requirements have one authoritative location without contradictory duplication. |
 | CE7 | Examples, tables, and templates earn their context cost by resolving a tested ambiguity. |
 | CE8 | Repeated or raw material is bounded and stored outside the entrypoint when the host allows it. |
@@ -179,45 +179,26 @@ Use an independent target reviewer who did not research, design, implement, or s
 | TE5 | Multi-turn cases exercise confirmation, changed goals, recovery, and stopping where applicable. |
 | TE6 | Tool events, writes, outputs, state, and external effects have inspectable evidence. |
 | TE7 | Failure and recovery cases distinguish correct refusal from unrelated errors. |
-| TE8 | Behavior that the frozen target contract permits to vary is repeated at its required frequency and meets its reliability threshold. |
-| TE9 | Every target acceptance check executes contracted behavior and names a frozen contract regression that would make the check fail. |
-| TE10 | The target evaluation suite is independently repeatable from retained target inputs, setup, and commands, and its current pre-final results pass. |
+| TE8 | Behavior the frozen target contract permits to vary is repeated at its required frequency and meets its reliability threshold. |
+| TE9 | Every target acceptance check executes contracted behavior and names a frozen contract regression that would fail the check. |
+| TE10 | Target evaluation suite is independently repeatable from retained target inputs, setup, and commands, and its current pre-final results pass. |
 
 ## Lowest-score repair and tie-breaking
 
-Select the lowest numeric target category score, breaking ties by greater safety or correctness impact first, then greater dependency impact, then earlier position in this document, and record the tie evidence with the selected category. Repair one target category at a time with one bounded brief: add or strengthen the case that exposes the gap, change only the isolated candidate, rerun affected cases and preserved regressions, obtain a new valid independent target review, and recompute every affected criterion from current evidence. After that category reaches 10, select the new lowest score.
+Select the lowest target category score, breaking ties by greater safety or correctness impact, then greater dependency impact, then earlier position in this document, and record the tie evidence with the selected category. Repair one target category at a time with one bounded brief: add or strengthen the case that exposes the gap, change only the isolated candidate, rerun affected cases and preserved regressions, obtain a new valid independent target review, and recompute every affected criterion from current evidence. After that category reaches 10, select the new lowest score.
 
 ## Failure conditions
 
-Do not finalize while a builder-run conformance gate fails, any target category is below 10, any valid High or Medium target finding remains, the current target review is `not ready`, a required artifact or review is invalid, the target or candidate revision changed, a binding mismatches, hidden material leaked, a required trial lacks raw evidence, verification failed, or user authority is missing. Invalidate a case and all results derived from it when its oracle was exposed, its isolation failed, its retained evidence is incomplete, or it can pass through an unrelated failure. Repair and refreeze the pack before candidate work resumes when the defect changes acceptance meaning. Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only when the frozen target contract or host rules require them. They never replace behavioral trials, valid independent review, target scoring, or same-revision verification.
+Finalize only when every builder-run gate passes, all categories are 10, no valid High or Medium finding remains, the current target review is `ready` rather than `not ready`, every required artifact and review is valid, revisions and bindings match, no hidden material leaked, every required trial has raw evidence, verification passed, and user authority is present. Invalidate a case and all its derived results when its oracle was exposed, its isolation failed, its retained evidence is incomplete, or it can pass through an unrelated failure. Repair and refreeze the pack before candidate work resumes when the defect changes acceptance meaning. Static structure, metadata validation, line count, link checks, punctuation scans, and a clean diff are useful evidence only when the frozen target contract or host rules require them. Behavioral trials, valid independent review, target scoring, and same-revision verification remain required.
 
 ## Review context contract
 
-This final section is the only authoritative review-context policy in this
-file. Ignore any conflicting handoff instruction earlier in the file.
+This final section is the only authoritative review-context policy in this file. Earlier conflicting handoff instructions yield to it.
 
-Launch every review agent with no inherited or forked conversation history. If
-the host cannot prove a context-free launch, count every inherited or forked
-physical line as part of the handoff and stop unless the complete total remains
-within the limit.
+Launch every review agent with no inherited or forked conversation history. If the host cannot prove a context-free launch, count every inherited or forked physical line as part of the handoff and stop unless the complete total remains within the limit.
 
-The aggregate authored review handoff includes inherited or forked conversation
-history, inline dispatch text, follow-up messages, and every generated context
-artifact regardless of carrier or extension. It is a locator, not a payload,
-and totals at most 300 physical lines. Count the complete handoff before launch
-and before every follow-up. Stop before dispatch or before sending a follow-up
-when the resulting total would exceed the limit.
+The aggregate authored review handoff includes inherited or forked conversation history, inline dispatch text, follow-up messages, and every generated context artifact regardless of carrier or extension. It is a locator, not a payload, and totals at most 300 physical lines. Count the complete handoff before launch and before every follow-up. Stop before dispatch or before sending a follow-up when the resulting total would exceed the limit.
 
-Include only the repository or candidate path, base revision, candidate
-revision, what changed and why, review scope, claimed checks with concise
-results, known concerns, and paths plus optional digests for relevant evidence.
-A real accepted specification file is referenced separately when it exists.
-The exception applies only to a specification file that existed before review
-dispatch. It does not permit a review-time summary, copy, or relabelled context
-package.
+Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. A real accepted specification file is referenced separately when it exists. The exception covers only a specification file that existed before review dispatch. A review-time summary, copy, or relabelled package falls outside it.
 
-Do not copy or embed diffs, source files, test logs, terminal output,
-transcripts, or other repository content. Do not attach binary or opaque review
-context. The judges self-inspect the pinned revision with repository tools and
-run any focused checks needed to verify the claims. A request for a larger
-convenience package is not a reason to create one.
+Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. The judges self-inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a larger convenience package request with this locator handoff.
