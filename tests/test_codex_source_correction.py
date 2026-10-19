@@ -166,13 +166,17 @@ class CodexSourceCorrectionTests(unittest.TestCase):
     def test_codex_package_is_regular_and_provenanced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = build_codex_package(ROOT, Path(temporary) / "package")
+            skill_names = {
+                path.parent.name
+                for path in (PLUGIN_ROOT / "content" / "skills").glob("*/SKILL.md")
+            }
             self.assertEqual(
-                len(tuple(output.glob("skills/*/SKILL.md"))),
-                16,
+                {path.parent.name for path in output.glob("skills/*/SKILL.md")},
+                skill_names,
             )
             self.assertEqual(
-                len(tuple(output.glob("skills/*/agents/openai.yaml"))),
-                16,
+                {path.parents[1].name for path in output.glob("skills/*/agents/openai.yaml")},
+                skill_names,
             )
             self.assertFalse(
                 any(
