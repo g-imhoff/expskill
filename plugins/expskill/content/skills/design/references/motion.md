@@ -2,7 +2,7 @@
 
 ### MOTION-01: Use motion for a named purpose
 - Scope: transitions, state changes, feedback, navigation, loading, spatial continuity. Expressive product moments need user approval and must preserve access requirements. Project motion language is authoritative.
-- Rule: every motion effect should clarify feedback, continuity, hierarchy, or state. Remove decorative motion that competes with the task and use project motion tokens.
+- Rule: every motion effect should clarify feedback, continuity, hierarchy, or state. Remove decorative motion competing with the task and use project motion tokens.
 - Check: compare with motion disabled, ask what information is lost. Inspect interruption and repeated use.
 - Sources: [Apple Motion](https://developer.apple.com/design/human-interface-guidelines/motion).
 
@@ -19,7 +19,7 @@
 - Sources: [WCAG Three Flashes or Below Threshold](https://www.w3.org/TR/WCAG22/#three-flashes-or-below-threshold).
 
 ### MOTION-04: Respect reduced-motion behavior when supported or required
-- Scope: environments exposing reduced-motion preference and products promising support, genuinely essential animation excepted with the least harmful treatment. Exact replacement follows the project, and it honors bound preferences.
+- Scope: environments exposing reduced-motion preference and products promising support, genuinely essential animation excepted with least harmful treatment. Exact replacement follows the project, bound preferences stay honored.
 - Rule: remove or replace nonessential translation, scale, parallax, and repetitive motion while preserving information, feedback, and final state.
 - Check: emulate reduced motion, inspect every transition, loader, parallax, state change.
 - Sources: [Media Queries prefers-reduced-motion](https://www.w3.org/TR/mediaqueries-5/#prefers-reduced-motion).

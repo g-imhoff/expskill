@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Execute an accepted implementation brief through isolated TDD workers, independent review and spec gates, corrections, and local integration.
+description: Build an accepted implementation brief with isolated TDD workers and review gates. Only the user or another ExpSkill skill can load $implement.
 ---
 
 # Implement
@@ -16,12 +16,12 @@ and protected-branch merge.
 
 Ground the accepted work in current code and Git state. Require a concrete outcome, protected behavior, scope, non-goals, proof intent, the exact non-protected target branch and starting commit, current dependencies with disjoint ownership per runnable node, approved Design deliverables for UI work, and authority for local edits, tests, commits, worktrees, and local integration.
 
-Keep settled product and Design decisions as decided. Ask the user only for a
+Preserve settled product and Design decisions. Ask the user only for a
 material decision or authority that cannot be discovered. If pre-existing
 uncommitted changes affect the work, stop, explain the safe options, and ask what
 to do while leaving them untouched.
 
-Implement uses only existing state formats, direct briefs included. For Plan-backed work, read the
+Use only the existing state formats, for direct briefs too. For Plan-backed work, read the
 current canonical graph through the Plan helper. Implement, not workers, returns compact
 node results to the active coordinator, which alone makes graph updates. A complete direct brief may run
 without a Plan Graph.
@@ -45,12 +45,12 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
    Before the worker adds any test, require four authoring answers, and hold the
    test until all four are answered: (1) what observable behavior, invariant, or
    independent contract does it protect? (2) what credible regression makes it
-   fail? (3) why does existing coverage not already catch that failure? Each
+   fail? (3) why does existing coverage miss that failure? Each
    contract has one primary test owner at the strongest boundary, so prefer
    extending a table-driven case or shared fixture over a near-duplicate test.
    (4) does it need a production seam (export, flag, wrapper, injection hook)
    that no production caller needs? If yes, move the test to the real
-   boundary instead. Then reject a new test matching a junk pattern unless it
+   boundary. Then reject a new test matching a junk pattern unless it
    independently guards a named contract: assertion-free coverage probes,
    self-comparisons, copied fixtures, manifests, or export lists, exact
    source, import, or string greps, private-predicate or call-shape tests
@@ -63,7 +63,7 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
    regression must fail on the pre-fix code for the intended reason and pass
    after the owner-boundary repair. One owner-boundary regression covers the
    bug at every layer it crosses, so write only that one.
-   Whole-subsystem pruning campaigns are an explicit non-goal here. Note one
+   Whole-subsystem pruning campaigns are a non-goal here. Note one
    as a follow-up for separate work.
 5. Treat the worker result as a candidate until both gates pass. It must report the exact
    commit, changed paths, commands and results, RED evidence or justified
@@ -83,7 +83,7 @@ contract and launch these fresh agents concurrently:
   `fail`.
 
 Keep the judges isolated from each other. Gate results come only from
-the fresh judges, not the implementing worker.
+the fresh judges.
 
 If either gate fails, combine only current actionable findings into a correction
 brief, launch a new `expskill-implementer` on that node, and rerun both judges
@@ -99,7 +99,7 @@ safe. Revalidate the target head, merge in dependency order, run affected checks
 and commit target-side work as accepted. Preserve conflicts for resolution, stopping integration at them.
 
 Remove an external worktree and its local task branch only after its exact commit
-is present on the target, the integrated checks pass, and the lane is clean. Keep
+is on the target, the integrated checks pass, and the lane is clean. Keep
 dirty, failing, unmerged, unknown, or still-needed lanes intact.
 
 After all nodes are integrated, launch one fresh `expskill-review` and one fresh `expskill-spec`

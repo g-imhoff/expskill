@@ -1,6 +1,6 @@
 ---
 name: use-expskill
-description: Use only for code or executable-configuration requests needing lifecycle routing. Stay inactive for explicit skills, read-only work, and non-code requests.
+description: Route a request to change code or executable configuration to the right ExpSkill skill. A request that names a skill goes straight to that skill.
 ---
 
 # Use ExpSkill
@@ -17,18 +17,18 @@ for non-code work. Let that direct request proceed.
 ## Route by missing decision
 
 - Choose `correct` when the request identifies a concrete defect, regression,
-  failing test, or accepted review finding whose expected behavior is already
+  failing test, or accepted review finding whose expected behavior is
   settled. Correct diagnoses whether its bounded repair gate passes.
-- Choose `brainstorm` when the intended outcome or user experience is still
+- Choose `brainstorm` when the intended outcome or user experience is
   ambiguous.
 - Choose `plan` when the direction is concrete but the technical execution is
-  not yet accepted.
+  not accepted.
 - Choose `design` whenever accepted work includes UI whose production-intended
-  components have not been approved.
+  components lack approval.
 - Choose `implement` when the implementation facts and any required Design
   deliverables are accepted.
 - Choose `roast` when implementation is done and the change needs
-  a single adversarial category review pass before a PR. It returns
+  one adversarial category review pass before a PR. It returns
   scores with top issues and stops without fixes.
 - Choose `roast-loop` when implementation is done and the change needs
   adversarial category review with fixes before a PR. It coordinates
@@ -37,7 +37,7 @@ for non-code work. Let that direct request proceed.
 
 Except for the bounded Plan and Design conversation pair, open only the selected
 skill for the current transition and explain the choice in plain language. A
-direct skill stays independent of this router from start to finish.
+direct skill stays independent of this router throughout.
 
 A selected `$correct` runs alone in the invoking coordinator, outside any agent
 profile or Plan Graph, from diagnosis through check. If diagnosis reveals a
@@ -54,13 +54,13 @@ test-method setup, select only that setup skill. If UI work arrives with no
 setup record and no explicit setup intent, report "not configured, run
 `$setup-design` / `$setup-test`" and stop before Plan, Design, or feature
 implementation in that transition. A ready `.expskill/setup-design.md` or
-`.expskill/setup-test.md` record, when present, is read only by its owning
+`.expskill/setup-test.md` record is read only by its owning
 skill, and routing ignores its contents. Eligible `$correct` repairs that
 restore accepted UI behavior without redesign skip every setup requirement.
 Direct `$setup-design` and `$setup-test` remain independently usable.
 
 When setup is ready and only one of technical planning or production UI approval
-is unresolved, select its normal standalone skill. When both are unresolved, use
+is unresolved, select its standalone skill. When both are unresolved, use
 the `parallel-plan-design` execution-policy route. The user opens two CLI
 conversations and talks to Plan and Design directly. In this route, the
 router only prepares the Design worktree before the user starts Design, asks the
@@ -69,14 +69,13 @@ the user, Plan, and Design. Both work from the same exact repository
 baseline and saved Concept Brief. The Plan conversation reads the unchanged
 target checkout and is the only Plan Graph writer. The Design conversation
 receives one isolated worktree created by `../../scripts/worktrees.py`. The
-worktree holds the baseline's tracked files alone. Design works from the
-project's tracked files and may consult a ready `.expskill/setup-design.md`
-record when one exists, but it is optional. Keep new specimens and temporary
-evidence in that worktree. Initialize the Design helper with `invocation_mode`
+worktree starts as the baseline's tracked files. Design works from them and may
+consult a ready `.expskill/setup-design.md` record when one exists. Keep new
+specimens and temporary evidence in that worktree. Initialize the Design helper with `invocation_mode`
 set to `routed`. Direct Design uses the default `direct` mode, which cannot
 checkpoint a candidate.
 
-Hand the user one command per conversation, in the CLI the user already runs.
+Hand the user one command per conversation, in the user's current CLI.
 Each shape below was checked against the stated release. Run the Plan
 conversation from the target checkout.
 
@@ -84,8 +83,7 @@ conversation from the target checkout.
 - `claude -p "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on Claude Code 2.1.197.
 - `opencode run "Run $plan from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."` Checked on opencode 1.18.30.
 
-Run the Design conversation from the isolated worktree, with the
-same baseline and Concept Brief.
+Run the Design conversation from the isolated worktree.
 
 - `codex exec "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
 - `claude -p "Run $design in routed mode from baseline <sha> using the Concept Brief at <brief path>. Return questions to me instead of asking the user."`
@@ -94,7 +92,7 @@ same baseline and Concept Brief.
 The router owns user interaction while both conversations run, and each
 returns questions to the router. Present one current question at a time, apply
 its answer to its owner, then request the next current one. Only explicit user
-approval is approval. Relay questions only after the user has started both
+approval is approval. Relay questions only after the user starts both
 conversations.
 
 Relay Design's clickable Yodea preview link with each visual approval request
@@ -102,15 +100,15 @@ and progress update, and carry the hosted note plus represented candidate
 revision or digest through handoffs and summaries. The coordinator authorized
 to create or update a PR includes the current preview link in its description
 and both links in the final user response. The hosted preview survives PR
-review after the local Design worktree is cleaned up.
+review after the local Design worktree is removed.
 
 After user approval, Design creates one coherent local candidate commit with its
 route-neutral manifest and candidate-bearing Design receipt. Pass that unchanged
 receipt and commit identity to the same Plan session. Plan records the typed
-Design join only while the isolated branch still points to that candidate and
+Design join only while the isolated branch points to that candidate and
 cannot become ready before validation. A blocked conversation, stale baseline,
 moved branch, malformed receipt, invalid setup, or failed Design gate stops the
-join. Keep the isolated worktree for `$implement`, which alone may later
+join. Keep the isolated worktree for `$implement`, which alone may
 integrate and clean it. Once the exact candidate is an ancestor of the target
 HEAD, the Plan Graph validates that integrated ancestry and the temporary Design
 branch may go. The router's only repository write is preparing the Design
@@ -138,8 +136,8 @@ or entering a merge queue.
 
 ## Resolve a decision frontier
 
-`$grill-me` serves only as the decision tool for connected user choices. Let the owning
-skill handle a single isolated user decision. Keep discovering facts and
+Use `$grill-me` only for connected user choices. Let the owning
+skill handle one isolated user decision. Keep discovering facts and
 resolving quality problems autonomously.
 
 Use `$grill-me` when every condition below is true:
@@ -152,9 +150,8 @@ Use `$grill-me` when every condition below is true:
 - Only the user can decide them.
 
 Explain the blocker briefly, then offer `$grill-me` for the decision frontier,
-and invoke it only with explicit consent. Resolve the tree with `$grill-me`, a
-frontier-by-round interview with a recommended answer per question that ends in
-confirmed shared understanding. Keep the owning skill paused while Grill Me
-resolves the decision tree. When the user confirms shared understanding, return
+and invoke it only with explicit consent. Keep the owning skill paused while `$grill-me`, a
+frontier-by-round interview with a recommended answer per question, resolves
+the decision tree. When the user confirms shared understanding, return
 the confirmed decision delta and resume the owning skill. The owning skill
-remains responsible for its state and for invalidating any dependent work.
+remains responsible for its state and invalidating any dependent work.

@@ -4,7 +4,7 @@ Read this index before choosing references. Revisit it after the first isolated 
 
 ## Loading strategy
 
-- **Narrow component:** one bounded responsibility and a small concern set. Selectively load the category references that materially apply, load another category as soon as the render exposes its trigger.
+- **Narrow component:** one bounded responsibility and a small concern set. Selectively load materially applicable category references, load another category as soon as the render exposes its trigger.
 - **Complex composite:** interacting regions, multiple behavior modes, state families, dense or structured data, breakpoint composition, or several dependent components. Load the complete category catalog, cross-category failures are easy to miss one concern at a time.
 - **Uncertain boundary:** load the broader relevant set. Reading a rule leaves its activation unchanged, and applicability still depends on the project, platform, confirmed intent, and stated trigger.
 
@@ -17,7 +17,7 @@ This strategy changes evidence coverage only. Project convention wins over a heu
 3. Conditional catalog rules whose activation criteria hold.
 4. Heuristics where project evidence leaves room.
 
-Import a public system's exact values only when project adoption, platform convention, or an activated norm calls for them. A project convention overrides heuristics. An activated normative requirement stands, and any conflict is surfaced.
+Import a public system's exact values only when project adoption, platform convention, or an activated norm calls for them.
 
 ## Always retain in the core skill
 

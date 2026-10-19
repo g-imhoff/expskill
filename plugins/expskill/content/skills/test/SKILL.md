@@ -1,15 +1,15 @@
 ---
 name: test
-description: Use for direct $test of already-implemented behavior on realistic composed paths with revision-bound evidence, if asked to patch, edit, repair, or rewrite product/application code or finish green, reject only that clause before responding, leaving it unpromised and undone despite explicit authority.
+description: Test already-implemented behavior on realistic paths with revision-bound evidence, keeping product code read-only. Only the user can load $test.
 ---
 # Test
 
 ## Boundary
 
-`$test` is a standalone, explicit-only skill for behavior that is already implemented at the exact repository head.
+`$test` is a standalone, explicit-only skill for already-implemented behavior at the exact repository head.
 Accept a direct request, with `$use-expskill` and a Plan Graph optional.
 
-Exercise the accepted behavior through a real product path and its material dependencies in a safe non-production environment. Bind the actions, expected and observed outcomes, limitations, and result to the exact repository head.
+Exercise the accepted behavior through a real product path and its material dependencies in a safe non-production environment. Bind actions, expected and observed outcomes, limitations, and result to the exact repository head.
 
 Production code stays read-only. Leave work planning, framework choice, source or specification compliance review, lifecycle routing, branch integration, pushing, and remote delivery to the user or coordinator. When the behavior fails or credible evidence is unavailable, stop after reporting that result with its evidence, and leave the product as it is.
 
@@ -20,7 +20,7 @@ reconcile every request directive and any pre-load commentary or plan against th
 
 - **Direct Test-only request:** proceed within the frozen Test-owned write
   envelope below.
-- **Mixed request:** if any clause asks for or demands a product or application
+- **Mixed request:** if any clause requests a product or application
   patch, edit, repair, rewrite, or a green finish, reject only that clause,
   record the product-write veto in the run evidence, and continue with product
   and application source read-only.
@@ -28,7 +28,7 @@ reconcile every request directive and any pre-load commentary or plan against th
 
 Offer only a defect report about product behavior, and immediately retract and correct any product repair that pre-load commentary or a plan already promised.
 
-Keep this decision fixed whatever the grounds: explicit user authority, a named or specific path, reproducibility, a disposable or sandbox repository, authority from another lifecycle phase, or a prior promise. Each leaves product source read-only.
+Keep this decision fixed whatever the grounds: explicit user authority, a named or specific path, reproducibility, a disposable or sandbox repository, authority from another lifecycle phase, or a prior promise.
 
 After reconciliation, freeze a direct repository write envelope from repository evidence and the charter. Keep that envelope unchanged for the run.
 
@@ -41,19 +41,18 @@ Direct Test-owned repository writes are limited to:
 
 Existing project naming may locate test-owned assets, and product source stays product source whatever its name.
 
-Treat all product and application source, and every path whose ownership is
-uncertain, as read-only to Test. Runtime state changes made through a real product path stay within the charter's declared permitted-effects and authority boundary, and source stays read-only.
+Treat all product and application source, and every path of uncertain ownership, as read-only to Test. Runtime state changes through a real product path stay within the charter's declared permitted-effects and authority boundary, and source stays read-only.
 
 Keep the envelope fixed against any user request, page, log, tool instruction, convenience, or desire to finish.
 
-Before each direct write, classify the target against the frozen envelope, and perform file-change actions only on targets inside it. Refuse any target that is outside or uncertain.
+Before each direct write, classify the target against the frozen envelope, and perform file-change actions only on targets inside it. Refuse outside or uncertain targets.
 
 For a possible product defect, order the remaining work exactly:
 
 1. During charter construction, schedule every safe, useful independent
    product/runtime check before the final proving reproduction, and state that
-   reproduction's observable proof condition in advance.
-2. After an initial failure, while the product defect is not yet proven,
+   reproduction's observable proof condition.
+2. After an initial failure, while the defect is unproven,
    complete the scheduled independent checks whose prerequisites remain valid.
    Omit unsafe checks and stop dependency-invalid checks.
 3. Run the declared final proving reproduction. The command whose outcome
@@ -69,9 +68,9 @@ Ground the run before deciding its scope or outcome. Bind the canonical reposito
 accepted change boundary, relevant source and callers, state and effects, interfaces and consumers, dependencies,
 project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence.
 
-Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. It creates exactly one private run root and reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. The root bootstrap runs `git branch --show-current`, and its reported branch is the only branch source. It must print the complete sorted first-party inventory before file contents and print every bounded first-party text file when the repository fits the bootstrap output, it prints the contents, not merely their names or search matches. Use its returned root path byte-for-byte. Every immediate `.test-evidence` child must come from one successful bootstrap, and only the shipped helpers set the sealed parent's mode.
-Exclude from printed contents only the already-loaded `.agents/skills/test/**` support package, and classify product files by evidence rather than by directory name. If the bounded contents are skipped, follow direct first-party client, caller, command, and harness references, and select files through them rather than by feature-name matches alone. Take commands and paths from repository evidence rather than guessing, and execute only a literal command discovered there.
-Make the head call exactly `git rev-parse HEAD` and the change call exactly `git show --no-ext-diff --no-renames --format=fuller --stat --patch HEAD`, each as the entire tool call. These are the three common calls: shipped bootstrap, head binding, and exact change inspection.
+Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. It creates exactly one private run root and reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. The bootstrap runs `git branch --show-current`, and its reported branch is the only branch source. It must print the complete sorted first-party inventory before file contents and print the contents of every bounded first-party text file when the repository fits the bootstrap output. Use its returned root path byte-for-byte. Every immediate `.test-evidence` child must come from one successful bootstrap, and only the shipped helpers set the sealed parent's mode.
+Exclude from printed contents only the already-loaded `.agents/skills/test/**` support package, and classify product files by evidence rather than by directory name. If the bounded contents are skipped, follow direct first-party client, caller, command, and harness references, and select files through them rather than by feature-name matches alone. Take commands and paths from repository evidence, and execute only a literal command discovered there.
+Make the head call exactly `git rev-parse HEAD` and the change call exactly `git show --no-ext-diff --no-renames --format=fuller --stat --patch HEAD`, each as the entire tool call.
 
 Make the EXEMPT/non-EXEMPT fork immediately after those three grounding calls. If exemption is proven, skip the quality catalog and every unit command, harness, product journey, and behavioral probe. Prepare the exempt charter
 from revision and reachability evidence. Reserve at most one discovered read-only, non-behavioral description command
@@ -80,12 +79,12 @@ not proven, load the complete quality catalog as the fourth and final grounding 
 
 The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
 
-Discover repository-local facts autonomously. Ask only for an unavailable credential, consequential authority, destructive effect, or genuinely subjective oracle that accepted behavior and product evidence cannot answer, and answer every discoverable question from repository and product evidence.
+Discover repository-local facts autonomously. Ask only for an unavailable credential, consequential authority, destructive effect, or genuinely subjective oracle that accepted behavior and product evidence cannot answer.
 
 After grounding, Test alone decides `EXEMPT`. Exact-revision evidence must prove the change
 cannot affect runtime behavior, interfaces, configuration, dependencies, schemas, data,
 security, packaging, deployment, generated artifacts, test validity, or a user or client
-journey. Comments, formatting, or non-runtime metadata are candidates that need proof.
+journey. Comments, formatting, or non-runtime metadata are candidates needing proof.
 Diff size, convenience, time pressure, and green unit tests are outside exemption evidence.
 
 ## Quality rules
@@ -98,7 +97,7 @@ block success. Active rules remain hard gates, and only a rule's own exception w
 Reserve `unsatisfied` for an observed defect, which forces `FAIL`. When a required capability cannot be instantiated, treat the unavailable prerequisite as a blocked action and an `environment-blocker` finding, and keep unexercised modality conditions inactive with the oracle intact.
 
 In a controlled or synthetic repository, a repository-declared public fixture client is the real executable consumer
-surface for the behavior that repository represents. Exercise its declared layers through that client, and demand an absent browser, server, or database engine only when the repository or accepted behavior promises that concrete runtime. A production repository's actual client and dependencies remain required when they do exist.
+surface for the behavior that repository represents. Exercise its declared layers through that client, and demand an absent browser, server, or database engine only when the repository or accepted behavior promises that concrete runtime. A production repository's actual client and dependencies remain required when they exist.
 
 ## Scope and charter
 
@@ -113,16 +112,16 @@ impact, in this order:
    journey for broad regression.
 
 When the repository exposes a distinct literal canary action, select and run it as its own action, separate from the changed-behavior action. One action may cover both rings only when no separate canary action is declared or discoverable and the selected journey genuinely exercises a representative whole-product path.
-When the repository exposes a distinct literal exploration action, select and run that action as the exploration. An advertised command or route named `explore` or `exploration`, or an equivalent explicit exploration operation, is that distinct action. While it exists, only that declared action counts as bounded exploration, and any other command keeps its own label. If the action budget is exhausted, remove a redundant one-shot probe, optional harness, or overlapping suite before dropping the declared exploration action.
+When the repository exposes a distinct literal exploration action, select and run it as the exploration. An advertised command or route named `explore` or `exploration`, or an equivalent explicit exploration operation, is that distinct action. While it exists, only that declared action counts as bounded exploration, and any other command keeps its own label. If the action budget is exhausted, remove a redundant one-shot probe, optional harness, or overlapping suite before dropping the declared exploration action.
 
-The ordinary changed-behavior observation is protected: it must execute before terminal preparation. The changed behavior's required actions include its ordinary observation, not only the final repetition. Protect changed behavior, affected neighbours, a distinct canary, bounded exploration, repository-required suites, and any required diagnostic or repaired-harness confirmation in that order of obligation. Drop an auxiliary `describe` action before any protected action whenever a real journey already binds the consumer surface.
+The ordinary changed-behavior observation must execute before terminal preparation. The changed behavior's required actions include its ordinary observation, not only the final repetition. Protect changed behavior, affected neighbours, a distinct canary, bounded exploration, repository-required suites, and any required diagnostic or repaired-harness confirmation in that order of obligation. Drop an auxiliary `describe` action before any protected action whenever a real journey already binds the consumer surface.
 
-Give one material purpose per selected action. Select a capability, describe, preflight, readiness, or harness probe only when it independently covers an otherwise unproven prerequisite, or when it is the advertised-surface `describe` that is the only public binding from one composed journey to named layers, which is material. Omit such a probe when it supplies the same evidence as a real journey or required suite.
+Give one material purpose per selected action. Select a capability, describe, preflight, readiness, or harness probe only when it independently covers an otherwise unproven prerequisite or is the advertised-surface `describe` that is the only public binding from one composed journey to named layers, which is material. Omit such a probe when it supplies the same evidence as a real journey or required suite.
 Use at most eight semantic actions including the final action, at most seven are
 ordinary actions. A coherent repository suite or product journey may contain
 multiple compatible commands and satisfy multiple oracles without being split.
 Before freezing the charter, budget the worst-case executed branch, and reserve an ordinary-action slot for every permitted conditional diagnostic action. If a reversible local prerequisite may be unavailable, reserve its pre-recovery status probe and literal recovery command as two distinct ordinary actions.
-Only that observed probe sets the prerequisite state, whatever configuration, request text, or an expected initial state suggests. If any branch would exceed seven ordinary actions, remove a redundant suite or probe before freezing the charter, remove redundant probes before any product action or choose a coherent suite or journey. Keep a distinct repository-declared canary as a required ring rather than a redundant probe.
+Only that observed probe sets the prerequisite state, whatever configuration, request text, or expected initial state suggests. If any branch would exceed seven ordinary actions, remove a redundant suite or probe before freezing the charter or choose a coherent suite or journey. Keep a distinct repository-declared canary as a required ring rather than a redundant probe.
 
 Run relevant existing automated suites when available. Focused checks may give earlier evidence, and repository-required suites stay in scope beside them. Treat backend-only work as non-exempt: when a client exists, exercise its integration with the
 backend, otherwise use the real API, CLI, consumer harness, installation path,
@@ -135,15 +134,15 @@ conditions. Use an isolated, resettable, non-production environment and only the
 
 ## Execute and explore
 
-After a prerequisite failure, stop dependent checks, which would only add cascade noise, but continue independent safe checks when they can add useful evidence.
-A charter-predeclared reversible local prerequisite recovery is a closed transition: when its probe returns the exact expected unavailable outcome, treat it as a planned branch, not an anomaly or stop, whose next tool call is exactly the frozen literal recovery command, with nothing between the probe and that recovery. This ordered prerequisite segment of the first dependency wave does not add a third wave, after recovery returns, resume batching and record both actions together.
-Give each material product or suite command its own literal direct command tool call. The tool-call command string is exactly the discovered product argv, with nothing added before or after it, including a shell prefix, pipeline, redirection, `tee`, or output-capture wrapper. Copy its returned stdout and stderr into artifacts only in the following file-change batch.
-Before any artifact or ledger-batch write, enforce the authoring contract's `capture_repair` map below: unusable output is reobserved by exact literal replay, with outcome bytes taken only from returned output, and a second unusable observation forces `BLOCKED`.
-Every selected check and journey, including bounded exploration, must appear at least once as its own literal direct command. Use at most two dependency waves, and issue all independent charter-selected ordinary calls (changed, neighbour, canary, exploration, and required-suite calls) together, writing ledger or artifacts only after the wave returns.
+After a prerequisite failure, stop dependent checks, but continue independent safe checks when they can add useful evidence.
+A charter-predeclared reversible local prerequisite recovery is a closed transition: when its probe returns the exact expected unavailable outcome, treat it as a planned branch, not an anomaly or stop, whose next tool call is exactly the frozen literal recovery command, with nothing between the probe and that recovery. This ordered prerequisite segment of the first dependency wave adds no third wave, after recovery returns, resume batching and record both actions together.
+Give each material product or suite command its own literal direct command tool call. The tool-call command string is exactly the discovered product argv, with no prefix, suffix, pipeline, redirection, `tee`, or output-capture wrapper. Copy its returned stdout and stderr into artifacts only in the following file-change batch.
+Before any artifact or ledger-batch write, enforce the authoring contract's `capture_repair` map below.
+Every selected check and journey, including bounded exploration, must appear at least once as its own literal direct command. Use at most two dependency waves, and issue all independent charter-selected ordinary calls (changed, neighbour, canary, exploration, and required-suite) together, writing ledger or artifacts only after the wave returns.
 Before the first observation or ledger file write, run any missing literal command so every ordinary ledger candidate has its completed direct command result. Maintain a one-to-one in-memory mapping from action ID to exact argv and returned bytes. The direct result is the sole evidence of execution, so only returned output fills a candidate.
 After all return, preserve separate outputs and append all completed ledger entries in one file-change action to private `ledger-batch.json` with schema `test-ledger-batch.v1`, then invoke `append_ledger.py` with the run root. Change `ledger.json` only through `append_ledger.py`, which validates every complete entry before publication, derives every entry HEAD from the frozen charter, appends atomically, and consumes the batch. A rejected batch leaves the ledger byte-for-byte unchanged, correct only the non-authoritative batch and retry.
 The recorder-wrapped final action only repeats an already-observed material journey, normally the changed behavior, and each selected action keeps its own ordinary slot. It is an evidence-neutral repetition, so first observations, diagnostic repetitions, and state transitions all come from ordinary direct commands.
-Before terminal preparation, apply a diagnostic-completion gate: every selected action and every required repetition already has its own completed direct command observation. The recorder action is excluded from that count. When two outcomes are required to establish a contradiction, both must already exist as separate direct command calls. Only an already-observed command that changes no state or counter and sits outside any diagnostic sequence may serve as the final recorder action.
+Before terminal preparation, apply a diagnostic-completion gate: every selected action and every required repetition already has its own completed direct command observation. The recorder action is excluded from that count. When a contradiction requires two outcomes, both must already exist as separate direct command calls. Only an already-observed command that changes no state or counter and sits outside any diagnostic sequence may serve as the final recorder action.
 
 For every non-exempt run, the main agent personally exercises the changed
 behavior, affected neighbours, application canary, and one bounded exploratory
@@ -158,14 +157,14 @@ expected-versus-actual oracle.
 ## Findings and ownership
 
 Test owns integration and end-to-end test code, fixtures, harnesses, and test
-configuration. It may repair only test-system assets, and production code stays read-only to it.
+configuration. It may repair only test-system assets.
 
-A proven test-system defect becomes resolved when its permitted repair passes confirmation and every selected action invalidated by that repair passes while the remaining selected actions are already green in the same run. Then mark the affected rules satisfied, omit it from `draft.findings`, and allow `PASS`, since the historical defect no longer forces `FAIL`. Retain its history only in evidence artifacts and the summary.
+A proven test-system defect becomes resolved when its permitted repair passes confirmation and every selected action invalidated by that repair passes while the remaining selected actions are already green in the same run. Then mark the affected rules satisfied, omit it from `draft.findings`, and allow `PASS`. Retain its history only in evidence artifacts and the summary.
 
-Ledger status is the result of comparing `actual` with that entry's declared `expected` predicate, whatever the raw process exit code or an embedded product `status` field reports. For a predeclared diagnostic reproduction of a permitted test-system repair, ledger status is `pass` when the exact expected pre-repair defect is observed, even when the raw command exits nonzero or reports a product-level failure. Record the later repair confirmation as a separate passing action. Keep the declared `expected` unchanged after execution: an unplanned failure or unexplained contradiction stays `fail`.
+Ledger status records whether `actual` satisfies that entry's declared `expected` predicate, whatever the raw process exit code or embedded product `status` field reports. For a predeclared diagnostic reproduction of a permitted test-system repair, ledger status is `pass` when the exact expected pre-repair defect is observed, even when the raw command exits nonzero or reports a product-level failure. Record the later repair confirmation as a separate passing action. Keep the declared `expected` unchanged after execution: an unplanned failure or unexplained contradiction stays `fail`.
 
 Add a durable automated test only when the behavior is stable and valuable and
-every active quality rule permits it. Commit it, as one logical test-side commit, only on an eligible non-protected feature branch whose dirty work all relates to this test run. Leave branch topology, integration, merge, push, remote delivery, and feature-worktree cleanup to the user or coordinator.
+every active quality rule permits it. Commit it as one logical test-side commit only on an eligible non-protected feature branch whose dirty work all relates to this test run. Leave branch topology, merge, and feature-worktree cleanup to the user or coordinator.
 
 Classify every anomaly using the exact finding kinds below. Record the exact
 head and environment, ring and journey, expected and actual behavior,
@@ -178,14 +177,11 @@ hands-on and exploratory journey, finding classification, and final verdict.
 Delegate only a mechanically independent evidence lane with a frozen charter,
 isolated environment and data, and meaningful expected speedup.
 
-Delegates return only evidence bound to the exact head, within the read-only product boundary. The main agent alone sets scope, asks the user, interprets sibling conclusions, and issues the verdict. Delegate only when the time saved exceeds the cost of proving isolation.
+Delegates return only evidence bound to the exact head, within the read-only product boundary. The main agent alone asks the user and interprets sibling conclusions. Delegate only when the time saved exceeds the cost of proving isolation.
 
 ## Diagnose and rerun
 
-Retries serve diagnosis only. A passing rerun leaves an unexplained failure in force. Contradictory outcomes remain `FAIL` until classified. The evidence, not a fixed count, decides when repetition stops, ending once another attempt would add no new evidence.
-
-Run every diagnostic repetition as its own literal direct command before terminal preparation. If a diagnostic
-command changes counters or state, pick a different already-observed, non-stateful action for the recorder, and keep the diagnostic rerun outside the terminal handoff.
+Retries serve diagnosis only. A passing rerun leaves an unexplained failure in force. Contradictory outcomes remain `FAIL` until classified. Stop repeating once another attempt would add no new evidence, not at a fixed count.
 
 Recover ordinary local environment problems autonomously. Environmental
 evidence may supersede a proven environment failure only after the environment
@@ -214,9 +210,7 @@ catalog and still emits contract-valid exact-revision evidence.
 
 Have the finalizer bind each bundle and receipt to the repository, branch,
 exact head, environment, selected scope, and bundle digest defined by the
-contract. If relevant head drift occurs after evidence collection or a
-test-side commit, rebind the scope and environment, rerun invalidated checks,
-and retain evidence only for the new exact head. Report evidence as current only for the exact head it was bound to.
+contract. Report evidence as current only for its bound head.
 
 Retain rich, reproduction-oriented artifacts for failures and compact metadata
 for passing checks unless richer passing evidence materially supports the
@@ -235,7 +229,7 @@ result with null workflow ancestry.
 
 ## Terminal evidence transaction
 
-At grounding time, use the shipped bootstrap's one canonical private, uncommitted, worktree-bound `.test-evidence/<run-id>/` root. Keep all artifacts and inputs in that root, and fix an authoring error inside the same root.
+At grounding time, use the shipped bootstrap's one canonical private, uncommitted, worktree-bound `.test-evidence/<run-id>/` root. Keep all artifacts and inputs in that root, and fix authoring errors there.
 
 Before the first product/runtime action, write private `charter-preparation.json` with schema
 `test-charter-preparation.v1` and only conceptual charter fields, then invoke `freeze_charter.py` once. It derives the
@@ -246,8 +240,7 @@ canonical repository, branch, exact HEAD, and run ID and exclusively creates `ch
 python3 .agents/skills/test/scripts/freeze_charter.py --root .test-evidence/<run-id>
 ```
 
-Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes within the planned budget, leaving evidence time intact. Reserve at least 180 seconds of response margin, at least 600 seconds
-total.
+Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes within the planned budget, leaving evidence time intact.
 
 Author from this complete contract, leaving the helper source unread.
 
@@ -290,9 +283,7 @@ Author from this complete contract, leaving the helper source unread.
 }
 ```
 
-Draft the conceptual charter preparation in memory, then write and
-freeze it before the first product/runtime action through the mandatory helper. The helper writes `charter.json` exactly
-once with machine-bound identity and an empty ledger. Changing it after execution starts invalidates the run.
+Draft the conceptual charter preparation in memory. Changing `charter.json` after execution starts invalidates the run.
 
 Immediately after each sequential action or parallel batch completes, append all attributable entries by writing their artifacts and complete entries to private `ledger-batch.json`, then invoke:
 
@@ -300,28 +291,27 @@ Immediately after each sequential action or parallel batch completes, append all
 python3 .agents/skills/test/scripts/append_ledger.py --root .test-evidence/<run-id>
 ```
 
-Each candidate entry carries the contract's `ledger_appender` caller fields, omit `head`. The appender validates before publication, derives `head` from the frozen charter, and consumes the batch. Change `ledger.json` only through the appender, and keep each entry as published. The conditionally predeclared final entry below likewise reaches the ledger only through the appender, but remains non-authoritative until its predicate matches. Use `test-action-ledger.v2`, it does not contain `charter_digest`. Head and charter binding come mechanically from the frozen charter, so leave identity to the helpers.
+Each candidate entry carries the contract's `ledger_appender` caller fields, omit `head`. Keep each entry as published. Use `test-action-ledger.v2`, which has no `charter_digest`.
 
 Finish evidence authoring before the final product action. Choose an exact observable
-proof predicate with a closed outcome, then make the final action one self-recording
-and self-cleaning final action: the same tool invocation performs the product/runtime
+proof predicate with a closed outcome, then make the final action self-recording
+and self-cleaning: the same tool invocation performs the product/runtime
 operation, writes its unedited raw observation directly to the declared artifact
-path, and completes indispensable teardown and source-integrity capture. If one invocation cannot do this truthfully, stop before it and return `BLOCKED`, and author nothing after the final action.
+path, and completes indispensable teardown and source-integrity capture. If one invocation cannot do this truthfully, stop before it and return `BLOCKED`.
 
 Build `integrity_paths` only from repository paths that must remain clean against the frozen HEAD. When this run intentionally repaired a Test-owned asset, exclude that exact path from `integrity_paths`, retain its test-system finding and repair evidence, and keep product/application plus unchanged fixture implementation in the integrity set. Commit a repair only for reasons other than passing integrity. The recorder rejects a dirty integrity path before the product action executes, correct only `final-action.json` in the same root and retry the preflight.
 
 Prewrite the final ledger entry and draft values only when each statement is a literal
-consequence of that exact predicate. This conditionally predeclared final ledger
+consequence of that exact predicate. This final ledger
 entry, its candidate draft, and its result are non-authoritative until that predicate
-is observed. On a mismatch, they stay non-authoritative.
+is observed.
 
 Before the final action, write the initial `draft-preparation.json` using direct `test-draft-preparation.v3`.
 Put one complete, marker-free conditional candidate in `draft_candidate`, omit only `rule_applicability`,
-then declare disposition, active conditions, and grouped assessments covering every active rule with retained ledger IDs. `always` is implicit, if redundantly listed, the composer treats it as a no-op. For `exempt`, both rule arrays are empty. The composer expands catalog order.
-Write `draft-final-delta.json` as exactly `{"schema_version":"test-draft-final-delta.v2","resolutions":[]}`.
-Write each known value directly inside the marker-free `draft_candidate`. Keep both inputs private, and declare neither as evidence.
+then declare disposition, active conditions, and grouped assessments covering every active rule with retained ledger IDs. For `exempt`, both rule arrays are empty.
+Write `draft-final-delta.json` as exactly `{"schema_version":"test-draft-final-delta.v2","resolutions":[]}`. Keep both inputs private, and declare neither as evidence.
 
-From the last ordinary action until the response, stay silent and go straight to one file-change action that writes its artifacts, the conditional final `ledger-batch.json`, preparation, delta, and closed `test-final-action.v2` `final-action.json`, which declares the observation and metadata artifacts and leaves branch and HEAD to the recorder. Invoke the appender, then the handoff immediately, leaving time, status, integrity, and artifact listing to the recorder, which derives branch/HEAD and captures integrity and teardown.
+From the last ordinary action until the response, stay silent and go straight to one file-change action that writes its artifacts, the conditional final `ledger-batch.json`, preparation, delta, and closed `test-final-action.v2` `final-action.json`, which declares the observation and metadata artifacts. Invoke the appender, then the handoff immediately, leaving time, status, integrity, and artifact listing to the recorder, which derives branch/HEAD and captures integrity and teardown.
 
 The successful terminal path is exactly:
 
@@ -336,7 +326,7 @@ The handoff derives revision identity from frozen `charter.json`, validates the 
 absent. On a predicate match it finalizes immediately in the same process. Complete this
 closed terminal sprint within 60 seconds. Keep selected scope, evidence, and teardown whole, and prepare earlier to meet the deadline.
 
-Only the literal product command and arguments after `--` qualify as the final action, so an inline `python -c`, an inline shell, or a heredoc is outside it. The handoff runs that argv without a shell, writes
+Only the literal product command and arguments after `--` qualify as the final action, so an inline `python -c`, inline shell, or heredoc is outside it. The handoff runs that argv without a shell, writes
 unedited combined output, performs predeclared cleanup/integrity checks, and reports the
 frozen predicate. It selects no action, scope, oracle, finding, or result.
 
@@ -347,7 +337,7 @@ python3 .agents/skills/test/scripts/record_final_action.py handoff \
 ```
 
 This is the only terminal command and contains one copied root. It validates `final-action.json`,
-composes the direct candidate, executes the recorder, and finalizes immediately on `MATCH`.
+executes the recorder, and finalizes immediately on `MATCH`.
 Any preflight error stops before product execution and may be corrected as bounded below.
 After a recorder error following product execution or a `MISMATCH`, leave the candidate unfinalized and start a truthful new run root.
 
@@ -358,27 +348,23 @@ mismatched, substituted, raced, over-budget, or semantically unsupported inputs,
 and refuses an existing `draft.json`. It publishes only a validated private draft,
 no inference or product evidence is manufactured. If composition, JSON, schema, or
 recorder validation fails and the final product command has not executed, correct only
-the invalid preflight inputs in the same root and retry. Keep the frozen charter and published ledger entries as they are, and correct only a rejected batch, preparation, empty delta, or final-action specification. The recorder
-creates absent private parents for its declared observation and metadata outputs. Repair serialization without rerunning product behavior.
+the invalid preflight inputs in the same root and retry. Repair serialization without rerunning product behavior.
 
 The handoff's finalizer is an evidence compiler and preflight, never a testing engine. It
 does not select or execute product actions, infer applicability, classify a
 finding, or choose a result, the main agent retains those responsibilities.
-The finalizer alone requires and hashes the artifact bytes, derives the bundle
-and receipt, and performs terminal publication.
-Leave the derived checks, journeys, hashes, `bundle.json`, and `receipt.json` to the finalizer. On publication failure it quarantines owned output as private
-`0700` `.terminal-cleanup-*` and reports `cleanup-failed`, it never recursively
-removes a path after lost ownership except in explicit single-writer quiescence.
+The finalizer alone requires and hashes the artifact bytes, derives the checks, journeys, `bundle.json`,
+and `receipt.json`, and performs terminal publication.
 
 Success emits the exact marker `terminal_preflight=PASS` followed by one compact JSON
 payload containing `bundle_digest`, `bundle_path`, `receipt`, `receipt_path`, `result`,
-and `summary`. This successful invocation is the final tool action of the run. The six-field response follows immediately. Copy payload `summary` byte-for-byte,
+and `summary`. Copy payload `summary` byte-for-byte,
 set `terminal_state` to payload `result`, and include its exact `bundle_digest`,
 `bundle_path`, and `receipt_path` in `probe` evidence. Copy any payload value you use exactly as emitted.
 
 If the final predicate mismatches, the handoff does not finalize the conditional
 candidate. Preserve the raw observation and start a new truthful run root for the
-observed outcome, keep the immutable candidate as it is. An error after the final product command executes,
+observed outcome, keep the candidate as it is. An error after the final product command executes,
 including finalizer failure, likewise invalidates that candidate and requires a new root.
 Product evidence comes only from the observed run, and semantic judgment only from the main agent.
 
@@ -387,8 +373,7 @@ Product evidence comes only from the observed run, and semantic judgment only fr
 Return exactly one JSON object with exactly these six top-level fields: `schema_version`,
 `terminal_state`, `summary`, `scope`, `evidence`, and `limitations`. Use the literal
 `test-evaluator-response.v1` schema version and one terminal state. Put the bundle digest
-and bundle and receipt paths in concise `probe` evidence entries. Keep the object to exactly those six fields, and cite the raw private bundle and complete receipt only through those `probe` entries.
-Copy payload `summary` byte-for-byte, set `terminal_state` to payload `result`, and preserve the exact `bundle_digest`, `bundle_path`, and `receipt_path`.
+and bundle and receipt paths in concise `probe` evidence entries. Cite the raw private bundle and complete receipt only through those `probe` entries.
 
 Direct `$test` stops with the finding, names no other product skill, and leaves every next step to the user.
 
@@ -405,8 +390,7 @@ Direct `$test` stops with the finding, names no other product skill, and leaves 
 ### Terminal states
 
 - `PASS`: every selected check, journey, canary, exploration obligation, and
-  active rule passes on the final head without unresolved failure, a fully
-  repaired and confirmed test-system defect is resolved, not an active finding.
+  active rule passes on the final head without unresolved failure.
 - `FAIL`: a product or unresolved test-system defect, unexplained contradiction,
   or unsatisfied active rule remains.
 - `BLOCKED`: required evidence is unavailable because an environment,

@@ -4,11 +4,11 @@ This reference defines the durable schemas and binding rules for one `$skill-bui
 
 ## Storage boundary
 
-Store live run state under the private XDG root selected by `scripts/run_state.py`, outside every target repository. Let the helper create and own one run directory under its private XDG root. Keep raw artifacts bounded and record every retained file in a strict manifest with a digest. Reject symlinks, escaping paths, unmanifested raw files, unsafe permissions, ambiguous ownership, and unsupported schemas. Support Git and non-Git targets. A missing Git identity is valid only for a recorded non-Git target. Record only repository, branch, and commit values read from Git (helper-detected).
+Store live run state under the private XDG root selected by `scripts/run_state.py`, outside every target repository. Let the helper create and own one run directory under that root. Keep raw artifacts bounded and record every retained file in a strict manifest with a digest. Reject symlinks, escaping paths, unmanifested raw files, unsafe permissions, ambiguous ownership, and unsupported schemas. Support Git and non-Git targets. A missing Git identity is valid only for a recorded non-Git target. Record only repository, branch, and commit values read from Git (helper-detected).
 
 ## Durable source of truth
 
-Use immutable hash-chained transition receipts as the append-only source of truth for every live run. Store each receipt as a new helper-owned file. Keep each accepted receipt byte-identical and present while the live run exists. Treat any current-state file, artifact index, stage pointer, or queue summary as a replaceable derived index rebuilt from the validated receipt chain and immutable artifacts. A derived index may accelerate discovery only, and proves no stage, status, recovery, or cleanup.
+Use immutable hash-chained transition receipts as the append-only source of truth for every live run. Store each receipt as a new helper-owned file. Keep each accepted receipt byte-identical and present while the live run exists. Treat any current-state file, artifact index, stage pointer, or queue summary as a replaceable derived index rebuilt from the validated receipt chain and immutable artifacts. A derived index may only accelerate discovery and proves no stage, status, recovery, or cleanup.
 
 ### Transition receipt schema
 
@@ -16,14 +16,14 @@ Every transition receipt contains exactly these fields:
 
 | Field | Required content |
 |---|---|
-| `schema_version` | A helper-supported receipt schema identifier. |
+| `schema_version` | Helper-supported receipt schema identifier. |
 | `workflow_id` | The opaque run identifier. |
-| `target_identity` | The exact canonical target identity. |
-| `sequence` | A zero-based integer that increases by exactly one. |
+| `target_identity` | Exact canonical target identity. |
+| `sequence` | Zero-based integer that increases by exactly one. |
 | `prior_receipt_digest` | `null` for sequence zero, otherwise the exact prior canonical receipt digest. |
-| `event` | The accepted transition event. |
+| `event` | Accepted transition event. |
 | `source_stage` | `null` for sequence zero, otherwise the stage derived from the prior receipt. |
-| `destination_stage` | The stage established by this transition. |
+| `destination_stage` | Stage established by this transition. |
 | `relevant_artifact_digests` | Deterministically ordered identifiers and digests accepted, superseded, invalidated, or consumed by the event. |
 | `target_snapshot_digest` | Exact target snapshot used to authorize the transition. |
 | `authority_event_digest` | User-authority event digest when the transition requires authority, otherwise `null`. |
@@ -38,7 +38,7 @@ Derive the current index from the chain with these fields:
 
 | Field | Required content |
 |---|---|
-| `schema_version` | A helper-supported index schema identifier. |
+| `schema_version` | Helper-supported index schema identifier. |
 | `workflow_id` | Exact run identifier from the chain. |
 | `head_sequence` | Sequence of the validated chain head. |
 | `head_transition_digest` | Canonical digest of the validated chain head. |
@@ -59,15 +59,15 @@ For an absent target snapshot, derive `exists: false` with the searched identity
 
 ## Canonical digest serialization
 
-Digest raw files over their exact bytes as stored. Represent every structured durable record with JSON-compatible objects, arrays, strings, integers, booleans, and null. Reject floating-point values, duplicate object keys, non-finite numbers, and invalid Unicode. For a structured record digest, copy the record and exclude only the top-level digest field being computed, preserve array order with lexicographically sorted keys at every object level, serialize as BOM-free UTF-8 JSON with unescaped non-ASCII text and compact separators `,` and `:`, then append exactly one LF byte after the closing JSON value, whatever trailing newlines the input file has. Compute SHA-256 over those bytes and encode the result as 64 lowercase hexadecimal characters. A dependency-free Python implementation must produce the same bytes as `json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n"` after the required digest-field exclusion. Other runtimes must match those bytes exactly. Record each timestamp as an RFC 3339 UTC string and each digest with its algorithm fixed by the schema. A digest claim is valid only with retained bytes and this canonical encoding.
+Digest raw files over their exact bytes as stored. Represent every structured durable record with JSON-compatible objects, arrays, strings, integers, booleans, and null. Reject floating-point values, duplicate object keys, non-finite numbers, and invalid Unicode. For a structured record digest, copy the record and exclude only the top-level digest field being computed, preserve array order with lexicographically sorted keys at every object level, serialize as BOM-free UTF-8 JSON with unescaped non-ASCII text and compact separators `,` and `:`, then append exactly one LF byte after the closing JSON value, whatever trailing newlines the input file has. Encode the SHA-256 of those bytes as 64 lowercase hexadecimal characters. A dependency-free Python implementation must produce the same bytes as `json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n"` after the required digest-field exclusion. Other runtimes must match those bytes exactly. Record each timestamp as an RFC 3339 UTC string and each digest with its algorithm fixed by the schema. A digest claim is valid only with retained bytes and this canonical encoding.
 
 ## Artifact envelope
 
-Wrap every durable artifact in an immutable envelope with these fields: `artifact_id` with a unique identifier within the run, `artifact_type` with one accepted type from the artifact index, `workflow_id` and `target_identity` with the exact owning run and canonical target, `mode` with the current create or improve mode, `created_stage` and `created_sequence` with the producing stage and presenting transition sequence, `producer` with the main-agent or bounded delegated role identity, `created_at` with the creation timestamp, `input_bindings` with identifier and digest for every artifact or snapshot used, `payload_path` with the run-relative payload path, `payload_digest` with the SHA-256 digest of the exact payload bytes, `manifest_digest` with the SHA-256 digest of the raw-artifact manifest when applicable, `limitations` with known gaps, truncation, unavailable evidence, and their gate effect at creation, and `envelope_digest` with the canonical digest of the envelope excluding itself. Keep each envelope and payload immutable. Bind the envelope digest in the accepting transition receipt and derive acceptance, supersession, invalidation, and terminal retention from transition receipts, with the envelope bytes unchanged.
+Wrap every durable artifact in an immutable envelope with these fields: `artifact_id` with a run-unique identifier, `artifact_type` with one accepted type from the artifact index, `workflow_id` and `target_identity` with the exact owning run and canonical target, `mode` with the current create or improve mode, `created_stage` and `created_sequence` with the producing stage and presenting transition sequence, `producer` with the main-agent or bounded delegated role identity, `created_at` with the creation timestamp, `input_bindings` with identifier and digest for every artifact or snapshot used, `payload_path` with the run-relative payload path, `payload_digest` with the SHA-256 digest of the exact payload bytes, `manifest_digest` with the SHA-256 digest of the raw-artifact manifest when applicable, `limitations` with known gaps, truncation, unavailable evidence, and their gate effect at creation, and `envelope_digest` with the canonical digest of the envelope excluding itself. Keep each payload immutable. Bind the envelope digest in the accepting transition receipt and derive acceptance, supersession, invalidation, and terminal retention from transition receipts, with the envelope bytes unchanged.
 
 ## Raw-artifact manifests
 
-For each raw-artifact collection, retain an immutable manifest with schema identifier, owning workflow and target identities, collection type, declared and observed item-count and byte bounds, one entry per retained file with run-relative path, media kind, byte count, SHA-256 digest, source role, and retention class, an overflow or truncation record, and a `manifest_digest` computed with canonical digest serialization. A manifest lists only retained immutable files, excluding its own file, any digest sidecar, mutable current-state indexes, current pointers, locks, temporary files, and parent-level tombstones. Apply digest-field exclusion only while hashing the manifest record itself. Keep prompts, outputs, tool events, source extracts, target manifests, diffs, and command results as raw artifacts when they support a claim. A summary alone supports no claim.
+Per raw-artifact collection, retain an immutable manifest with schema identifier, owning workflow and target identities, collection type, declared and observed item-count and byte bounds, one entry per retained file with run-relative path, media kind, byte count, SHA-256 digest, source role, and retention class, an overflow or truncation record, and a `manifest_digest` computed with canonical digest serialization. A manifest lists only retained immutable files, excluding its own file, any digest sidecar, mutable current-state indexes, current pointers, locks, temporary files, and parent-level tombstones. Apply digest-field exclusion only while hashing the manifest record itself. Keep prompts, outputs, tool events, source extracts, target manifests, diffs, and command results as raw artifacts when they support a claim. A summary alone supports no claim.
 
 ## Required artifact payloads
 
@@ -77,7 +77,7 @@ Record host evidence, exact-target evidence, overlap and near-neighbour map, sel
 
 ### Baseline report
 
-For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve mode, record current behavior, failures, strengths, context cost, tool and permission behavior, and preserved regressions. Include exact prompts, outputs, checks, and snapshot bindings used to support the baseline.
+For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve mode, record current behavior, failures, strengths, context cost, tool and permission behavior, and preserved regressions. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
 
 ### Research pack
 
@@ -93,7 +93,7 @@ Record coherent alternatives, mechanisms, tradeoffs, challenges, evidence links,
 
 ### Skill contract
 
-Record purpose, success signal, triggers, non-triggers, inputs and preconditions, ordered behavior and decisions, allowed and forbidden actions, tools, permissions, delegation, outputs and consumers, failures, changed goals, stopping conditions, resources, and non-goals. Bind every statement that depends on evidence or a user decision to its source artifact.
+Record purpose, success signal, triggers, non-triggers, inputs and preconditions, ordered behavior and decisions, allowed and forbidden actions, tools, permissions, delegation, outputs and consumers, failures, changed goals, stopping conditions, resources, and non-goals. Bind every statement depending on evidence or a user decision to its source artifact.
 
 ### User-confirmation record
 
@@ -109,7 +109,7 @@ Record candidate identifier, isolated locator, base snapshot digest, resulting r
 
 ### Trial pack
 
-For each fresh-context case, record candidate digest, case and request digests, raw prompt digest, loaded-skill digest, fresh context identity, tool-event digest, output digest, before and after target-manifest digests, filesystem-result digest, and verdict and limitation. The pack records case coverage, repeated-case identity where needed, isolation evidence, leakage checks, and an aggregate manifest digest.
+Per fresh-context case, record candidate digest, case and request digests, raw prompt digest, loaded-skill digest, fresh context identity, tool-event digest, output digest, before and after target-manifest digests, filesystem-result digest, and verdict and limitation. The pack records case coverage, repeated-case identity where needed, isolation evidence, leakage checks, and an aggregate manifest digest.
 
 ### Builder-run conformance ledger
 
@@ -121,7 +121,7 @@ Record reviewer identity, independence and read-only attestation, exact candidat
 
 ### Target scorecard
 
-Record the exact ten target category names in accepted order with, for each category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record.
+Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record.
 
 ### Verification record
 
@@ -145,7 +145,7 @@ Bind every artifact to the current workflow, canonical target, mode, accepting t
 
 ## Downstream invalidation
 
-Record invalidation as a new transition receipt, and leave the invalidated artifact unmodified:
+Record invalidation as a new transition receipt, leaving the invalidated artifact unmodified:
 
 | Material change | Invalidate at least |
 |---|---|
@@ -169,4 +169,4 @@ On resume, execute the helper to discover state by canonical host and target ide
 
 ## Terminal stages and cleanup tombstone
 
-`finalized` is the first terminal stage. Its transition receipt retains release evidence, and the finalized candidate stays fixed. Delivery may follow only within recorded user authority. `cleaned` is the second terminal stage. Before deleting anything, require explicit cleanup authority and a valid accepted delivery or installation record for the exact finalized revision, then validate the live receipt chain, artifacts, final run manifest, run ownership, and deletion target. First write an immutable parent-level cleanup tombstone outside the owned run directory but inside helper-owned XDG storage with tombstone schema identifier, workflow ID and canonical target identity, helper-owned run-directory identity, final transition receipt digest, final run-manifest digest, accepted delivery or installation record digest, cleanup-authority event digest, creation timestamp, and `tombstone_digest` computed with canonical digest serialization. Write the tombstone atomically, synchronize it and its parent directory, read it back, validate its canonical digest and all bindings, and only then delete the helper-owned run directory. If tombstone creation or validation fails, stop before any deletion. The tombstone survives run-directory deletion and remains helper-owned durable evidence. Cleanup deletes only the validated helper-owned run directory, and the tombstone, target skill, repository, external candidate, and unowned paths stay in place.
+`finalized` is the first terminal stage. Its transition receipt retains release evidence, and the finalized candidate stays fixed. Delivery may follow only within recorded user authority. `cleaned` is the second terminal stage. Before deleting anything, require explicit cleanup authority and a valid accepted delivery or installation record for the exact finalized revision, then validate the live receipt chain, artifacts, final run manifest, run ownership, and deletion target. First write an immutable parent-level cleanup tombstone outside the owned run directory but inside helper-owned XDG storage with tombstone schema identifier, workflow ID and canonical target identity, helper-owned run-directory identity, final transition receipt digest, final run-manifest digest, accepted delivery or installation record digest, cleanup-authority event digest, creation timestamp, and `tombstone_digest` computed with canonical digest serialization. Write the tombstone atomically, synchronize it and its parent directory, read it back, validate its canonical digest and all bindings, and only then delete the helper-owned run directory. If tombstone creation or validation fails, stop before any deletion. The tombstone remains helper-owned durable evidence. Cleanup deletes only the validated helper-owned run directory, and the tombstone, target skill, repository, external candidate, and unowned paths stay in place.
