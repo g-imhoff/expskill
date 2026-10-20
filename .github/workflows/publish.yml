@@ -21,10 +21,10 @@ jobs:
       - name: Repository contract
         run: python3 scripts/validate.py
       - name: Install test dependencies
-        run: python3 -m pip install pytest
+        run: python3 -m pip install pytest pytest-xdist
       - name: Host contract tests
         run: >-
-          python3 -m pytest -q
+          python3 -m pytest -q -n auto
           tests/test_installer.py
           tests/test_codex_agent_discovery.py
           tests/test_codex_source_correction.py

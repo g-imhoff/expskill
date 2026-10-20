@@ -7,9 +7,10 @@ import json
 import re
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable, Iterator
 from unittest import mock
 
 
@@ -919,43 +920,178 @@ class OracleFailure:
     ledger: str = "builder-run"
 
 
+CANONICAL_CACHE_LIMIT = 8192
+_CANONICAL_CACHE: dict[Any, dict[str, Any]] = {}
+
+
+def _durable_cache_key(value: Any, exclude_field: str | None) -> Any:
+    """Return an exact memoization key for one durable value.
+
+    The key keeps every durable type apart, ignores the insertion order of
+    object keys, and rejects every value the canonical form rejects, in the
+    same traversal order.
+    """
+
+    cls = value.__class__
+    if cls is dict:
+        pairs = []
+        for name, nested in value.items():
+            if name.__class__ is not str and not isinstance(name, str):
+                raise TypeError("durable object keys must be strings")
+            if exclude_field is not None and name == exclude_field:
+                continue
+            pairs.append((name, _durable_cache_key(nested, None)))
+        pairs.sort()
+        return ("d", tuple(pairs))
+    if cls is list:
+        return ("l", tuple([_durable_cache_key(item, None) for item in value]))
+    if cls is str:
+        return value
+    if cls is int:
+        return value
+    if cls is bool:
+        return ("b", value)
+    if value is None:
+        return None
+    if isinstance(value, float):
+        raise TypeError("floating-point values are outside the durable schema")
+    if isinstance(value, dict):
+        return ("D", type(value), _durable_cache_key(dict(value), exclude_field))
+    if isinstance(value, list):
+        return (
+            "L",
+            type(value),
+            tuple([_durable_cache_key(item, None) for item in value]),
+        )
+    if isinstance(value, str):
+        return ("s", type(value), str(value))
+    if isinstance(value, int):
+        return ("i", type(value), int(value))
+    raise TypeError(f"unsupported durable value: {type(value).__name__}")
+
+
+def _store_canonical(key: Any, entry: dict[str, Any]) -> None:
+    """Keep the memoization cache bounded."""
+
+    while len(_CANONICAL_CACHE) >= CANONICAL_CACHE_LIMIT:
+        _CANONICAL_CACHE.pop(next(iter(_CANONICAL_CACHE)))
+    _CANONICAL_CACHE[key] = entry
+
+
+def _canonical_entry(
+    value: Any,
+    digest_field: str | None,
+    key: Any,
+) -> dict[str, Any]:
+    """Return the memoized entry of one already keyed durable value."""
+
+    entry = _CANONICAL_CACHE.get(key)
+    if entry is not None:
+        return entry
+    payload = (
+        value
+        if digest_field is None
+        else {name: item for name, item in value.items() if name != digest_field}
+    )
+    entry = {
+        "bytes": (
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8"),
+        "digest": None,
+    }
+    _store_canonical(key, entry)
+    return entry
+
+
 def canonical_bytes(value: Any, *, digest_field: str | None = None) -> bytes:
     """Return the one canonical JSON byte representation used by every digest."""
 
-    if digest_field is not None:
-        if not isinstance(value, dict):
-            raise TypeError("digest-field exclusion requires an object")
-        value = {key: item for key, item in value.items() if key != digest_field}
-
-    def reject_floats(item: Any) -> None:
-        if isinstance(item, float):
-            raise TypeError("floating-point values are outside the durable schema")
-        if isinstance(item, dict):
-            for key, nested in item.items():
-                if not isinstance(key, str):
-                    raise TypeError("durable object keys must be strings")
-                reject_floats(nested)
-        elif isinstance(item, list):
-            for nested in item:
-                reject_floats(nested)
-        elif not isinstance(item, (str, int, bool, type(None))):
-            raise TypeError(f"unsupported durable value: {type(item).__name__}")
-
-    reject_floats(value)
-    return (
-        json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    if digest_field is not None and not isinstance(value, dict):
+        raise TypeError("digest-field exclusion requires an object")
+    key = _durable_cache_key(value, digest_field)
+    return _canonical_entry(value, digest_field, key)["bytes"]
 
 
 def canonical_digest(value: Any, *, digest_field: str | None = None) -> str:
-    return hashlib.sha256(canonical_bytes(value, digest_field=digest_field)).hexdigest()
+    """Return the digest of the canonical bytes used by every digest."""
+
+    if digest_field is not None and not isinstance(value, dict):
+        raise TypeError("digest-field exclusion requires an object")
+    key = _durable_cache_key(value, digest_field)
+    entry = _canonical_entry(value, digest_field, key)
+    digest = entry["digest"]
+    if digest is None:
+        digest = hashlib.sha256(entry["bytes"]).hexdigest()
+        entry["digest"] = digest
+    return digest
+
+
+def reference_canonical_text(value: Any) -> str:
+    """Return the canonical text from the canonical form rules alone.
+
+    This oracle never calls the helpers under test, so it can disagree with
+    them when they drift away from the canonical form.
+    """
+
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return str(int(value))
+    if isinstance(value, str):
+        return json.dumps(str(value), ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(reference_canonical_text(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ",".join(
+                json.dumps(str(name), ensure_ascii=False)
+                + ":"
+                + reference_canonical_text(item)
+                for name, item in sorted(value.items())
+            )
+            + "}"
+        )
+    raise AssertionError(f"not a durable value: {value!r}")
+
+
+def reference_canonical_bytes(value: Any) -> bytes:
+    """Return the canonical bytes of one durable value."""
+
+    return (reference_canonical_text(value) + "\n").encode("utf-8")
+
+
+def reference_canonical_digest(value: Any) -> str:
+    """Return the canonical digest of one durable value."""
+
+    return hashlib.sha256(reference_canonical_bytes(value)).hexdigest()
+
+
+@contextmanager
+def _counted_canonical_dumps() -> Iterator[Callable[[], int]]:
+    """Count how often the canonical form is serialized while the block runs."""
+
+    calls = 0
+    original_dumps = json.dumps
+
+    def counting_dumps(*args: Any, **kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return original_dumps(*args, **kwargs)
+
+    with mock.patch.object(json, "dumps", counting_dumps):
+        yield lambda: calls
 
 
 def digest_value(value: Any) -> str:
@@ -16454,6 +16590,135 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     evaluate_trace(trace, BUILDER_FIXTURES, scenario),
                     (),
                 )
+
+
+class SkillBuilderCanonicalDigestTests(unittest.TestCase):
+    """Pin the canonical byte form every oracle digest is built from."""
+
+    def test_canonical_bytes_matches_an_independent_reference(self) -> None:
+        """The canonical form stays one JSON object per value, whatever the cache does."""
+
+        cases = [
+            {"nested": {"list": [1, 2, {"deep": [True, None, "ünïcödé"]}]}},
+            {},
+            [],
+            {
+                "empty_object": {},
+                "empty_list": [],
+                "text": "ünïcödé ✅",
+                "int": 7,
+                "bool": False,
+                "null": None,
+            },
+            [{}, [], {"a": {"b": {"c": []}}}],
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    canonical_bytes(value),
+                    reference_canonical_bytes(value),
+                )
+                self.assertEqual(
+                    canonical_digest(value),
+                    reference_canonical_digest(value),
+                )
+
+    def test_canonical_digest_excludes_only_the_named_top_level_field(self) -> None:
+        """One named top-level field is dropped before the digest is taken."""
+
+        value = {
+            "receipt_digest": "0" * 64,
+            "schema_version": "skill-builder-transition-receipt-v1",
+            "nested": {"receipt_digest": "1" * 64},
+        }
+        excluded = {
+            name: item for name, item in value.items() if name != "receipt_digest"
+        }
+        self.assertEqual(
+            canonical_bytes(value, digest_field="receipt_digest"),
+            reference_canonical_bytes(excluded),
+        )
+        self.assertEqual(
+            canonical_digest(value, digest_field="receipt_digest"),
+            reference_canonical_digest(excluded),
+        )
+
+    def test_rejected_values_keep_their_type_error_messages(self) -> None:
+        """Every value outside the durable schema fails the same way as before."""
+
+        cases = [
+            (1.0, "floating-point values are outside the durable schema"),
+            (
+                {"a": 1.0, "b": (1, 2)},
+                "floating-point values are outside the durable schema",
+            ),
+            ({"a": (1, 2), "b": 1.0}, "unsupported durable value: tuple"),
+            ({"a": "b", 2: "c"}, "durable object keys must be strings"),
+            ({"a": {"b": (1, 2)}}, "unsupported durable value: tuple"),
+            ([1.0], "floating-point values are outside the durable schema"),
+        ]
+        for value, message in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(TypeError) as caught:
+                    canonical_bytes(value)
+                self.assertEqual(str(caught.exception), message)
+                with self.assertRaises(TypeError) as caught:
+                    canonical_digest(value)
+                self.assertEqual(str(caught.exception), message)
+
+        with self.assertRaises(TypeError) as caught:
+            canonical_bytes([], digest_field="receipt_digest")
+        self.assertEqual(
+            str(caught.exception),
+            "digest-field exclusion requires an object",
+        )
+
+    def test_repeated_equal_calls_reuse_the_memoized_canonical_form(self) -> None:
+        """An equal value is digested once, not once per call."""
+
+        value = {"b": [1, True, None], "a": {"x": "ünïcödé"}}
+        with _counted_canonical_dumps() as dumps_calls:
+            first = canonical_bytes(value)
+            after_first = dumps_calls()
+            second = canonical_bytes(value)
+            after_second = dumps_calls()
+        self.assertEqual(first, second)
+        self.assertEqual(
+            after_second,
+            after_first,
+            "an equal value must reuse the memoized canonical form",
+        )
+
+    def test_distinct_durable_values_do_not_share_a_memoized_result(self) -> None:
+        """Only values that are equal in the durable schema share one result."""
+
+        with _counted_canonical_dumps() as dumps_calls:
+            canonical_bytes(True)
+            before = dumps_calls()
+            canonical_bytes(1)
+            self.assertEqual(
+                dumps_calls(),
+                before + 1,
+                "True and 1 are different durable values",
+            )
+
+            before = dumps_calls()
+            canonical_bytes({"1": 2})
+            canonical_bytes({"a": 2})
+            self.assertEqual(
+                dumps_calls(),
+                before + 2,
+                'the string key "1" and the string key "a" are different values',
+            )
+
+            before = dumps_calls()
+            canonical_bytes({"a": 1, "b": 2})
+            canonical_bytes({"b": 2, "a": 1})
+            self.assertEqual(
+                dumps_calls(),
+                before + 1,
+                "the insertion order of object keys must not change the result",
+            )
 
 
 if __name__ == "__main__":
