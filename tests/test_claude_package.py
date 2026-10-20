@@ -84,7 +84,7 @@ class ClaudePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 root,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".testbin"),
             )
             (root / "plugins" / "expskill" / "claude" / "agents").mkdir()
             artifact = Path(temporary) / "artifact"

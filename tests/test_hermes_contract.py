@@ -42,7 +42,7 @@ class HermesContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        ignored = ["__pycache__", "*.pyc", "*.pyo"]
+        ignored = ["__pycache__", "*.pyc", "*.pyo", ".testbin"]
         if not include_git:
             ignored.append(".git")
         shutil.copytree(

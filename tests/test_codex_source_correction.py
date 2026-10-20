@@ -112,7 +112,11 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             copied = Path(temporary) / "repo"
             import shutil
 
-            shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(
+                ROOT,
+                copied,
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
+            )
             content_path = copied / "plugins" / "expskill" / "content" / "agents.json"
             content = json.loads(content_path.read_text(encoding="utf-8"))
             marker = "Canonical metadata mutation marker."

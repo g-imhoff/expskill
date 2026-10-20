@@ -96,7 +96,7 @@ class HermesPackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 root,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".testbin"),
             )
             (root / "plugins" / "expskill" / "hermes" / "agents").mkdir()
             artifact = Path(temporary) / "artifact"

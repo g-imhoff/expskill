@@ -958,7 +958,13 @@ def _durable_cache_key(value: Any, exclude_field: str | None) -> Any:
     if isinstance(value, float):
         raise TypeError("floating-point values are outside the durable schema")
     if isinstance(value, dict):
-        return ("D", type(value), _durable_cache_key(dict(value), exclude_field))
+        # ``json`` encodes a dict subclass through its ``items()`` view, so the
+        # key must describe that same view and not the stored items.
+        return (
+            "D",
+            type(value),
+            _durable_cache_key(dict(value.items()), exclude_field),
+        )
     if isinstance(value, list):
         return (
             "L",
@@ -16781,6 +16787,27 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
                 before + 1,
                 "the insertion order of object keys must not change the result",
             )
+
+    def test_dict_subclass_is_encoded_and_keyed_by_its_reported_items_view(self) -> None:
+        """A dict subclass is digested through the view it reports, not the one it stores."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: dict[str, Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return self._reported.items()
+
+        _CANONICAL_CACHE.clear()
+        first = ReportedItems({"a": 1}, {"a": 1, "b": 2})
+        second = ReportedItems({"a": 1}, {"a": 9})
+        self.assertEqual(canonical_bytes(first), reference_canonical_bytes(first))
+        self.assertEqual(canonical_bytes(second), reference_canonical_bytes(second))
+        self.assertNotEqual(canonical_bytes(first), canonical_bytes(second))
+        self.assertNotEqual(canonical_digest(first), canonical_digest(second))
 
     def test_canonical_cache_stays_bounded(self) -> None:
         """The memo keeps at most the configured number of entries."""

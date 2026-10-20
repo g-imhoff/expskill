@@ -264,7 +264,7 @@ class OpencodePackageTests(unittest.TestCase):
             with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 repo = root / "repository"
-                shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+                shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
                 workspace = root / "workspace"
                 workspace.mkdir()
                 with mock.patch.object(build_module, "render_all", side_effect=failure):
@@ -278,7 +278,7 @@ class OpencodePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             created: list[Path] = []
             real_mkdtemp = build_module.tempfile.mkdtemp
 
@@ -409,7 +409,7 @@ class OpencodePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             workspace = root / "workspace"
             workspace.mkdir()
             caller_fd = os.open(workspace, build_module._directory_open_flags())
@@ -468,7 +468,7 @@ class OpencodePackageTests(unittest.TestCase):
             self.assertTrue(staging.is_dir())
 
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             workspace = root / "workspace"
             workspace.mkdir()
             before = fd_snapshot()
@@ -736,7 +736,7 @@ class OpencodePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             workspace = root / "workspace"
             workspace.mkdir()
             unrelated = workspace / "unrelated"
@@ -788,7 +788,7 @@ class OpencodePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             workspace = root / "workspace"
             workspace.mkdir()
             caller_fd = os.open(workspace, build_module._directory_open_flags())
@@ -817,7 +817,7 @@ class OpencodePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             workspace = root / "workspace"
             workspace.mkdir()
             caller_fd = os.open(workspace, build_module._directory_open_flags())
@@ -939,7 +939,7 @@ class OpencodePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = root / "repository"
-            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"))
             workspace = root / "workspace"
             workspace.mkdir()
             output = workspace / "artifact"
@@ -993,7 +993,7 @@ class OpencodePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 copied_repo,
-                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
             )
             workspace = temporary_root / "workspace"
             workspace.mkdir()
@@ -1216,7 +1216,7 @@ class OpencodePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 copied_repo,
-                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
             )
             workspace = temporary_root / "workspace"
             workspace.mkdir()
@@ -1307,7 +1307,7 @@ class OpencodePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 repo,
-                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
             )
             output = temporary_root / "artifact"
             injected = False
@@ -1385,7 +1385,7 @@ class OpencodePackageTests(unittest.TestCase):
                 shutil.copytree(
                     ROOT,
                     repo,
-                    ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                    ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
                 )
                 workspace = temporary_root / "workspace"
                 workspace.mkdir()
@@ -1447,7 +1447,7 @@ class OpencodePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 repo,
-                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
             )
             output = temporary_root / "artifact"
             with mock.patch.object(
@@ -1636,7 +1636,7 @@ class OpencodePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 copied_repo,
-                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
             )
             workspace = temporary_root / "workspace"
             workspace.mkdir()
@@ -1691,7 +1691,7 @@ class OpencodePackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 copied_repo,
-                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
             )
             workspace = temporary_root / "workspace"
             workspace.mkdir()

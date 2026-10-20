@@ -32,6 +32,10 @@ from typing import Callable, Mapping
 MANIFEST_PATH = Path(__file__).with_name("cli_release_manifest.json")
 CLI_MODE_ENV = "EXPSKILL_CLI_MODE"
 NETWORK_TEST_ENV = "EXPSKILL_RUN_NETWORK_TESTS"
+XDIST_WORKER_ENV = "PYTEST_XDIST_WORKER"
+PARALLEL_WORKER_REASON = (
+    f"run the networked CLI suites with -n 0; {XDIST_WORKER_ENV} is set"
+)
 REQUIRED_MODE = "required"
 OPTIONAL_MODE = "optional"
 _VALID_MODES = frozenset({REQUIRED_MODE, OPTIONAL_MODE})
@@ -135,6 +139,19 @@ def network_tests_enabled(environ: Mapping[str, str] | None = None) -> bool:
 
     env = os.environ if environ is None else environ
     return env.get(NETWORK_TEST_ENV, "").strip().lower() in _NETWORK_TEST_ENABLED_VALUES
+
+
+def parallel_worker_detected(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the current process runs inside a pytest-xdist worker.
+
+    Both networked suites install into the same verified CLI cache and the
+    install renames that directory, so two workers doing it at once can fail.
+    A worker therefore refuses to run the networked suites, and the skip
+    message names the serial command that runs them.
+    """
+
+    env = os.environ if environ is None else environ
+    return env.get(XDIST_WORKER_ENV, "").strip() != ""
 
 
 def _failure(

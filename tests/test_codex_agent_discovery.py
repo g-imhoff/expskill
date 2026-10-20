@@ -1,7 +1,9 @@
 """Networked test that real Codex loads the updated agent profiles.
 
 This suite needs the opt-in variable ``EXPSKILL_RUN_NETWORK_TESTS`` set to an
-enabling value such as ``1``.  Without it the suite is skipped.
+enabling value such as ``1``.  Without it the suite is skipped.  It also
+refuses to run inside a pytest-xdist worker, because both networked suites
+install into the same verified CLI cache: run it with ``-n 0``.
 """
 
 from __future__ import annotations
@@ -17,7 +19,13 @@ import unittest
 
 from scripts.render_codex import render_agents
 from tests import test_installer
-from tests.cli_verification import NETWORK_TEST_ENV, ensure_binary, network_tests_enabled
+from tests.cli_verification import (
+    NETWORK_TEST_ENV,
+    PARALLEL_WORKER_REASON,
+    ensure_binary,
+    network_tests_enabled,
+    parallel_worker_detected,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 needs_network_tests = unittest.skipUnless(
     network_tests_enabled(),
     f"set {NETWORK_TEST_ENV}=1 to run the networked Codex agent discovery suite",
+)
+needs_serial_run = unittest.skipUnless(
+    not parallel_worker_detected(),
+    PARALLEL_WORKER_REASON,
 )
 
 
@@ -85,6 +97,7 @@ def _agent_warnings(binary: Path, codex_home: Path, project: Path) -> list[str]:
 
 
 @needs_network_tests
+@needs_serial_run
 class CodexAgentDiscoveryTests(unittest.TestCase):
     def test_real_codex_loads_updated_profiles_after_legacy_backup_migration(self) -> None:
         binary = ensure_binary("codex", ROOT / ".testbin")

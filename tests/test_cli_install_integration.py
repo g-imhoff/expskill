@@ -1,7 +1,9 @@
 """Networked integration test for the documented CLI install flows.
 
 This suite needs the opt-in variable ``EXPSKILL_RUN_NETWORK_TESTS`` set to an
-enabling value such as ``1``.  Without it the suite is skipped.
+enabling value such as ``1``.  Without it the suite is skipped.  It also
+refuses to run inside a pytest-xdist worker, because both networked suites
+install into the same verified CLI cache: run it with ``-n 0``.
 
 The default ``required`` mode fails closed when a pinned CLI cannot be
 verified. Set ``EXPSKILL_CLI_MODE=optional`` only for an explicitly requested
@@ -22,9 +24,21 @@ import unittest
 from pathlib import Path
 
 try:
-    from tests.cli_verification import NETWORK_TEST_ENV, ensure_binary, network_tests_enabled
+    from tests.cli_verification import (
+        NETWORK_TEST_ENV,
+        PARALLEL_WORKER_REASON,
+        ensure_binary,
+        network_tests_enabled,
+        parallel_worker_detected,
+    )
 except ModuleNotFoundError:  # direct ``python tests/test_cli_install_integration.py``
-    from cli_verification import NETWORK_TEST_ENV, ensure_binary, network_tests_enabled
+    from cli_verification import (
+        NETWORK_TEST_ENV,
+        PARALLEL_WORKER_REASON,
+        ensure_binary,
+        network_tests_enabled,
+        parallel_worker_detected,
+    )
 
 from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.build_opencode_package import build_opencode_package
@@ -54,6 +68,10 @@ needs_npm = unittest.skipUnless(NPM, "npm is required for packed OpenCode plugin
 needs_network_tests = unittest.skipUnless(
     network_tests_enabled(),
     f"set {NETWORK_TEST_ENV}=1 to run the networked CLI install suite",
+)
+needs_serial_run = unittest.skipUnless(
+    not parallel_worker_detected(),
+    PARALLEL_WORKER_REASON,
 )
 
 
@@ -136,6 +154,7 @@ def _await_agent_list(
 
 
 @needs_network_tests
+@needs_serial_run
 class CliInstallIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
