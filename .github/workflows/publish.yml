@@ -51,8 +51,31 @@ jobs:
             exit 1
           fi
 
+  networked-validate:
+    # The networked suites are off the pull request path, so a release tag
+    # still proves that the real Codex CLI accepts the published profiles.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+      # Both suites acquire the same verified executable cache, so they run
+      # one after the other.
+      - name: Networked CLI tests
+        env:
+          EXPSKILL_RUN_NETWORK_TESTS: "1"
+          EXPSKILL_CLI_MODE: required
+        run: >-
+          python3 -m pytest -q -n 0
+          tests/test_cli_install_integration.py
+          tests/test_codex_agent_discovery.py
+
   publish-codex-dist:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -110,7 +133,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-npm:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -148,7 +171,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-claude-dist:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -204,7 +227,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-hermes-dist:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

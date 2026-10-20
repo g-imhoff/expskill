@@ -936,10 +936,12 @@ def _durable_cache_key(value: Any, exclude_field: str | None) -> Any:
     if cls is dict:
         pairs = []
         for name, nested in value.items():
-            if name.__class__ is not str and not isinstance(name, str):
-                raise TypeError("durable object keys must be strings")
+            # The exclusion runs before the key check, so an excluded key is
+            # dropped instead of reported, exactly as the unmemoized form did.
             if exclude_field is not None and name == exclude_field:
                 continue
+            if not isinstance(name, str):
+                raise TypeError("durable object keys must be strings")
             pairs.append((name, _durable_cache_key(nested, None)))
         pairs.sort()
         return ("d", tuple(pairs))
@@ -16595,9 +16597,6 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
 class SkillBuilderCanonicalDigestTests(unittest.TestCase):
     """Pin the canonical byte form every oracle digest is built from."""
 
-    def setUp(self) -> None:
-        _CANONICAL_CACHE.clear()
-
     def test_canonical_bytes_matches_an_independent_reference(self) -> None:
         """The canonical form stays one JSON object per value, whatever the cache does."""
 
@@ -16644,6 +16643,28 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
         self.assertEqual(
             canonical_digest(value, digest_field="receipt_digest"),
             reference_canonical_digest(excluded),
+        )
+
+    def test_digest_field_exclusion_drops_a_key_before_the_keys_are_validated(
+        self,
+    ) -> None:
+        """An excluded key is dropped, so it is never reported as a bad key."""
+
+        value = {"a": 1, 2: 3}
+        excluded = {name: item for name, item in value.items() if name != 2}
+        self.assertEqual(
+            canonical_bytes(value, digest_field=2),
+            reference_canonical_bytes(excluded),
+        )
+        self.assertEqual(
+            canonical_digest(value, digest_field=2),
+            reference_canonical_digest(excluded),
+        )
+        with self.assertRaises(TypeError) as caught:
+            canonical_bytes(value, digest_field="a")
+        self.assertEqual(
+            str(caught.exception),
+            "durable object keys must be strings",
         )
 
     def test_rejected_values_keep_their_type_error_messages(self) -> None:
@@ -16760,6 +16781,20 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
                 before + 1,
                 "the insertion order of object keys must not change the result",
             )
+
+    def test_canonical_cache_stays_bounded(self) -> None:
+        """The memo keeps at most the configured number of entries."""
+
+        _CANONICAL_CACHE.clear()
+        try:
+            for index in range(CANONICAL_CACHE_LIMIT + 10):
+                canonical_bytes({"index": index})
+            self.assertLessEqual(
+                len(_CANONICAL_CACHE),
+                CANONICAL_CACHE_LIMIT,
+            )
+        finally:
+            _CANONICAL_CACHE.clear()
 
 
 if __name__ == "__main__":
