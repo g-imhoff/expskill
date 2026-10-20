@@ -18,6 +18,16 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 BUILDER_FIXTURES = FIXTURES / "skill-builder"
 SKILL_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills" / "skill-builder"
+SKILL_BUILDER_REFERENCE_FILES = (
+    "references/artifact-contracts.md",
+    "references/evaluation-rubric.md",
+)
+SKILL_BUILDER_STAGE_FILES = (
+    "references/create.md",
+    "references/improve.md",
+    "references/modify.md",
+    "references/shared-stages.md",
+)
 PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills"
 CODEX_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "codex" / "skill-adapters"
 TRIAL_CONTROL_PATH = "controls/recorded-trial-control.json"
@@ -10638,22 +10648,33 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
         self.assertEqual(categories, TARGET_CATEGORIES)
 
         resource_links = set(re.findall(r"\]\((references/[^)]+\.md)\)", skill_text))
-        self.assertEqual(
-            resource_links,
-            {
-                "references/artifact-contracts.md",
-                "references/evaluation-rubric.md",
-            },
-        )
+        self.assertEqual(resource_links, {*SKILL_BUILDER_REFERENCE_FILES, *SKILL_BUILDER_STAGE_FILES})
         for resource in resource_links:
             self.assertEqual(len(Path(resource).parts), 2)
             self.assertTrue((SKILL_ROOT / resource).is_file())
         self.assertFalse(any(path.is_dir() for path in (SKILL_ROOT / "references").iterdir()))
 
+    def test_entrypoint_fits_the_codex_injection_limit(self) -> None:
+        """Public contract: Codex truncates an injected SKILL.md, frontmatter included, past 8,000 bytes."""
+
+        self.assertLessEqual(len((SKILL_ROOT / "SKILL.md").read_bytes()), 8000)
+
+    def test_stage_files_start_at_a_stage_heading_and_link_nothing(self) -> None:
+        """Public contract: mode and shared-stage files hold stage text only, loaded through SKILL.md."""
+
+        for resource in SKILL_BUILDER_STAGE_FILES:
+            with self.subTest(resource=resource):
+                text = (SKILL_ROOT / resource).read_text(encoding="utf-8")
+                self.assertRegex(text.splitlines()[0], r"^### (?:[1-9]|1[0-3])\. \S")
+                self.assertNotRegex(text, r"(?m)^# ")
+                self.assertNotRegex(text, r"\]\([^)]*\)")
+
     def test_research_and_sieve_headings_appear_exactly_once_in_order(self) -> None:
         """Public contract: the research and sieve headings each appear once, in workflow order."""
 
-        lines = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        lines = (SKILL_ROOT / "references" / "shared-stages.md").read_text(
+            encoding="utf-8"
+        ).splitlines()
         headings = ("### 3. Run three blind research lanes", "### 4. Sieve every evidence card")
         for heading in headings:
             self.assertEqual(lines.count(heading), 1, heading)

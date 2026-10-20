@@ -96,6 +96,8 @@ _ARTIFACT_TYPES = {
 }
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_EXISTING_TARGET_MODES = frozenset({"improve", "modify"})
+_MODES = frozenset({"create", *_EXISTING_TARGET_MODES})
 _STAGES = (
     "resolved",
     "baseline",
@@ -1050,7 +1052,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
     if artifact_type == "baseline-report":
-        if payload["mode"] not in {"create", "improve"}:
+        if payload["mode"] not in _MODES:
             raise RunStateError("baseline mode is invalid")
         _digest(payload["target_snapshot_digest"], "baseline target snapshot")
         if payload["mode"] == "create":
@@ -1063,7 +1065,9 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             _digest(proof["absence_evidence_digest"], "absence evidence")
             _digest(proof["overlap_map_digest"], "overlap map")
         elif payload["absent_target_proof"] is not None:
-            raise RunStateError("improve baseline must not claim absent-target proof")
+            raise RunStateError(
+                f"{payload['mode']} baseline must not claim absent-target proof"
+            )
         _text_list(payload["host_conventions"], "baseline host conventions")
         _text_list(payload["preserved_regressions"], "baseline regressions")
         _digest_list(payload["raw_evidence_digests"], "baseline raw evidence")
@@ -1703,7 +1707,9 @@ def snapshot_target(target: Path) -> dict[str, Any]:
     try:
         root_info = locator.lstat()
     except OSError as error:
-        raise RunStateError("improve mode requires an existing exact target") from error
+        raise RunStateError(
+            "improve and modify modes require an existing exact target"
+        ) from error
     if stat.S_ISLNK(root_info.st_mode) or not (
         stat.S_ISDIR(root_info.st_mode) or stat.S_ISREG(root_info.st_mode)
     ):
@@ -1886,7 +1892,9 @@ def _existing_snapshot(
     target: dict[str, Any], supplied_manifest: object
 ) -> dict[str, Any]:
     if not isinstance(supplied_manifest, dict):
-        raise RunStateError("improve mode requires an exact target manifest")
+        raise RunStateError(
+            "improve and modify modes require an exact target manifest"
+        )
     actual = snapshot_target(Path(target["locator"]))
     if supplied_manifest != actual:
         raise RunStateError("supplied target manifest does not match the exact target")
@@ -2747,7 +2755,7 @@ def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dic
         or not _ARTIFACT_RE.fullmatch(artifact_id)
         or envelope.get("artifact_type") not in _ARTIFACT_TYPES
         or envelope.get("workflow_id") != run.name
-        or envelope.get("mode") not in {"create", "improve"}
+        or envelope.get("mode") not in _MODES
         or isinstance(envelope.get("created_sequence"), bool)
         or not isinstance(envelope.get("created_sequence"), int)
         or envelope["created_sequence"] < 0
@@ -3135,7 +3143,9 @@ def _validate_baseline_binding(
         if baseline.get("absent_target_proof") != expected_proof:
             raise RunStateError("baseline absent-target proof binding is stale")
     elif baseline.get("absent_target_proof") is not None:
-        raise RunStateError("improve baseline contains an absent-target proof")
+        raise RunStateError(
+            f"{current['mode']['name']} baseline contains an absent-target proof"
+        )
     _require_input_bindings(
         baseline_envelope,
         {resolution_id: resolution_envelope["envelope_digest"]},
@@ -4504,9 +4514,12 @@ def _owned_result_digest(
     if not owned_paths or len(owned_paths) != len(set(owned_paths)):
         raise RunStateError("candidate owned paths are empty or duplicated")
     entries = manifest["entries"]
+    mode = index["mode"]["name"]
+    if mode not in _MODES:
+        raise RunStateError("delivery mode is invalid")
     baseline_manifest = (
         index["target_snapshot"]["manifest"]
-        if index["mode"]["name"] == "improve"
+        if mode in _EXISTING_TARGET_MODES
         else None
     )
     baseline_entries = (
@@ -4560,9 +4573,9 @@ def _owned_result_digest(
             )
     selected.sort(key=lambda entry: entry["path"])
     all_paths = {entry["path"] for entry in entries}
-    if index["mode"]["name"] == "create" and selected_paths != all_paths:
+    if mode == "create" and selected_paths != all_paths:
         raise RunStateError("create delivery contains content outside candidate ownership")
-    if index["mode"]["name"] == "improve":
+    if mode in _EXISTING_TARGET_MODES:
         unowned_paths = {
             path
             for path in set(baseline_entries) | set(current_entries)
@@ -4661,23 +4674,32 @@ def _validate_target_unchanged(
     detected_git = _detect_git_identity(locator)
     if detected_git != index["git_identity"]:
         raise RunStateError("Git identity changed after initialization")
+    _validate_active_target_lock(
+        index, root, allow_missing=allow_missing_active_lock
+    )
+
+
+def _validate_active_target_lock(
+    index: dict[str, Any], root: Path, *, allow_missing: bool = False
+) -> None:
     active_lock = index["active_target_lock"]
-    if active_lock is not None:
-        lock_path = (
-            root
-            / "target-locks"
-            / _target_lock_name(index["target_identity"]["canonical"])
-        )
-        if allow_missing_active_lock and not os.path.lexists(lock_path):
-            return
-        lock = _read_json(lock_path)
-        expected = {
-            "schema_version": "skill-builder-target-lock.v1",
-            **active_lock,
-            "workflow_id": index["workflow_id"],
-        }
-        if lock != expected:
-            raise RunStateError("active-target lock binding mismatch")
+    if active_lock is None:
+        return
+    lock_path = (
+        root
+        / "target-locks"
+        / _target_lock_name(index["target_identity"]["canonical"])
+    )
+    if allow_missing and not os.path.lexists(lock_path):
+        return
+    lock = _read_json(lock_path)
+    expected = {
+        "schema_version": "skill-builder-target-lock.v1",
+        **active_lock,
+        "workflow_id": index["workflow_id"],
+    }
+    if lock != expected:
+        raise RunStateError("active-target lock binding mismatch")
 
 
 def _restore_missing_active_target_lock(
@@ -4886,8 +4908,8 @@ def initialize_run(
     _queue_states: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     host, target, granted = _identity_records(host_identity, target_identity, authority)
-    if mode not in {"create", "improve"}:
-        raise RunStateError("mode must be create or improve")
+    if not isinstance(mode, str) or mode not in _MODES:
+        raise RunStateError("mode must be create, improve, or modify")
     if mode == "create":
         snapshot = _absent_snapshot(target, absence_evidence, overlap_map)
     else:
@@ -5195,7 +5217,7 @@ def discover_run(
             if _discard_uncommitted_initialization(root, entry):
                 continue
             run = _run_directory(root, entry.name)
-            derived = _recover_validated_run(root, run)
+            derived = _recover_validated_run(root, run, check_target=False)
             if (
                 derived["host_identity"] == host
                 and derived["target_identity"] == target
@@ -5214,6 +5236,7 @@ def discover_run(
                 else "canonical discovery is ambiguous"
             )
         match = selected_matches[0]
+        _validate_target_unchanged(match, root)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "discover",
@@ -5364,7 +5387,9 @@ def transition_run(
         }
 
 
-def _recover_validated_run(root: Path, run: Path) -> dict[str, Any]:
+def _recover_validated_run(
+    root: Path, run: Path, *, check_target: bool = True
+) -> dict[str, Any]:
     """Reconcile one normalized live run while the root lock is held."""
     committed_journals = _reconcile_append_transactions(run)
     derived = _derive_index(run)
@@ -5377,9 +5402,12 @@ def _recover_validated_run(root: Path, run: Path) -> dict[str, Any]:
             allow_missing=True,
             allow_other_owner=True,
         )
-    _validate_target_unchanged(
-        derived, root, allow_missing_active_lock=True
-    )
+    if check_target:
+        _validate_target_unchanged(
+            derived, root, allow_missing_active_lock=True
+        )
+    else:
+        _validate_active_target_lock(derived, root, allow_missing=True)
     _restore_missing_active_target_lock(root, derived)
     _atomic_json(run / "current.json", derived)
     _remove_committed_append_journals(committed_journals)
@@ -6193,7 +6221,8 @@ def _validate_delivery_record_binding(
     )
     if retained_evidence != sorted(delivery["acceptance_evidence"]):
         raise RunStateError("delivery acceptance evidence lacks retained raw bytes")
-    _validate_delivery_destination(current, delivery, candidate)
+    if delivery["destination_identity"] != current["target_identity"]["canonical"]:
+        raise RunStateError("delivery destination is not the canonical target")
     _require_input_bindings(
         delivery_envelope,
         {
@@ -6966,8 +6995,10 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "request schemas (one strict JSON object on stdin):\n"
-            "  initialize request: host_identity, target_identity, mode, authority, "
-            "and mode evidence, with an optional queue\n"
+            "  initialize request: host_identity, target_identity, mode (create, "
+            "improve, or modify), authority, and mode evidence (create needs "
+            "absence_evidence and overlap_map, improve or modify needs "
+            "target_manifest), with an optional queue\n"
             "  retain request: workflow_id, expected_sequence, artifact_id, "
             "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
             "  transition request: workflow_id, expected_sequence, event, "

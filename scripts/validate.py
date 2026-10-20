@@ -207,6 +207,10 @@ SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
     "references/evaluation-rubric.md",
+    "references/create.md",
+    "references/improve.md",
+    "references/modify.md",
+    "references/shared-stages.md",
 )
 SETUP_SKILLS_REQUIRED_RESOURCES = (
     "references/record-format.md",
@@ -677,7 +681,6 @@ EXPECTED_AGENTS = {
 REVIEW_HANDOFF_PATHS = (
     "content/skills/implement/SKILL.md",
     "content/skills/skill-builder/SKILL.md",
-    "content/skills/skill-builder/references/evaluation-rubric.md",
 )
 REVIEW_HANDOFF_HEADING = "## Review context contract\n"
 REVIEW_JUDGE_AGENTS = ("expskill-review", "expskill-spec")

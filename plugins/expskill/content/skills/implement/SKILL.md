@@ -119,12 +119,10 @@ decisions coordinated outside this skill.
 
 ## Review context contract
 
-This final section is the only authoritative review-context policy in this file. Earlier conflicting handoff instructions yield to it.
+Launch every review agent in a fresh, context-free conversation.
 
-Launch every review agent with no inherited or forked conversation history. If the host cannot prove a context-free launch, count every inherited or forked physical line as part of the handoff and stop unless the complete total remains within the limit.
+The review handoff is a locator of at most 300 physical lines, counting inherited or forked conversation history, inline dispatch text, follow-up messages, and every generated context artifact regardless of carrier or extension. Count the complete handoff before launch and before every follow-up, and send it only while the total stays within the limit.
 
-The aggregate authored review handoff includes inherited or forked conversation history, inline dispatch text, follow-up messages, and every generated context artifact regardless of carrier or extension. It is a locator, not a payload, and totals at most 300 physical lines. Count the complete handoff before launch and before every follow-up. Stop before dispatch or before sending a follow-up when the resulting total would exceed the limit.
+Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. Reference separately an accepted specification file that existed before dispatch. Reviewers reject a review-time summary, copy, or relabelled package as a specification.
 
-Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. A real accepted specification file is referenced separately when it exists. The exception covers only a specification file that existed before review dispatch. A review-time summary, copy, or relabelled package falls outside it.
-
-Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. The judges self-inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a larger convenience package request with this locator handoff.
+Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context by existing path, command, or optional digest alone. The judges inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a request for a larger package with this locator handoff.

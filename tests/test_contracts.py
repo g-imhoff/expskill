@@ -225,6 +225,10 @@ class ContractTests(unittest.TestCase):
         references = (
             "references/artifact-contracts.md",
             "references/evaluation-rubric.md",
+            "references/create.md",
+            "references/improve.md",
+            "references/modify.md",
+            "references/shared-stages.md",
         )
         mutations = ("missing", "empty", "directory", "symlink", "invalid-utf8")
         for relative in references:

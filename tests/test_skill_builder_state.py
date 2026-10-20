@@ -803,6 +803,24 @@ def valid_create_baseline_payload(
     }
 
 
+def valid_baseline_payload(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> dict[str, object]:
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    if current["mode"]["name"] == "create":
+        return valid_create_baseline_payload(helper, state_root, workflow_id)
+    return {
+        "schema_version": "skill-builder-baseline.v1",
+        "mode": current["mode"]["name"],
+        "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
+        "absent_target_proof": None,
+        "host_conventions": [],
+        "preserved_regressions": [],
+        "raw_evidence_digests": [],
+        "limitations": [],
+    }
+
+
 def accepted_artifact(
     helper: ModuleType, state_root: Path, workflow_id: str, artifact_type: str
 ) -> tuple[str, str]:
@@ -1112,7 +1130,7 @@ def stage_payload(
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
     snapshot_digest = current["target_snapshot"]["snapshot_digest"]
     if artifact_type == "baseline-report":
-        return valid_create_baseline_payload(helper, state_root, workflow_id)
+        return valid_baseline_payload(helper, state_root, workflow_id)
     if artifact_type == "research-pack":
         _, baseline_digest = accepted_artifact(
             helper, state_root, workflow_id, "baseline-report"
@@ -1795,19 +1813,27 @@ def build_candidate_stage(
     historical_candidate_v3: bool = False,
     retain_review_source_components: bool = False,
     omitted_review_source_component: str | None = None,
+    mode: str = "create",
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
+    mode_evidence: dict[str, object] = (
+        {
+            "absence_evidence": {"searched": [str(target)], "exists": False},
+            "overlap_map": {"exact": [], "near_neighbours": []},
+        }
+        if mode == "create"
+        else {"target_manifest": helper.snapshot_target(target)}
+    )
     started = helper.initialize_run(
         host_identity=host_identity(tmp_path),
         target_identity=target_identity(target),
-        mode="create",
+        mode=mode,
         authority=granted_authority or authority(),
-        absence_evidence={"searched": [str(target)], "exists": False},
-        overlap_map={"exact": [], "near_neighbours": []},
         git_identity={"present": False},
         queue=queued_targets,
         state_root=state_root,
+        **mode_evidence,
     )
     workflow_id = started["workflow_id"]
     compatibility_modes = sum(
@@ -2003,10 +2029,12 @@ def build_verified_stage(
     legacy_candidate_v1: bool = False,
     historical_candidate_v2: bool = False,
     historical_candidate_v3: bool = False,
+    mode: str = "create",
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root, workflow_id, sequence, candidate = build_candidate_stage(
         helper,
         tmp_path,
+        mode=mode,
         queued_targets=queued_targets,
         granted_authority=granted_authority,
         candidate_schema_version=candidate_schema_version,
