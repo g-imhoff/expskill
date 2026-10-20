@@ -1,0 +1,22 @@
+{
+  "schema_version": "skill-policies.v1",
+  "allow_implicit_invocation": {
+    "autonomous-run": false,
+    "brainstorm": false,
+    "correct": false,
+    "deep-research": false,
+    "design": false,
+    "grill-me": false,
+    "implement": false,
+    "plan": false,
+    "review": false,
+    "roast": false,
+    "roast-loop": false,
+    "setup-design": false,
+    "setup-test": false,
+    "skill-builder": false,
+    "test": false,
+    "unslop": false,
+    "use-expskill": true
+  }
+}
