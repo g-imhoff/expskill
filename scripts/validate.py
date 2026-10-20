@@ -4785,7 +4785,7 @@ def _validate_claude_hooks(package_root: Path, errors: list[str]) -> None:
     if not isinstance(spec, dict) or not isinstance(hooks, dict) or set(hooks) != {"SessionStart", "PreCompact"}:
         errors.append("claude hooks must wire exactly SessionStart and PreCompact")
         return
-    expected_matchers = {"SessionStart": "startup|resume|clear|compact", "PreCompact": "manual|auto"}
+    expected_matchers = {"SessionStart": "startup|resume|clear|compact|fork", "PreCompact": "manual|auto"}
     seen_scripts = {"SessionStart": set(), "PreCompact": set()}
     for event in ("SessionStart", "PreCompact"):
         entries = hooks.get(event)

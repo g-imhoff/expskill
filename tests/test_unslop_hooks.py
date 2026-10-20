@@ -18,6 +18,9 @@ CODEX_HOOKS = PLUGIN_ROOT / "codex" / "hooks"
 INJECT_SCRIPT = CODEX_HOOKS / "inject_unslop.py"
 HELPER_MODULE = CODEX_HOOKS / "unslop_body.py"
 HERMES_HOOK = PLUGIN_ROOT / "content" / "scripts" / "hermes_unslop.py"
+CLAUDE_HOOKS = PLUGIN_ROOT / "claude" / "hooks"
+CLAUDE_INJECT = CLAUDE_HOOKS / "inject_unslop.py"
+CLAUDE_HOOKS_JSON = CLAUDE_HOOKS / "hooks.json"
 OPENCODE_V2_PLUGIN = PLUGIN_ROOT / "opencode" / "plugins" / "unslop-v2.ts"
 SKILL_MD = PLUGIN_ROOT / "content" / "skills" / "unslop" / "SKILL.md"
 POLICY_JSON = PLUGIN_ROOT / "content" / "policies" / "unslop-runtime.json"
@@ -147,6 +150,61 @@ class OpencodePluginTests(unittest.TestCase):
 
     def test_v2_plugin_has_no_windows(self) -> None:
         self.assertFalse(_windows(SKILL_MD, POLICY_JSON) & _windows(OPENCODE_V2_PLUGIN))
+
+
+class ClaudeHookTests(unittest.TestCase):
+    def _run_claude_inject(self, payload: dict | None, raw: str | None = None):
+        env = dict(os.environ)
+        env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+        stdin = raw if raw is not None else json.dumps(payload)
+        return subprocess.run(
+            [sys.executable, str(CLAUDE_INJECT)],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+    def test_matcher_covers_all_documented_session_sources(self) -> None:
+        matcher = json.loads(CLAUDE_HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]["SessionStart"][0]["matcher"]
+        for source in ("startup", "resume", "clear", "compact", "fork"):
+            with self.subTest(source=source):
+                self.assertTrue(re.search(matcher, source), f"matcher misses {source}")
+        self.assertFalse(re.search(matcher, "bogus"))
+
+    def test_session_start_sources_load_scope_or_reminder(self) -> None:
+        policy = json.loads(POLICY_JSON.read_text(encoding="utf-8"))
+        for source, expected in (
+            ("startup", policy["scope"]),
+            ("resume", policy["scope"]),
+            ("clear", policy["scope"]),
+            ("fork", policy["scope"]),
+            ("compact", policy["compaction_reminder"]),
+        ):
+            with self.subTest(source=source):
+                result = self._run_claude_inject({"hook_event_name": "SessionStart", "source": source})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(
+                    payload["hookSpecificOutput"]["additionalContext"], expected
+                )
+
+    def test_pre_compact_returns_plain_reminder(self) -> None:
+        policy = json.loads(POLICY_JSON.read_text(encoding="utf-8"))
+        for trigger in ("manual", "auto"):
+            with self.subTest(trigger=trigger):
+                result = self._run_claude_inject({"hook_event_name": "PreCompact", "trigger": trigger})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), policy["compaction_reminder"])
+
+    def test_unknown_event_and_invalid_json_are_silent(self) -> None:
+        result = self._run_claude_inject({"hook_event_name": "SessionStart", "source": "bogus"})
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        result = self._run_claude_inject(None, raw="{not json")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
 
 
 NODE = shutil.which("node")
