@@ -16675,6 +16675,12 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
             str(caught.exception),
             "digest-field exclusion requires an object",
         )
+        with self.assertRaises(TypeError) as caught:
+            canonical_digest([], digest_field="receipt_digest")
+        self.assertEqual(
+            str(caught.exception),
+            "digest-field exclusion requires an object",
+        )
 
     def test_repeated_equal_calls_reuse_the_memoized_canonical_form(self) -> None:
         """An equal value is digested once, not once per call."""
