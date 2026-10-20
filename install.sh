@@ -172,6 +172,10 @@ PY
             opencode plugin add opencode-expskill ||
                 fail 'OpenCode installation failed. Check the error above and npm access, then retry.'
         fi
+        # The background server keeps serving the previously loaded plugin
+        # copy until it reloads; a new session alone still gets the old code.
+        reload_output=$(opencode reload 2>&1) ||
+            printf 'Note: %s\nRestart OpenCode (or run: opencode reload) to activate the updated plugin.\n' "$reload_output"
         printf 'ExpSkill installed or updated successfully for OpenCode. Start a new OpenCode session.\n'
         ;;
     Hermes)
