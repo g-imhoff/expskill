@@ -215,9 +215,9 @@ PY
             claude plugin marketplace add "$source" ||
                 fail 'Claude Code marketplace registration failed. Check the error above and network access, then retry this installer.'
         fi
-        installed=$(claude plugin list --json) ||
+        installed_json=$(claude plugin list --json) ||
             fail 'Cannot inspect Claude Code plugins. Check the error above, then retry.'
-        present=$(python3 - "$installed" <<'PY'
+        present=$(python3 - "$installed_json" <<'PY'
 import json
 import sys
 
@@ -234,9 +234,43 @@ except ValueError as error:
     sys.exit(1)
 PY
         ) || fail 'Cannot inspect Claude Code plugins. Update the Claude Code CLI, then retry.'
+        scopes=$(python3 - "$installed_json" <<'PY'
+import json
+import sys
+
+try:
+    entries = json.loads(sys.argv[1])
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+        for entry in entries
+    ):
+        raise ValueError("expected a plugins list with identified entries")
+    seen = []
+    for entry in entries:
+        if entry.get("id") != "expskill@expskill":
+            continue
+        scope = entry.get("scope") or "-"
+        if scope not in seen:
+            seen.append(scope)
+    print("\n".join(seen))
+except ValueError as error:
+    print("Cannot read Claude Code plugin list: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+        ) || fail 'Cannot inspect Claude Code plugins. Update the Claude Code CLI, then retry.'
         if "$present"; then
-            claude plugin update expskill@expskill ||
-                fail 'Claude Code update failed. Check the error above and network access, then retry.'
+            # Refresh every scope holding the plugin. An unscoped update
+            # reaches only one scope and leaves the others stale.
+            while IFS= read -r scope; do
+                [ -n "$scope" ] || continue
+                if [ "$scope" = "-" ]; then
+                    claude plugin update expskill@expskill ||
+                        fail 'Claude Code update failed. Check the error above and network access, then retry.'
+                else
+                    claude plugin update expskill@expskill -s "$scope" ||
+                        fail "Claude Code update failed for scope $scope. Check the error above and network access, then retry."
+                fi
+            done <<< "$scopes"
         else
             claude plugin install expskill@expskill ||
                 fail 'Claude Code installation failed. Check the error above and network access, then retry.'
