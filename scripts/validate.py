@@ -119,7 +119,7 @@ except ModuleNotFoundError:
 
 MARKETPLACE_NAME = "expskill"
 PLUGIN_NAME = "expskill"
-PLUGIN_VERSION = "0.1.8"
+PLUGIN_VERSION = "0.1.9"
 PLUGIN_VERSION_PATTERN = re.compile(
     rf"{re.escape(PLUGIN_VERSION)}(?:\+codex\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
@@ -4083,7 +4083,9 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
         for marker in (
             "Plugin.define",
             "session.hook",
-            '"request"',
+            '"context"',
+            '"compaction"',
+            '"generate"',
             "system",
             "SKILL.md",
             "unslop-runtime.json",
@@ -4092,6 +4094,8 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
         ):
             if marker not in unslop_v2:
                 errors.append(f"opencode unslop v2 plugin is missing required marker {marker!r}")
+        if 'hook("request"' in unslop_v2:
+            errors.append('opencode unslop v2 plugin must not use the removed "request" hook')
         for forbidden in ("const SCOPE", "const RULES", "const BODY", "const TEXT"):
             if forbidden in unslop_v2:
                 errors.append(

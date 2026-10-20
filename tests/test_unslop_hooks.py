@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
+OPENCODE_INDEX = PLUGIN_ROOT / "opencode" / "index.js"
 CODEX_HOOKS = PLUGIN_ROOT / "codex" / "hooks"
 INJECT_SCRIPT = CODEX_HOOKS / "inject_unslop.py"
 HELPER_MODULE = CODEX_HOOKS / "unslop_body.py"
@@ -133,17 +135,126 @@ class HermesHookTests(unittest.TestCase):
 
 
 class OpencodePluginTests(unittest.TestCase):
-    def test_v2_plugin_registers_request_hook_with_shared_text(self) -> None:
+    def test_v2_plugin_registers_context_hooks_with_shared_text(self) -> None:
         text = OPENCODE_V2_PLUGIN.read_text(encoding="utf-8")
         self.assertIn("Plugin.define", text)
         self.assertIn('id: "expskill-unslop"', text)
-        self.assertIn('hook("request"', text)
+        self.assertIn('hook("context"', text)
+        self.assertNotIn('hook("request"', text)
         self.assertIn("system.push", text)
         self.assertIn("unslop-scope", text)
         self.assertIn("frontmatter", text)
 
     def test_v2_plugin_has_no_windows(self) -> None:
         self.assertFalse(_windows(SKILL_MD, POLICY_JSON) & _windows(OPENCODE_V2_PLUGIN))
+
+
+NODE = shutil.which("node")
+needs_node = unittest.skipUnless(NODE, "node is required for opencode setup tests")
+
+_SETUP_CASE = r"""
+import(process.env.EXPSKILL_TEST_OPENCODE_INDEX).then(async (module) => {
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const hooks = {};
+  const skills = new Map();
+  const ctx = {
+    skill: { transform: async (callback) => {
+      const editor = {
+        get: (id) => skills.get(id),
+        add: (skill) => skills.set(skill.id, skill),
+        update: (id, apply) => { const skill = skills.get(id); if (skill) apply(skill); },
+        list: () => [...skills.values()],
+      };
+      await callback(editor);
+    } },
+    session: { hook: async (kind, fn) => { (hooks[kind] ||= []).push(fn); return { dispose() {} }; } },
+    command: { transform: async (callback) => { await callback({ add() {} }); } },
+    tool: { hook: async () => {} },
+  };
+  await module.default.setup(ctx);
+  assert('setup-registers-context', Array.isArray(hooks.context) && hooks.context.length > 0);
+  assert('setup-registers-compaction', Array.isArray(hooks.compaction) && hooks.compaction.length > 0);
+  assert('setup-registers-generate', Array.isArray(hooks.generate) && hooks.generate.length > 0);
+  const unslop = skills.get('expskill:unslop');
+  assert('setup-registers-unslop-skill', !!unslop);
+  assert('setup-unslop-autoinvoke', !!unslop && unslop.autoinvoke === true);
+  const event = { system: [{ type: 'text', text: 'base' }] };
+  for (const fn of hooks.context) await fn(event);
+  const text = JSON.stringify(event.system);
+  assert('setup-injects-unslop-scope', text.includes('<unslop-scope>') && text.includes('$expskill:unslop'));
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
+_SETUP_RESILIENT_CASE = r"""
+import(process.env.EXPSKILL_TEST_OPENCODE_INDEX).then(async (module) => {
+  const assert = (name, condition) => {
+    console.log((condition ? 'ok:' : 'FAIL:') + name);
+    if (!condition) process.exitCode = 1;
+  };
+  const hooks = {};
+  const ctx = {
+    skill: { transform: async () => { throw new Error('skills unavailable'); } },
+    session: { hook: async (kind, fn) => { (hooks[kind] ||= []).push(fn); return { dispose() {} }; } },
+    command: { transform: async () => { throw new Error('commands unavailable'); } },
+    tool: { hook: async () => {} },
+  };
+  let error = null;
+  try {
+    await module.default.setup(ctx);
+  } catch (cause) {
+    error = cause;
+  }
+  assert('setup-survives-skill-failure', error === null);
+  assert('setup-hooks-despite-skill-failure', Array.isArray(hooks.context) && hooks.context.length > 0);
+  const event = { system: [{ type: 'text', text: 'base' }] };
+  for (const fn of hooks.context) await fn(event);
+  const text = JSON.stringify(event.system);
+  assert('setup-injects-despite-skill-failure', text.includes('<unslop-scope>'));
+}).catch((error) => { console.error('FAIL:load', error); process.exit(1); });
+"""
+
+
+class OpencodeSetupTests(unittest.TestCase):
+    def _run(self, case: str) -> "subprocess.CompletedProcess[str]":
+        assert NODE is not None
+        env = dict(os.environ)
+        env["EXPSKILL_TEST_OPENCODE_INDEX"] = OPENCODE_INDEX.as_uri()
+        return subprocess.run(
+            [NODE, "-e", case],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+            timeout=60,
+        )
+
+    @needs_node
+    def test_setup_registers_hooks_and_autoinvoke(self) -> None:
+        result = self._run(_SETUP_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for token in (
+            "ok:setup-registers-context",
+            "ok:setup-registers-compaction",
+            "ok:setup-registers-generate",
+            "ok:setup-registers-unslop-skill",
+            "ok:setup-unslop-autoinvoke",
+            "ok:setup-injects-unslop-scope",
+        ):
+            self.assertIn(token, result.stdout)
+
+    @needs_node
+    def test_setup_survives_skill_failure(self) -> None:
+        result = self._run(_SETUP_RESILIENT_CASE)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for token in (
+            "ok:setup-survives-skill-failure",
+            "ok:setup-hooks-despite-skill-failure",
+            "ok:setup-injects-despite-skill-failure",
+        ):
+            self.assertIn(token, result.stdout)
 
 
 class SharedTextDriftTests(unittest.TestCase):
