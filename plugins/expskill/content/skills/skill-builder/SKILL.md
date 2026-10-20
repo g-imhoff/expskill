@@ -2,13 +2,6 @@
 name: skill-builder
 description: Create, improve, redesign, or evaluate an agent skill. Only the user can load $skill-builder.
 ---
-# Skill Builder
-
-## Boundary
-
-Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Run independently of product lifecycle phases and ambient authoring skills, invoking neither.
-
-Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence.
 
 Read [artifact contracts](references/artifact-contracts.md) completely at run start and again before resuming persisted work. Read [evaluation rubric](references/evaluation-rubric.md) completely before freezing the evaluation pack and before every review or scoring pass.
 

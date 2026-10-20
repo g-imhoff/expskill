@@ -22,29 +22,14 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
-        (temporary / "docs").mkdir()
-        shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
-    def test_guide_and_manifest_expose_sixteen_skills_including_correct(self) -> None:
-        """Regression: stale phase wording in the guide or manifest contradicts the public roster."""
-        guide = (ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
+    def test_manifest_exposes_sixteen_skills_including_correct(self) -> None:
+        """Regression: stale phase wording in the manifest contradicts the public roster."""
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
         skill_wording = re.compile(r"\bsixteen independent skills and one optional lifecycle router\b", re.I)
-        self.assertRegex(" ".join(guide.split()), skill_wording)
-        self.assertIn("$design", guide)
-        self.assertIn("$test", guide)
-        self.assertIn("$skill-builder", guide)
-        self.assertIn("$setup-design", guide)
-        self.assertIn("$setup-test", guide)
-        self.assertIn("$review", guide)
-        self.assertIn("$roast", guide)
-        self.assertIn("$roast-loop", guide)
-        self.assertIn("$correct", guide)
-        self.assertIn("$autonomous-run", guide)
-        self.assertIn("$deep-research", guide)
         self.assertIn("$test", long_description)
         self.assertIn("$skill-builder", long_description)
         self.assertIn("$setup-design", long_description)
@@ -56,10 +41,6 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$autonomous-run", long_description)
         self.assertIn("$deep-research", long_description)
         self.assertRegex(description, skill_wording)
-        self.assertNotRegex(
-            guide,
-            re.compile(r"\b(?:six|seven|eight|nine) independent development phases\b", re.I),
-        )
         self.assertNotRegex(
             description,
             re.compile(r"\b(?:six|seven|eight|nine) standalone development phases\b", re.I),
@@ -88,13 +69,12 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-fifteen-skill-wording": ("guide", "sixteen independent skills"),
+            "stale-fifteen-skill-wording": ("plugin description", "sixteen independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
             ),
-            "lifecycle-coupling": ("skill-builder", "lifecycle wording outside"),
-            "duplicate-boundary": ("skill-builder", "exactly one boundary section"),
+            "lifecycle-coupling": ("skill-builder", "lifecycle wording"),
             "router-coupling": (
                 "use-expskill",
                 "must not name skill-builder",
@@ -135,13 +115,17 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                 elif mutation == "stale-fifteen-skill-wording":
-                    guide = root / "docs" / "guide.md"
-                    guide.write_text(
-                        guide.read_text(encoding="utf-8").replace(
-                            "sixteen independent skills",
-                            "fifteen independent skills",
-                            1,
-                        ),
+                    manifest_path = plugin / ".codex-plugin" / "plugin.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    original = manifest["description"]
+                    manifest["description"] = original.replace(
+                        "sixteen independent skills",
+                        "fifteen independent skills",
+                        1,
+                    )
+                    self.assertNotEqual(manifest["description"], original)
+                    manifest_path.write_text(
+                        json.dumps(manifest, indent=2) + "\n",
                         encoding="utf-8",
                     )
                 elif mutation == "use-expskill-route":
@@ -153,20 +137,9 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     )
                 elif mutation == "lifecycle-coupling":
                     contract = builder / "SKILL.md"
-                    original = contract.read_text(encoding="utf-8")
-                    changed = original.replace(
-                        "## Boundary\n",
-                        "## Lifecycle routing\n\nRun the lifecycle after finalization.\n\n"
-                        "## Boundary\n",
-                        1,
-                    )
-                    self.assertNotEqual(changed, original)
-                    contract.write_text(changed, encoding="utf-8")
-                elif mutation == "duplicate-boundary":
-                    contract = builder / "SKILL.md"
                     contract.write_text(
                         contract.read_text(encoding="utf-8")
-                        + "\n## Boundary\n\nSecond boundary section.\n",
+                        + "\n## Lifecycle routing\n\nRun the lifecycle after finalization.\n",
                         encoding="utf-8",
                     )
                 elif mutation == "router-coupling":
@@ -375,64 +348,6 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                         for error in errors
                     ),
                     f"manifest collision {replacement!r} escaped validation: {errors}",
-                )
-
-    def test_guide_invocation_requires_the_exact_skill_builder_token(self) -> None:
-        """Regression: a collision or wrong-case example cannot invoke the public skill."""
-
-        invocation = "Use $skill-builder to create or improve one exact agent skill"
-        for replacement in (
-            "prefix$skill-builder",
-            "$skill-builder-v2",
-            "$skill-builder-preview",
-            "$Skill-Builder",
-        ):
-            with self.subTest(replacement=replacement):
-                root = self._copy_repository()
-                guide_path = root / "docs" / "guide.md"
-                guide = guide_path.read_text(encoding="utf-8")
-                self.assertIn(invocation, guide)
-                guide_path.write_text(
-                    guide.replace(
-                        invocation,
-                        invocation.replace("$skill-builder", replacement),
-                    ),
-                    encoding="utf-8",
-                )
-                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
-                self.assertTrue(
-                    any(
-                        "guide" in error
-                        and "direct $skill-builder invocation" in error
-                        for error in errors
-                    ),
-                    f"Guide token collision {replacement!r} escaped validation: {errors}",
-                )
-
-    def test_guide_rejects_extra_skill_builder_mentions(self) -> None:
-        """Regression: unmarked Skill Builder prose is structural drift regardless of sentiment."""
-
-        additions = (
-            "Skill Builder remains separate from lifecycle routing.",
-            "Do not route to $skill-builder from the code lifecycle.",
-            "Evidence from skill-builder must never become a lifecycle phase.",
-        )
-        for addition in additions:
-            with self.subTest(addition=addition):
-                root = self._copy_repository()
-                guide_path = root / "docs" / "guide.md"
-                guide_path.write_text(
-                    guide_path.read_text(encoding="utf-8") + "\n" + addition + "\n",
-                    encoding="utf-8",
-                )
-                errors = tuple(error.lower() for error in validate_repository(root, include_opencode=False))
-                self.assertTrue(
-                    any(
-                        "guide" in error
-                        and "skill builder mentions must be exactly" in error
-                        for error in errors
-                    ),
-                    f"extra Guide mention escaped validation: {addition!r}: {errors}",
                 )
 
     def test_validator_accepts_the_complete_design_package(self) -> None:

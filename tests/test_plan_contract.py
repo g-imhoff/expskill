@@ -102,7 +102,7 @@ class PlanContractTests(unittest.TestCase):
 
     def test_plan_section_headings_appear_exactly_once(self) -> None:
         for heading in (
-            "Boundary",
+            "Precondition",
             "Workflow",
             "Canonical private graph",
             "Implementation, proof, and Git execution contract",

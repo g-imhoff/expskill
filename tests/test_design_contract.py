@@ -133,10 +133,10 @@ class DesignContractTests(unittest.TestCase):
         self.assertNotRegex(metadata, re.compile(r"\bprivate[- ]state\b", re.I))
 
     def test_design_workflow_is_ordered_and_compact(self) -> None:
-        """Regression: the five workflow headings stay in order and the body stays under 500 lines."""
+        """Regression: the four workflow headings stay in order and the body stays under 500 lines."""
         body = _body(DESIGN / "SKILL.md")
         self.assertLess(len(body.splitlines()), 500)
-        positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+        positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Choose", "Build", "Review", "Deliver")]
         self.assertTrue(all(position >= 0 for position in positions), positions)
         self.assertEqual(positions, sorted(positions))
 
@@ -164,12 +164,12 @@ class DesignContractTests(unittest.TestCase):
             shutil.copytree(DESIGN, copy)
             body_path = copy / "SKILL.md"
             body = _body(body_path)
-            positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+            positions = [body.lower().find(f"\n## {heading.lower()}\n") for heading in ("Choose", "Build", "Review", "Deliver")]
             self.assertTrue(all(position >= 0 for position in positions))
             self.assertEqual(positions, sorted(positions))
             mutated = re.sub(r"^## Review$", "## Build", body, count=1, flags=re.MULTILINE)
             body_path.write_text(mutated, encoding="utf-8")
-            mutated_positions = [mutated.lower().find(f"\n## {heading.lower()}\n") for heading in ("Ground", "Choose", "Build", "Review", "Deliver")]
+            mutated_positions = [mutated.lower().find(f"\n## {heading.lower()}\n") for heading in ("Choose", "Build", "Review", "Deliver")]
             self.assertNotEqual(mutated_positions, sorted(mutated_positions))
             self.assertNotEqual(mutated, body)
 

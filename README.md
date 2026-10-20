@@ -6,4 +6,3 @@ Codex and Hermes also need Git; Codex needs Python 3.
 ```bash
 installer="$(curl -fsSL https://raw.githubusercontent.com/g-imhoff/expskill/main/install.sh)" && bash -c "$installer"
 ```
-[Usage, manual installation, and development guide](docs/guide.md)
