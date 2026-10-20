@@ -924,29 +924,26 @@ CANONICAL_CACHE_LIMIT = 8192
 _CANONICAL_CACHE: dict[Any, dict[str, Any]] = {}
 
 
-def _durable_cache_key(value: Any, exclude_field: str | None) -> Any:
+def _durable_cache_key(value: Any) -> Any:
     """Return an exact memoization key for one durable value.
 
     The key keeps every durable type apart, ignores the insertion order of
-    object keys, and rejects every value the canonical form rejects, in the
-    same traversal order.
+    object keys, and describes exactly what the canonical form encodes. It
+    rejects every value the canonical form rejects, in the same traversal
+    order.
     """
 
     cls = value.__class__
     if cls is dict:
         pairs = []
         for name, nested in value.items():
-            # The exclusion runs before the key check, so an excluded key is
-            # dropped instead of reported, exactly as the unmemoized form did.
-            if exclude_field is not None and name == exclude_field:
-                continue
             if not isinstance(name, str):
                 raise TypeError("durable object keys must be strings")
-            pairs.append((name, _durable_cache_key(nested, None)))
+            pairs.append((name, _durable_cache_key(nested)))
         pairs.sort()
         return ("d", tuple(pairs))
     if cls is list:
-        return ("l", tuple([_durable_cache_key(item, None) for item in value]))
+        return ("l", tuple([_durable_cache_key(item) for item in value]))
     if cls is str:
         return value
     if cls is int:
@@ -958,23 +955,22 @@ def _durable_cache_key(value: Any, exclude_field: str | None) -> Any:
     if isinstance(value, float):
         raise TypeError("floating-point values are outside the durable schema")
     if isinstance(value, dict):
-        # ``json`` encodes a dict subclass through its ``items()`` view, so the
-        # key must describe that same view and not the stored items.
-        return (
-            "D",
-            type(value),
-            _durable_cache_key(dict(value.items()), exclude_field),
-        )
+        # ``json`` encodes a dict subclass through its ``items()`` view, but
+        # only when the stored mapping is not empty. An empty stored mapping
+        # encodes as an empty object whatever ``items()`` reports.
+        if not dict.__len__(value):
+            return ("D", type(value), ("d", ()))
+        return ("D", type(value), _durable_cache_key(dict(value.items())))
     if isinstance(value, list):
-        return (
-            "L",
-            type(value),
-            tuple([_durable_cache_key(item, None) for item in value]),
-        )
+        # ``json`` encodes a list subclass through its iteration, whatever
+        # the stored list holds.
+        return ("L", type(value), tuple([_durable_cache_key(item) for item in value]))
     if isinstance(value, str):
-        return ("s", type(value), str(value))
+        # ``json`` encodes the underlying text, not an overridden ``__str__``.
+        return ("s", type(value), str.__str__(value))
     if isinstance(value, int):
-        return ("i", type(value), int(value))
+        # ``json`` encodes the underlying number, not an overridden ``__int__``.
+        return ("i", type(value), int.__int__(value))
     raise TypeError(f"unsupported durable value: {type(value).__name__}")
 
 
@@ -986,21 +982,24 @@ def _store_canonical(key: Any, entry: dict[str, Any]) -> None:
     _CANONICAL_CACHE[key] = entry
 
 
-def _canonical_entry(
-    value: Any,
-    digest_field: str | None,
-    key: Any,
-) -> dict[str, Any]:
-    """Return the memoized entry of one already keyed durable value."""
+def _canonical_payload(value: Any, digest_field: str | None) -> Any:
+    """Return the value the canonical form encodes.
+
+    The digest-field exclusion copies the reported object view into a plain
+    object, exactly as the unmemoized form did before the copy.
+    """
+
+    if digest_field is None:
+        return value
+    return {name: item for name, item in value.items() if name != digest_field}
+
+
+def _canonical_entry(payload: Any, key: Any) -> dict[str, Any]:
+    """Return the memoized entry of one already keyed payload."""
 
     entry = _CANONICAL_CACHE.get(key)
     if entry is not None:
         return entry
-    payload = (
-        value
-        if digest_field is None
-        else {name: item for name, item in value.items() if name != digest_field}
-    )
     entry = {
         "bytes": (
             json.dumps(
@@ -1018,13 +1017,57 @@ def _canonical_entry(
     return entry
 
 
+def _uncached_canonical_bytes(value: Any, digest_field: str | None) -> bytes:
+    """Return the canonical bytes without the memo.
+
+    This is the reference form of the canonical bytes. The memoized path
+    falls back to it for every value it cannot key, so a rejected value
+    fails with the same error it failed with before the memo existed.
+    """
+
+    if digest_field is not None:
+        if not isinstance(value, dict):
+            raise TypeError("digest-field exclusion requires an object")
+        value = {key: item for key, item in value.items() if key != digest_field}
+
+    def reject_floats(item: Any) -> None:
+        if isinstance(item, float):
+            raise TypeError("floating-point values are outside the durable schema")
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                if not isinstance(key, str):
+                    raise TypeError("durable object keys must be strings")
+                reject_floats(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                reject_floats(nested)
+        elif not isinstance(item, (str, int, bool, type(None))):
+            raise TypeError(f"unsupported durable value: {type(item).__name__}")
+
+    reject_floats(value)
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def canonical_bytes(value: Any, *, digest_field: str | None = None) -> bytes:
     """Return the one canonical JSON byte representation used by every digest."""
 
     if digest_field is not None and not isinstance(value, dict):
         raise TypeError("digest-field exclusion requires an object")
-    key = _durable_cache_key(value, digest_field)
-    return _canonical_entry(value, digest_field, key)["bytes"]
+    payload = _canonical_payload(value, digest_field)
+    try:
+        key = _durable_cache_key(payload)
+    except (TypeError, ValueError, AttributeError):
+        return _uncached_canonical_bytes(value, digest_field)
+    return _canonical_entry(payload, key)["bytes"]
 
 
 def canonical_digest(value: Any, *, digest_field: str | None = None) -> str:
@@ -1032,8 +1075,14 @@ def canonical_digest(value: Any, *, digest_field: str | None = None) -> str:
 
     if digest_field is not None and not isinstance(value, dict):
         raise TypeError("digest-field exclusion requires an object")
-    key = _durable_cache_key(value, digest_field)
-    entry = _canonical_entry(value, digest_field, key)
+    payload = _canonical_payload(value, digest_field)
+    try:
+        key = _durable_cache_key(payload)
+    except (TypeError, ValueError, AttributeError):
+        return hashlib.sha256(
+            _uncached_canonical_bytes(value, digest_field)
+        ).hexdigest()
+    entry = _canonical_entry(payload, key)
     digest = entry["digest"]
     if digest is None:
         digest = hashlib.sha256(entry["bytes"]).hexdigest()
@@ -1055,16 +1104,18 @@ def reference_canonical_text(value: Any) -> str:
     if value is False:
         return "false"
     if isinstance(value, int):
-        return str(int(value))
+        return str(int.__int__(value))
     if isinstance(value, str):
-        return json.dumps(str(value), ensure_ascii=False)
+        return json.dumps(str.__str__(value), ensure_ascii=False)
     if isinstance(value, list):
         return "[" + ",".join(reference_canonical_text(item) for item in value) + "]"
     if isinstance(value, dict):
+        if not dict.__len__(value):
+            return "{}"
         return (
             "{"
             + ",".join(
-                json.dumps(str(name), ensure_ascii=False)
+                json.dumps(str.__str__(name), ensure_ascii=False)
                 + ":"
                 + reference_canonical_text(item)
                 for name, item in sorted(value.items())
@@ -16808,6 +16859,55 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
         self.assertEqual(canonical_bytes(second), reference_canonical_bytes(second))
         self.assertNotEqual(canonical_bytes(first), canonical_bytes(second))
         self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+    def test_empty_dict_subclass_encodes_as_an_empty_object(self) -> None:
+        """An empty stored mapping encodes as an empty object, whatever it reports."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: dict[str, Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return self._reported.items()
+
+        _CANONICAL_CACHE.clear()
+        empty = ReportedItems({}, {"a": 2})
+        reported = ReportedItems({"x": 1}, {"a": 2})
+        self.assertEqual(canonical_bytes(empty), b"{}\n")
+        self.assertEqual(canonical_bytes(reported), b'{"a":2}\n')
+        self.assertNotEqual(canonical_bytes(empty), canonical_bytes(reported))
+        self.assertNotEqual(canonical_digest(empty), canonical_digest(reported))
+
+    def test_text_and_number_subclasses_keep_their_own_data(self) -> None:
+        """A subclass that overrides a conversion is still keyed by its own data."""
+
+        class ReportedText(str):
+            """A text subclass whose string conversion lies."""
+
+            def __str__(self) -> str:
+                return "alpha"
+
+        class ReportedNumber(int):
+            """A number subclass whose integer conversion lies."""
+
+            def __int__(self) -> int:
+                return 7
+
+        _CANONICAL_CACHE.clear()
+        first = ReportedText("alpha")
+        second = ReportedText("beta")
+        self.assertEqual(canonical_bytes(first), b'"alpha"\n')
+        self.assertEqual(canonical_bytes(second), b'"beta"\n')
+        self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+        first_number = ReportedNumber(1)
+        second_number = ReportedNumber(2)
+        self.assertEqual(canonical_bytes(first_number), b"1\n")
+        self.assertEqual(canonical_bytes(second_number), b"2\n")
+        self.assertNotEqual(canonical_digest(first_number), canonical_digest(second_number))
 
     def test_canonical_cache_stays_bounded(self) -> None:
         """The memo keeps at most the configured number of entries."""

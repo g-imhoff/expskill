@@ -861,8 +861,11 @@ __all__ = [
     "CliVerificationError",
     "NETWORK_TEST_ENV",
     "OPTIONAL_MODE",
+    "PARALLEL_WORKER_REASON",
     "REQUIRED_MODE",
+    "XDIST_WORKER_ENV",
     "ensure_binary",
     "network_tests_enabled",
+    "parallel_worker_detected",
     "platform_key",
 ]

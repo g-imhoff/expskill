@@ -372,7 +372,9 @@ inconsistent evidence.
 Install the test dependencies once. The suite runs in parallel by default,
 because `pytest.ini` sets `-n auto`, so a plain `python3 -m pytest` spreads
 the tests over the available cores. The parallel default needs pytest-xdist,
-which the install step below provides. Pass `-n 0` for a serial run.
+which the install step below provides. Pass `-n 0` for a serial run. Each
+worker holds its own copy of the memoized canonical form that the trace
+oracle builds, so a run needs a few hundred megabytes per worker.
 
 ```bash
 python3 -m pip install -r requirements-dev.txt
