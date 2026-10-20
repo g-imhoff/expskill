@@ -1,0 +1,5 @@
+{
+  "schema_version": "unslop-runtime.v1",
+  "scope": "Always load $expskill:unslop at conversation start and after each compaction, before writing user-facing prose. Send commentary only after the skill is loaded. Apply it throughout the conversation.",
+  "compaction_reminder": "After this compaction, reload $expskill:unslop before writing user-facing prose. Send commentary only after the skill is reloaded. Apply it throughout the conversation."
+}

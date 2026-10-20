@@ -1,0 +1,6 @@
+interface:
+  display_name: "Correct"
+  short_description: "Repair bounded defects without lifecycle orchestration"
+  default_prompt: "Use $correct to diagnose and repair this bounded defect."
+policy:
+  allow_implicit_invocation: false

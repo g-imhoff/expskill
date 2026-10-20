@@ -1,0 +1,7 @@
+interface:
+  display_name: "Implement"
+  short_description: "Implement accepted work through independent gates"
+  default_prompt: "Use $implement to execute this accepted implementation work."
+
+policy:
+  allow_implicit_invocation: false
