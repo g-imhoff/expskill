@@ -174,8 +174,14 @@ PY
         fi
         # The background server keeps serving the previously loaded plugin
         # copy until it reloads; a new session alone still gets the old code.
-        reload_output=$(opencode reload 2>&1) ||
-            printf 'Note: %s\nRestart OpenCode (or run: opencode reload) to activate the updated plugin.\n' "$reload_output"
+        # Keep only the first output line: a reload failure is usually stale
+        # server state (for example a tracked directory deleted since), and
+        # the full trace buries the action the user must take.
+        reload_output=$(opencode reload 2>&1) || {
+            reload_line=${reload_output%%$'\n'*}
+            [ -n "$reload_line" ] || reload_line="the background server did not respond"
+            printf 'Note: OpenCode did not reload (%s). Restart OpenCode (or run: opencode reload) to activate the updated plugin.\n' "$reload_line"
+        }
         printf 'ExpSkill installed or updated successfully for OpenCode. Start a new OpenCode session.\n'
         ;;
     Hermes)
