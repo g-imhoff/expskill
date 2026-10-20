@@ -99,7 +99,7 @@ Record user identity as available to the host, confirmation timestamp, exact con
 
 ### Evaluation pack
 
-Record the confirmed contract digest, target-snapshot digest, rubric digest, frozen target scoring parameters, freeze timestamp, and three case partitions: visible development, frozen validation, and hidden release. Each case holds an identifier, partition, purpose, raw request digest, allowed context, setup manifest, observable assertions, forbidden effects, evidence requirements, and pass or fail rule. Keep hidden prompts, expectations, and oracles in separately manifested helper-owned paths withheld from candidate implementers and trial agents.
+Record the confirmed contract digest, target-snapshot digest, rubric digest, frozen target scoring parameters, freeze timestamp, and three case partitions: visible development, frozen validation, and hidden release. Each case holds an identifier, partition, purpose, raw request digest, allowed context, observable assertions, forbidden effects, evidence requirements, pass or fail rule, and `exposure`. A `loaded` case adds its setup-manifest digest. A `selection` case adds `host` (`claude-code`, `codex`, `opencode`, or `hermes`), `expected_selection` (`candidate`, `none`, or `other`), `repeats` (3), and a `setup_manifest` holding a relative `skill_root` and `installs`, each with `role`, a path under the skill root, and `digest`. The one `candidate` install has a `null` digest, so the pack freezes before the candidate exists. Each `neighbour` install carries its loadable-skill digest, and a case expecting `other` installs at least one. A pack refrozen under the same confirmation keeps every case's exposure and every selection case with its host and expected selection. Keep hidden prompts, expectations, and oracles in separately manifested helper-owned paths withheld from candidate implementers and trial agents.
 
 ### Candidate record
 
@@ -107,7 +107,18 @@ Record candidate identifier, isolated locator, base snapshot digest, resulting r
 
 ### Trial pack
 
-Per fresh-context case, record candidate digest, case and request digests, raw prompt digest, loaded-skill digest, fresh context identity, tool-event digest, output digest, before and after target-manifest digests, filesystem-result digest, and verdict and limitation. The pack records case coverage, repeated-case identity where needed, isolation evidence, leakage checks, and an aggregate manifest digest.
+Record one fresh-context run per case and `repeat_index`: index 0 for a loaded case, indexes 0 to 2 for a selection case. Each run holds case identity, repeat index, exposure, case and request digests, raw prompt digest, fresh context identity, tool-event digest, output digest, before and after target-manifest digests, filesystem-result digest, verdict, and limitations. A loaded run adds the loaded-skill digest, equal to the candidate's, and its before-manifest digest equals the frozen setup digest. A selection run adds `installed_skill_digest`, equal to the candidate's, `complete_trace`, and `observed_load` with `kind` (`candidate`, `none`, or `other`), `name` (the target's name for `candidate`, another skill's for `other`), and the loadable-skill `digest`, both `null` for `none`. Its before-manifest is the canonical JSON of the frozen `setup_manifest` with the candidate install's digest set to the candidate's. Its tool-events file is the host's JSON-lines event stream, different for each repeat. `complete_trace` is true exactly when the last event is the host's end marker, and `none` requires a complete trace without the host's load event. A selection run passes only when its kind matches the expected selection, and `other` matches only a frozen neighbour digest, so a selection case passes only when all 3 runs match. Retain each case's frozen record at `evidence/<case_id>/case.json`, each run's raw `request`, `prompt`, `tool-events`, `output`, `before-manifest`, `after-manifest`, and `filesystem-result` files as `.bin` under `evidence/<case_id>/run-<repeat_index>/`, and, for each run that loaded a skill, that package under the run's `loaded-skill/`. The pack records coverage as the ordered case and repeat-index pairs, isolation evidence, leakage checks, and the digest of `evidence/aggregate-manifest.json`. Finalization requires a run that loaded the candidate, and rejects a candidate with a failing selection run in a superseded trial pack.
+
+### Selection trials
+
+Start each selection run in a fresh throwaway directory `$T` outside every Git repository. Install the candidate and the case's neighbours under the skill root, keep all host configuration inside `$T`, and pass credentials only through environment variables. Record the first skill the host loads as the observed load, and retain the host's event stream unchanged as the run's `tool-events`.
+
+| Host | Skill root under `$T` | Command | Load event | End marker |
+|---|---|---|---|---|
+| Claude Code | `.claude/skills/<name>/`, run from `$T` | `CLAUDE_CONFIG_DIR=$T/cfg CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 CLAUDE_CODE_DISABLE_POLICY_SKILLS=1 claude -p "<request>" --output-format stream-json --verbose --setting-sources project --no-session-persistence` | `tool_use` named `Skill` | `result` event |
+| Codex | `work/.agents/skills/<name>/` | `HOME=$T/home CODEX_HOME=$T/codex codex exec --json --ephemeral --skip-git-repo-check --ignore-rules -C $T/work "<request>"` | A command reading the installed `SKILL.md` path, a heuristic | `turn.completed` or `turn.failed` |
+| OpenCode | `cfg/skills/<name>/` | `OPENCODE_TEST_HOME=$T OPENCODE_CONFIG_DIR=$T/cfg OPENCODE_DISABLE_CLAUDE_CODE=1 opencode run --standalone --format json "<request>"` | `tool_use` with `part.tool` `skill` | `step_finish` |
+| Hermes | `skills/<name>/` | `HERMES_HOME=$T HERMES_BUNDLED_SKILLS=<empty directory> hermes chat -q "<request>" --format stream-json --ignore-rules --source tool` | `tool_use` named `skill_view` | `result` event |
 
 ### Builder-run conformance ledger
 
@@ -119,7 +130,7 @@ Record reviewer identity, independence and read-only attestation, exact candidat
 
 ### Target scorecard
 
-Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record.
+Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, with every run of those cases passing.
 
 ### Verification record
 

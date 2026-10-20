@@ -38,13 +38,17 @@ MANIFEST_SCHEMA = "skill-builder-raw-manifest.v1"
 LEGACY_RESOLUTION_SCHEMA = "skill-builder-resolution.v1"
 PREVIOUS_RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
 HISTORICAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
-RESOLUTION_SCHEMA = "skill-builder-resolution.v4"
+LOADED_TRIAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v4"
+RESOLUTION_SCHEMA = "skill-builder-resolution.v5"
 LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
 PREVIOUS_CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
 HISTORICAL_CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
 CANDIDATE_SCHEMA = "skill-builder-candidate.v4"
 LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
-TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
+LOADED_TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
+TRIAL_SCHEMA = "skill-builder-trial-pack.v3"
+LOADED_EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v1"
+EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v2"
 LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
 REVIEW_SCHEMA = "skill-builder-review.v2"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
@@ -98,6 +102,71 @@ _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 _EXISTING_TARGET_MODES = frozenset({"improve", "modify"})
 _MODES = frozenset({"create", *_EXISTING_TARGET_MODES})
+_SELECTION_HOSTS = frozenset({"claude-code", "codex", "opencode", "hermes"})
+_SELECTION_KINDS = frozenset({"candidate", "none", "other"})
+_SELECTION_REPEATS = 3
+_SELECTION_END_MARKERS = {
+    "claude-code": frozenset({"result"}),
+    "codex": frozenset({"turn.completed", "turn.failed"}),
+    "opencode": frozenset({"step_finish"}),
+    "hermes": frozenset({"result"}),
+}
+_SELECTION_BACKED_CRITERIA = {
+    "TR2": frozenset({"candidate"}),
+    "TR3": frozenset({"none", "other"}),
+    "TR6": frozenset({"none", "other"}),
+    "TE3": frozenset({"none", "other"}),
+    "CP5": frozenset({"none", "other"}),
+}
+_EVALUATION_CASE_FIELDS = frozenset(
+    {
+        "case_id",
+        "partition",
+        "purpose",
+        "raw_request_digest",
+        "allowed_context",
+        "setup_manifest_digest",
+        "observable_assertions",
+        "forbidden_effects",
+        "evidence_requirements",
+        "pass_fail_rule",
+    }
+)
+_SELECTION_CASE_FIELDS = (_EVALUATION_CASE_FIELDS - {"setup_manifest_digest"}) | {
+    "exposure",
+    "host",
+    "expected_selection",
+    "repeats",
+    "setup_manifest",
+}
+_TRIAL_EVIDENCE_FIELDS = frozenset(
+    {
+        "case_id",
+        "case_digest",
+        "request_digest",
+        "raw_prompt_digest",
+        "fresh_context_identity",
+        "tool_event_digest",
+        "output_digest",
+        "before_target_manifest_digest",
+        "after_target_manifest_digest",
+        "filesystem_result_digest",
+        "verdict",
+        "limitations",
+    }
+)
+_LOADED_TRIAL_RUN_FIELDS = _TRIAL_EVIDENCE_FIELDS | {
+    "repeat_index",
+    "exposure",
+    "loaded_skill_digest",
+}
+_SELECTION_TRIAL_RUN_FIELDS = _TRIAL_EVIDENCE_FIELDS | {
+    "repeat_index",
+    "exposure",
+    "installed_skill_digest",
+    "observed_load",
+    "complete_trace",
+}
 _STAGES = (
     "resolved",
     "baseline",
@@ -152,14 +221,14 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "design-record": "skill-builder-design.v1",
     "skill-contract": "skill-builder-contract.v1",
     "user-confirmation-record": "skill-builder-user-confirmation.v1",
-    "evaluation-pack": "skill-builder-evaluation-pack.v1",
+    "evaluation-pack": {LOADED_EVALUATION_SCHEMA, EVALUATION_SCHEMA},
     "candidate-record": {
         LEGACY_CANDIDATE_SCHEMA,
         PREVIOUS_CANDIDATE_SCHEMA,
         HISTORICAL_CANDIDATE_SCHEMA,
         CANDIDATE_SCHEMA,
     },
-    "trial-pack": {LEGACY_TRIAL_SCHEMA, TRIAL_SCHEMA},
+    "trial-pack": {LEGACY_TRIAL_SCHEMA, LOADED_TRIAL_SCHEMA, TRIAL_SCHEMA},
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
     "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA},
     "target-scorecard": {LEGACY_SCORECARD_SCHEMA, SCORECARD_SCHEMA},
@@ -1032,6 +1101,154 @@ def _mapping_list(value: object, label: str) -> list[dict[str, Any]]:
     return value
 
 
+def _validate_selection_case(case: dict[str, Any]) -> None:
+    if (
+        case["host"] not in _SELECTION_HOSTS
+        or case["expected_selection"] not in _SELECTION_KINDS
+        or isinstance(case["repeats"], bool)
+        or case["repeats"] != _SELECTION_REPEATS
+    ):
+        raise RunStateError("selection case host, expectation, or repeats are invalid")
+    setup = case["setup_manifest"]
+    if not isinstance(setup, dict) or set(setup) != {"skill_root", "installs"}:
+        raise RunStateError("selection setup manifest schema is invalid")
+    _safe_artifact_path(setup["skill_root"])
+    installs = _mapping_list(setup["installs"], "selection setup installs")
+    paths: set[str] = set()
+    roles: list[str] = []
+    for install in installs:
+        if set(install) != {"role", "path", "digest"}:
+            raise RunStateError("selection setup install schema is invalid")
+        path = _safe_artifact_path(install["path"])
+        if path in paths:
+            raise RunStateError("selection setup installs share a path")
+        paths.add(path)
+        roles.append(install["role"])
+        if install["role"] == "candidate":
+            if install["digest"] is not None:
+                raise RunStateError(
+                    "selection setup names the candidate by role, not by bytes"
+                )
+        elif install["role"] == "neighbour":
+            _digest(install["digest"], "selection setup neighbour")
+        else:
+            raise RunStateError("selection setup install role is invalid")
+    if roles.count("candidate") != 1:
+        raise RunStateError("selection setup must install exactly one candidate")
+    if case["expected_selection"] == "other" and "neighbour" not in roles:
+        raise RunStateError("selection case expecting another skill installs none")
+
+
+def _selection_neighbour_digests(case: dict[str, Any]) -> set[str]:
+    return {
+        install["digest"]
+        for install in case["setup_manifest"]["installs"]
+        if install["role"] == "neighbour"
+    }
+
+
+def _selection_setup_bytes(case: dict[str, Any], candidate_digest: str) -> bytes:
+    """Render the frozen setup with the accepted candidate installed by role."""
+    setup = case["setup_manifest"]
+    return canonical_json_bytes(
+        {
+            "skill_root": setup["skill_root"],
+            "installs": [
+                {**install, "digest": candidate_digest}
+                if install["role"] == "candidate"
+                else install
+                for install in setup["installs"]
+            ],
+        }
+    )
+
+
+def _selection_load_event(host: str, event: dict[str, Any]) -> bool:
+    if host == "codex":
+        item = event.get("item")
+        return (
+            isinstance(item, dict)
+            and item.get("type") == "command_execution"
+            and isinstance(item.get("command"), str)
+            and "SKILL.md" in item["command"]
+        )
+    if host == "opencode":
+        part = event.get("part")
+        return (
+            event["type"] == "tool_use"
+            and isinstance(part, dict)
+            and part.get("tool") == "skill"
+        )
+    tool = "Skill" if host == "claude-code" else "skill_view"
+    pending: list[Any] = [event]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if value.get("type") == "tool_use" and value.get("name") == tool:
+                return True
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return False
+
+
+def _validate_selection_trace(
+    host: str, payload: bytes, trial_run: dict[str, Any]
+) -> None:
+    """Derive trace completeness and no-load evidence from the host's raw events."""
+    try:
+        events = [
+            json.loads(line)
+            for line in payload.decode("utf-8").splitlines()
+            if line.strip()
+        ]
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise RunStateError("selection trial tool events are not JSON lines") from error
+    if not events or any(
+        not isinstance(event, dict) or not isinstance(event.get("type"), str)
+        for event in events
+    ):
+        raise RunStateError("selection trial tool events are not JSON lines")
+    ended = events[-1]["type"] in _SELECTION_END_MARKERS[host]
+    if trial_run["complete_trace"] is not ended:
+        raise RunStateError(
+            "selection trial trace completeness contradicts the host end marker"
+        )
+    if trial_run["observed_load"]["kind"] == "none" and any(
+        _selection_load_event(host, event) for event in events
+    ):
+        raise RunStateError("selection trial that loaded nothing records a load event")
+
+
+def _validate_trial_run(case: dict[str, Any]) -> None:
+    repeat_index = _exact_integer(case["repeat_index"], "trial repeat index")
+    if case["exposure"] == "loaded":
+        if repeat_index != 0:
+            raise RunStateError("loaded trial case runs exactly once")
+        _digest(case["loaded_skill_digest"], "trial case loaded_skill_digest")
+        return
+    if repeat_index >= _SELECTION_REPEATS:
+        raise RunStateError("selection trial repeat index is out of range")
+    _digest(case["installed_skill_digest"], "selection trial installed skill")
+    if not isinstance(case["complete_trace"], bool):
+        raise RunStateError("selection trial trace completeness is invalid")
+    observed = case["observed_load"]
+    if not isinstance(observed, dict) or set(observed) != {"kind", "name", "digest"}:
+        raise RunStateError("selection trial observed load schema is invalid")
+    if observed["kind"] == "none":
+        if observed["name"] is not None or observed["digest"] is not None:
+            raise RunStateError("selection trial that loaded nothing names a skill")
+        if case["complete_trace"] is not True:
+            raise RunStateError(
+                "selection trial claims no load without a complete trace"
+            )
+    elif observed["kind"] in {"candidate", "other"}:
+        _text(observed["name"], "selection trial loaded skill name")
+        _digest(observed["digest"], "selection trial loaded skill")
+    else:
+        raise RunStateError("selection trial observed load kind is invalid")
+
+
 def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
     """Apply the normative, versioned payload schema before accepting an artifact."""
     expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
@@ -1224,18 +1441,15 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         case_ids: set[str] = set()
         for partition, cases in partitions.items():
             for case in _mapping_list(cases, f"evaluation {partition} cases"):
-                if set(case) != {
-                    "case_id",
-                    "partition",
-                    "purpose",
-                    "raw_request_digest",
-                    "allowed_context",
-                    "setup_manifest_digest",
-                    "observable_assertions",
-                    "forbidden_effects",
-                    "evidence_requirements",
-                    "pass_fail_rule",
-                }:
+                if payload["schema_version"] == LOADED_EVALUATION_SCHEMA:
+                    expected_case_fields = _EVALUATION_CASE_FIELDS
+                elif case.get("exposure") == "loaded":
+                    expected_case_fields = _EVALUATION_CASE_FIELDS | {"exposure"}
+                elif case.get("exposure") == "selection":
+                    expected_case_fields = _SELECTION_CASE_FIELDS
+                else:
+                    raise RunStateError("evaluation case exposure is invalid")
+                if set(case) != expected_case_fields:
                     raise RunStateError("evaluation case schema is invalid")
                 case_id = _text(case["case_id"], "evaluation case identity")
                 if case_id in case_ids or case["partition"] != partition:
@@ -1243,7 +1457,10 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 case_ids.add(case_id)
                 _text(case["purpose"], "evaluation case purpose")
                 _digest(case["raw_request_digest"], "evaluation raw request")
-                _digest(case["setup_manifest_digest"], "evaluation setup manifest")
+                if case.get("exposure") == "selection":
+                    _validate_selection_case(case)
+                else:
+                    _digest(case["setup_manifest_digest"], "evaluation setup manifest")
                 for field in (
                     "allowed_context",
                     "observable_assertions",
@@ -1291,41 +1508,38 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         cases = _mapping_list(payload["cases"], "trial cases")
         if not cases:
             raise RunStateError("trial pack has no cases")
-        case_fields = {
-            "case_id",
-            "case_digest",
-            "request_digest",
-            "raw_prompt_digest",
-            "loaded_skill_digest",
-            "fresh_context_identity",
-            "tool_event_digest",
-            "output_digest",
-            "before_target_manifest_digest",
-            "after_target_manifest_digest",
-            "filesystem_result_digest",
-            "verdict",
-            "limitations",
-        }
+        runs_are_versioned = payload["schema_version"] == TRIAL_SCHEMA
         case_ids: list[str] = []
-        seen_case_ids: set[str] = set()
+        seen_case_ids: set[tuple[str, int]] = set()
         context_ids: set[str] = set()
+        selection_traces: set[tuple[str, str]] = set()
         for case in cases:
+            if not runs_are_versioned:
+                case_fields = _TRIAL_EVIDENCE_FIELDS | {"loaded_skill_digest"}
+            elif case.get("exposure") == "selection":
+                case_fields = _SELECTION_TRIAL_RUN_FIELDS
+            elif case.get("exposure") == "loaded":
+                case_fields = _LOADED_TRIAL_RUN_FIELDS
+            else:
+                raise RunStateError("trial case exposure is invalid")
             if set(case) != case_fields:
                 raise RunStateError("trial case schema is invalid")
             case_id = _text(case["case_id"], "trial case identity")
             context_id = _text(
                 case["fresh_context_identity"], "trial fresh context identity"
             )
-            if case_id in seen_case_ids or context_id in context_ids:
+            if runs_are_versioned:
+                _validate_trial_run(case)
+            run_identity = (case_id, case.get("repeat_index", 0))
+            if run_identity in seen_case_ids or context_id in context_ids:
                 raise RunStateError("trial case or fresh context identity is duplicated")
             case_ids.append(case_id)
-            seen_case_ids.add(case_id)
+            seen_case_ids.add(run_identity)
             context_ids.add(context_id)
             for field in (
                 "case_digest",
                 "request_digest",
                 "raw_prompt_digest",
-                "loaded_skill_digest",
                 "tool_event_digest",
                 "output_digest",
                 "before_target_manifest_digest",
@@ -1333,12 +1547,29 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 "filesystem_result_digest",
             ):
                 _digest(case[field], f"trial case {field}")
+            if runs_are_versioned and case["exposure"] == "selection":
+                trace = (case_id, case["tool_event_digest"])
+                if trace in selection_traces:
+                    raise RunStateError(
+                        "selection trial repeats share one tool-event trace"
+                    )
+                selection_traces.add(trace)
+            if not runs_are_versioned:
+                _digest(case["loaded_skill_digest"], "trial case loaded_skill_digest")
             if case["verdict"] not in {"pass", "fail"}:
                 raise RunStateError("trial case verdict is invalid")
             _text_list(case["limitations"], "trial case limitations")
-        for field in ("coverage", "isolation_evidence", "leakage_checks"):
+        for field in ("isolation_evidence", "leakage_checks"):
             _text_list(payload[field], f"trial {field}")
-        if payload["coverage"] != case_ids:
+        expected_coverage: list[Any] = (
+            [
+                {"case_id": case["case_id"], "repeat_index": case["repeat_index"]}
+                for case in cases
+            ]
+            if runs_are_versioned
+            else case_ids
+        )
+        if payload["coverage"] != expected_coverage:
             raise RunStateError("trial case coverage is incomplete or out of order")
         _digest(payload["aggregate_manifest_digest"], "trial aggregate manifest")
         if payload["status"] not in {"pass", "fail"}:
@@ -1991,6 +2222,7 @@ def _create_resolution_artifact(
         "schema_version": RESOLUTION_SCHEMA,
         "workflow_id": workflow_id,
         "candidate_record_schema": CANDIDATE_SCHEMA,
+        "evaluation_pack_schema": EVALUATION_SCHEMA,
         "trial_pack_schema": TRIAL_SCHEMA,
         "review_record_schema": REVIEW_SCHEMA,
         "scorecard_schema": SCORECARD_SCHEMA,
@@ -2192,8 +2424,10 @@ def _trial_loadable_skill_digests_from_manifest(
         case_id, marker, package_path = relative.partition(package_marker)
         if not marker:
             continue
+        run_parts = case_id.split("/")
         if (
-            not _ARTIFACT_RE.fullmatch(case_id)
+            len(run_parts) > 2
+            or any(not _ARTIFACT_RE.fullmatch(part) for part in run_parts)
             or not package_path
             or package_path.startswith("/")
         ):
@@ -2247,6 +2481,7 @@ def _loadable_skill_digest_from_target_manifest(
 
 
 _VERSIONED_ARTIFACT_SCHEMAS = {
+    "evaluation-pack": ("evaluation_pack_schema", LOADED_EVALUATION_SCHEMA),
     "candidate-record": ("candidate_record_schema", LEGACY_CANDIDATE_SCHEMA),
     "trial-pack": ("trial_pack_schema", LEGACY_TRIAL_SCHEMA),
     "review-record": ("review_record_schema", LEGACY_REVIEW_SCHEMA),
@@ -2263,6 +2498,7 @@ def _validate_artifact_schema_pairing(
     marker_name, default_schema = marker
     if payload["schema_version"] != resolution.get(marker_name, default_schema):
         label = {
+            "evaluation-pack": "evaluation-pack",
             "candidate-record": "candidate",
             "trial-pack": "trial-pack",
             "review-record": "review",
@@ -3055,7 +3291,7 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             payload.get("candidate_record_schema") == HISTORICAL_CANDIDATE_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
         )
-    else:
+    elif schema_version == LOADED_TRIAL_RESOLUTION_SCHEMA:
         expected_fields = common_fields | {
             "candidate_record_schema",
             "trial_pack_schema",
@@ -3064,6 +3300,21 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
         }
         version_markers_valid = (
             payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            and payload.get("trial_pack_schema") == LOADED_TRIAL_SCHEMA
+            and payload.get("review_record_schema") == REVIEW_SCHEMA
+            and payload.get("scorecard_schema") == SCORECARD_SCHEMA
+        )
+    else:
+        expected_fields = common_fields | {
+            "candidate_record_schema",
+            "evaluation_pack_schema",
+            "trial_pack_schema",
+            "review_record_schema",
+            "scorecard_schema",
+        }
+        version_markers_valid = (
+            payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            and payload.get("evaluation_pack_schema") == EVALUATION_SCHEMA
             and payload.get("trial_pack_schema") == TRIAL_SCHEMA
             and payload.get("review_record_schema") == REVIEW_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
@@ -3074,6 +3325,7 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             LEGACY_RESOLUTION_SCHEMA,
             PREVIOUS_RESOLUTION_SCHEMA,
             HISTORICAL_RESOLUTION_SCHEMA,
+            LOADED_TRIAL_RESOLUTION_SCHEMA,
             RESOLUTION_SCHEMA,
         }
         or set(payload) != expected_fields
@@ -3225,9 +3477,16 @@ def _validate_trial_binding(
     ):
         frozen_cases.extend(evaluation["partitions"][partition])
     trial_cases = trials["cases"]
-    if [case["case_id"] for case in trial_cases] != [
-        case["case_id"] for case in frozen_cases
-    ]:
+    runs_are_versioned = trials["schema_version"] == TRIAL_SCHEMA
+    planned_cases: list[dict[str, Any]] = []
+    planned_runs: list[tuple[str, int]] = []
+    for frozen_case in frozen_cases:
+        for repeat_index in range(frozen_case.get("repeats", 1)):
+            planned_cases.append(frozen_case)
+            planned_runs.append((frozen_case["case_id"], repeat_index))
+    if [
+        (case["case_id"], case.get("repeat_index", 0)) for case in trial_cases
+    ] != planned_runs:
         raise RunStateError("trial coverage does not match the frozen evaluation cases")
 
     raw_fields = {
@@ -3245,52 +3504,103 @@ def _validate_trial_binding(
         in {HISTORICAL_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA}
         else candidate["resulting_digest"]
     )
+
+    def run_key(case: dict[str, Any]) -> str:
+        if runs_are_versioned:
+            return f"{case['case_id']}/run-{case['repeat_index']}"
+        return case["case_id"]
+
+    def loaded_digest(case: dict[str, Any]) -> str | None:
+        if case.get("exposure") == "selection":
+            return case["observed_load"]["digest"]
+        return case["loaded_skill_digest"]
+
     retained_loaded_digests: dict[str, str] = {}
-    if trials["schema_version"] == TRIAL_SCHEMA:
+    if trials["schema_version"] != LEGACY_TRIAL_SCHEMA:
         retained_loaded_digests = _trial_loadable_skill_digests_from_manifest(
             run, trial_id, trial_manifest
         )
         if set(retained_loaded_digests) != {
-            case["case_id"] for case in trial_cases
+            run_key(case) for case in trial_cases if loaded_digest(case) is not None
         }:
             raise RunStateError("trial loaded-skill package coverage is incomplete")
-    for trial_case, frozen_case in zip(trial_cases, frozen_cases, strict=True):
+    target_name = current["target_identity"]["name"]
+    for trial_case, frozen_case in zip(trial_cases, planned_cases, strict=True):
         case_id = trial_case["case_id"]
         if not _ARTIFACT_RE.fullmatch(case_id):
             raise RunStateError("trial case identity is unsafe")
+        selection = frozen_case.get("exposure") == "selection"
         expected_case_digest = raw_digest(canonical_json_bytes(frozen_case))
+        expected_setup_digest = (
+            raw_digest(
+                _selection_setup_bytes(frozen_case, expected_loaded_skill_digest)
+            )
+            if selection
+            else frozen_case["setup_manifest_digest"]
+        )
         if (
             trial_case["case_digest"] != expected_case_digest
             or raw_digests.get(f"evidence/{case_id}/case.json")
             != expected_case_digest
             or trial_case["request_digest"] != frozen_case["raw_request_digest"]
-            or trial_case["before_target_manifest_digest"]
-            != frozen_case["setup_manifest_digest"]
+            or trial_case.get("exposure", "loaded")
+            != frozen_case.get("exposure", "loaded")
+            or trial_case["before_target_manifest_digest"] != expected_setup_digest
         ):
             raise RunStateError("trial case binding is stale or substituted")
-        if trial_case["loaded_skill_digest"] != expected_loaded_skill_digest:
+        if selection:
+            observed = trial_case["observed_load"]
+            if trial_case["installed_skill_digest"] != expected_loaded_skill_digest:
+                raise RunStateError(
+                    "selection trial installed skill is not the accepted candidate"
+                )
+            if (observed["digest"] == expected_loaded_skill_digest) != (
+                observed["kind"] == "candidate"
+            ) or (observed["kind"] == "candidate") != (
+                observed["name"] == target_name
+            ):
+                raise RunStateError(
+                    "selection trial observed load mislabels the candidate"
+                )
+            matches = observed["kind"] == frozen_case["expected_selection"] and (
+                observed["kind"] != "other"
+                or observed["digest"] in _selection_neighbour_digests(frozen_case)
+            )
+            if trial_case["verdict"] == "pass" and not matches:
+                raise RunStateError(
+                    "selection trial passes a load other than its expected selection"
+                )
+        elif trial_case["loaded_skill_digest"] != expected_loaded_skill_digest:
             raise RunStateError(
                 "trial loaded-skill content identity is stale or substituted"
             )
-        if trials["schema_version"] == TRIAL_SCHEMA:
+        if trials["schema_version"] == LEGACY_TRIAL_SCHEMA:
             if (
-                retained_loaded_digests.get(case_id)
+                raw_digests.get(f"evidence/{case_id}/loaded-skill.bin")
                 != trial_case["loaded_skill_digest"]
             ):
-                raise RunStateError(
-                    "trial loaded-skill content is missing or substituted"
-                )
+                raise RunStateError("trial raw evidence binding is missing or stale")
         elif (
-            raw_digests.get(f"evidence/{case_id}/loaded-skill.bin")
-            != trial_case["loaded_skill_digest"]
+            loaded_digest(trial_case) is not None
+            and retained_loaded_digests.get(run_key(trial_case))
+            != loaded_digest(trial_case)
         ):
-            raise RunStateError("trial raw evidence binding is missing or stale")
+            raise RunStateError(
+                "trial loaded-skill content is missing or substituted"
+            )
         for field, file_stem in raw_fields.items():
             if (
-                raw_digests.get(f"evidence/{case_id}/{file_stem}.bin")
+                raw_digests.get(f"evidence/{run_key(trial_case)}/{file_stem}.bin")
                 != trial_case[field]
             ):
                 raise RunStateError("trial raw evidence binding is missing or stale")
+        if selection:
+            trace_path = f"{raw_prefix}evidence/{run_key(trial_case)}/tool-events.bin"
+            _validate_selection_trace(
+                frozen_case["host"],
+                _read_bytes(run.joinpath(*trace_path.split("/")), MAX_ARTIFACT_BYTES),
+                trial_case,
+            )
     if (
         raw_digests.get("evidence/aggregate-manifest.json")
         != trials["aggregate_manifest_digest"]
@@ -3796,8 +4106,8 @@ def _validate_score_bindings(
         raise RunStateError("scorecard lacks frozen scoring-parameter evidence")
     for parameter_id in frozen_parameter_ids:
         _text(parameter_id, "evaluation scoring parameter identity")
-    cases_by_id = {case["case_id"]: case for case in trials["cases"]}
-    frozen_case_ids = sorted(cases_by_id)
+    trial_runs = trials["cases"]
+    frozen_case_ids = sorted({case["case_id"] for case in trial_runs})
     if not frozen_case_ids:
         raise RunStateError("scorecard lacks frozen case evidence")
     review_finding_ids: dict[str, list[str]] = {}
@@ -3806,15 +4116,37 @@ def _validate_score_bindings(
         for criterion_id in finding["affected_target_criteria"]:
             review_finding_ids.setdefault(criterion_id, []).append(finding_id)
 
+    expected_selections = {
+        case["case_id"]: case["expected_selection"]
+        for cases in evaluation["partitions"].values()
+        for case in cases
+        if case.get("exposure") == "selection"
+    }
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
-            selected_cases = [cases_by_id[case_id] for case_id in frozen_case_ids]
+            backing_kinds = _SELECTION_BACKED_CRITERIA.get(criterion_id)
+            if (
+                trials["schema_version"] == TRIAL_SCHEMA
+                and backing_kinds is not None
+                and result["passed"] is True
+            ):
+                backing_verdicts = [
+                    case["verdict"]
+                    for case in trial_runs
+                    if expected_selections.get(case["case_id"]) in backing_kinds
+                ]
+                if not backing_verdicts or any(
+                    verdict != "pass" for verdict in backing_verdicts
+                ):
+                    raise RunStateError(
+                        f"scorecard passes {criterion_id} without passing selection trials"
+                    )
             expected_raw_digests = sorted(
-                {case["output_digest"] for case in selected_cases}
+                {case["output_digest"] for case in trial_runs}
             )
             expected_trial_receipts = sorted(
-                raw_digest(canonical_json_bytes(case)) for case in selected_cases
+                raw_digest(canonical_json_bytes(case)) for case in trial_runs
             )
             expected_finding_ids = sorted(set(review_finding_ids.get(criterion_id, [])))
             if (
@@ -3994,6 +4326,38 @@ def _validate_evaluation_binding(
         },
         "evaluation pack",
     )
+    refrozen = {
+        case["case_id"]: case
+        for cases in evaluation["partitions"].values()
+        for case in cases
+    }
+    for record in current["artifact_index"].values():
+        if (
+            record["type"] != "evaluation-pack"
+            or record["derived_status"] != "superseded"
+        ):
+            continue
+        earlier = _artifact_payload_json(run, record["artifact_id"])
+        if earlier["confirmation_digest"] != evaluation["confirmation_digest"]:
+            continue
+        for cases in earlier["partitions"].values():
+            for case in cases:
+                kept = refrozen.get(case["case_id"])
+                selection = case.get("exposure") == "selection"
+                if (kept is None and selection) or (
+                    kept is not None
+                    and any(
+                        kept.get(field) != case.get(field)
+                        for field in (
+                            ("exposure", "host", "expected_selection")
+                            if selection
+                            else ("exposure",)
+                        )
+                    )
+                ):
+                    raise RunStateError(
+                        "refreezing under the same confirmation changes a case's selection"
+                    )
     return evaluation, evaluation_envelope
 
 
@@ -5994,6 +6358,23 @@ def _validate_final_evidence(
         or trials.get("status") != "pass"
     ):
         raise RunStateError("trial evidence is stale or failing")
+    if not any(
+        case.get("exposure") != "selection"
+        or case["observed_load"]["kind"] == "candidate"
+        for case in trials["cases"]
+    ):
+        raise RunStateError("delivery requires a trial that loaded the candidate")
+    for record in current["artifact_index"].values():
+        if record["type"] != "trial-pack" or record["derived_status"] != "superseded":
+            continue
+        earlier = _artifact_payload_json(run, record["artifact_id"])
+        if earlier["candidate_digest"] == candidate_digest and any(
+            case.get("exposure") == "selection" and case["verdict"] == "fail"
+            for case in earlier["cases"]
+        ):
+            raise RunStateError(
+                "selection trials already failed for this candidate, so repair it"
+            )
     review_id, review_envelope, review = _current_event_artifact(
         run, current, "accept-review", "review-record", event_artifacts
     )

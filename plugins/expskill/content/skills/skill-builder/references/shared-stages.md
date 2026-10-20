@@ -26,7 +26,7 @@ Present the current contract and wait for the user's explicit, unforced answer t
 
 ### 8. Freeze acceptance before candidate work
 
-Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze the evaluation pack, and enter candidate work only after the helper confirms the four candidate-entry bindings.
+Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Mark each case `selection` when it tests whether the host loads the candidate, as trigger, non-trigger, and near-neighbour requests do, and `loaded` when it tests behavior after loading. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze the evaluation pack, and enter candidate work only after the helper confirms the four candidate-entry bindings.
 
 ### 9. Build one isolated candidate
 
@@ -34,7 +34,7 @@ Build one candidate in a disposable copy or isolated worktree, edit only that ca
 
 ### 10. Run fresh-context trials
 
-Run every case in a disposable target with a fresh agent context. Give each trial agent only the candidate skill, the realistic request, visible case material, and the target artifacts it needs. Pass a trial only when it shows the expected outcome with only the candidate loaded, every write inside its disposable target, case material confined to its allowed context, and complete trace evidence. Write the trial pack.
+Run every case in a disposable target with a fresh agent context. Run each selection case as the artifact contracts' selection trials describe, and each loaded case with the candidate preloaded, giving the trial agent only the candidate skill, the realistic request, visible case material, and the target artifacts it needs. Pass a run only when it shows the expected outcome, every write inside its disposable target, case material confined to its allowed context, and complete trace evidence. Write the trial pack.
 
 ### 11. Obtain independent review before scoring
 
