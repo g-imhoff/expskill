@@ -1,0 +1,31 @@
+name: networked-tests
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  networked-cli-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+      # These two suites download the pinned Codex and opencode executables
+      # and run their real CLIs, so they stay off the pull request path. They
+      # run serially because both acquire the same verified executable cache.
+      - name: Networked CLI tests
+        env:
+          EXPSKILL_RUN_NETWORK_TESTS: "1"
+          EXPSKILL_CLI_MODE: required
+        run: >-
+          python3 -m pytest -q -n 0
+          tests/test_cli_install_integration.py
+          tests/test_codex_agent_discovery.py

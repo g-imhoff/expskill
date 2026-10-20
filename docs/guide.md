@@ -369,7 +369,12 @@ inconsistent evidence.
 
 ## Repository commands
 
+Install the test dependencies once. The suite runs in parallel by default,
+because `pytest.ini` sets `-n auto`, so a plain `python3 -m pytest` spreads
+the tests over the available cores. Pass `-n 0` for a serial run.
+
 ```bash
+python3 -m pip install -r requirements-dev.txt
 python3 scripts/validate.py
 python3 -m pytest -q tests/test_codex_source_correction.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
@@ -383,11 +388,14 @@ the official release archive SHA-256, retains or reacquires that verified
 archive, checks the expected executable member before reusing cached bytes,
 exercises Codex through the real Codex CLI marketplace and plugin commands
 and exercises OpenCode through npm pack/install plus file-URI config wiring,
-and verifies detection. Run it in
-the required, fail-closed mode:
+and verifies detection. Both networked suites skip unless
+`EXPSKILL_RUN_NETWORK_TESTS` holds 1, true, yes, or on. The nightly
+`networked-tests` workflow sets that variable and runs both suites. Run them
+locally in the required, fail-closed mode, serially, because both acquire the
+same verified executable cache:
 
 ```bash
-EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q -n 0 tests/test_cli_install_integration.py tests/test_codex_agent_discovery.py
 ```
 
 The checked-in manifest records the archive digests and their authoritative
@@ -409,7 +417,7 @@ export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
 export EXPSKILL_TEST_CODEX_BIN_SHA256="independently-verified-sha256"
 export EXPSKILL_TEST_OPENCODE_BIN="/path/to/opencode"
 export EXPSKILL_TEST_OPENCODE_BIN_SHA256="independently-verified-sha256"
-EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q -n 0 tests/test_cli_install_integration.py
 ```
 
 For a deliberately local/offline check, opt in explicitly with
