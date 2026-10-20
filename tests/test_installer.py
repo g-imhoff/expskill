@@ -172,6 +172,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.calls(), [
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "add", "opencode-expskill"],
+            ["opencode", "reload"],
         ])
         self.assertFalse((self.home / ".codex").exists())
 
@@ -256,6 +257,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.calls(), [
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "add", "opencode-expskill"],
+            ["opencode", "reload"],
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", SHA, "--force"],
         ])
@@ -273,7 +275,7 @@ class InstallerTests(unittest.TestCase):
         self.commands("opencode", "hermes", "claude")
         result = self.run_installer("ALL\n")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([call[0] for call in self.calls()], ["git", "codex", "codex", "codex", "opencode", "opencode", "git", "hermes", "git", "claude", "claude", "claude", "claude"])
+        self.assertEqual([call[0] for call in self.calls()], ["git", "codex", "codex", "codex", "opencode", "opencode", "opencode", "git", "hermes", "git", "claude", "claude", "claude", "claude"])
         for host in ("Codex", "OpenCode", "Hermes", "Claude Code"):
             self.assertIn("installed or updated successfully for " + host, result.stdout)
 
@@ -281,7 +283,7 @@ class InstallerTests(unittest.TestCase):
         self.commands("opencode", "git", "hermes")
         result = self.run_installer("2,OpenCode,2 3 Hermes 3\n")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([call[0] for call in self.calls()], ["opencode", "opencode", "git", "hermes"])
+        self.assertEqual([call[0] for call in self.calls()], ["opencode", "opencode", "opencode", "git", "hermes"])
 
     def test_invalid_combined_selection_never_installs_partial_choice(self):
         self.commands("opencode", "git", "hermes")
@@ -299,6 +301,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.calls(), [
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "add", "opencode-expskill"],
+            ["opencode", "reload"],
         ])
 
     def test_preflight_checks_every_selected_cli_before_installing(self):
@@ -314,7 +317,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Hermes installation or update failed", result.stderr)
         self.assertIn("installed or updated successfully for OpenCode", result.stdout)
         self.assertNotIn("installed or updated successfully for Hermes", result.stdout)
-        self.assertEqual([call[0] for call in self.calls()], ["opencode", "opencode", "git", "hermes"])
+        self.assertEqual([call[0] for call in self.calls()], ["opencode", "opencode", "opencode", "git", "hermes"])
         self.assertFalse((self.home / ".codex").exists())
 
     def test_codex_installs_profiles_in_custom_home_and_preserves_existing(self):
@@ -384,6 +387,7 @@ class InstallerTests(unittest.TestCase):
             ["codex", "plugin", "add", "expskill@expskill", "--json"],
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "update", "opencode-expskill"],
+            ["opencode", "reload"],
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", next_sha, "--force"],
             ["git", "ls-remote", REMOTE, "refs/heads/claude-dist"],
@@ -462,6 +466,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.calls(), [
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "update", "opencode-expskill"],
+            ["opencode", "reload"],
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", SHA, "--force"],
         ])
@@ -477,14 +482,24 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(self.calls(), [
                     ["opencode", "plugin", "list"],
                     ["opencode", "plugin", "update", target],
+                    ["opencode", "reload"],
                 ])
+
+    def test_opencode_reload_failure_still_reports_success_with_restart_note(self):
+        self.commands("opencode")
+        result = self.run_installer("2\n", FAIL_COMMAND="opencode reload")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("installed or updated successfully for OpenCode", result.stdout)
+        self.assertIn("opencode reload", result.stdout)
+        self.assertEqual(self.calls()[-1], ["opencode", "reload"])
 
     def test_opencode_does_not_mistake_similar_package_or_id_for_expskill(self):
         self.commands("opencode")
         listing = "ID VERSION SOURCE\nopencode-expskill 1.0 unrelated\nexp 0.1 opencode-expskill-extra"
         result = self.run_installer("2\n", OPENCODE_PLUGINS=listing)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls()[-1], ["opencode", "plugin", "add", "opencode-expskill"])
+        self.assertIn(["opencode", "plugin", "add", "opencode-expskill"], self.calls())
+        self.assertEqual(self.calls()[-1], ["opencode", "reload"])
 
     def test_codex_leaves_unrelated_marketplaces_registered(self):
         self.codex_commands()
@@ -640,6 +655,7 @@ class InstallerTests(unittest.TestCase):
             ["curl", "-fsSL", "https://raw.githubusercontent.com/g-imhoff/expskill/main/install.sh"],
             ["opencode", "plugin", "list"],
             ["opencode", "plugin", "add", "opencode-expskill"],
+            ["opencode", "reload"],
             ["git", "ls-remote", REMOTE, "refs/heads/hermes-dist"],
             ["hermes", "plugins", "install", REMOTE, "--ref", SHA, "--force"],
         ])
