@@ -1,5 +1,8 @@
 """Networked integration test for the documented CLI install flows.
 
+This suite needs the opt-in variable ``EXPSKILL_RUN_NETWORK_TESTS`` set to an
+enabling value such as ``1``.  Without it the suite is skipped.
+
 The default ``required`` mode fails closed when a pinned CLI cannot be
 verified. Set ``EXPSKILL_CLI_MODE=optional`` only for an explicitly requested
 local/offline run that may skip acquisition failures. Explicit executable
@@ -19,9 +22,9 @@ import unittest
 from pathlib import Path
 
 try:
-    from tests.cli_verification import ensure_binary
+    from tests.cli_verification import NETWORK_TEST_ENV, ensure_binary, network_tests_enabled
 except ModuleNotFoundError:  # direct ``python tests/test_cli_install_integration.py``
-    from cli_verification import ensure_binary
+    from cli_verification import NETWORK_TEST_ENV, ensure_binary, network_tests_enabled
 
 from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.build_opencode_package import build_opencode_package
@@ -48,6 +51,10 @@ COMMAND_TIMEOUT = 300
 
 NPM = shutil.which("npm")
 needs_npm = unittest.skipUnless(NPM, "npm is required for packed OpenCode plugin integration")
+needs_network_tests = unittest.skipUnless(
+    network_tests_enabled(),
+    f"set {NETWORK_TEST_ENV}=1 to run the networked CLI install suite",
+)
 
 
 def _ensure_binary(kind: str) -> Path:
@@ -128,6 +135,7 @@ def _await_agent_list(
         _time.sleep(3)
 
 
+@needs_network_tests
 class CliInstallIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

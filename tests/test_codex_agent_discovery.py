@@ -1,3 +1,9 @@
+"""Networked test that real Codex loads the updated agent profiles.
+
+This suite needs the opt-in variable ``EXPSKILL_RUN_NETWORK_TESTS`` set to an
+enabling value such as ``1``.  Without it the suite is skipped.
+"""
+
 from __future__ import annotations
 
 import json
@@ -11,10 +17,15 @@ import unittest
 
 from scripts.render_codex import render_agents
 from tests import test_installer
-from tests.cli_verification import ensure_binary
+from tests.cli_verification import NETWORK_TEST_ENV, ensure_binary, network_tests_enabled
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+needs_network_tests = unittest.skipUnless(
+    network_tests_enabled(),
+    f"set {NETWORK_TEST_ENV}=1 to run the networked Codex agent discovery suite",
+)
 
 
 def _agent_warnings(binary: Path, codex_home: Path, project: Path) -> list[str]:
@@ -73,6 +84,7 @@ def _agent_warnings(binary: Path, codex_home: Path, project: Path) -> list[str]:
         return [warning for warning in warnings if "agent role" in warning]
 
 
+@needs_network_tests
 class CodexAgentDiscoveryTests(unittest.TestCase):
     def test_real_codex_loads_updated_profiles_after_legacy_backup_migration(self) -> None:
         binary = ensure_binary("codex", ROOT / ".testbin")

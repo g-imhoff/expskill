@@ -1063,6 +1063,25 @@ class CliVerificationTests(unittest.TestCase):
                     environ={},
                 )
 
+    def test_network_test_gate_enables_only_documented_values(self) -> None:
+        enabled_values = ("1", "true", "TRUE", " True ", "yes", "YES", "on", "ON", " On\n")
+        for value in enabled_values:
+            with self.subTest(value=value):
+                self.assertTrue(
+                    cli_verification.network_tests_enabled(
+                        {cli_verification.NETWORK_TEST_ENV: value}
+                    )
+                )
+        rejected_values = ("", " ", "0", "false", "no", "off", "2", "enabled", "y", "t")
+        for value in rejected_values:
+            with self.subTest(value=value):
+                self.assertFalse(
+                    cli_verification.network_tests_enabled(
+                        {cli_verification.NETWORK_TEST_ENV: value}
+                    )
+                )
+        self.assertFalse(cli_verification.network_tests_enabled({}))
+
 
 if __name__ == "__main__":
     unittest.main()
