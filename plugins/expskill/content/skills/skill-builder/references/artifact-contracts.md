@@ -75,7 +75,7 @@ Record host evidence, exact-target evidence, overlap and near-neighbour map, sel
 
 ### Baseline report
 
-For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve and modify modes, record current behavior, failures, strengths, context cost, tool and permission behavior, and preserved regressions. For modify mode, also record the contract delta and each retired behavior with the change that replaces it. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
+For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve and modify modes, record current behavior, failures, strengths, context cost, tool and permission behavior, preserved regressions, and body restatement marked for removal. For modify mode, also record the contract delta and each retired behavior with the change that replaces it. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
 
 ### Research pack
 
@@ -91,19 +91,61 @@ Record coherent alternatives, mechanisms, tradeoffs, challenges, evidence links,
 
 ### Skill contract
 
-Record purpose, success signal, triggers, non-triggers, inputs and preconditions, ordered behavior and decisions, allowed and forbidden actions, tools, permissions, delegation, outputs and consumers, failures, changed goals, stopping conditions, resources, and non-goals. Bind every statement depending on evidence or a user decision to its source artifact.
+Record purpose, success signal, triggers, non-triggers, aliases, ambiguity behavior, inputs and preconditions, ordered behavior and decisions, collaboration, allowed and forbidden actions, tools, permissions, delegation, outputs and consumers, failures, changed goals, stopping conditions, resources, non-goals, `load_policy`, and `hosts`. Bind every statement depending on evidence or a user decision to its source artifact. Record these in `skill-builder-contract.v2`, and keep v1 contracts in runs begun under v1. `load_policy` holds `policy` (`user`, `user-or-skills`, or `agent`), `loader_skills` (skill names), and `loader_packages` (package names). Both lists stay empty unless the policy is `user-or-skills`, which names at least one loader. `hosts` lists each target host once, from `claude-code`, `codex`, `opencode`, and `hermes`.
+
+### Load policy
+
+A hook asking for a skill counts as the user asking. `run_state.py load-sentence` renders the load sentence from `load_policy` and the target name.
+
+| Policy | Load sentence | Codex `agents/openai.yaml` | OpenCode frontmatter | Claude Code | Hermes |
+|---|---|---|---|---|---|
+| `user` | `Only the user can load $N.` | `policy.allow_implicit_invocation: false` | `metadata:` `opencode/autoinvoke: "false"` | 3-run selection trials | Limitation recorded at confirmation |
+| `user-or-skills` | `Only the user or <loaders> can load $N.` | `policy.allow_implicit_invocation: false` | `metadata:` `opencode/autoinvoke: "false"` | 3-run selection trials | 3-run selection trials, limitation recorded at confirmation |
+| `agent` | None | `policy.allow_implicit_invocation: true` or absent, 3-run selection trials | `opencode/autoinvoke` absent or `"true"`, 3-run selection trials | 3-run selection trials | 3-run selection trials |
+
+Leave `disable-model-invocation` out of every candidate's frontmatter. A generated Codex target's `short_description` shortens the description sentence without load text, and its `default_prompt` is `Use $N to <what it does>.`
+
+### Placement
+
+Give each contract field one home:
+
+| Home | Fields |
+|---|---|
+| Description sentence | `purpose`, `triggers`, `aliases` |
+| Load sentence and host flags | `load_policy`, `hosts` |
+| Body, as wanted actions in run order | `inputs_preconditions`, `ordered_behavior`, `ambiguity`, `collaboration`, `allowed_actions`, `tools`, `permissions`, `delegation`, `outputs_consumers`, `failures`, `changed_goals`, `stopping_conditions`, `resources` |
+| Body, once, with its reason and alternative | An irreversible action no allowlist covers |
+| Test cases only | `success_signal`, `non_triggers`, `non_goals`, `forbidden_actions` |
 
 ### User-confirmation record
 
-Record user identity as available to the host, confirmation timestamp, exact confirmation text or event digest, canonical target identity, contract artifact identifier, contract digest, target-snapshot digest, and accepted status. Only an explicit user event can create an accepted confirmation artifact.
+Record user identity as available to the host, confirmation timestamp, exact confirmation text or event digest, canonical target identity, contract artifact identifier, contract digest, target-snapshot digest, and accepted status. Under a restricted load policy with a Hermes target, list in the artifact's `limitations` a Hermes entry naming the missing hide flag. Only an explicit user event can create an accepted confirmation artifact.
 
 ### Evaluation pack
 
 Record the confirmed contract digest, target-snapshot digest, rubric digest, frozen target scoring parameters, freeze timestamp, and three case partitions: visible development, frozen validation, and hidden release. Each case holds an identifier, partition, purpose, raw request digest, allowed context, observable assertions, forbidden effects, evidence requirements, pass or fail rule, and `exposure`. A `loaded` case adds its setup-manifest digest. A `selection` case adds `host` (`claude-code`, `codex`, `opencode`, or `hermes`), `expected_selection` (`candidate`, `none`, or `other`), `repeats` (3), and a `setup_manifest` holding a relative `skill_root` and `installs`, each with `role`, a path under the skill root, and `digest`. The one `candidate` install has a `null` digest, so the pack freezes before the candidate exists. Each `neighbour` install carries its loadable-skill digest, and a case expecting `other` installs at least one. A pack refrozen under the same confirmation keeps every case's exposure and every selection case with its host and expected selection. Keep hidden prompts, expectations, and oracles in separately manifested helper-owned paths withheld from candidate implementers and trial agents.
 
+### Implementer brief
+
+Before each candidate, retain one `implementer-brief` (`skill-builder-implementer-brief.v1`) holding exactly these fields:
+
+| Field | Content |
+|---|---|
+| `contract_digest`, `confirmation_digest`, `evaluation_digest` | Digests of the current contract, confirmation, and pack |
+| `description` | The full planned description, ending with `load_sentence` when one exists |
+| `load_sentence` | The helper's rendering, or `null` for `agent` |
+| `host_flags` | Each contract host mapped to OpenCode `{"opencode/autoinvoke": "false"}` under a restricted policy, Codex `allow_implicit_invocation` (whether the policy is `agent`) with `adapter_path`, `short_description`, and `default_prompt`, or `{}` |
+| `body_rules` | The body's wanted actions in run order |
+| `irreversible_prohibitions` | Each `forbidden_action` from the contract's `forbidden_actions` with its `action`, `reason`, and `alternative` |
+| `owned_paths` | The candidate's owned paths |
+| `resources` | Resources the body links |
+| `visible_cases` | Visible `loaded` cases only, each with `case_id`, its exact frozen `request` text, and `expected` copied from one of its observable assertions or its pass or fail rule |
+
+`adapter_path` locates `agents/openai.yaml` from the candidate package root, with leading `../` segments when the target keeps its Codex adapter outside the package, and the candidate artifact then retains a byte copy at `codex-adapter/openai.yaml`. Only `irreversible_prohibitions[].forbidden_action` and that prohibition's own `action` may hold contract `forbidden_actions` text, and no brief text holds a contract `non_triggers` or `non_goals` item.
+
 ### Candidate record
 
-Record candidate identifier, isolated locator, base snapshot digest, resulting revision and digest, writable role, owned paths, diff digest, local-check evidence, and the four candidate-entry bindings.
+Record candidate identifier, isolated locator, base snapshot digest, resulting revision and digest, writable role, owned paths, diff digest, local-check evidence, and the four candidate-entry bindings. Under contract v2, also record `brief_digest`, naming the one accepted implementer brief the candidate binds, and `checker_version` (`skill-builder-candidate-checks.v1`). Accepting the candidate runs the helper's checks once. Frontmatter and `agents/openai.yaml` hold single-line scalars, with `metadata` the only frontmatter block and `interface` and `policy` the only adapter blocks. The frontmatter `name` is the target name and the description equals the brief's. Under a restricted policy the description ends with the load sentence after sentence punctuation and names `$<name>` nowhere else, and under `agent` it holds none. A restricted Claude Code target has no `when_to_use` and a description of at most 1,536 characters. Each Codex and OpenCode flag matches the load-policy table, and the adapter's `short_description` and `default_prompt` equal the brief's. The body holds no copy of the load sentence. Outside fenced code, block quotes, quoted text, and code spans other than a lone `$name`, no body sentence pairs `$<name>` or "this skill" with load, loads, use, uses, used, activate, activates, activated, inactive, or explicit-only. Superseding a candidate invalidates its brief, so each repair binds a new one. Candidate records from earlier schemas stay valid without a brief.
 
 ### Trial pack
 
@@ -130,7 +172,7 @@ Record reviewer identity, independence and read-only attestation, exact candidat
 
 ### Target scorecard
 
-Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, with every run of those cases passing.
+Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, with every run of those cases passing. Under a restricted load policy, those cases are needed only on Claude Code, and on Hermes under `user-or-skills`.
 
 ### Verification record
 
@@ -150,7 +192,7 @@ Immediately before cleanup, create an immutable manifest of every retained immut
 
 ## Binding rules
 
-Bind every artifact to the current workflow, canonical target, mode, accepting transition, and input digests. Bind Git targets to repository identity, branch, commit, and dirty-state digest. Bind non-Git targets to host identity, canonical locator, and target-snapshot digest. Allow entry to candidate stage only when the current skill-contract digest, the accepted user-confirmation record bound to that digest, the frozen evaluation-pack digest bound to that contract and confirmation, and a recomputed target snapshot equal to the bound snapshot all match current state. The helper accepts the transition only when every binding is present, current, unique, original, and matching.
+Bind every artifact to the current workflow, canonical target, mode, accepting transition, and input digests. Bind Git targets to repository identity, branch, commit, and dirty-state digest. Bind non-Git targets to host identity, canonical locator, and target-snapshot digest. Allow entry to candidate stage only when the current skill-contract digest, the accepted user-confirmation record bound to that digest, the frozen evaluation-pack digest bound to that contract and confirmation, and a recomputed target snapshot equal to the bound snapshot all match current state. Under contract v2, the candidate also binds one accepted implementer brief bound to that contract, confirmation, and pack. The helper accepts the transition only when every binding is present, current, unique, original, and matching.
 
 ## Downstream invalidation
 
@@ -164,8 +206,8 @@ Record invalidation as a new transition receipt, leaving the invalidated artifac
 | Research or sieve conclusion | Dependent design decisions and every dependent artifact. |
 | Design decision or skill contract | Confirmation and every downstream artifact. |
 | User confirmation | Evaluation pack and every downstream artifact. |
-| Evaluation pack, target parameters, or rubric | Candidate and every downstream artifact. |
-| Candidate content or revision | Trials, reviews, scores, verification, and release. |
+| Evaluation pack, target parameters, or rubric | Implementer brief, candidate, and every downstream artifact. |
+| Candidate content or revision | Implementer brief, trials, reviews, scores, verification, and release. |
 | Trial or review evidence | Dependent scores, verification, and release. |
 | Verification input or result | Verification and release. |
 | Delivery intent | Authority and delivery portions of the release record. |

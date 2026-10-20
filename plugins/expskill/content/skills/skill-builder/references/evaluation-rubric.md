@@ -2,7 +2,7 @@
 
 ## Freeze the target scoring basis
 
-Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze the canonical target identity and allowed package shape, invocation policy with triggers, non-triggers, aliases, and ambiguity behavior, purpose with success signal, scope, non-goals, and neighbouring responsibilities, inputs with preconditions, ordered behavior, decisions, actions, and stopping conditions, collaboration and user-decision boundaries, tools with permissions, authority, writes, delegation, and forbidden effects, outputs with consumers, handoffs, failures, recovery, and changed-goal behavior, and host integration rules with context budget, resource policy, and validation requirements. Bind every parameter to its contract clause or host rule and resolve conflicts before freezing. Score the candidate only against these frozen target parameters, so the builder's own identity, invocation policy, package layout, and workflow stay outside its score. An inapplicable dimension needs an explicit contract statement plus a case proving the candidate leaves that behavior out. Only a supported `not applicable` label earns its point.
+Before writing cases, extract the scoring parameters from the confirmed target contract, host rules, accepted neighbour boundaries, and unchanged target snapshot. Freeze one scoring parameter per contract field, plus the canonical target identity, neighbouring responsibilities, host package shape, load size, context budget, resource policy, and validation requirements. Bind every parameter to its contract clause or host rule and resolve conflicts before freezing. Score the candidate only against these frozen target parameters, so the builder's own identity, invocation policy, package layout, and workflow stay outside its score. An inapplicable dimension needs an explicit contract statement plus a case proving the candidate leaves that behavior out. Only a supported `not applicable` label earns its point.
 
 ## Builder-run conformance gates
 
@@ -25,20 +25,20 @@ A failed builder-run gate blocks release but by itself leaves category scores un
 
 ## Target scoring method
 
-Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. Only bound results count as scoring evidence. Where a selection trial applies, TR2, TR3, TR6, TR7, TE3, and CP5 require all 3 real-host runs of each selection case to match its expected selection.
+Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. Only bound results count as scoring evidence. Where a selection trial applies, TR2, TR3, TR6, TR7, TE3, and CP5 require all 3 real-host runs of each selection case to match its expected selection, and where a host flag applies, they pass on the helper's static flag check.
 
 ## Reviewer evidence contract
 
-Use an independent target reviewer distinct from every researcher, designer, implementer, and scorer of the candidate. Keep the reviewer read-only to tracked source. Apply the Review context contract in SKILL.md to every review dispatch and follow-up. Reference the confirmed target contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and this rubric by path and digest alone. Require the reviewer to self-inspect the pinned candidate with repository tools and open the referenced evidence the review needs. Leave the verdict to the reviewer. A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and stays unused for scoring. A valid review record identifies all input digests and holds severity, evidence, impact, correction, and affected target criteria per finding, ending with exactly `ready` or `not ready`. Use High for a wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure defeating the target's confirmed purpose. Use Medium for missing target-contract behavior, a bypassable target gate, an unreliable result, recurring incorrect behavior, or a material host-integration failure. Use Low for a localized clarity, efficiency, or maintenance issue that leaves every target gate and material result intact. Treat a valid review that is `not ready` or has High or Medium findings as negative scoring evidence: map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the lowest-category repair loop. Apply the same rule to the final target review.
+Use an independent target reviewer distinct from every researcher, designer, implementer, and scorer of the candidate. Keep the reviewer read-only to tracked source. Apply the Review context contract in SKILL.md to every review dispatch and follow-up. Reference the confirmed target contract, host rules, evaluation pack, original raw trial evidence, preserved regressions, artifact manifest, and this rubric by path and digest alone. Require the reviewer to self-inspect the pinned candidate with repository tools and open the referenced evidence the review needs. Leave the verdict to the reviewer. A review is valid only when it proves independence, exact-revision freshness, read-only behavior, and access to every supplied artifact. An inaccessible, contaminated, stale, or otherwise invalid review blocks advancement and stays unused for scoring. A valid review record identifies all input digests and holds severity, evidence, impact, correction, and affected target criteria per finding, ending with exactly `ready` or `not ready`. Use High for a wrong target, unauthorized or destructive effect, hidden-evidence exposure, state-integrity failure, false completion, or a failure defeating the target's confirmed purpose. Use Medium for missing target-contract behavior, a bypassable target gate, an unreliable result, recurring incorrect behavior, or a material host-integration failure. A body that leaves out non-triggers or non-goals is not missing behavior. Use Low for a localized clarity, efficiency, or maintenance issue that leaves every target gate and material result intact. Treat a valid review that is `not ready` or has High or Medium findings as negative scoring evidence: map every finding to affected target criteria, mark those criteria failing, score the affected categories below 10, and enter the lowest-category repair loop. Apply the same rule to the final target review.
 
 ## 1. Triggering
 
 | ID | One point requires |
 |---|---|
-| TR1 | Candidate identity and invocation surface match the frozen target identity and host rules. |
+| TR1 | Candidate identity and invocation token match the frozen target identity and host rules. |
 | TR2 | Every accepted positive trigger class selects the candidate with the required priority and context. |
 | TR3 | Every accepted non-trigger class leaves the candidate inactive or produces the contracted decline. |
-| TR4 | Invocation policy matches the frozen explicit, implicit, automatic, or mixed policy. |
+| TR4 | The load sentence and every target host's flag match the frozen load policy, or the host's limitation is recorded, as for Hermes. |
 | TR5 | Contracted aliases, names, file types, tools, and domain signals resolve to the intended target. |
 | TR6 | Near-neighbour requests stay with their accepted neighbouring responsibility. |
 | TR7 | Ambiguous requests follow the contracted disambiguation behavior before any action the contract defers until disambiguation. |
@@ -141,7 +141,7 @@ Use an independent target reviewer distinct from every researcher, designer, imp
 | ID | One point requires |
 |---|---|
 | CP1 | Candidate package shape and metadata satisfy the frozen host rules. |
-| CP2 | Direct, indirect, routed, or embedded invocation behaves exactly as contracted. |
+| CP2 | Under a restricted load policy, each named loader links to the target, and every skill linking to it is named or belongs to a loader package. |
 | CP3 | Inputs and preconditions are consumable from every accepted upstream actor. |
 | CP4 | Outputs and handoffs are consumable by every accepted downstream actor. |
 | CP5 | Neighbouring targets retain their accepted ownership and selection behavior. |
@@ -156,11 +156,11 @@ Use an independent target reviewer distinct from every researcher, designer, imp
 | ID | One point requires |
 |---|---|
 | CE1 | Entrypoint size stays within the frozen host and target budget. |
-| CE2 | Trigger metadata contains only decision-relevant discovery language. |
+| CE2 | The description states what the skill does, and adds a load sentence only when the policy limits who loads it. |
 | CE3 | Core behavior loads with only the resources it needs. |
 | CE4 | Supporting resources exist only when justified by reuse, size, precision, or deterministic behavior. |
 | CE5 | Resource links state the exact condition for needing each resource. |
-| CE6 | Each concept and requirement has one authoritative location, and every other mention agrees with it. |
+| CE6 | Each concept and requirement has one authoritative location, every other mention agrees with it, and the body holds no sentence that only restates the description, the load policy, a non-trigger, or a non-goal. |
 | CE7 | Examples, tables, and templates earn their context cost by resolving a tested ambiguity. |
 | CE8 | Repeated or raw material is bounded and stored outside the entrypoint when the host allows it. |
 | CE9 | Terminology is consistent, concise, and matched to the frozen target audience. |

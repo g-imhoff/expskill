@@ -63,7 +63,18 @@ SCORE_CRITERIA = {
     "testability": tuple(f"TE{index}" for index in range(1, 11)),
 }
 
-CANDIDATE_SKILL_BYTES = b"---\nname: sample-skill\n---\n# Sample skill\n"
+SAMPLE_DESCRIPTION = "Build the exact sample skill."
+CANDIDATE_SKILL_BYTES = (
+    b"---\nname: sample-skill\ndescription: Build the exact sample skill.\n---\n"
+    b"# Sample skill\n"
+)
+CURRENT_CANDIDATE_SCHEMA = "skill-builder-candidate.v5"
+AGENT_LOAD_POLICY = {"policy": "agent", "loader_skills": [], "loader_packages": []}
+CODEX_SHORT_DESCRIPTION = "Build the exact sample skill"
+CODEX_DEFAULT_PROMPT = "Use $sample-skill to build the exact sample skill."
+EXTERNAL_CODEX_ADAPTER_PATH = "../codex/sample-skill/agents/openai.yaml"
+HERMES_LIMITATION = "hermes has no hide flag, so only the load sentence restricts loading"
+USER_LOAD_POLICY = {"policy": "user", "loader_skills": [], "loader_packages": []}
 CANDIDATE_DIFF_BYTES = b"candidate diff\n"
 EVALUATION_RUBRIC_BYTES = b"frozen evaluation rubric\n"
 MULTIFILE_SKILL_FILES = {
@@ -818,6 +829,8 @@ def retain_json(
     retain_review_source_components: bool = False,
     candidate_resulting_bytes: bytes | None = None,
     omitted_review_source_component: str | None = None,
+    extra_files: dict[str, bytes] | None = None,
+    limitations: list[str] | None = None,
 ) -> dict[str, object]:
     if artifact_type == "trial-pack":
         files = trial_files(
@@ -849,10 +862,10 @@ def retain_json(
                     ),
                 }
             )
-        if (
-            artifact_type == "candidate-record"
-            and payload.get("schema_version") == "skill-builder-candidate.v4"
-        ):
+        if artifact_type == "candidate-record" and payload.get("schema_version") in {
+            "skill-builder-candidate.v4",
+            CURRENT_CANDIDATE_SCHEMA,
+        }:
             candidate_root = Path(str(payload["isolated_locator"]))
             files.update(
                 {
@@ -913,6 +926,7 @@ def retain_json(
             },
         }
         files.update(supporting_evidence.get(artifact_type, {}))
+    files.update(extra_files or {})
     return helper.retain_artifact(
         workflow_id=workflow_id,
         expected_sequence=sequence,
@@ -922,7 +936,7 @@ def retain_json(
         primary_path="record.json",
         producer="main-agent",
         input_bindings=input_bindings or [],
-        limitations=[],
+        limitations=limitations or [],
         state_root=state_root,
     )
 
@@ -1046,6 +1060,7 @@ def rewrite_current_resolution_version(
     scorecard_schema: str | None,
     trial_pack_schema: str | None = None,
     review_record_schema: str | None = None,
+    evaluation_pack_schema: str | None = None,
 ) -> None:
     """Rewrite only genesis bytes to a previously emitted resolution format."""
     run = state_root / "live" / workflow_id
@@ -1056,9 +1071,12 @@ def rewrite_current_resolution_version(
         "skill-builder-resolution.v3",
         "skill-builder-resolution.v4",
         "skill-builder-resolution.v5",
+        "skill-builder-resolution.v6",
     }
     for marker in (
         "candidate_record_schema",
+        "contract_schema",
+        "implementer_brief_schema",
         "scorecard_schema",
         "evaluation_pack_schema",
         "trial_pack_schema",
@@ -1074,6 +1092,8 @@ def rewrite_current_resolution_version(
         payload["trial_pack_schema"] = trial_pack_schema
     if review_record_schema is not None:
         payload["review_record_schema"] = review_record_schema
+    if evaluation_pack_schema is not None:
+        payload["evaluation_pack_schema"] = evaluation_pack_schema
     payload_bytes = helper.canonical_json_bytes(payload)
     payload_path.write_bytes(payload_bytes)
 
@@ -1158,6 +1178,22 @@ def mark_run_as_loaded_trial_v4(
         scorecard_schema="skill-builder-scorecard.v2",
         trial_pack_schema="skill-builder-trial-pack.v2",
         review_record_schema="skill-builder-review.v2",
+    )
+
+
+def mark_run_as_selection_v5(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> None:
+    rewrite_current_resolution_version(
+        helper,
+        state_root,
+        workflow_id,
+        resolution_schema="skill-builder-resolution.v5",
+        candidate_schema="skill-builder-candidate.v4",
+        scorecard_schema="skill-builder-scorecard.v2",
+        trial_pack_schema=CURRENT_TRIAL_SCHEMA,
+        review_record_schema="skill-builder-review.v2",
+        evaluation_pack_schema="skill-builder-evaluation-pack.v2",
     )
 
 
@@ -1372,10 +1408,46 @@ def current_bindings(
     ]
 
 
+def run_contract_schema(state_root: Path, workflow_id: str) -> str:
+    resolution = json.loads(
+        (
+            state_root
+            / "live"
+            / workflow_id
+            / "artifacts"
+            / "resolution"
+            / "raw"
+            / "payload.json"
+        ).read_text(encoding="utf-8")
+    )
+    return resolution.get("contract_schema", "skill-builder-contract.v1")
+
+
 def contract_payload(
-    helper: ModuleType, state_root: Path, workflow_id: str
+    helper: ModuleType,
+    state_root: Path,
+    workflow_id: str,
+    *,
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
 ) -> dict[str, object]:
     _, design_digest = accepted_artifact(helper, state_root, workflow_id, "design-record")
+    payload = contract_v1_payload(design_digest)
+    if run_contract_schema(state_root, workflow_id) == "skill-builder-contract.v2":
+        payload.update(
+            {
+                "schema_version": "skill-builder-contract.v2",
+                "load_policy": load_policy or AGENT_LOAD_POLICY,
+                "hosts": hosts or ["claude-code"],
+                "aliases": ["sample builder"],
+                "ambiguity": ["ask which sample before building"],
+                "collaboration": ["the user confirms the sample"],
+            }
+        )
+    return payload
+
+
+def contract_v1_payload(design_digest: str) -> dict[str, object]:
     return {
         "schema_version": "skill-builder-contract.v1",
         "design_digest": design_digest,
@@ -1457,6 +1529,61 @@ def evaluation_payload(
     }
 
 
+def default_owned_paths(additional_skill_files: dict[str, bytes] | None) -> list[str]:
+    return ["."] if additional_skill_files else ["SKILL.md"]
+
+
+def visible_loaded_brief_cases(
+    cases: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "case_id": case["case_id"],
+            "request": trial_evidence_bytes(str(case["case_id"]), "request").decode(
+                "utf-8"
+            ),
+            "expected": "returns pass",
+        }
+        for case in cases
+        if case["partition"] == "visible_development"
+        and case.get("exposure", "loaded") == "loaded"
+    ]
+
+
+def brief_payload(
+    *,
+    contract_digest: str,
+    confirmation_digest: str,
+    evaluation_digest: str,
+    cases: list[dict[str, object]],
+    owned_paths: list[str],
+    description: str = SAMPLE_DESCRIPTION,
+    load_sentence: str | None = None,
+    host_flags: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "skill-builder-implementer-brief.v1",
+        "contract_digest": contract_digest,
+        "confirmation_digest": confirmation_digest,
+        "evaluation_digest": evaluation_digest,
+        "description": description,
+        "load_sentence": load_sentence,
+        "host_flags": {"claude-code": {}} if host_flags is None else host_flags,
+        "body_rules": ["Validate the request, build the sample, then verify it."],
+        "irreversible_prohibitions": [
+            {
+                "forbidden_action": "remote delivery",
+                "action": "push the sample to a remote",
+                "reason": "a pushed sample cannot be recalled",
+                "alternative": "leave the sample in the isolated candidate",
+            }
+        ],
+        "owned_paths": owned_paths,
+        "resources": ["artifact contract"],
+        "visible_cases": visible_loaded_brief_cases(cases),
+    }
+
+
 def candidate_payload(
     *,
     tmp_path: Path,
@@ -1466,7 +1593,8 @@ def candidate_payload(
     confirmation_digest: str,
     evaluation_digest: str,
     snapshot_digest: str,
-    schema_version: str = "skill-builder-candidate.v4",
+    schema_version: str = CURRENT_CANDIDATE_SCHEMA,
+    brief_digest: str | None = None,
     resulting_bytes: bytes | None = None,
     loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     claimed_loaded_skill_bytes: bytes | None = None,
@@ -1494,9 +1622,9 @@ def candidate_payload(
             else resulting_bytes
         ),
         "writable_role": "implementer",
-        "owned_paths": (
-            ["."] if additional_skill_files else ["SKILL.md"]
-        ) if owned_paths is None else owned_paths,
+        "owned_paths": default_owned_paths(additional_skill_files)
+        if owned_paths is None
+        else owned_paths,
         "diff_digest": fixture_digest(CANDIDATE_DIFF_BYTES),
         "local_check_evidence": ["3" * 64],
         "contract_digest": contract_digest,
@@ -1504,7 +1632,11 @@ def candidate_payload(
         "evaluation_digest": evaluation_digest,
         "target_snapshot_digest": snapshot_digest,
     }
-    if schema_version == "skill-builder-candidate.v4":
+    if schema_version == CURRENT_CANDIDATE_SCHEMA:
+        assert brief_digest is not None
+        payload["brief_digest"] = brief_digest
+        payload["checker_version"] = "skill-builder-candidate-checks.v1"
+    if schema_version in {"skill-builder-candidate.v4", CURRENT_CANDIDATE_SCHEMA}:
         claimed_package = dict(package)
         if claimed_loaded_skill_bytes is not None:
             claimed_package["SKILL.md"] = claimed_loaded_skill_bytes
@@ -2008,13 +2140,104 @@ def advance_with_artifact(
     )
 
 
+def fixture_codex_adapter(
+    restricted: bool,
+    short_description: str = CODEX_SHORT_DESCRIPTION,
+    default_prompt: str = CODEX_DEFAULT_PROMPT,
+) -> bytes:
+    return (
+        "interface:\n"
+        '  display_name: "Sample"\n'
+        f'  short_description: "{short_description}"\n'
+        f'  default_prompt: "{default_prompt}"\n'
+        "policy:\n"
+        f"  allow_implicit_invocation: {'false' if restricted else 'true'}\n"
+    ).encode("utf-8")
+
+
+def fixture_host_flags(
+    load_policy: dict[str, object],
+    hosts: list[str],
+    codex_adapter_path: str = "agents/openai.yaml",
+) -> dict[str, dict[str, object]]:
+    restricted = load_policy["policy"] != "agent"
+    flags: dict[str, dict[str, object]] = {host: {} for host in hosts}
+    if "codex" in flags:
+        flags["codex"] = {
+            "allow_implicit_invocation": not restricted,
+            "adapter_path": codex_adapter_path,
+            "short_description": CODEX_SHORT_DESCRIPTION,
+            "default_prompt": CODEX_DEFAULT_PROMPT,
+        }
+    if "opencode" in flags and restricted:
+        flags["opencode"] = {"opencode/autoinvoke": "false"}
+    return flags
+
+
+def fixture_load_sentence(load_policy: dict[str, object]) -> str | None:
+    if load_policy["policy"] == "user":
+        return "Only the user can load $sample-skill."
+    if load_policy["policy"] == "agent":
+        return None
+    loaders = load_policy["loader_skills"]
+    if load_policy["loader_packages"] or not isinstance(loaders, list) or len(loaders) != 1:
+        raise AssertionError("fixtures render one named loader skill")
+    return f"Only the user or ${loaders[0]} can load $sample-skill."
+
+
+def retain_brief(
+    helper: ModuleType,
+    *,
+    state_root: Path,
+    workflow_id: str,
+    sequence: int,
+    artifact_id: str,
+    contract_digest: str,
+    confirmation_digest: str,
+    evaluation_digest: str,
+    cases: list[dict[str, object]],
+    owned_paths: list[str],
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
+    overrides: dict[str, object] | None = None,
+    codex_adapter_path: str = "agents/openai.yaml",
+) -> dict[str, object]:
+    policy = load_policy or AGENT_LOAD_POLICY
+    sentence = fixture_load_sentence(policy)
+    payload = brief_payload(
+        contract_digest=contract_digest,
+        confirmation_digest=confirmation_digest,
+        evaluation_digest=evaluation_digest,
+        cases=cases,
+        owned_paths=owned_paths,
+        description=SAMPLE_DESCRIPTION
+        if sentence is None
+        else f"{SAMPLE_DESCRIPTION} {sentence}",
+        load_sentence=sentence,
+        host_flags=fixture_host_flags(
+            policy, hosts or ["claude-code"], codex_adapter_path
+        ),
+    )
+    payload.update(overrides or {})
+    return retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id=artifact_id,
+        artifact_type="implementer-brief",
+        payload=payload,
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+
+
 def build_candidate_stage(
     helper: ModuleType,
     tmp_path: Path,
     *,
     queued_targets: list[dict[str, str]] | None = None,
     granted_authority: dict[str, object] | None = None,
-    candidate_schema_version: str = "skill-builder-candidate.v4",
+    candidate_schema_version: str | None = None,
     candidate_resulting_bytes: bytes | None = None,
     candidate_loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     candidate_claimed_loaded_skill_bytes: bytes | None = None,
@@ -2024,10 +2247,17 @@ def build_candidate_stage(
     historical_candidate_v2: bool = False,
     historical_candidate_v3: bool = False,
     loaded_trial_v4: bool = False,
+    selection_v5: bool = False,
     selection: dict[str, str] | None = None,
     retain_review_source_components: bool = False,
     omitted_review_source_component: str | None = None,
     mode: str = "create",
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
+    brief_overrides: dict[str, object] | None = None,
+    external_codex_adapter: bytes | None = None,
+    retained_codex_adapter: bytes | None = None,
+    confirmation_limitations: list[str] | None = None,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
@@ -2058,10 +2288,16 @@ def build_candidate_stage(
             loaded_trial_v4,
         )
     )
-    if compatibility_modes > 1:
+    if compatibility_modes + selection_v5 > 1:
         raise AssertionError("candidate compatibility modes are mutually exclusive")
     if compatibility_modes and selection:
         raise AssertionError("selection cases need the current evaluation pack")
+    if candidate_schema_version is None:
+        candidate_schema_version = (
+            "skill-builder-candidate.v4"
+            if loaded_trial_v4 or selection_v5
+            else CURRENT_CANDIDATE_SCHEMA
+        )
     if legacy_candidate_v1:
         mark_run_as_legacy_candidate_v1(helper, state_root, workflow_id)
     elif historical_candidate_v2:
@@ -2070,6 +2306,8 @@ def build_candidate_stage(
         mark_run_as_historical_candidate_v3(helper, state_root, workflow_id)
     elif loaded_trial_v4:
         mark_run_as_loaded_trial_v4(helper, state_root, workflow_id)
+    elif selection_v5:
+        mark_run_as_selection_v5(helper, state_root, workflow_id)
     sequence = 0
     for artifact_id, artifact_type, event, stage in (
         ("baseline", "baseline-report", "capture-baseline", "baseline"),
@@ -2094,7 +2332,9 @@ def build_candidate_stage(
         sequence=sequence,
         artifact_id="contract",
         artifact_type="skill-contract",
-        payload=contract_payload(helper, state_root, workflow_id),
+        payload=contract_payload(
+            helper, state_root, workflow_id, load_policy=load_policy, hosts=hosts
+        ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
     sequence = helper.transition_run(
@@ -2121,6 +2361,14 @@ def build_candidate_stage(
             authority_digest=authority_digest,
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
+        limitations=(
+            [HERMES_LIMITATION]
+            if "hermes" in (hosts or [])
+            and (load_policy or AGENT_LOAD_POLICY)["policy"] != "agent"
+            else []
+        )
+        if confirmation_limitations is None
+        else confirmation_limitations,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -2161,6 +2409,35 @@ def build_candidate_stage(
         artifact_ids=["evaluation"],
         state_root=state_root,
     )["sequence"]
+    brief_digest: str | None = None
+    if candidate_schema_version == CURRENT_CANDIDATE_SCHEMA:
+        brief = retain_brief(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="brief",
+            contract_digest=contract["artifact_digest"],
+            confirmation_digest=confirmation["artifact_digest"],
+            evaluation_digest=evaluation["artifact_digest"],
+            cases=frozen_cases(selection),
+            owned_paths=default_owned_paths(candidate_additional_skill_files)
+            if candidate_owned_paths is None
+            else candidate_owned_paths,
+            load_policy=load_policy,
+            hosts=hosts,
+            overrides=brief_overrides,
+            codex_adapter_path=EXTERNAL_CODEX_ADAPTER_PATH
+            if external_codex_adapter is not None
+            else "agents/openai.yaml",
+        )
+        sequence = brief["sequence"]
+        brief_digest = brief["artifact_digest"]
+    if external_codex_adapter is not None:
+        write_skill_package(
+            (tmp_path / "candidate" / EXTERNAL_CODEX_ADAPTER_PATH).parent,
+            {"openai.yaml": external_codex_adapter},
+        )
     candidate = retain_json(
         helper,
         state_root=state_root,
@@ -2177,6 +2454,7 @@ def build_candidate_stage(
             evaluation_digest=evaluation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
             schema_version=candidate_schema_version,
+            brief_digest=brief_digest,
             resulting_bytes=candidate_resulting_bytes,
             loaded_skill_bytes=candidate_loaded_skill_bytes,
             claimed_loaded_skill_bytes=candidate_claimed_loaded_skill_bytes,
@@ -2187,6 +2465,9 @@ def build_candidate_stage(
         retain_review_source_components=retain_review_source_components,
         candidate_resulting_bytes=candidate_resulting_bytes,
         omitted_review_source_component=omitted_review_source_component,
+        extra_files={"codex-adapter/openai.yaml": retained_codex_adapter}
+        if retained_codex_adapter is not None
+        else None,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -2253,8 +2534,9 @@ def build_verified_stage(
     scorecard_criteria_overrides: dict[str, dict[str, bool]] | None = None,
     scorecard_evidence_overrides: dict[str, dict[str, object]] | None = None,
     scorecard_schema_version: str | None = None,
-    candidate_schema_version: str = "skill-builder-candidate.v4",
+    candidate_schema_version: str | None = None,
     candidate_resulting_bytes: bytes | None = None,
+    candidate_loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     candidate_additional_skill_files: dict[str, bytes] | None = None,
     candidate_owned_paths: list[str] | None = None,
     trial_loaded_skill_bytes: bytes | None = None,
@@ -2263,10 +2545,13 @@ def build_verified_stage(
     historical_candidate_v2: bool = False,
     historical_candidate_v3: bool = False,
     loaded_trial_v4: bool = False,
+    selection_v5: bool = False,
     selection: dict[str, str] | None = None,
     trial_run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     superseded_trial_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     mode: str = "create",
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
 ) -> tuple[Path, str, int, dict[str, object]]:
     if selection is None and not (
         legacy_candidate_v1
@@ -2280,11 +2565,15 @@ def build_verified_stage(
         tmp_path,
         mode=mode,
         loaded_trial_v4=loaded_trial_v4,
+        selection_v5=selection_v5,
         selection=selection,
         queued_targets=queued_targets,
         granted_authority=granted_authority,
         candidate_schema_version=candidate_schema_version,
         candidate_resulting_bytes=candidate_resulting_bytes,
+        candidate_loaded_skill_bytes=candidate_loaded_skill_bytes,
+        load_policy=load_policy,
+        hosts=hosts,
         candidate_additional_skill_files=candidate_additional_skill_files,
         candidate_owned_paths=candidate_owned_paths,
         legacy_candidate_v1=legacy_candidate_v1,
@@ -3156,6 +3445,18 @@ def test_candidate_entry_requires_four_current_matching_bindings(tmp_path: Path)
         artifact_ids=["evaluation"],
         state_root=state_root,
     )
+    brief = retain_brief(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=evaluated["sequence"],
+        artifact_id="brief",
+        contract_digest=contract["artifact_digest"],
+        confirmation_digest=confirmation["artifact_digest"],
+        evaluation_digest=evaluation["artifact_digest"],
+        cases=frozen_cases(),
+        owned_paths=["SKILL.md"],
+    )
     valid_bindings = candidate_payload(
         tmp_path=tmp_path,
         candidate_id="candidate-boundary",
@@ -3164,8 +3465,9 @@ def test_candidate_entry_requires_four_current_matching_bindings(tmp_path: Path)
         confirmation_digest=confirmation["artifact_digest"],
         evaluation_digest=evaluation["artifact_digest"],
         snapshot_digest=started["target_snapshot_digest"],
+        brief_digest=brief["artifact_digest"],
     )
-    sequence = evaluated["sequence"]
+    sequence = brief["sequence"]
     for field in (
         "contract_digest",
         "confirmation_digest",
@@ -3218,6 +3520,7 @@ def test_candidate_entry_requires_four_current_matching_bindings(tmp_path: Path)
             confirmation_digest=confirmation["artifact_digest"],
             evaluation_digest=evaluation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
+            brief_digest=brief["artifact_digest"],
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -5445,9 +5748,10 @@ def test_invalidation_allows_zero_downstream_and_rewinds_to_replacement_stage(
         state_root=state_root,
     )
     loaded = helper.load_run(workflow_id=workflow_id, state_root=state_root)
-    assert invalidated["invalidated_artifact_ids"] == []
+    assert invalidated["invalidated_artifact_ids"] == ["brief"]
     assert invalidated["stage"] == "evaluation"
     assert loaded["artifact_index"]["candidate"]["derived_status"] == "superseded"
+    assert loaded["artifact_index"]["brief"]["derived_status"] == "invalidated"
 
 
 def test_invalidation_rejects_change_kind_artifact_type_mismatch(tmp_path: Path) -> None:
@@ -6460,10 +6764,16 @@ def test_new_runs_require_versioned_candidate_result_semantics(tmp_path: Path) -
             candidate_schema_version="skill-builder-candidate.v2",
         )
 
+    with pytest.raises(helper.RunStateError, match="semantics"):
+        build_candidate_stage(
+            helper,
+            tmp_path / "packaged",
+            candidate_schema_version="skill-builder-candidate.v4",
+        )
+
     state_root, workflow_id, _, _ = build_candidate_stage(
         helper,
         tmp_path / "current",
-        candidate_schema_version="skill-builder-candidate.v4",
         candidate_resulting_bytes=candidate_result_bytes(
             schema_version="skill-builder-owned-result.v2"
         ),
@@ -7887,11 +8197,15 @@ def test_current_v4_package_and_review_semantics_replay(
     resolution, _ = helper._resolution_payload(run, workflow_id)
     candidate_payload_record = helper._artifact_payload_json(run, "candidate")
 
-    assert resolution["schema_version"] == "skill-builder-resolution.v5"
-    assert resolution["candidate_record_schema"] == "skill-builder-candidate.v4"
+    assert resolution["schema_version"] == "skill-builder-resolution.v6"
+    assert resolution["candidate_record_schema"] == CURRENT_CANDIDATE_SCHEMA
+    assert resolution["contract_schema"] == "skill-builder-contract.v2"
+    assert resolution["implementer_brief_schema"] == (
+        "skill-builder-implementer-brief.v1"
+    )
     assert resolution["evaluation_pack_schema"] == "skill-builder-evaluation-pack.v2"
     assert resolution["trial_pack_schema"] == CURRENT_TRIAL_SCHEMA
-    assert candidate_payload_record["schema_version"] == "skill-builder-candidate.v4"
+    assert candidate_payload_record["schema_version"] == CURRENT_CANDIDATE_SCHEMA
     assert candidate["sequence"] < sequence
     assert helper.load_run(
         workflow_id=workflow_id, state_root=state_root

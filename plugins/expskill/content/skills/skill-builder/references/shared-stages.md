@@ -18,19 +18,19 @@ Collaborate with the user on materially different, coherent designs covering tri
 
 ### 6. Produce one concrete skill contract
 
-Write one skill contract, resolving every conflict with host rules and preserved regressions.
+Write one skill contract with its load policy and target hosts, resolving every conflict with host rules and preserved regressions.
 
 ### 7. Obtain user confirmation
 
-Present the current contract and wait for the user's explicit, unforced answer to that exact contract. The main agent may propose readiness. Keep waiting through silence, urgency, seniority, prior broad approval, or instructions to skip questions. Return to this stage after correcting the contract.
+Present the current contract, the planned description, and each host limitation its load policy meets, then wait for the user's explicit, unforced answer to that exact contract. Record each limitation in the confirmation's limitations. The confirmation binds the contract alone, leaving the description free to sharpen when selection cases fail. The main agent may propose readiness. Keep waiting through silence, urgency, seniority, prior broad approval, or instructions to skip questions. Return to this stage after correcting the contract.
 
 ### 8. Freeze acceptance before candidate work
 
-Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Mark each case `selection` when it tests whether the host loads the candidate, as trigger, non-trigger, and near-neighbour requests do, and `loaded` when it tests behavior after loading. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze the evaluation pack, and enter candidate work only after the helper confirms the four candidate-entry bindings.
+Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Mark each case `selection` when it tests whether the host loads the candidate, as trigger, non-trigger, and near-neighbour requests do, and `loaded` when it tests behavior after loading. Give each selection case a target host the load-policy table runs selection trials on. Where no target host runs them, the static flag check stands in for selection cases. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze the evaluation pack, and enter candidate work only after the helper confirms the four candidate-entry bindings.
 
 ### 9. Build one isolated candidate
 
-Build one candidate in a disposable copy or isolated worktree, edit only that candidate, and preserve unrelated work. Give the implementer only its accepted brief, owned paths, visible cases, and the target artifacts it needs. Write the candidate record.
+Write the implementer brief from the placement table. Build one candidate in a disposable copy or isolated worktree, edit only that candidate, and preserve unrelated work. Give the implementer only the brief and the isolated copy it edits. Write the candidate record bound to that brief.
 
 ### 10. Run fresh-context trials
 
@@ -42,10 +42,10 @@ Dispatch one target reviewer under the Review context contract, and use the revi
 
 ### 12. Score and repair the lowest category
 
-Record the conformance ledger against the rubric's gates BR1 to BR10. Score the exact candidate with the rubric, and repair with its lowest-score loop until every category is 10. An unresolved user decision keeps its affected category below 10.
+Record the conformance ledger against the rubric's gates BR1 to BR10. Score the exact candidate with the rubric, and repair with its lowest-score loop until every category is 10, writing a new implementer brief for each repaired candidate. An unresolved user decision keeps its affected category below 10.
 
 ### 13. Review, verify, and finalize one exact revision
 
-Once every category is 10 and every builder-run gate passes, run a final target review of the same revision under stage 11's rules. After a valid `ready` final review, verify that revision, then finalize through the helper once every finalize condition in the rubric holds.
+Once every category is 10 and every builder-run gate passes, run a final target review of the same revision under stage 11's rules. After a valid `ready` final review, verify that revision, then finalize through the helper once every finalize condition in the rubric holds. Put the candidate's final description in the finalization report.
 
 Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect, and record any accepted installation or integration against the finalized revision. Clean up through the helper only with explicit cleanup authority and a recorded accepted installation or integration.

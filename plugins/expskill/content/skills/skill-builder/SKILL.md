@@ -31,6 +31,10 @@ Take the mode the user's wording names and check it against the table. When they
 
 Create writes only to an absent target. Rename, replace, or absorb a near neighbour only on the user's explicit decision. Keep exactly one active target, and finish, explicitly abandon, or validly pause it before activating the next. A multi-target request keeps every target's gates in force. Write the resolution record.
 
+## Target skill text
+
+Write each contract field where the artifact contracts' placement table puts it. Write the description as one sentence saying what the skill does in the words a user would ask with, then the load sentence when one exists. Start the body with its first action. Keep SKILL.md under each target host's load size, and move the rest to linked references.
+
 ## Roles, tools, and permissions
 
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, authority checks, scope changes, external delivery, and cleanup.

@@ -39,11 +39,17 @@ LEGACY_RESOLUTION_SCHEMA = "skill-builder-resolution.v1"
 PREVIOUS_RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
 HISTORICAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
 LOADED_TRIAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v4"
-RESOLUTION_SCHEMA = "skill-builder-resolution.v5"
+SELECTION_RESOLUTION_SCHEMA = "skill-builder-resolution.v5"
+RESOLUTION_SCHEMA = "skill-builder-resolution.v6"
 LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
 PREVIOUS_CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
 HISTORICAL_CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
-CANDIDATE_SCHEMA = "skill-builder-candidate.v4"
+PACKAGED_CANDIDATE_SCHEMA = "skill-builder-candidate.v4"
+CANDIDATE_SCHEMA = "skill-builder-candidate.v5"
+LEGACY_CONTRACT_SCHEMA = "skill-builder-contract.v1"
+CONTRACT_SCHEMA = "skill-builder-contract.v2"
+BRIEF_SCHEMA = "skill-builder-implementer-brief.v1"
+CANDIDATE_CHECKER_VERSION = "skill-builder-candidate-checks.v1"
 LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
 LOADED_TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
 TRIAL_SCHEMA = "skill-builder-trial-pack.v3"
@@ -86,6 +92,7 @@ _ARTIFACT_TYPES = {
     "skill-contract",
     "user-confirmation-record",
     "evaluation-pack",
+    "implementer-brief",
     "candidate-record",
     "trial-pack",
     "builder-run-conformance-ledger",
@@ -103,6 +110,37 @@ _THREAD_LOCKS_GUARD = threading.Lock()
 _EXISTING_TARGET_MODES = frozenset({"improve", "modify"})
 _MODES = frozenset({"create", *_EXISTING_TARGET_MODES})
 _SELECTION_HOSTS = frozenset({"claude-code", "codex", "opencode", "hermes"})
+_LOAD_POLICIES = frozenset({"user", "user-or-skills", "agent"})
+_RESTRICTED_TRIAL_HOSTS = frozenset({"claude-code"})
+_PACKAGED_CANDIDATE_SCHEMAS = frozenset({PACKAGED_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA})
+_CANDIDATE_CHECKER_VERSIONS = frozenset({CANDIDATE_CHECKER_VERSION})
+_SKILL_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_PACKAGE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?: [A-Za-z0-9][A-Za-z0-9_-]*)*\Z")
+_YAML_KEY_RE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_./-]*):(?: (.*))?\Z")
+_AMBIGUOUS_TEXT_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+_LOAD_CLAIM_RE = re.compile(r"can load \$", re.IGNORECASE)
+_RESTATEMENT_VERB_RE = re.compile(
+    r"(?<![\w$-])(?:loads?|uses?|used|activat(?:e|es|ed)|inactive|explicit-only)"
+    r"(?![\w-])",
+    re.IGNORECASE,
+)
+_CODEX_INTERFACE_KEYS = frozenset(
+    {
+        "display_name",
+        "short_description",
+        "icon_small",
+        "icon_large",
+        "brand_color",
+        "default_prompt",
+    }
+)
+_CODEX_BRIEF_KEYS = frozenset(
+    {"allow_implicit_invocation", "adapter_path", "short_description", "default_prompt"}
+)
+_CODEX_TEXT_LIMIT = 1024
+_CLAUDE_LISTING_LIMIT = 1536
+_CODEX_EXTERNAL_ADAPTER = "codex-adapter/openai.yaml"
+_THIS_SKILL_RE = re.compile(r"(?<![\w-])this skill(?![\w'\u2019-])", re.IGNORECASE)
 _SELECTION_KINDS = frozenset({"candidate", "none", "other"})
 _SELECTION_REPEATS = 3
 _SELECTION_END_MARKERS = {
@@ -160,6 +198,9 @@ _LOADED_TRIAL_RUN_FIELDS = _TRIAL_EVIDENCE_FIELDS | {
     "exposure",
     "loaded_skill_digest",
 }
+_CONTRACT_V2_FIELDS = frozenset(
+    {"load_policy", "hosts", "aliases", "ambiguity", "collaboration"}
+)
 _SELECTION_TRIAL_RUN_FIELDS = _TRIAL_EVIDENCE_FIELDS | {
     "repeat_index",
     "exposure",
@@ -219,13 +260,15 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "research-pack": "skill-builder-research-pack.v1",
     "evidence-sieve": "skill-builder-evidence-sieve.v1",
     "design-record": "skill-builder-design.v1",
-    "skill-contract": "skill-builder-contract.v1",
+    "skill-contract": {LEGACY_CONTRACT_SCHEMA, CONTRACT_SCHEMA},
     "user-confirmation-record": "skill-builder-user-confirmation.v1",
     "evaluation-pack": {LOADED_EVALUATION_SCHEMA, EVALUATION_SCHEMA},
+    "implementer-brief": BRIEF_SCHEMA,
     "candidate-record": {
         LEGACY_CANDIDATE_SCHEMA,
         PREVIOUS_CANDIDATE_SCHEMA,
         HISTORICAL_CANDIDATE_SCHEMA,
+        PACKAGED_CANDIDATE_SCHEMA,
         CANDIDATE_SCHEMA,
     },
     "trial-pack": {LEGACY_TRIAL_SCHEMA, LOADED_TRIAL_SCHEMA, TRIAL_SCHEMA},
@@ -325,6 +368,20 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "scoring_parameters",
         "freeze_timestamp",
         "partitions",
+    },
+    "implementer-brief": {
+        "schema_version",
+        "contract_digest",
+        "confirmation_digest",
+        "evaluation_digest",
+        "description",
+        "load_sentence",
+        "host_flags",
+        "body_rules",
+        "irreversible_prohibitions",
+        "owned_paths",
+        "resources",
+        "visible_cases",
     },
     "candidate-record": {
         "schema_version",
@@ -1101,6 +1158,340 @@ def _mapping_list(value: object, label: str) -> list[dict[str, Any]]:
     return value
 
 
+def _validate_load_policy(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "policy",
+        "loader_skills",
+        "loader_packages",
+    }:
+        raise RunStateError("contract load policy schema is invalid")
+    if value["policy"] not in _LOAD_POLICIES:
+        raise RunStateError("contract load policy is unsupported")
+    skills = _text_list(value["loader_skills"], "load policy loader skills")
+    packages = _text_list(value["loader_packages"], "load policy loader packages")
+    if len(set(skills)) != len(skills) or len(set(packages)) != len(packages):
+        raise RunStateError("load policy loaders contain duplicates")
+    if any(len(skill) > 64 or not _SKILL_NAME_RE.fullmatch(skill) for skill in skills):
+        raise RunStateError("load policy loader skill name is invalid")
+    if any(
+        len(package) > 64 or not _PACKAGE_NAME_RE.fullmatch(package)
+        for package in packages
+    ):
+        raise RunStateError("load policy loader package name is invalid")
+    if (value["policy"] == "user-or-skills") != bool(skills or packages):
+        raise RunStateError(
+            "only a user-or-skills load policy names loaders, and it names at least one"
+        )
+    return value
+
+
+def _validate_hosts(value: object) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(host, str) or host not in _SELECTION_HOSTS for host in value)
+        or len(set(value)) != len(value)
+    ):
+        raise RunStateError("contract hosts must be distinct supported target hosts")
+    return value
+
+
+def load_sentence(load_policy: object, name: object) -> str | None:
+    """Render the description's load sentence, or None when the agent may load."""
+    policy = _validate_load_policy(load_policy)
+    if not isinstance(name, str) or not name:
+        raise RunStateError("load sentence target name is invalid")
+    if policy["policy"] == "agent":
+        return None
+    if len(name) > 64 or not _SKILL_NAME_RE.fullmatch(name):
+        raise RunStateError("load sentence target name is invalid")
+    if policy["policy"] == "user":
+        return f"Only the user can load ${name}."
+    if name in policy["loader_skills"]:
+        raise RunStateError("a skill cannot name itself as its loader")
+    loaders = [f"${skill}" for skill in policy["loader_skills"]] + [
+        f"another {package} skill" for package in policy["loader_packages"]
+    ]
+    if len(loaders) == 1:
+        joined = loaders[0]
+    elif len(loaders) == 2:
+        joined = f"{loaders[0]} or {loaders[1]}"
+    else:
+        joined = f"{', '.join(loaders[:-1])}, or {loaders[-1]}"
+    return f"Only the user or {joined} can load ${name}."
+
+
+def _own_token(name: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![\w$-])\${re.escape(name)}(?![\w-])")
+
+
+def _check_description(description: str, sentence: str | None, name: str) -> None:
+    if sentence is None:
+        if _LOAD_CLAIM_RE.search(description):
+            raise RunStateError("description limits loading under an agent load policy")
+        return
+    prefix = description[: -len(sentence)] if description.endswith(sentence) else ""
+    if (
+        not re.search(r"[.!?] \Z", prefix)
+        or prefix != prefix.lstrip()
+        or _LOAD_CLAIM_RE.search(prefix)
+        or _own_token(name).search(prefix)
+    ):
+        raise RunStateError("description does not end with its one load sentence")
+
+
+def _codex_adapter_parts(value: object) -> list[str]:
+    """Split a Codex adapter path relative to the candidate package, failing closed."""
+    if not isinstance(value, str) or value.startswith("/") or "\\" in value:
+        raise RunStateError("Codex adapter path is unsafe")
+    parts = value.split("/")
+    climbs = 0
+    while climbs < len(parts) and parts[climbs] == "..":
+        climbs += 1
+    rest = parts[climbs:]
+    if rest[-2:] != ["agents", "openai.yaml"] or any(
+        part in {"", ".", ".."} for part in rest
+    ):
+        raise RunStateError("Codex adapter path must name an agents/openai.yaml")
+    return parts
+
+
+def _strict_text(payload: bytes, label: str) -> str:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunStateError(f"{label} is not UTF-8") from error
+    if _AMBIGUOUS_TEXT_RE.search(text):
+        raise RunStateError(f"{label} has an ambiguous encoding, control, or line break")
+    return text
+
+
+def _yaml_line(line: str, label: str) -> tuple[str, str | None]:
+    match = _YAML_KEY_RE.fullmatch(line)
+    if match is None:
+        raise RunStateError(f"{label} has an ambiguous line")
+    value = (match.group(2) or "").strip()
+    return match.group(1), value or None
+
+
+def _strict_yaml_scalar(value: str, label: str) -> str:
+    """Parse one closed single-line YAML scalar, rejecting every ambiguous form."""
+    if value[0] == '"':
+        inner = value[1:-1]
+        if len(value) < 2 or value[-1] != '"' or '"' in inner or "\\" in inner:
+            raise RunStateError(f"{label} is not a plain double-quoted string")
+        return inner
+    if value[0] == "'":
+        inner = value[1:-1]
+        if len(value) < 2 or value[-1] != "'" or "'" in inner.replace("''", ""):
+            raise RunStateError(f"{label} is not a closed single-quoted string")
+        return inner.replace("''", "'")
+    if (
+        value[0] in "-?:,[]{}#&*!|>%@`"
+        or ": " in value
+        or " #" in value
+        or value.endswith(":")
+    ):
+        raise RunStateError(f"{label} is not an unambiguous plain scalar")
+    return value
+
+
+def _strict_yaml_block(
+    lines: list[str],
+    label: str,
+    blocks: dict[str, frozenset[str] | None],
+    *,
+    other_roots: bool,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Read raw one-line scalars at the root and one level under the named blocks."""
+    roots: dict[str, str] = {}
+    nested: dict[str, dict[str, str]] = {}
+    parent: str | None = None
+    for line in lines:
+        if not line.strip() or line.lstrip(" ").startswith("#"):
+            continue
+        if "\t" in line:
+            raise RunStateError(f"{label} contains a tab")
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation == 0:
+            key, value = _yaml_line(line, label)
+            if key in roots or key in nested:
+                raise RunStateError(f"{label} repeats a key")
+            parent = None
+            if key in blocks:
+                if value is not None:
+                    raise RunStateError(f"{label} {key} must be a block mapping")
+                nested[key] = {}
+                parent = key
+            elif not other_roots or value is None:
+                raise RunStateError(f"{label} key {key} is unsupported or empty")
+            else:
+                _strict_yaml_scalar(value, f"{label} {key}")
+                roots[key] = value
+            continue
+        if parent is None or indentation != 2:
+            raise RunStateError(f"{label} has an ambiguous indented line")
+        key, value = _yaml_line(line[2:], label)
+        allowed = blocks[parent]
+        if (
+            key in nested[parent]
+            or value is None
+            or (allowed is not None and key not in allowed)
+        ):
+            raise RunStateError(f"{label} {parent} entry is ambiguous or unsupported")
+        _strict_yaml_scalar(value, f"{label} {parent} {key}")
+        nested[parent][key] = value
+    return roots, nested
+
+
+def _skill_frontmatter(payload: bytes) -> tuple[dict[str, str], dict[str, str], str]:
+    """Read root scalars and metadata from SKILL.md and return its body."""
+    label = "candidate SKILL.md frontmatter"
+    lines = _strict_text(payload, "candidate SKILL.md").split("\n")
+    if lines[0] != "---" or "---" not in lines[1:]:
+        raise RunStateError("candidate SKILL.md frontmatter is missing or unclosed")
+    end = lines.index("---", 1)
+    roots, nested = _strict_yaml_block(
+        lines[1:end], label, {"metadata": None}, other_roots=True
+    )
+    scalars = {key: _strict_yaml_scalar(raw, label) for key, raw in roots.items()}
+    metadata = {
+        key: _strict_yaml_scalar(raw, label)
+        for key, raw in nested.get("metadata", {}).items()
+    }
+    return scalars, metadata, "\n".join(lines[end + 1 :])
+
+
+def _codex_adapter(payload: bytes) -> tuple[bool | None, dict[str, str]]:
+    """Read policy.allow_implicit_invocation and interface text from agents/openai.yaml."""
+    label = "candidate agents/openai.yaml"
+    _, nested = _strict_yaml_block(
+        _strict_text(payload, label).split("\n"),
+        label,
+        {
+            "interface": _CODEX_INTERFACE_KEYS,
+            "policy": frozenset({"allow_implicit_invocation"}),
+        },
+        other_roots=False,
+    )
+    raw = nested.get("policy", {}).get("allow_implicit_invocation")
+    if raw not in {None, "true", "false"}:
+        raise RunStateError("candidate allow_implicit_invocation is not a plain YAML boolean")
+    interface = {
+        key: _strict_yaml_scalar(value, label)
+        for key, value in nested.get("interface", {}).items()
+    }
+    return (None if raw is None else raw == "true"), interface
+
+
+def restatement_sentences(body: str, name: str) -> list[str]:
+    """Return body sentences that restate who loads the skill named name."""
+    kept: list[str] = []
+    fence: str | None = None
+    for line in body.split("\n"):
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            if (
+                marker
+                and marker.group(1)[0] == fence[0]
+                and len(marker.group(1)) >= len(fence)
+                and not line.strip().lstrip(fence[0])
+            ):
+                fence = None
+            continue
+        if marker:
+            fence = marker.group(1)
+            continue
+        kept.append("" if re.match(r" {0,3}>", line) else line)
+    units: list[str] = []
+    paragraph: list[str] = []
+    for line in [*kept, ""]:
+        stripped = line.strip()
+        starts_unit = re.match(r"(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\|)", stripped)
+        if (not stripped or starts_unit) and paragraph:
+            units.append(" ".join(paragraph))
+            paragraph = []
+        if stripped.startswith("|"):
+            units.extend(cell for cell in stripped.split("|") if cell.strip())
+        elif stripped.startswith("#"):
+            units.append(stripped)
+        elif stripped:
+            paragraph.append(stripped)
+    own = _own_token(name)
+    found: list[str] = []
+    for unit in units:
+        unit = re.sub(
+            r"(`+)(?!`)(.*?)(?<!`)\1(?!`)",
+            lambda span: span.group(2)
+            if re.fullmatch(r"\$[\w-]+", span.group(2).strip())
+            else " ",
+            unit,
+        )
+        unit = re.sub(r'"[^"]*"|\u201c[^\u201d]*\u201d', " ", unit)
+        for sentence in re.split(r"(?<=[.!?])\s+", unit):
+            if (own.search(sentence) or _THIS_SKILL_RE.search(sentence)) and (
+                _RESTATEMENT_VERB_RE.search(re.sub(r"\$[\w-]+", " ", sentence))
+            ):
+                found.append(sentence.strip())
+    return found
+
+
+def check_candidate_entrypoint(
+    skill_md: bytes,
+    openai_yaml: bytes | None,
+    *,
+    name: str,
+    load_policy: dict[str, Any],
+    hosts: list[str],
+    description: str,
+    codex_interface: dict[str, Any] | None = None,
+) -> None:
+    """Check a candidate's frontmatter, host hide flags, and body at acceptance."""
+    scalars, metadata, body = _skill_frontmatter(skill_md)
+    if scalars.get("name") != name:
+        raise RunStateError("candidate SKILL.md name differs from the target name")
+    if scalars.get("description") != description:
+        raise RunStateError("candidate description differs from its implementer brief")
+    if "disable-model-invocation" in scalars:
+        raise RunStateError(
+            "candidate SKILL.md sets disable-model-invocation, which no load policy uses"
+        )
+    hosts = _validate_hosts(hosts)
+    sentence = load_sentence(load_policy, name)
+    _check_description(description, sentence, name)
+    restricted = sentence is not None
+    if (
+        restricted
+        and "claude-code" in hosts
+        and ("when_to_use" in scalars or len(description) > _CLAUDE_LISTING_LIMIT)
+    ):
+        raise RunStateError("candidate Claude Code listing can cut off its load sentence")
+    if "codex" in hosts:
+        implicit, interface = (
+            (None, {}) if openai_yaml is None else _codex_adapter(openai_yaml)
+        )
+        if (implicit is not False) if restricted else (implicit is False):
+            raise RunStateError(
+                "candidate Codex allow_implicit_invocation contradicts its load policy"
+            )
+        if codex_interface is None or any(
+            interface.get(field) != codex_interface[field]
+            for field in ("short_description", "default_prompt")
+        ):
+            raise RunStateError("candidate Codex interface text differs from its implementer brief")
+    if "opencode" in hosts and (
+        metadata.get("opencode/autoinvoke") != "false"
+        if restricted
+        else metadata.get("opencode/autoinvoke") not in {None, "true"}
+    ):
+        raise RunStateError("candidate opencode/autoinvoke contradicts its load policy")
+    if restricted and sentence in " ".join(body.split()):
+        raise RunStateError("candidate body restates its load sentence")
+    restated = restatement_sentences(body, name)
+    if restated:
+        raise RunStateError(f"candidate body restates its load policy: {restated[0]!r}")
+
+
 def _validate_selection_case(case: dict[str, Any]) -> None:
     if (
         case["host"] not in _SELECTION_HOSTS
@@ -1262,9 +1653,13 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     versioned_fields = set(expected_fields)
     if artifact_type == "candidate-record" and schema_version in {
         HISTORICAL_CANDIDATE_SCHEMA,
-        CANDIDATE_SCHEMA,
+        *_PACKAGED_CANDIDATE_SCHEMAS,
     }:
         versioned_fields.add("loaded_skill_digest")
+    if artifact_type == "candidate-record" and schema_version == CANDIDATE_SCHEMA:
+        versioned_fields |= {"brief_digest", "checker_version"}
+    if artifact_type == "skill-contract" and schema_version == CONTRACT_SCHEMA:
+        versioned_fields |= _CONTRACT_V2_FIELDS
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
@@ -1388,14 +1783,19 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         _digest(payload["design_digest"], "contract design")
         _text(payload["purpose"], "contract purpose")
         _text(payload["success_signal"], "contract success signal")
-        for field in _PAYLOAD_REQUIRED_FIELDS[artifact_type] - {
+        for field in versioned_fields - {
             "schema_version",
             "design_digest",
             "purpose",
             "success_signal",
             "evidence_bindings",
+            "load_policy",
+            "hosts",
         }:
             _text_list(payload[field], f"contract {field}")
+        if schema_version == CONTRACT_SCHEMA:
+            _validate_load_policy(payload["load_policy"])
+            _validate_hosts(payload["hosts"])
         bindings = _mapping_list(payload["evidence_bindings"], "contract evidence bindings")
         for binding in bindings:
             if set(binding) != {"statement", "artifact_id", "digest"}:
@@ -1473,7 +1873,60 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("evaluation pack has no frozen cases")
         return
 
+    if artifact_type == "implementer-brief":
+        for field in ("contract_digest", "confirmation_digest", "evaluation_digest"):
+            _digest(payload[field], f"implementer brief {field}")
+        if "\n" in _text(payload["description"], "implementer brief description"):
+            raise RunStateError("implementer brief description must be one line")
+        if payload["load_sentence"] is not None:
+            _text(payload["load_sentence"], "implementer brief load sentence")
+        flags = payload["host_flags"]
+        if not isinstance(flags, dict) or any(
+            host not in _SELECTION_HOSTS or not isinstance(value, dict)
+            for host, value in flags.items()
+        ):
+            raise RunStateError("implementer brief host flags are invalid")
+        _json_value(flags)
+        codex = flags.get("codex")
+        if codex is not None:
+            if set(codex) != _CODEX_BRIEF_KEYS or not isinstance(
+                codex["allow_implicit_invocation"], bool
+            ):
+                raise RunStateError("implementer brief Codex flags are invalid")
+            _codex_adapter_parts(codex["adapter_path"])
+            for field in ("short_description", "default_prompt"):
+                if "\n" in _text(codex[field], f"implementer brief Codex {field}"):
+                    raise RunStateError(f"implementer brief Codex {field} must be one line")
+        if not _text_list(payload["body_rules"], "implementer brief body rules"):
+            raise RunStateError("implementer brief has no body rules")
+        prohibitions = _mapping_list(
+            payload["irreversible_prohibitions"], "implementer brief prohibitions"
+        )
+        for prohibition in prohibitions:
+            if set(prohibition) != {"forbidden_action", "action", "reason", "alternative"}:
+                raise RunStateError("implementer brief prohibition schema is invalid")
+            for field, value in prohibition.items():
+                _text(value, f"implementer brief prohibition {field}")
+        if len({item["forbidden_action"] for item in prohibitions}) != len(prohibitions):
+            raise RunStateError("implementer brief repeats a prohibition")
+        owned = _text_list(payload["owned_paths"], "implementer brief owned paths")
+        if not owned or len(set(owned)) != len(owned):
+            raise RunStateError("implementer brief owned paths are empty or repeated")
+        _text_list(payload["resources"], "implementer brief resources")
+        cases = _mapping_list(payload["visible_cases"], "implementer brief visible cases")
+        for case in cases:
+            if set(case) != {"case_id", "request", "expected"}:
+                raise RunStateError("implementer brief visible case schema is invalid")
+            for field, value in case.items():
+                _text(value, f"implementer brief visible case {field}")
+        if len({case["case_id"] for case in cases}) != len(cases):
+            raise RunStateError("implementer brief repeats a visible case")
+        return
+
     if artifact_type == "candidate-record":
+        if schema_version == CANDIDATE_SCHEMA:
+            _digest(payload["brief_digest"], "candidate implementer brief")
+            _text(payload["checker_version"], "candidate checker version")
         for field in ("candidate_id", "isolated_locator", "candidate_revision", "writable_role"):
             _text(payload[field], f"candidate {field}")
         locator = Path(payload["isolated_locator"])
@@ -1491,7 +1944,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             _digest(payload[field], f"candidate {field}")
         if payload["schema_version"] in {
             HISTORICAL_CANDIDATE_SCHEMA,
-            CANDIDATE_SCHEMA,
+            *_PACKAGED_CANDIDATE_SCHEMAS,
         }:
             _digest(payload["loaded_skill_digest"], "candidate loaded skill")
             if payload["loaded_skill_digest"] == payload["resulting_digest"]:
@@ -2222,6 +2675,8 @@ def _create_resolution_artifact(
         "schema_version": RESOLUTION_SCHEMA,
         "workflow_id": workflow_id,
         "candidate_record_schema": CANDIDATE_SCHEMA,
+        "contract_schema": CONTRACT_SCHEMA,
+        "implementer_brief_schema": BRIEF_SCHEMA,
         "evaluation_pack_schema": EVALUATION_SCHEMA,
         "trial_pack_schema": TRIAL_SCHEMA,
         "review_record_schema": REVIEW_SCHEMA,
@@ -2481,6 +2936,8 @@ def _loadable_skill_digest_from_target_manifest(
 
 
 _VERSIONED_ARTIFACT_SCHEMAS = {
+    "skill-contract": ("contract_schema", LEGACY_CONTRACT_SCHEMA),
+    "implementer-brief": ("implementer_brief_schema", None),
     "evaluation-pack": ("evaluation_pack_schema", LOADED_EVALUATION_SCHEMA),
     "candidate-record": ("candidate_record_schema", LEGACY_CANDIDATE_SCHEMA),
     "trial-pack": ("trial_pack_schema", LEGACY_TRIAL_SCHEMA),
@@ -2498,6 +2955,8 @@ def _validate_artifact_schema_pairing(
     marker_name, default_schema = marker
     if payload["schema_version"] != resolution.get(marker_name, default_schema):
         label = {
+            "skill-contract": "contract",
+            "implementer-brief": "implementer-brief",
             "evaluation-pack": "evaluation-pack",
             "candidate-record": "candidate",
             "trial-pack": "trial-pack",
@@ -2576,7 +3035,7 @@ def _create_artifact(
             )
         if (
             artifact_type == "candidate-record"
-            and primary_record["schema_version"] == CANDIDATE_SCHEMA
+            and primary_record["schema_version"] in _PACKAGED_CANDIDATE_SCHEMAS
         ):
             _validate_current_candidate_content(
                 primary_record,
@@ -3299,12 +3758,13 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             "scorecard_schema",
         }
         version_markers_valid = (
-            payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            payload.get("candidate_record_schema") == PACKAGED_CANDIDATE_SCHEMA
             and payload.get("trial_pack_schema") == LOADED_TRIAL_SCHEMA
             and payload.get("review_record_schema") == REVIEW_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
         )
     else:
+        current_markers = schema_version == RESOLUTION_SCHEMA
         expected_fields = common_fields | {
             "candidate_record_schema",
             "evaluation_pack_schema",
@@ -3312,12 +3772,22 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             "review_record_schema",
             "scorecard_schema",
         }
+        if current_markers:
+            expected_fields |= {"contract_schema", "implementer_brief_schema"}
         version_markers_valid = (
-            payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            payload.get("candidate_record_schema")
+            == (CANDIDATE_SCHEMA if current_markers else PACKAGED_CANDIDATE_SCHEMA)
             and payload.get("evaluation_pack_schema") == EVALUATION_SCHEMA
             and payload.get("trial_pack_schema") == TRIAL_SCHEMA
             and payload.get("review_record_schema") == REVIEW_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
+            and (
+                not current_markers
+                or (
+                    payload.get("contract_schema") == CONTRACT_SCHEMA
+                    and payload.get("implementer_brief_schema") == BRIEF_SCHEMA
+                )
+            )
         )
     if (
         schema_version
@@ -3326,6 +3796,7 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             PREVIOUS_RESOLUTION_SCHEMA,
             HISTORICAL_RESOLUTION_SCHEMA,
             LOADED_TRIAL_RESOLUTION_SCHEMA,
+            SELECTION_RESOLUTION_SCHEMA,
             RESOLUTION_SCHEMA,
         }
         or set(payload) != expected_fields
@@ -3501,7 +3972,7 @@ def _validate_trial_binding(
     expected_loaded_skill_digest = (
         candidate["loaded_skill_digest"]
         if candidate["schema_version"]
-        in {HISTORICAL_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA}
+        in {HISTORICAL_CANDIDATE_SCHEMA, *_PACKAGED_CANDIDATE_SCHEMAS}
         else candidate["resulting_digest"]
     )
 
@@ -4116,12 +4587,26 @@ def _validate_score_bindings(
         for criterion_id in finding["affected_target_criteria"]:
             review_finding_ids.setdefault(criterion_id, []).append(finding_id)
 
-    expected_selections = {
-        case["case_id"]: case["expected_selection"]
+    selection_cases = {
+        case["case_id"]: case
         for cases in evaluation["partitions"].values()
         for case in cases
         if case.get("exposure") == "selection"
     }
+    contract_id, _ = _event_artifact(
+        run, "accept-contract", "skill-contract", event_artifacts
+    )
+    contract = _artifact_payload_json(run, contract_id)
+    trial_hosts: frozenset[str] | None = None
+    if (
+        contract["schema_version"] == CONTRACT_SCHEMA
+        and contract["load_policy"]["policy"] != "agent"
+    ):
+        trial_hosts = frozenset(contract["hosts"]) & (
+            _RESTRICTED_TRIAL_HOSTS | {"hermes"}
+            if contract["load_policy"]["policy"] == "user-or-skills"
+            else _RESTRICTED_TRIAL_HOSTS
+        )
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
@@ -4131,14 +4616,22 @@ def _validate_score_bindings(
                 and backing_kinds is not None
                 and result["passed"] is True
             ):
-                backing_verdicts = [
-                    case["verdict"]
+                backing_runs = [
+                    case
                     for case in trial_runs
-                    if expected_selections.get(case["case_id"]) in backing_kinds
+                    if case["case_id"] in selection_cases
+                    and selection_cases[case["case_id"]]["expected_selection"]
+                    in backing_kinds
                 ]
-                if not backing_verdicts or any(
-                    verdict != "pass" for verdict in backing_verdicts
-                ):
+                required_runs = [
+                    case
+                    for case in backing_runs
+                    if trial_hosts is None
+                    or selection_cases[case["case_id"]]["host"] in trial_hosts
+                ]
+                if (
+                    (trial_hosts is None or trial_hosts) and not required_runs
+                ) or any(case["verdict"] != "pass" for case in backing_runs):
                     raise RunStateError(
                         f"scorecard passes {criterion_id} without passing selection trials"
                     )
@@ -4257,6 +4750,14 @@ def _validate_confirmation_binding(
         or not _DIGEST_RE.fullmatch(authority_event_digest)
     ):
         raise RunStateError("user confirmation binding is missing or mismatched")
+    contract = _artifact_payload_json(run, contract_id)
+    if (
+        contract["schema_version"] == CONTRACT_SCHEMA
+        and contract["load_policy"]["policy"] != "agent"
+        and "hermes" in contract["hosts"]
+        and not any("hermes" in item.casefold() for item in confirmation_envelope["limitations"])
+    ):
+        raise RunStateError("user confirmation does not record the Hermes load-policy limitation")
     _require_input_bindings(
         confirmation_envelope,
         {
@@ -4389,7 +4890,7 @@ def _validate_candidate_entry(
         raise RunStateError(
             "candidate schema does not match the run's versioned semantics"
         )
-    if candidate["schema_version"] == CANDIDATE_SCHEMA:
+    if candidate["schema_version"] in _PACKAGED_CANDIDATE_SCHEMAS:
         retained_loaded_digest = _loadable_skill_digest_from_artifact(
             run,
             candidate_id,
@@ -4446,6 +4947,217 @@ def _validate_candidate_entry(
             evaluation_id: evaluation_envelope["envelope_digest"],
         },
         "candidate entry",
+    )
+    if candidate["schema_version"] == CANDIDATE_SCHEMA:
+        _validate_brief_binding(
+            run,
+            current,
+            candidate,
+            candidate_envelope,
+            {
+                "contract_digest": (contract_id, contract_envelope),
+                "confirmation_digest": (confirmation_id, confirmation_envelope),
+                "evaluation_digest": (evaluation_id, evaluation_envelope),
+            },
+        )
+
+
+def _bound_brief_id(current: dict[str, Any], candidate_envelope: dict[str, Any]) -> str:
+    briefs = [
+        binding
+        for binding in candidate_envelope["input_bindings"]
+        if (current["artifact_index"].get(binding["artifact_id"]) or {}).get("type")
+        == "implementer-brief"
+    ]
+    if len(briefs) != 1:
+        raise RunStateError("candidate must bind exactly one implementer brief")
+    return briefs[0]["artifact_id"]
+
+
+def _validate_brief_binding(
+    run: Path,
+    current: dict[str, Any],
+    candidate: dict[str, Any],
+    candidate_envelope: dict[str, Any],
+    bound: dict[str, tuple[str, dict[str, Any]]],
+) -> None:
+    """Bind a current candidate to one accepted brief derived from its contract."""
+    brief_id = _bound_brief_id(current, candidate_envelope)
+    record = current["artifact_index"][brief_id]
+    if (
+        record["derived_status"] != "accepted"
+        or record["digest"] != candidate["brief_digest"]
+    ):
+        raise RunStateError("candidate implementer brief binding is stale")
+    if candidate["checker_version"] not in _CANDIDATE_CHECKER_VERSIONS:
+        raise RunStateError("candidate checker version is unknown")
+    brief_envelope, _ = _validate_envelope(run, brief_id)
+    brief = _artifact_payload_json(run, brief_id)
+    _require_input_bindings(
+        brief_envelope,
+        {artifact_id: envelope["envelope_digest"] for artifact_id, envelope in bound.values()},
+        "implementer brief",
+    )
+    if any(
+        brief[field] != bound[field][1]["envelope_digest"]
+        for field in ("contract_digest", "confirmation_digest", "evaluation_digest")
+    ):
+        raise RunStateError("implementer brief contract, confirmation, or pack binding is stale")
+    contract = _artifact_payload_json(run, bound["contract_digest"][0])
+    evaluation = _artifact_payload_json(run, bound["evaluation_digest"][0])
+    if any(
+        item["forbidden_action"] not in contract["forbidden_actions"]
+        for item in brief["irreversible_prohibitions"]
+    ):
+        raise RunStateError("implementer brief prohibits an action the contract does not forbid")
+    visible = {
+        case["case_id"]: case
+        for case in evaluation["partitions"]["visible_development"]
+        if case.get("exposure", "loaded") == "loaded"
+    }
+    for case in brief["visible_cases"]:
+        frozen = visible.get(case["case_id"])
+        if (
+            frozen is None
+            or raw_digest(case["request"].encode("utf-8")) != frozen["raw_request_digest"]
+            or case["expected"]
+            not in {*frozen["observable_assertions"], frozen["pass_fail_rule"]}
+        ):
+            raise RunStateError(
+                "implementer brief shows a case outside the visible loaded cases "
+                "or their frozen expectations"
+            )
+    if brief["owned_paths"] != candidate["owned_paths"]:
+        raise RunStateError("candidate owned paths differ from its implementer brief")
+
+
+def _holds_phrase(text: str, phrase: str) -> bool:
+    normalized = " ".join(text.casefold().split())
+    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) is not None
+
+
+def _check_brief_policy(brief: dict[str, Any], contract: dict[str, Any], name: str) -> None:
+    """Check a brief against its load policy and withheld lists at candidate acceptance."""
+    sentence = load_sentence(contract["load_policy"], name)
+    if brief["load_sentence"] != sentence:
+        raise RunStateError("implementer brief load sentence differs from the load policy")
+    restricted = sentence is not None
+    flags = brief["host_flags"]
+    if set(flags) != set(contract["hosts"]) or any(
+        value["allow_implicit_invocation"] is restricted
+        if host == "codex"
+        else value != ({"opencode/autoinvoke": "false"} if host == "opencode" and restricted else {})
+        for host, value in flags.items()
+    ):
+        raise RunStateError("implementer brief host flags differ from the load policy")
+    codex = flags.get("codex")
+    if codex is not None and (
+        not codex["default_prompt"].startswith(f"Use ${name} to ")
+        or not codex["default_prompt"].endswith(".")
+        or _LOAD_CLAIM_RE.search(codex["short_description"])
+        or _own_token(name).search(codex["short_description"])
+        or max(len(codex["default_prompt"]), len(codex["short_description"]))
+        > _CODEX_TEXT_LIMIT
+    ):
+        raise RunStateError("implementer brief Codex adapter text breaks the adapter rules")
+    def fold(items: list[str]) -> list[str]:
+        return [" ".join(item.casefold().split()) for item in items]
+
+    withheld = fold([*contract["non_triggers"], *contract["non_goals"]])
+    forbidden = fold(contract["forbidden_actions"])
+    exposed: list[tuple[str, str | None]] = [
+        (text, None)
+        for text in (
+            brief["description"],
+            *brief["body_rules"],
+            *brief["resources"],
+            *(case["expected"] for case in brief["visible_cases"]),
+        )
+    ]
+    for item in brief["irreversible_prohibitions"]:
+        own = fold([item["forbidden_action"]])[0]
+        exposed.append((item["action"], own))
+        exposed.extend((item[field], None) for field in ("reason", "alternative"))
+    for text, own in exposed:
+        if any(_holds_phrase(text, phrase) for phrase in withheld) or any(
+            _holds_phrase(text, phrase) for phrase in forbidden if phrase != own
+        ):
+            raise RunStateError(
+                "implementer brief carries a withheld non-trigger, non-goal, or forbidden action"
+            )
+
+
+def _check_accepted_contract(run: Path, current: dict[str, Any], contract_id: str) -> None:
+    """Render the load sentence once, when a contract is accepted."""
+    contract = _artifact_payload_json(run, contract_id)
+    if contract["schema_version"] == CONTRACT_SCHEMA:
+        load_sentence(contract["load_policy"], current["target_identity"]["name"])
+
+
+def _check_accepted_candidate(run: Path, current: dict[str, Any], candidate_id: str) -> None:
+    """Run the policy and entrypoint checks once, when a current candidate is accepted."""
+    candidate = _artifact_payload_json(run, candidate_id)
+    if candidate["schema_version"] != CANDIDATE_SCHEMA:
+        return
+    if candidate["checker_version"] != CANDIDATE_CHECKER_VERSION:
+        raise RunStateError("candidate record names a checker other than the current one")
+    candidate_envelope, manifest = _validate_envelope(run, candidate_id)
+    brief = _artifact_payload_json(run, _bound_brief_id(current, candidate_envelope))
+    contract_id, _ = _event_artifact(run, "accept-contract", "skill-contract")
+    contract = _artifact_payload_json(run, contract_id)
+    name = current["target_identity"]["name"]
+    _check_brief_policy(brief, contract, name)
+    prefix = f"artifacts/{candidate_id}/raw/"
+    retained = {
+        entry["path"].removeprefix(prefix): entry["path"]
+        for entry in manifest["entries"]
+        if entry["path"].startswith(prefix)
+    }
+
+    def retained_file(relative: str) -> bytes | None:
+        path = retained.get(relative)
+        if path is None:
+            return None
+        return _read_bytes(run.joinpath(*path.split("/")), MAX_ARTIFACT_BYTES)
+
+    skill_md = retained_file("candidate-package/SKILL.md")
+    if skill_md is None:
+        raise RunStateError("candidate package lacks SKILL.md")
+    codex = brief["host_flags"].get("codex")
+    openai_yaml: bytes | None = None
+    if codex is not None:
+        parts = _codex_adapter_parts(codex["adapter_path"])
+        if parts[0] != "..":
+            openai_yaml = retained_file("candidate-package/" + "/".join(parts))
+        else:
+            openai_yaml = retained_file(_CODEX_EXTERNAL_ADAPTER)
+            source = Path(
+                os.path.normpath(Path(candidate["isolated_locator"]).joinpath(*parts))
+            )
+            actual = (
+                snapshot_target(source)["entries"]
+                if os.path.lexists(source)
+                else None
+            )
+            if (openai_yaml is None) != (actual is None) or (
+                actual is not None
+                and (
+                    len(actual) != 1
+                    or actual[0]["path"] != "."
+                    or actual[0]["digest"] != raw_digest(openai_yaml)
+                )
+            ):
+                raise RunStateError(
+                    "candidate retained Codex adapter differs from its isolated copy"
+                )
+    check_candidate_entrypoint(
+        skill_md,
+        openai_yaml,
+        name=name,
+        load_policy=contract["load_policy"],
+        hosts=contract["hosts"],
+        description=brief["description"],
+        codex_interface=codex,
     )
 
 
@@ -4771,7 +5483,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         ):
             continue
         candidate = _artifact_payload_json(run, artifact_id)
-        if candidate["schema_version"] != CANDIDATE_SCHEMA:
+        if candidate["schema_version"] not in _PACKAGED_CANDIDATE_SCHEMAS:
             continue
         _, candidate_manifest = _validate_envelope(run, artifact_id)
         _validate_current_candidate_content(
@@ -4986,14 +5698,14 @@ def _validate_delivery_destination(
         in {
             PREVIOUS_CANDIDATE_SCHEMA,
             HISTORICAL_CANDIDATE_SCHEMA,
-            CANDIDATE_SCHEMA,
+            *_PACKAGED_CANDIDATE_SCHEMAS,
         }
         and candidate.get("resulting_digest")
         != _owned_result_digest(index, manifest, candidate.get("owned_paths"))
     ):
         raise RunStateError("delivery content does not match the finalized candidate result")
     if (
-        candidate.get("schema_version") == CANDIDATE_SCHEMA
+        candidate.get("schema_version") in _PACKAGED_CANDIDATE_SCHEMAS
         and candidate.get("loaded_skill_digest")
         != _loadable_skill_digest_from_target_manifest(
             manifest, "delivery destination"
@@ -5732,6 +6444,18 @@ def transition_run(
             artifact_ids,
             authority_event_digest,
         )
+        if event == "accept-contract":
+            _check_accepted_contract(
+                run,
+                current,
+                _artifact_id_of_type(run, artifact_ids, "skill-contract"),
+            )
+        if event == "accept-candidate":
+            _check_accepted_candidate(
+                run,
+                current,
+                _artifact_id_of_type(run, artifact_ids, "candidate-record"),
+            )
         derived, _, _ = _append_transaction(
             run=run,
             current=current,
@@ -5892,6 +6616,7 @@ _AFTER_BASELINE = {
     "skill-contract",
     "user-confirmation-record",
     "evaluation-pack",
+    "implementer-brief",
     "candidate-record",
     "trial-pack",
     "review-record",
@@ -5903,6 +6628,7 @@ _AFTER_BASELINE = {
 _AFTER_CONTRACT = {
     "user-confirmation-record",
     "evaluation-pack",
+    "implementer-brief",
     "candidate-record",
     "trial-pack",
     "review-record",
@@ -5973,22 +6699,22 @@ _INVALIDATION_RULES = {
     "evaluation": {
         "changed_types": {"evaluation-pack"},
         "destination": "confirmed",
-        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+        "invalidates": {"implementer-brief", "candidate-record", *_AFTER_CANDIDATE},
     },
     "target-parameters": {
         "changed_types": {"evaluation-pack"},
         "destination": "confirmed",
-        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+        "invalidates": {"implementer-brief", "candidate-record", *_AFTER_CANDIDATE},
     },
     "rubric": {
         "changed_types": {"evaluation-pack"},
         "destination": "confirmed",
-        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+        "invalidates": {"implementer-brief", "candidate-record", *_AFTER_CANDIDATE},
     },
     "candidate": {
         "changed_types": {"candidate-record"},
         "destination": "evaluation",
-        "invalidates": _AFTER_CANDIDATE,
+        "invalidates": _AFTER_CANDIDATE | {"implementer-brief"},
     },
     "trial": {
         "changed_types": {"trial-pack"},
@@ -7389,7 +8115,8 @@ def main(argv: list[str] | None = None) -> int:
             "  cleanup-authority request: workflow_id, expected_sequence, "
             "authority_event_digest, authority_event_base64, actor\n"
             "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
-            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence"
+            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence\n"
+            "  load-sentence request: load_policy and the target name"
         ),
     )
     parser.add_argument(
@@ -7410,6 +8137,7 @@ def main(argv: list[str] | None = None) -> int:
             "cleanup-authority",
             "cleanup",
             "activate-next",
+            "load-sentence",
         ),
     )
     parser.add_argument(
@@ -7514,6 +8242,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "activate-next":
             result = activate_next_target(state_root=state_root, **payload)
+        elif args.command == "load-sentence":
+            if set(payload) != {"load_policy", "name"}:
+                raise RunStateError("load-sentence requires load_policy and name")
+            result = {
+                "load_sentence": load_sentence(payload["load_policy"], payload["name"])
+            }
         else:
             result = cleanup_run(
                 state_root=state_root,
