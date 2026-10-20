@@ -38,8 +38,22 @@ jobs:
           tests/test_opencode_package.py
           tests/test_skill_structure.py
 
+  check-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python3 -c "import json; print(json.load(open('plugins/expskill/opencode/package.json'))['version'])")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package version $version; bump versions first" >&2
+            exit 1
+          fi
+
   publish-codex-dist:
-    needs: validate
+    needs: [validate, check-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -97,7 +111,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-npm:
-    needs: validate
+    needs: [validate, check-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -135,7 +149,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-claude-dist:
-    needs: validate
+    needs: [validate, check-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -191,7 +205,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-hermes-dist:
-    needs: validate
+    needs: [validate, check-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

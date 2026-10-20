@@ -85,14 +85,25 @@ elif name == "claude":
         elif args[2:3] == ["update"]:
             state["claude-marketplace-updated"] = True
     elif args == ["plugin", "list", "--json"]:
-        entries = [{"id": "expskill@expskill"}] if state.get("claude-installed") else []
+        if state.get("claude-installed"):
+            scoped = state.get("claude-scopes", [None])
+            entries = []
+            for scope in scoped:
+                entry = {"id": "expskill@expskill"}
+                if scope:
+                    entry["scope"] = scope
+                entries.append(entry)
+        else:
+            entries = []
         print(json.dumps(entries))
     elif args[:2] == ["plugin", "install"]:
         if state.get("claude-installed"):
             sys.exit("plugin already installed; use update")
         state["claude-installed"] = True
     elif args[:2] == ["plugin", "update"]:
-        state["claude-updated"] = args[-1]
+        state["claude-updated"] = args[2] if len(args) > 2 else None
+        state.setdefault("claude-updated-scopes", []).append(
+            args[args.index("-s") + 1] if "-s" in args else None)
 elif name == "curl":
     print(pathlib.Path(os.environ["INSTALLER_SOURCE"]).read_text())
 state_path.write_text(json.dumps(state))
@@ -200,6 +211,27 @@ class InstallerTests(unittest.TestCase):
             ["claude", "plugin", "list", "--json"],
             ["claude", "plugin", "update", "expskill@expskill"],
         ])
+
+    def test_claude_update_refreshes_every_installed_scope(self):
+        self.claude_commands()
+        first = self.run_installer("4\n")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        state_path = self.log.with_suffix(".state.json")
+        state = json.loads(state_path.read_text())
+        state["claude-scopes"] = ["user", "project"]
+        state_path.write_text(json.dumps(state))
+        self.log.unlink()
+        rerun = self.run_installer("4\n")
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertEqual(self.calls(), [
+            ["git", "ls-remote", REMOTE, "refs/heads/claude-dist"],
+            ["claude", "plugin", "marketplace", "list", "--json"],
+            ["claude", "plugin", "marketplace", "update", "expskill"],
+            ["claude", "plugin", "list", "--json"],
+            ["claude", "plugin", "update", "expskill@expskill", "-s", "user"],
+            ["claude", "plugin", "update", "expskill@expskill", "-s", "project"],
+        ])
+        self.assertEqual(self.state()["claude-updated-scopes"], ["user", "project"])
 
     def test_claude_inspection_failure_stops_before_changes(self):
         self.claude_commands()
