@@ -16595,6 +16595,9 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
 class SkillBuilderCanonicalDigestTests(unittest.TestCase):
     """Pin the canonical byte form every oracle digest is built from."""
 
+    def setUp(self) -> None:
+        _CANONICAL_CACHE.clear()
+
     def test_canonical_bytes_matches_an_independent_reference(self) -> None:
         """The canonical form stays one JSON object per value, whatever the cache does."""
 
@@ -16676,6 +16679,7 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
     def test_repeated_equal_calls_reuse_the_memoized_canonical_form(self) -> None:
         """An equal value is digested once, not once per call."""
 
+        _CANONICAL_CACHE.clear()
         value = {"b": [1, True, None], "a": {"x": "ünïcödé"}}
         with _counted_canonical_dumps() as dumps_calls:
             first = canonical_bytes(value)
@@ -16684,14 +16688,45 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
             after_second = dumps_calls()
         self.assertEqual(first, second)
         self.assertEqual(
-            after_second,
             after_first,
+            1,
+            "the first call must miss and serialize once",
+        )
+        self.assertEqual(
+            after_second,
+            1,
             "an equal value must reuse the memoized canonical form",
+        )
+
+        _CANONICAL_CACHE.clear()
+        sha_calls = 0
+        original_sha256 = hashlib.sha256
+
+        def counting_sha256(*args: Any, **kwargs: Any) -> Any:
+            nonlocal sha_calls
+            sha_calls += 1
+            return original_sha256(*args, **kwargs)
+
+        with _counted_canonical_dumps() as dumps_calls:
+            with mock.patch.object(hashlib, "sha256", counting_sha256):
+                first_digest = canonical_digest(value)
+                second_digest = canonical_digest(value)
+        self.assertEqual(first_digest, second_digest)
+        self.assertEqual(
+            dumps_calls(),
+            1,
+            "an equal digest must reuse the memoized canonical form",
+        )
+        self.assertEqual(
+            sha_calls,
+            1,
+            "an equal digest must reuse the memoized sha256 digest",
         )
 
     def test_distinct_durable_values_do_not_share_a_memoized_result(self) -> None:
         """Only values that are equal in the durable schema share one result."""
 
+        _CANONICAL_CACHE.clear()
         with _counted_canonical_dumps() as dumps_calls:
             canonical_bytes(True)
             before = dumps_calls()

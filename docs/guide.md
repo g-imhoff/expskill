@@ -387,14 +387,15 @@ and verifies detection. Run it in
 the required, fail-closed mode:
 
 ```bash
-EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
 ```
 
 The checked-in manifest records the archive digests and their authoritative
-release metadata URLs from the Codex and opencode GitHub release APIs. A
-missing binary, unsupported platform, download failure, corrupt archive or
-cache, unexpected archive layout, and any digest mismatch fails this command;
-none can become a skip. The suite runs only install/list/remove and
+release metadata URLs from the Codex and opencode GitHub release APIs. Both
+networked suites skip by default unless EXPSKILL_RUN_NETWORK_TESTS holds 1,
+true, yes, or on; once opted in, a missing binary, unsupported platform,
+download failure, corrupt archive or cache, unexpected archive layout, and any
+digest mismatch fails this command. The suite runs only install/list/remove and
 config-startup smoke commands, never a model call.
 
 An explicit executable override is permitted only with an independently
@@ -408,8 +409,7 @@ export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
 export EXPSKILL_TEST_CODEX_BIN_SHA256="independently-verified-sha256"
 export EXPSKILL_TEST_OPENCODE_BIN="/path/to/opencode"
 export EXPSKILL_TEST_OPENCODE_BIN_SHA256="independently-verified-sha256"
-export EXPSKILL_CLI_MODE=required
-python3 -m pytest -q tests/test_cli_install_integration.py
+EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
 ```
 
 For a deliberately local/offline check, opt in explicitly with
