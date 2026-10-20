@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 // OpenCode v2 plugin API ("@opencode-ai/plugin/v2"; the marketing site
-// aliases it as "@opencode/plugin"). `ctx.session.hook("request", ...)`
-// exposes mutable `system`/`messages`/`tools` immediately before model
-// dispatch, which is the hook that provably delivers system text
-// (https://dev.opencode.ai/v2/docs/build/plugins/ "Runtime hooks",
-// reviewed 2026-10-01). The v1 `experimental.chat.system.transform`
+// aliases it as "@opencode/plugin"). `ctx.session.hook("context", ...)`
+// (plus "compaction" and "generate") exposes mutable `system`/`messages`/
+// `tools` immediately before model dispatch, which is the hook that provably
+// delivers system text
+// (https://opencode.ai/v2/docs/build/plugins/ "Hooks", sessions section).
+// There is no "request" session hook in v2; "context" is the agent-loop hook.
+// The v1 `experimental.chat.system.transform`
 // plugin in ./unslop.js stays the default for OpenCode v1.
 import { Plugin } from "@opencode-ai/plugin/v2";
 
@@ -75,8 +77,9 @@ async function readFirst(paths: string[]): Promise<string> {
 }
 
 function systemEntry(block: string, system: unknown[]): string | { text: string } {
-  // The request-hook `system` array may carry plain strings or text parts
-  // depending on the release; match the prevailing entry shape.
+  // The context/compaction/generate-hook `system` array may carry plain
+  // strings or text parts depending on the release; match the prevailing
+  // entry shape.
   for (const entry of system) {
     if (typeof entry === "string") return `${OPEN_MARKER}\n${block}\n${CLOSE_MARKER}`;
     if (typeof entry === "object" && entry !== null) {
@@ -90,9 +93,9 @@ export default Plugin.define({
   id: "expskill-unslop",
   async setup(ctx) {
     const sources = resolveSources(process.env, import.meta.url);
-    await ctx.session.hook("request", async (event) => {
+    const inject = async (event: { system?: unknown }) => {
       try {
-        const system = (event as { system?: unknown }).system;
+        const system = event?.system;
         if (!Array.isArray(system)) return;
         const joined = system
           .map((entry) =>
@@ -116,6 +119,12 @@ export default Plugin.define({
       } catch {
         return;
       }
-    });
+    };
+    // "context" is the agent-loop hook (every model call including the first
+    // turn). "compaction" and "generate" cover checkpoint summaries and
+    // transient generation so the rules survive those flows too.
+    for (const kind of ["context", "compaction", "generate"] as const) {
+      await ctx.session.hook(kind, inject);
+    }
   },
 });

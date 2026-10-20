@@ -650,16 +650,37 @@ function v2IsExpSkillAgent(value) {
 }
 
 const ExpSkillSetup = async (ctx) => {
-  if (ctx?.skill?.transform) {
-    const skills = await v2AllSkills();
-    await ctx.skill.transform(editor => {
-      for (const skill of skills) {
-        if (!editor.get(skill.id)) editor.add(skill);
-      }
-    });
+  try {
+    if (ctx?.skill?.transform) {
+      const skills = await v2AllSkills();
+      await ctx.skill.transform(editor => {
+        for (const skill of skills) {
+          if (!editor.get(skill.id)) editor.add(skill);
+        }
+        // Unslop must apply at conversation start without relying on the
+        // model to call the skill tool first. Mark it autoinvoke
+        // best-effort; the system pointer below remains the fallback.
+        try {
+          if (typeof editor.update === "function") {
+            editor.update(SKILL_ID_PREFIX + "unslop", (skill) => {
+              skill.autoinvoke = true;
+            });
+          }
+        } catch {
+          // autoinvoke is additive; the injected pointer still applies
+        }
+      });
+    }
+  } catch {
+    // skill registration is additive; session hooks below still register
   }
-  const authoring = await authoringBlock();
-  if (ctx?.session?.hook) {
+  let authoring = null;
+  try {
+    authoring = await authoringBlock();
+  } catch {
+    authoring = null;
+  }
+  if (authoring && ctx?.session?.hook) {
     for (const kind of ["context", "compaction", "generate"]) {
       await ctx.session.hook(kind, async (event) => {
         if (Array.isArray(event?.system)) {
