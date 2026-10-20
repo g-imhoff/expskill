@@ -939,7 +939,10 @@ def _durable_cache_key(value: Any) -> Any:
         for name, nested in value.items():
             if not isinstance(name, str):
                 raise TypeError("durable object keys must be strings")
-            pairs.append((name, _durable_cache_key(nested)))
+            # The name is keyed by the text the canonical form encodes, not
+            # by the caller's object, so a name that lies about its own
+            # equality cannot share a result with a different name.
+            pairs.append((str.__str__(name), _durable_cache_key(nested)))
         pairs.sort()
         return ("d", tuple(pairs))
     if cls is list:
@@ -957,10 +960,13 @@ def _durable_cache_key(value: Any) -> Any:
     if isinstance(value, dict):
         # ``json`` encodes a dict subclass through its ``items()`` view, but
         # only when the stored mapping is not empty. An empty stored mapping
-        # encodes as an empty object whatever ``items()`` reports.
+        # encodes as an empty object whatever ``items()`` reports. The
+        # reported view is still checked, because the canonical form rejects
+        # a value it reports.
+        reported = _durable_cache_key(dict(value.items()))
         if not dict.__len__(value):
             return ("D", type(value), ("d", ()))
-        return ("D", type(value), _durable_cache_key(dict(value.items())))
+        return ("D", type(value), reported)
     if isinstance(value, list):
         # ``json`` encodes a list subclass through its iteration, whatever
         # the stored list holds.
@@ -16908,6 +16914,53 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
         self.assertEqual(canonical_bytes(first_number), b"1\n")
         self.assertEqual(canonical_bytes(second_number), b"2\n")
         self.assertNotEqual(canonical_digest(first_number), canonical_digest(second_number))
+
+    def test_object_names_are_keyed_by_the_text_they_encode(self) -> None:
+        """A name that lies about its own equality keeps its own digest."""
+
+        class EqualText(str):
+            """A text subclass whose equality and hash lie."""
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, str)
+
+            def __hash__(self) -> int:
+                return 1
+
+        _CANONICAL_CACHE.clear()
+        first = {EqualText("alpha"): 0}
+        second = {EqualText("beta"): 0}
+        self.assertEqual(canonical_bytes(first), b'{"alpha":0}\n')
+        self.assertEqual(canonical_bytes(second), b'{"beta":0}\n')
+        self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+    def test_an_empty_stored_mapping_still_rejects_what_it_reports(self) -> None:
+        """An empty stored mapping is checked before it encodes as an empty object."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: dict[str, Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return self._reported.items()
+
+        _CANONICAL_CACHE.clear()
+        cases = [
+            ({"a": 1.0}, "floating-point values are outside the durable schema"),
+            ({"a": (1, 2)}, "unsupported durable value: tuple"),
+            ({2: 3}, "durable object keys must be strings"),
+        ]
+        for reported, message in cases:
+            with self.subTest(reported=reported):
+                with self.assertRaises(TypeError) as caught:
+                    canonical_bytes(ReportedItems({}, reported))
+                self.assertEqual(str(caught.exception), message)
+                with self.assertRaises(TypeError) as caught:
+                    canonical_digest(ReportedItems({}, reported))
+                self.assertEqual(str(caught.exception), message)
 
     def test_canonical_cache_stays_bounded(self) -> None:
         """The memo keeps at most the configured number of entries."""
