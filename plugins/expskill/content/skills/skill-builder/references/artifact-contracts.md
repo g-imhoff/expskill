@@ -43,11 +43,11 @@ Derive the current index from the chain with these fields:
 | `stage` | Destination stage of the validated chain head. |
 | `host_identity` | Host kind, canonical identifier, locator, and discovery evidence. |
 | `target_identity` | Requested identity, canonical identity, name, invocation token, and locator. |
-| `mode` | Exactly `create`, `improve`, or `modify`, plus the evidence that selected it. |
+| `mode` | Exactly `create`, `improve`, `modify`, or `evaluate`, plus the evidence that selected it. |
 | `authority` | Allowed reads, writes, delegation, candidate effects, and delivery effects. |
 | `git_identity` | Presence flag and, when present, repository identity, branch, commit, and dirty-state digest. |
 | `target_snapshot` | Existence flag, snapshot kind, manifest digest, content digest, and capture sequence. |
-| `queue` | Ordered target identities and derived pending, active, paused, finalized, or abandoned state. |
+| `queue` | Ordered target identities and derived pending, active, paused, finalized, reported, delivered, or abandoned state. |
 | `active_target_lock` | One target identity, owner identity, acquisition time, and lock nonce. |
 | `artifact_index` | Artifact identifier, type, path, digest, derived status, producing sequence, and dependency identifiers. |
 | `created_at` | Stable creation timestamp from sequence zero. |
@@ -75,7 +75,7 @@ Record host evidence, exact-target evidence, overlap and near-neighbour map, sel
 
 ### Baseline report
 
-For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve and modify modes, record current behavior, failures, strengths, context cost, tool and permission behavior, preserved regressions, and body restatement marked for removal. For modify mode, also record the contract delta and each retired behavior with the change that replaces it. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
+For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve and modify modes, record current behavior, failures, strengths, context cost, tool and permission behavior, preserved regressions, and body restatement marked for removal. For modify mode, also record the contract delta and each retired behavior with the change that replaces it. For evaluate mode, record the same current-target evidence, with body restatement as CE6 findings. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
 
 ### Research pack
 
@@ -91,7 +91,7 @@ Record coherent alternatives, mechanisms, tradeoffs, challenges, evidence links,
 
 ### Skill contract
 
-Record purpose, success signal, triggers, non-triggers, aliases, ambiguity behavior, inputs and preconditions, ordered behavior and decisions, collaboration, allowed and forbidden actions, tools, permissions, delegation, outputs and consumers, failures, changed goals, stopping conditions, resources, non-goals, `load_policy`, and `hosts`. Bind every statement depending on evidence or a user decision to its source artifact. Record these in `skill-builder-contract.v2`, and keep v1 contracts in runs begun under v1. `load_policy` holds `policy` (`user`, `user-or-skills`, or `agent`), `loader_skills` (skill names), and `loader_packages` (package names). Both lists stay empty unless the policy is `user-or-skills`, which names at least one loader. `hosts` lists each target host once, from `claude-code`, `codex`, `opencode`, and `hermes`.
+Record purpose, success signal, triggers, non-triggers, aliases, ambiguity behavior, inputs and preconditions, ordered behavior and decisions, collaboration, allowed and forbidden actions, tools, permissions, delegation, outputs and consumers, failures, changed goals, stopping conditions, resources, non-goals, `load_policy`, and `hosts`. Bind every statement depending on evidence or a user decision to its source artifact. Record these in `skill-builder-contract.v2`, and keep v1 contracts in runs begun under v1. `load_policy` holds `policy` (`user`, `user-or-skills`, or `agent`), `loader_skills` (skill names), and `loader_packages` (package names). Both lists stay empty unless the policy is `user-or-skills`, which names at least one loader. `hosts` lists each target host once, from `claude-code`, `codex`, `opencode`, and `hermes`. An evaluate contract has `design_digest` `null` and binds the baseline in its place.
 
 ### Load policy
 
@@ -145,7 +145,7 @@ Before each candidate, retain one `implementer-brief` (`skill-builder-implemente
 
 ### Candidate record
 
-Record candidate identifier, isolated locator, base snapshot digest, resulting revision and digest, writable role, owned paths, diff digest, local-check evidence, and the four candidate-entry bindings. Under contract v2, also record `brief_digest`, naming the one accepted implementer brief the candidate binds, and `checker_version` (`skill-builder-candidate-checks.v1`). Accepting the candidate runs the helper's checks once. Frontmatter and `agents/openai.yaml` hold single-line scalars, with `metadata` the only frontmatter block and `interface` and `policy` the only adapter blocks. The frontmatter `name` is the target name and the description equals the brief's. Under a restricted policy the description ends with the load sentence after sentence punctuation and names `$<name>` nowhere else, and under `agent` it holds none. A restricted Claude Code target has no `when_to_use` and a description of at most 1,536 characters. Each Codex and OpenCode flag matches the load-policy table, and the adapter's `short_description` and `default_prompt` equal the brief's. The body holds no copy of the load sentence. Outside fenced code, block quotes, quoted text, and code spans other than a lone `$name`, no body sentence pairs `$<name>` or "this skill" with load, loads, use, uses, used, activate, activates, activated, inactive, or explicit-only. Superseding a candidate invalidates its brief, so each repair binds a new one. Candidate records from earlier schemas stay valid without a brief.
+Record candidate identifier, isolated locator, base snapshot digest, resulting revision and digest, writable role, owned paths, diff digest, local-check evidence, and the four candidate-entry bindings. Under contract v2, also record `brief_digest`, naming the one accepted implementer brief the candidate binds, and `checker_version` (`skill-builder-candidate-checks.v1`). Accepting the candidate runs the helper's checks once. Frontmatter and `agents/openai.yaml` hold single-line scalars, with `metadata` the only frontmatter block and `interface` and `policy` the only adapter blocks. The frontmatter `name` is the target name and the description equals the brief's. Under a restricted policy the description ends with the load sentence after sentence punctuation and names `$<name>` nowhere else, and under `agent` it holds none. A restricted Claude Code target has no `when_to_use` and a description of at most 1,536 characters. Each Codex and OpenCode flag matches the load-policy table, and the adapter's `short_description` and `default_prompt` equal the brief's. The body holds no copy of the load sentence. Outside fenced code, block quotes, quoted text, and code spans other than a lone `$name`, no body sentence pairs `$<name>` or "this skill" with load, loads, use, uses, used, activate, activates, activated, inactive, or explicit-only. Superseding a candidate invalidates its brief, so each repair binds a new one. Candidate records from earlier schemas stay valid without a brief. The isolated locator and the target each lie outside the other. An evaluate candidate is an unchanged copy of the target: its loaded-skill digest equals the target snapshot's, and at acceptance its paths, kinds, modes, and bytes equal the snapshot's entries. It holds `null` `writable_role`, `brief_digest`, and `checker_version`, empty `owned_paths`, and the SHA-256 of empty bytes as `diff_digest`, retained as an empty file. Evaluate runs retain no implementer brief, and acceptance skips the brief and entrypoint checks. Accepting evaluate scores runs the load-sentence and host-flag checks once on the retained copy, reading the Codex adapter from `agents/openai.yaml` in the package or the retained `codex-adapter/openai.yaml` copy. A failed or unreadable check fails TR4, and one on a Codex or OpenCode flag also fails TR2, TR3, TR6, TE3, and CP5.
 
 ### Trial pack
 
@@ -164,7 +164,7 @@ Start each selection run in a fresh throwaway directory `$T` outside every Git r
 
 ### Builder-run conformance ledger
 
-Record each process gate identifier, pass or fail, evidence digests, affected stage, repair state, and release-blocking result. Keep this ledger separate from target category scores.
+Record each process gate identifier, its status (`pass`, `fail`, or an evaluate run's `skip`), evidence digests, affected stage, repair state, and release-blocking result. Keep this ledger separate from target category scores.
 
 ### Review record
 
@@ -182,13 +182,17 @@ Record verifier identity, independence and read-only attestation, exact candidat
 
 Record the finalized target and candidate identities, contract and confirmation digests, evaluation-pack digest, builder-run conformance ledger digest, target scorecard digest, final review and verification digests, retained limitations, release evidence manifest, authorized delivery scope, and finalization receipt digest.
 
+### Evaluation report
+
+An evaluate run retains one `evaluation-report` (`skill-builder-evaluation-report.v1`) at `scored` holding `target_identity`, `target_snapshot_digest`, `candidate_digest`, `candidate_revision`, `contract_digest`, `confirmation_digest`, `evaluation_digest`, `review_digest`, `review_verdict`, `conformance_digest`, `scorecard_digest`, `scores`, and `limitations`. `scores` lists each category in rubric order with `name`, `score`, and sorted `failing_criteria`, and each score counts its passing criteria. `run_state.py report` binds the report to the current scored evidence and ends the run at `reported`.
+
 ### Delivery-acceptance record
 
 Before cleanup, record an accepted installation or integration with action, destination identity, exact finalized revision, resulting destination digest, acceptance evidence, user-authority event digest, actor, and timestamp.
 
 ### Final run manifest
 
-Immediately before cleanup, create an immutable manifest of every retained immutable file in the helper-owned run directory, applying the manifest self-exclusion and mutable-pointer exclusions above, and bind it to the validated transition-chain head and accepted delivery or installation record.
+Immediately before cleanup, create an immutable manifest of every retained immutable file in the helper-owned run directory, applying the manifest self-exclusion and mutable-pointer exclusions above, and bind it to the validated transition-chain head and accepted delivery or installation record (`skill-builder-final-run-manifest.v1`), or for a reported run to its report receipt and evaluation report (`skill-builder-final-run-manifest.v2`).
 
 ## Binding rules
 
@@ -207,8 +211,8 @@ Record invalidation as a new transition receipt, leaving the invalidated artifac
 | Design decision or skill contract | Confirmation and every downstream artifact. |
 | User confirmation | Evaluation pack and every downstream artifact. |
 | Evaluation pack, target parameters, or rubric | Implementer brief, candidate, and every downstream artifact. |
-| Candidate content or revision | Implementer brief, trials, reviews, scores, verification, and release. |
-| Trial or review evidence | Dependent scores, verification, and release. |
+| Candidate content or revision | Implementer brief, trials, reviews, scores, verification, release, and evaluation report. |
+| Trial or review evidence | Dependent scores, verification, release, and evaluation report. |
 | Verification input or result | Verification and release. |
 | Delivery intent | Authority and delivery portions of the release record. |
 
@@ -216,8 +220,8 @@ Retain invalidated artifacts for audit within configured bounds and derive their
 
 ## Fail-closed recovery
 
-On resume, execute the helper to discover state by canonical host and target identity, acquire the one active-target lock, validate helper ownership, permissions, and regular files, parse supported schemas, and load the transition receipts in sequence order. Validate the chain under the receipt rules, then the artifact bindings, immutable payloads, manifests, target identities, authority, queue, lock, and recomputed target snapshot. Rebuild the derived index and compare it with any stored current-state file, replacing a stale derived index only from the validated chain. A missing or broken chain, fork, receipt gap, altered artifact, invalid identity, changed target, ambiguous generation, or foreign active writer fails closed. Recover history only through the validated chain and the helper, and take the stage only from that chain. If a valid cleanup tombstone exists while its run directory remains, validate its authority and bindings before retrying deletion. If the run directory is absent, accept `cleaned` only from a valid helper-owned tombstone.
+On resume, execute the helper to discover state by canonical host and target identity, acquire the one active-target lock, validate helper ownership, permissions, and regular files, parse supported schemas, and load the transition receipts in sequence order. Validate the chain under the receipt rules, then the artifact bindings, immutable payloads, manifests, target identities, authority, queue, lock, and recomputed target snapshot. Rebuild the derived index and compare it with any stored current-state file, replacing a stale derived index only from the validated chain. A missing or broken chain, fork, receipt gap, altered artifact, invalid identity, changed target, ambiguous generation, or foreign active writer fails closed. Recover history only through the validated chain and the helper, and take the stage only from that chain. If a valid cleanup tombstone exists while its run directory remains, validate its authority and bindings before retrying deletion. If the run directory is absent, accept `cleaned` only from a valid helper-owned tombstone. When a target has no active run and several finished runs, discovery reports ambiguity, so load a finished run by its workflow ID. Only unfinished runs recheck the isolated candidate copy, so a finished run outlives the copy's removal.
 
 ## Terminal stages and cleanup tombstone
 
-`finalized` is the first terminal stage. Its transition receipt retains release evidence, and the finalized candidate stays fixed. Delivery may follow only within recorded user authority. `cleaned` is the second terminal stage. Before deleting anything, require explicit cleanup authority and a valid accepted delivery or installation record for the exact finalized revision, then validate the live receipt chain, artifacts, final run manifest, run ownership, and deletion target. First write an immutable parent-level cleanup tombstone outside the owned run directory but inside helper-owned XDG storage with tombstone schema identifier, workflow ID and canonical target identity, helper-owned run-directory identity, final transition receipt digest, final run-manifest digest, accepted delivery or installation record digest, cleanup-authority event digest, creation timestamp, and `tombstone_digest` computed with canonical digest serialization. Write the tombstone atomically, synchronize it and its parent directory, read it back, validate its canonical digest and all bindings, and only then delete the helper-owned run directory. If tombstone creation or validation fails, stop before any deletion. The tombstone remains as helper-owned durable evidence, and the target skill, repository, external candidate, and unowned paths stay in place.
+`finalized` is the first terminal stage. Its transition receipt retains release evidence, and the finalized candidate stays fixed. Delivery may follow only within recorded user authority. `reported` ends an evaluate run in place of `finalized`: its receipt retains the evaluation report with the scored evidence, and the run releases its target lock with the target unchanged. `cleaned` is the second terminal stage. Before deleting anything, require explicit cleanup authority and a valid accepted delivery or installation record for the exact finalized revision, or for a reported run its evaluation report, then validate the live receipt chain, artifacts, final run manifest, run ownership, and deletion target. First write an immutable parent-level cleanup tombstone outside the owned run directory but inside helper-owned XDG storage with tombstone schema identifier, workflow ID and canonical target identity, helper-owned run-directory identity, final transition receipt digest, final run-manifest digest, accepted delivery or installation record digest (`skill-builder-cleanup-tombstone.v1`) or, for a reported run, evaluation report digest (`skill-builder-cleanup-tombstone.v2`), cleanup-authority event digest, creation timestamp, and `tombstone_digest` computed with canonical digest serialization. The cleanup-authority record binds the same accepted delivery (`skill-builder-cleanup-authority.v1`) or evaluation report (`skill-builder-cleanup-authority.v2`). Both tombstone schemas stay valid. Write the tombstone atomically, synchronize it and its parent directory, read it back, validate its canonical digest and all bindings, and only then delete the helper-owned run directory. If tombstone creation or validation fails, stop before any deletion. The tombstone remains as helper-owned durable evidence, and the target skill, repository, external candidate, and unowned paths stay in place.

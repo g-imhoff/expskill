@@ -12,8 +12,9 @@ Read [artifact contracts](references/artifact-contracts.md) completely at run st
 | create | The exact target is absent. | [create](references/create.md) |
 | improve | The target exists, keeps its contract, and needs higher quality or fixed failures, with everything it does today still working. | [improve](references/improve.md) |
 | modify | The target exists and the user changes its contract, with the unchanged parts still working. | [modify](references/modify.md) |
+| evaluate | The target exists and the user wants scores only. | [evaluate](references/evaluate.md) |
 
-Read the selected mode file once stage 1 records the mode, read [shared stages](references/shared-stages.md) before stage 3, and read both again before resuming persisted work.
+Read the selected mode file once stage 1 records the mode, read [shared stages](references/shared-stages.md) before the first shared stage, and read both again before resuming persisted work.
 
 ## Durable run state
 
@@ -49,7 +50,7 @@ A changed target identity, mode, behavior, success, scope, delivery intent, or o
 
 ## Status
 
-During work, report the exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At a failed gate, report the gate, retained evidence, invalidated artifacts, and the next decision or proof needed. At finalization, report the revision, the ten scores, the review verdict, verification, limitations, the release-record locator, and the delivery result.
+During work, report the exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At a failed gate, report the gate, retained evidence, invalidated artifacts, and the next decision or proof needed. At finalization, report the revision, the ten scores, the review verdict, verification, limitations, the release-record locator, and the delivery result. At `reported`, report the ten scores with their failing criteria, the conformance ledger, the review verdict, and limitations, with the target unchanged.
 
 ## Review context contract
 

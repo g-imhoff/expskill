@@ -26,6 +26,7 @@ SKILL_BUILDER_STAGE_FILES = (
     "references/create.md",
     "references/improve.md",
     "references/modify.md",
+    "references/evaluate.md",
     "references/shared-stages.md",
 )
 PUBLIC_SKILLS_ROOT = ROOT / "plugins" / "expskill" / "content" / "skills"

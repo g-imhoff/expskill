@@ -228,6 +228,7 @@ class ContractTests(unittest.TestCase):
             "references/create.md",
             "references/improve.md",
             "references/modify.md",
+            "references/evaluate.md",
             "references/shared-stages.md",
         )
         mutations = ("missing", "empty", "directory", "symlink", "invalid-utf8")

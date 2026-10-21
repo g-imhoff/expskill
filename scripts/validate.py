@@ -210,6 +210,7 @@ SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/create.md",
     "references/improve.md",
     "references/modify.md",
+    "references/evaluate.md",
     "references/shared-stages.md",
 )
 SETUP_SKILLS_REQUIRED_RESOURCES = (

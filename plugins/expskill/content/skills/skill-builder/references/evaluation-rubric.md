@@ -6,7 +6,7 @@ Before writing cases, extract the scoring parameters from the confirmed target c
 
 ## Builder-run conformance gates
 
-Evaluate builder-run conformance separately from target quality. Each gate is pass or fail and has no category points:
+Evaluate builder-run conformance separately from target quality. Each gate is pass, fail, or an evaluate run's `skip`, and has no category points:
 
 | Gate | Passing evidence |
 |---|---|
@@ -20,6 +20,8 @@ Evaluate builder-run conformance separately from target quality. Each gate is pa
 | BR8 | Every completed review or verification action was independent, valid, current, and bound to the exact candidate revision. |
 | BR9 | Every completed state transition, invalidation, recovery, finalization, and evidence-retention action followed the helper contract. |
 | BR10 | Every delivery and cleanup stayed within explicit authority. When cleanup occurred, a durable tombstone preceded owned-run deletion. |
+
+An evaluate run records BR3 and BR10 as `skip`, passes BR4 on the user's confirmation of the rebuilt contract, and passes BR6 on isolated trials and an unchanged target.
 
 A failed builder-run gate blocks release but by itself leaves category scores unchanged. When the failure also leaves target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only while their evidence bindings remain valid.
 

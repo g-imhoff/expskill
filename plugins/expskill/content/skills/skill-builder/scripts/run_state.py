@@ -60,6 +60,13 @@ REVIEW_SCHEMA = "skill-builder-review.v2"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
 SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
 LOADABLE_CONTENT_SCHEMA = "skill-builder-loadable-content.v1"
+EVALUATION_REPORT_SCHEMA = "skill-builder-evaluation-report.v1"
+LEGACY_CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v1"
+CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v2"
+LEGACY_TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v1"
+TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v2"
+LEGACY_FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v1"
+FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v2"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -100,6 +107,7 @@ _ARTIFACT_TYPES = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
     "delivery-acceptance-record",
     "cleanup-authority-record",
     "final-run-manifest",
@@ -107,8 +115,20 @@ _ARTIFACT_TYPES = {
 }
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
-_EXISTING_TARGET_MODES = frozenset({"improve", "modify"})
+_EXISTING_TARGET_MODES = frozenset({"improve", "modify", "evaluate"})
 _MODES = frozenset({"create", *_EXISTING_TARGET_MODES})
+_EMPTY_DIFF_DIGEST = hashlib.sha256(b"").hexdigest()
+_EVALUATE_SKIPPED_GATES = frozenset({"BR3", "BR10"})
+_EVALUATE_SKIPPED_EVENTS = frozenset(
+    {
+        "complete-research",
+        "sieve-evidence",
+        "accept-design",
+        "accept-verification",
+        "finalize",
+        "record-delivery",
+    }
+)
 _SELECTION_HOSTS = frozenset({"claude-code", "codex", "opencode", "hermes"})
 _LOAD_POLICIES = frozenset({"user", "user-or-skills", "agent"})
 _RESTRICTED_TRIAL_HOSTS = frozenset({"claude-code"})
@@ -223,9 +243,12 @@ _STAGES = (
     "scored",
     "verified",
     "finalized",
+    "reported",
     "delivered",
     "abandoned",
 )
+_WORK_STAGES = _STAGES[: _STAGES.index("finalized")]
+_TERMINAL_STAGES = frozenset(_STAGES[len(_WORK_STAGES) :])
 _STAGE_TRANSITIONS = {
     "capture-baseline": ("resolved", "baseline"),
     "complete-research": ("baseline", "research"),
@@ -240,6 +263,27 @@ _STAGE_TRANSITIONS = {
     "accept-scores": ("reviewed", "scored"),
     "accept-verification": ("scored", "verified"),
 }
+_MODE_STAGE_TRANSITIONS = {"evaluate": {"accept-contract": ("baseline", "contract")}}
+_EVENT_EDGES = {
+    event: {edge}
+    | {
+        transitions[event]
+        for transitions in _MODE_STAGE_TRANSITIONS.values()
+        if event in transitions
+    }
+    for event, edge in _STAGE_TRANSITIONS.items()
+}
+_REPORT_ARTIFACT_TYPES = (
+    "candidate-record",
+    "trial-pack",
+    "review-record",
+    "builder-run-conformance-ledger",
+    "target-scorecard",
+    "skill-contract",
+    "user-confirmation-record",
+    "evaluation-pack",
+    "evaluation-report",
+)
 _EVENT_ARTIFACT_TYPES = {
     "capture-baseline": ("baseline-report",),
     "complete-research": ("research-pack",),
@@ -278,7 +322,11 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "verification-record": "skill-builder-verification.v1",
     "release-record": "skill-builder-release.v1",
     "delivery-acceptance-record": "skill-builder-delivery-acceptance.v1",
-    "cleanup-authority-record": "skill-builder-cleanup-authority.v1",
+    "evaluation-report": EVALUATION_REPORT_SCHEMA,
+    "cleanup-authority-record": {
+        LEGACY_CLEANUP_AUTHORITY_SCHEMA,
+        CLEANUP_AUTHORITY_SCHEMA,
+    },
     "invalidation-record": "skill-builder-invalidation.v1",
 }
 
@@ -473,6 +521,22 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "release_evidence_manifest_digest",
         "authorized_delivery_scope",
     },
+    "evaluation-report": {
+        "schema_version",
+        "target_identity",
+        "target_snapshot_digest",
+        "candidate_digest",
+        "candidate_revision",
+        "contract_digest",
+        "confirmation_digest",
+        "evaluation_digest",
+        "review_digest",
+        "review_verdict",
+        "conformance_digest",
+        "scorecard_digest",
+        "scores",
+        "limitations",
+    },
     "delivery-acceptance-record": {
         "schema_version",
         "action",
@@ -507,6 +571,17 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "invalidated_artifact_ids",
     },
 }
+
+
+def _stage_transition(event: str, mode: str) -> tuple[str, str] | None:
+    return _MODE_STAGE_TRANSITIONS.get(mode, {}).get(event, _STAGE_TRANSITIONS.get(event))
+
+
+def _require_mode_event(event: str, mode: str) -> None:
+    if mode == "evaluate" and event in _EVALUATE_SKIPPED_EVENTS:
+        raise RunStateError(f"evaluate runs skip the {event} event")
+    if mode != "evaluate" and event == "report":
+        raise RunStateError("only evaluate runs end with a report")
 
 
 def _now() -> str:
@@ -1436,6 +1511,15 @@ def restatement_sentences(body: str, name: str) -> list[str]:
     return found
 
 
+def _codex_flag_fits(implicit: bool | None, restricted: bool) -> bool:
+    return implicit is False if restricted else implicit is not False
+
+
+def _opencode_flag_fits(metadata: dict[str, str], restricted: bool) -> bool:
+    value = metadata.get("opencode/autoinvoke")
+    return value == "false" if restricted else value in {None, "true"}
+
+
 def check_candidate_entrypoint(
     skill_md: bytes,
     openai_yaml: bytes | None,
@@ -1470,7 +1554,7 @@ def check_candidate_entrypoint(
         implicit, interface = (
             (None, {}) if openai_yaml is None else _codex_adapter(openai_yaml)
         )
-        if (implicit is not False) if restricted else (implicit is False):
+        if not _codex_flag_fits(implicit, restricted):
             raise RunStateError(
                 "candidate Codex allow_implicit_invocation contradicts its load policy"
             )
@@ -1479,11 +1563,7 @@ def check_candidate_entrypoint(
             for field in ("short_description", "default_prompt")
         ):
             raise RunStateError("candidate Codex interface text differs from its implementer brief")
-    if "opencode" in hosts and (
-        metadata.get("opencode/autoinvoke") != "false"
-        if restricted
-        else metadata.get("opencode/autoinvoke") not in {None, "true"}
-    ):
+    if "opencode" in hosts and not _opencode_flag_fits(metadata, restricted):
         raise RunStateError("candidate opencode/autoinvoke contradicts its load policy")
     if restricted and sentence in " ".join(body.split()):
         raise RunStateError("candidate body restates its load sentence")
@@ -1640,8 +1720,15 @@ def _validate_trial_run(case: dict[str, Any]) -> None:
         raise RunStateError("selection trial observed load kind is invalid")
 
 
-def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
+def _validate_artifact_payload(
+    artifact_type: str, payload: dict[str, Any], mode: str | None = None
+) -> None:
     """Apply the normative, versioned payload schema before accepting an artifact."""
+    evaluate = mode == "evaluate"
+    if evaluate and artifact_type == "implementer-brief":
+        raise RunStateError("evaluate runs have no implementer brief")
+    if not evaluate and artifact_type == "evaluation-report":
+        raise RunStateError("only evaluate runs retain an evaluation report")
     expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
     expected_fields = _PAYLOAD_REQUIRED_FIELDS.get(artifact_type)
     if expected_version is None or expected_fields is None:
@@ -1660,6 +1747,13 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         versioned_fields |= {"brief_digest", "checker_version"}
     if artifact_type == "skill-contract" and schema_version == CONTRACT_SCHEMA:
         versioned_fields |= _CONTRACT_V2_FIELDS
+    if (
+        artifact_type == "cleanup-authority-record"
+        and schema_version == CLEANUP_AUTHORITY_SCHEMA
+    ):
+        versioned_fields = (versioned_fields - {"accepted_delivery_digest"}) | {
+            "evaluation_report_digest"
+        }
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
@@ -1780,7 +1874,11 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         return
 
     if artifact_type == "skill-contract":
-        _digest(payload["design_digest"], "contract design")
+        if evaluate:
+            if payload["design_digest"] is not None:
+                raise RunStateError("an evaluate contract has no design to bind")
+        else:
+            _digest(payload["design_digest"], "contract design")
         _text(payload["purpose"], "contract purpose")
         _text(payload["success_signal"], "contract success signal")
         for field in versioned_fields - {
@@ -1924,10 +2022,25 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         return
 
     if artifact_type == "candidate-record":
-        if schema_version == CANDIDATE_SCHEMA:
-            _digest(payload["brief_digest"], "candidate implementer brief")
-            _text(payload["checker_version"], "candidate checker version")
-        for field in ("candidate_id", "isolated_locator", "candidate_revision", "writable_role"):
+        if evaluate:
+            if (
+                schema_version != CANDIDATE_SCHEMA
+                or payload["brief_digest"] is not None
+                or payload["checker_version"] is not None
+                or payload["writable_role"] is not None
+                or payload["owned_paths"] != []
+                or payload["diff_digest"] != _EMPTY_DIFF_DIGEST
+            ):
+                raise RunStateError(
+                    "an evaluate candidate is an unchanged copy with no writer, "
+                    "brief, owned paths, or diff"
+                )
+        else:
+            if schema_version == CANDIDATE_SCHEMA:
+                _digest(payload["brief_digest"], "candidate implementer brief")
+                _text(payload["checker_version"], "candidate checker version")
+            _text(payload["writable_role"], "candidate writable_role")
+        for field in ("candidate_id", "isolated_locator", "candidate_revision"):
             _text(payload[field], f"candidate {field}")
         locator = Path(payload["isolated_locator"])
         if not locator.is_absolute() or ".." in locator.parts:
@@ -2040,6 +2153,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         gates = payload["gates"]
         if not isinstance(gates, dict) or not gates:
             raise RunStateError("conformance gates are incomplete")
+        if evaluate and set(gates) != _CONFORMANCE_GATES:
+            raise RunStateError("evaluate conformance must record gates BR1 to BR10")
         for gate_id, gate in gates.items():
             _text(gate_id, "conformance gate identity")
             if not isinstance(gate, dict) or set(gate) != {
@@ -2050,7 +2165,12 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 "release_blocking",
             }:
                 raise RunStateError("conformance gate schema is invalid")
-            if gate["status"] not in {"pass", "fail"} or not isinstance(gate["release_blocking"], bool):
+            statuses = (
+                {"skip"}
+                if evaluate and gate_id in _EVALUATE_SKIPPED_GATES
+                else {"pass", "fail"}
+            )
+            if gate["status"] not in statuses or not isinstance(gate["release_blocking"], bool):
                 raise RunStateError("conformance gate result is invalid")
             _digest_list(gate["evidence_digests"], "conformance gate evidence")
             _text(gate["affected_stage"], "conformance affected stage")
@@ -2246,6 +2366,31 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("release delivery scope contains duplicates")
         return
 
+    if artifact_type == "evaluation-report":
+        _text(payload["target_identity"], "evaluation report target identity")
+        _text(payload["candidate_revision"], "evaluation report candidate revision")
+        for field in (
+            "target_snapshot_digest",
+            "candidate_digest",
+            "contract_digest",
+            "confirmation_digest",
+            "evaluation_digest",
+            "review_digest",
+            "conformance_digest",
+            "scorecard_digest",
+        ):
+            _digest(payload[field], f"evaluation report {field}")
+        if payload["review_verdict"] not in {"ready", "not ready"}:
+            raise RunStateError("evaluation report review verdict is invalid")
+        for score in _mapping_list(payload["scores"], "evaluation report scores"):
+            if set(score) != {"name", "score", "failing_criteria"}:
+                raise RunStateError("evaluation report score schema is invalid")
+            _text(score["name"], "evaluation report category")
+            _exact_integer(score["score"], "evaluation report score")
+            _text_list(score["failing_criteria"], "evaluation report failing criteria")
+        _text_list(payload["limitations"], "evaluation report limitations")
+        return
+
     if artifact_type == "delivery-acceptance-record":
         if payload["action"] not in {"installation", "integration"} or payload["accepted"] is not True:
             raise RunStateError("delivery acceptance result is invalid")
@@ -2270,7 +2415,12 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         _digest(payload["authority_event_digest"], "cleanup authority event")
         _text(payload["actor"], "cleanup authority actor")
         _timestamp(payload["timestamp"], "cleanup authority timestamp")
-        _digest(payload["accepted_delivery_digest"], "cleanup accepted delivery")
+        if (schema_version == CLEANUP_AUTHORITY_SCHEMA) != evaluate:
+            raise RunStateError("cleanup authority schema does not match the run's mode")
+        if evaluate:
+            _digest(payload["evaluation_report_digest"], "cleanup evaluation report")
+        else:
+            _digest(payload["accepted_delivery_digest"], "cleanup accepted delivery")
         return
 
     if artifact_type == "invalidation-record":
@@ -2392,7 +2542,7 @@ def snapshot_target(target: Path) -> dict[str, Any]:
         root_info = locator.lstat()
     except OSError as error:
         raise RunStateError(
-            "improve and modify modes require an existing exact target"
+            "improve, modify, and evaluate modes require an existing exact target"
         ) from error
     if stat.S_ISLNK(root_info.st_mode) or not (
         stat.S_ISDIR(root_info.st_mode) or stat.S_ISREG(root_info.st_mode)
@@ -2577,7 +2727,7 @@ def _existing_snapshot(
 ) -> dict[str, Any]:
     if not isinstance(supplied_manifest, dict):
         raise RunStateError(
-            "improve and modify modes require an exact target manifest"
+            "improve, modify, and evaluate modes require an exact target manifest"
         )
     actual = snapshot_target(Path(target["locator"]))
     if supplied_manifest != actual:
@@ -2971,6 +3121,8 @@ def _validate_artifact_schema_pairing(
 def _validate_current_candidate_content(
     payload: dict[str, Any], retained_digest: str
 ) -> None:
+    if not os.path.lexists(payload["isolated_locator"]):
+        raise RunStateError("candidate isolated copy is missing")
     actual_manifest = snapshot_target(Path(payload["isolated_locator"]))
     actual_digest = _loadable_skill_digest_from_target_manifest(
         actual_manifest, "isolated candidate package"
@@ -3027,7 +3179,7 @@ def _create_artifact(
         primary_record = _decode_canonical_object(
             files[primary], f"{artifact_type} primary payload"
         )
-        _validate_artifact_payload(artifact_type, primary_record)
+        _validate_artifact_payload(artifact_type, primary_record, mode)
         if artifact_type in _VERSIONED_ARTIFACT_SCHEMAS:
             resolution, _ = _resolution_payload(run, workflow_id)
             _validate_artifact_schema_pairing(
@@ -3683,16 +3835,16 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
                 if source != destination or source not in _STAGES:
                     raise RunStateError("artifact retention changed the run stage")
             elif event in _STAGE_TRANSITIONS:
-                if (source, destination) != _STAGE_TRANSITIONS[event]:
+                if (source, destination) not in _EVENT_EDGES[event]:
                     raise RunStateError("receipt contains an unsupported stage transition")
             elif event == "pause":
-                if source not in _STAGES[:-3] or destination != "paused":
+                if source not in _WORK_STAGES or destination != "paused":
                     raise RunStateError("pause receipt is not valid from its source stage")
             elif event == "resume":
                 if source != "paused" or destination != prior.get("source_stage"):
                     raise RunStateError("resume receipt does not restore the paused stage")
             elif event == "invalidate":
-                if source not in _STAGES[:-3] or destination not in _STAGES:
+                if source not in _WORK_STAGES or destination not in _STAGES:
                     raise RunStateError("invalidation receipt has an invalid stage")
                 if destination != "abandoned" and _STAGES.index(destination) > _STAGES.index(source):
                     raise RunStateError("invalidation advanced rather than rewound state")
@@ -3702,11 +3854,14 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
             elif event == "finalize":
                 if source != "verified" or destination != "finalized":
                     raise RunStateError("finalization receipt has an invalid stage")
+            elif event == "report":
+                if source != "scored" or destination != "reported":
+                    raise RunStateError("report receipt has an invalid stage")
             elif event == "record-delivery":
                 if source != "finalized" or destination != "delivered" or not isinstance(receipt.get("authority_event_digest"), str):
                     raise RunStateError("delivery receipt has an invalid stage or authority")
             elif event == "record-cleanup-authority":
-                if source != "delivered" or destination != "delivered" or not isinstance(receipt.get("authority_event_digest"), str):
+                if source not in {"delivered", "reported"} or destination != source or not isinstance(receipt.get("authority_event_digest"), str):
                     raise RunStateError("cleanup-authority receipt is invalid")
             else:
                 raise RunStateError("receipt event is unsupported")
@@ -3811,7 +3966,7 @@ def _artifact_payload_json(run: Path, artifact_id: str) -> dict[str, Any]:
     envelope, _ = _validate_envelope(run, artifact_id)
     payload_path = envelope["payload_path"]
     payload = _read_json(run.joinpath(*payload_path.split("/")))
-    _validate_artifact_payload(envelope["artifact_type"], payload)
+    _validate_artifact_payload(envelope["artifact_type"], payload, envelope["mode"])
     return payload
 
 
@@ -4234,17 +4389,21 @@ def _validate_contract_binding(
 ) -> None:
     contract_envelope, _ = _validate_envelope(run, contract_id)
     contract = _artifact_payload_json(run, contract_id)
-    design_id, design_envelope = _event_artifact(
-        run, "accept-design", "design-record", event_artifacts
+    source_id, source_envelope = (
+        _event_artifact(run, "capture-baseline", "baseline-report", event_artifacts)
+        if current["mode"]["name"] == "evaluate"
+        else _event_artifact(run, "accept-design", "design-record", event_artifacts)
     )
     resolution_id, resolution_envelope = _event_artifact(
         run, "initialize", "resolution-record", event_artifacts
     )
-    if contract["design_digest"] != design_envelope["envelope_digest"]:
+    if current["mode"]["name"] != "evaluate" and (
+        contract["design_digest"] != source_envelope["envelope_digest"]
+    ):
         raise RunStateError("skill contract design binding is stale")
     required = {
         resolution_id: resolution_envelope["envelope_digest"],
-        design_id: design_envelope["envelope_digest"],
+        source_id: source_envelope["envelope_digest"],
     }
     for binding in contract["evidence_bindings"]:
         record = current["artifact_index"].get(binding["artifact_id"])
@@ -4938,6 +5097,20 @@ def _validate_candidate_entry(
         != current["target_snapshot"]["snapshot_digest"]
     ):
         raise RunStateError("candidate entry binding is missing or mismatched")
+    candidate_locator = Path(candidate["isolated_locator"])
+    target_locator = Path(current["target_identity"]["locator"])
+    if candidate_locator.is_relative_to(
+        target_locator
+    ) or target_locator.is_relative_to(candidate_locator):
+        raise RunStateError("candidate isolated copy overlaps the target")
+    if current["mode"]["name"] == "evaluate" and candidate[
+        "loaded_skill_digest"
+    ] != _loadable_skill_digest_from_target_manifest(
+        current["target_snapshot"]["manifest"], "evaluated target"
+    ):
+        raise RunStateError(
+            "an evaluate candidate must be an unchanged copy of the target"
+        )
     _require_input_bindings(
         candidate_envelope,
         {
@@ -4948,7 +5121,7 @@ def _validate_candidate_entry(
         },
         "candidate entry",
     )
-    if candidate["schema_version"] == CANDIDATE_SCHEMA:
+    if candidate["schema_version"] == CANDIDATE_SCHEMA and current["mode"]["name"] != "evaluate":
         _validate_brief_binding(
             run,
             current,
@@ -5097,6 +5270,15 @@ def _check_accepted_contract(run: Path, current: dict[str, Any], contract_id: st
 def _check_accepted_candidate(run: Path, current: dict[str, Any], candidate_id: str) -> None:
     """Run the policy and entrypoint checks once, when a current candidate is accepted."""
     candidate = _artifact_payload_json(run, candidate_id)
+    if current["mode"]["name"] == "evaluate":
+        if (
+            snapshot_target(Path(candidate["isolated_locator"]))["entries"]
+            != current["target_snapshot"]["manifest"]["entries"]
+        ):
+            raise RunStateError(
+                "an evaluate candidate must be an unchanged copy of the target"
+            )
+        return
     if candidate["schema_version"] != CANDIDATE_SCHEMA:
         return
     if candidate["checker_version"] != CANDIDATE_CHECKER_VERSION:
@@ -5159,6 +5341,74 @@ def _check_accepted_candidate(run: Path, current: dict[str, Any], candidate_id: 
         description=brief["description"],
         codex_interface=codex,
     )
+
+
+def _check_accepted_evaluation_scores(
+    run: Path, current: dict[str, Any], scorecard_id: str
+) -> None:
+    """Run the static load-sentence and host-flag check once, when evaluate scores are accepted."""
+    contract_id, _ = _event_artifact(run, "accept-contract", "skill-contract")
+    contract = _artifact_payload_json(run, contract_id)
+    candidate_id, _ = _event_artifact(run, "accept-candidate", "candidate-record")
+    _, manifest = _validate_envelope(run, candidate_id)
+    prefix = f"artifacts/{candidate_id}/raw/"
+    retained = {
+        entry["path"].removeprefix(prefix): entry["path"]
+        for entry in manifest["entries"]
+        if entry["path"].startswith(prefix)
+    }
+
+    def retained_file(*relatives: str) -> bytes | None:
+        path = next((retained[item] for item in relatives if item in retained), None)
+        if path is None:
+            return None
+        return _read_bytes(run.joinpath(*path.split("/")), MAX_ARTIFACT_BYTES)
+
+    name = current["target_identity"]["name"]
+    hosts = contract["hosts"]
+    sentence = load_sentence(contract["load_policy"], name)
+    restricted = sentence is not None
+    sentence_fits = flags_fit = True
+    metadata: dict[str, str] | None = None
+    try:
+        scalars, metadata, _ = _skill_frontmatter(
+            retained_file("candidate-package/SKILL.md") or b""
+        )
+        description = scalars.get("description", "")
+        _check_description(description, sentence, name)
+        sentence_fits = not (
+            restricted
+            and "claude-code" in hosts
+            and ("when_to_use" in scalars or len(description) > _CLAUDE_LISTING_LIMIT)
+        )
+    except RunStateError:
+        sentence_fits = False
+    if "opencode" in hosts:
+        flags_fit = metadata is not None and _opencode_flag_fits(metadata, restricted)
+    if "codex" in hosts:
+        openai_yaml = retained_file(
+            "candidate-package/agents/openai.yaml", _CODEX_EXTERNAL_ADAPTER
+        )
+        try:
+            implicit = None if openai_yaml is None else _codex_adapter(openai_yaml)[0]
+            flags_fit = flags_fit and _codex_flag_fits(implicit, restricted)
+        except RunStateError:
+            flags_fit = False
+    blocked = set() if flags_fit else set(_SELECTION_BACKED_CRITERIA)
+    if not (sentence_fits and flags_fit):
+        blocked.add("TR4")
+    scorecard = _artifact_payload_json(run, scorecard_id)
+    passed = sorted(
+        criterion_id
+        for category in scorecard["categories"]
+        for criterion_id, result in category["criteria"].items()
+        if result["passed"] is True and criterion_id in blocked
+    )
+    if passed:
+        raise RunStateError(
+            f"scorecard passes {passed[0]} although the evaluated load sentence or "
+            "host flags contradict the load policy"
+        )
 
 
 def _artifact_id_of_type(
@@ -5339,6 +5589,14 @@ def _derive_index(run: Path) -> dict[str, Any]:
                         raise RunStateError("artifact dependency is missing or stale")
             validated_bindings.append((item, envelope))
         event = receipt["event"]
+        mode = resolution["mode"]["name"]
+        if event in _STAGE_TRANSITIONS or event in {"finalize", "report", "record-delivery"}:
+            _require_mode_event(event, mode)
+        if event in _STAGE_TRANSITIONS and (
+            receipt["source_stage"],
+            receipt["destination_stage"],
+        ) != _stage_transition(event, mode):
+            raise RunStateError("receipt stage transition does not fit the run's mode")
         accepted_types = sorted(
             envelope["artifact_type"]
             for item, envelope in validated_bindings
@@ -5382,6 +5640,11 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 expected_final_types
             ):
                 raise RunStateError("finalization receipt evidence binding is incomplete")
+        elif event == "report":
+            if accepted_types != sorted(_REPORT_ARTIFACT_TYPES) or len(
+                validated_bindings
+            ) != len(_REPORT_ARTIFACT_TYPES):
+                raise RunStateError("report receipt evidence binding is incomplete")
         elif event == "initialize":
             if accepted_types != ["resolution-record"] or len(validated_bindings) != 1:
                 raise RunStateError("genesis artifact binding is invalid")
@@ -5419,6 +5682,12 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 event_artifacts,
             )) != set(accepted_ids):
                 raise RunStateError("finalization receipt semantic binding is invalid")
+        elif event == "report":
+            report_id = _artifact_id_of_type(run, accepted_ids, "evaluation-report")
+            if set(
+                _validate_report_evidence(run, replay_current, report_id, event_artifacts)
+            ) != set(accepted_ids):
+                raise RunStateError("report receipt semantic binding is invalid")
         elif event == "record-delivery":
             _validate_delivery_record_binding(
                 run,
@@ -5465,6 +5734,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
                             event_binding.pop(key)
         if event == "initialize" or event in _STAGE_TRANSITIONS or event in {
             "finalize",
+            "report",
             "record-delivery",
             "record-cleanup-authority",
         }:
@@ -5478,7 +5748,8 @@ def _derive_index(run: Path) -> dict[str, Any]:
             ]
     for artifact_id, record in artifact_status.items():
         if (
-            record["type"] != "candidate-record"
+            chain[-1]["destination_stage"] in _TERMINAL_STAGES
+            or record["type"] != "candidate-record"
             or record["derived_status"] != "accepted"
         ):
             continue
@@ -5509,7 +5780,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         raise RunStateError("artifact namespace contains an orphan or missing artifact")
     head = chain[-1]
     stage = head["destination_stage"]
-    active_lock = resolution["active_target_lock"] if stage not in {"finalized", "delivered", "abandoned"} else None
+    active_lock = resolution["active_target_lock"] if stage not in _TERMINAL_STAGES else None
     stored_queue = resolution["queue"]
     if (
         not isinstance(stored_queue, dict)
@@ -5536,7 +5807,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
     canonical_target = resolution["target_identity"]["canonical"]
     if stage == "paused":
         queue["states"][canonical_target] = "paused"
-    elif stage in {"finalized", "delivered", "abandoned"}:
+    elif stage in _TERMINAL_STAGES:
         queue["states"][canonical_target] = stage
     else:
         queue["states"][canonical_target] = "active"
@@ -5722,7 +5993,7 @@ def _validate_target_unchanged(
     *,
     allow_missing_active_lock: bool = False,
 ) -> None:
-    if index["stage"] == "abandoned":
+    if index["stage"] in {"abandoned", "reported"}:
         return
     snapshot = index["target_snapshot"]
     locator = Path(index["target_identity"]["locator"])
@@ -5781,7 +6052,7 @@ def _validate_active_target_lock(
 def _restore_missing_active_target_lock(
     root: Path, index: dict[str, Any]
 ) -> None:
-    if index["stage"] in {"finalized", "delivered", "abandoned"}:
+    if index["stage"] in _TERMINAL_STAGES:
         return
     active_lock = index["active_target_lock"]
     if not isinstance(active_lock, dict):
@@ -5985,7 +6256,7 @@ def initialize_run(
 ) -> dict[str, Any]:
     host, target, granted = _identity_records(host_identity, target_identity, authority)
     if not isinstance(mode, str) or mode not in _MODES:
-        raise RunStateError("mode must be create, improve, or modify")
+        raise RunStateError("mode must be create, improve, modify, or evaluate")
     if mode == "create":
         snapshot = _absent_snapshot(target, absence_evidence, overlap_map)
     else:
@@ -6032,8 +6303,7 @@ def initialize_run(
         or queue_states.get(target["canonical"]) != "active"
         or list(queue_states.values()).count("active") != 1
         or any(
-            value
-            not in {"pending", "active", "paused", "finalized", "delivered", "abandoned"}
+            value not in {"pending", "active", "paused", *_TERMINAL_STAGES}
             for value in queue_states.values()
         )
     ):
@@ -6069,11 +6339,7 @@ def initialize_run(
             current = _derive_index(existing_run)
             if _read_json(existing_run / "current.json") != current:
                 raise RunStateError("existing live run has a stale derived index")
-            unfinished = current["stage"] not in {
-                "finalized",
-                "delivered",
-                "abandoned",
-            }
+            unfinished = current["stage"] not in _TERMINAL_STAGES
             queue_overlap = set(canonical_queue) & set(current["queue"]["order"])
             if unfinished and queue_overlap:
                 raise RunStateError(
@@ -6214,7 +6480,7 @@ def activate_next_target(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] not in {"finalized", "delivered", "abandoned"}:
+        if current["stage"] not in _TERMINAL_STAGES:
             raise RunStateError("unfinished queued work blocks target activation")
         resolution, _ = _resolution_payload(run, workflow_id)
         durable_queue = resolution["queue"]
@@ -6302,7 +6568,7 @@ def discover_run(
         active_matches = [
             match
             for match in matches
-            if match["stage"] not in {"finalized", "delivered", "abandoned"}
+            if match["stage"] not in _TERMINAL_STAGES
         ]
         selected_matches = active_matches if active_matches else matches
         if len(selected_matches) != 1:
@@ -6346,7 +6612,7 @@ def retain_artifact(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] in {"paused", "finalized", "delivered", "abandoned"}:
+        if current["stage"] == "paused" or current["stage"] in _TERMINAL_STAGES:
             raise RunStateError("terminal run artifacts are immutable")
         _validate_target_unchanged(current, root)
         for binding in input_bindings:
@@ -6414,6 +6680,9 @@ def transition_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event(event, current["mode"]["name"])
+        expected_transition = _stage_transition(event, current["mode"]["name"])
+        assert expected_transition is not None
         if current["stage"] != expected_transition[0]:
             raise RunStateError("event is not allowed from the current stage")
         _validate_target_unchanged(current, root)
@@ -6456,6 +6725,12 @@ def transition_run(
                 current,
                 _artifact_id_of_type(run, artifact_ids, "candidate-record"),
             )
+        if event == "accept-scores" and current["mode"]["name"] == "evaluate":
+            _check_accepted_evaluation_scores(
+                run,
+                current,
+                _artifact_id_of_type(run, artifact_ids, "target-scorecard"),
+            )
         derived, _, _ = _append_transaction(
             run=run,
             current=current,
@@ -6481,7 +6756,7 @@ def _recover_validated_run(
     """Reconcile one normalized live run while the root lock is held."""
     committed_journals = _reconcile_append_transactions(run)
     derived = _derive_index(run)
-    if derived["stage"] in {"finalized", "delivered", "abandoned"}:
+    if derived["stage"] in _TERMINAL_STAGES:
         resolution, _ = _resolution_payload(run, run.name)
         _release_owned_target_lock(
             root,
@@ -6558,7 +6833,7 @@ def _lifecycle_transition(
             raise RevisionConflict("receipt sequence conflict")
         chain = _load_receipt_chain(run)
         if operation == "pause":
-            if current["stage"] not in _STAGES[:-3]:
+            if current["stage"] not in _WORK_STAGES:
                 raise RunStateError("run cannot be paused from its current stage")
             destination = "paused"
         elif operation == "resume":
@@ -6624,6 +6899,7 @@ _AFTER_BASELINE = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
 }
 _AFTER_CONTRACT = {
     "user-confirmation-record",
@@ -6636,6 +6912,7 @@ _AFTER_CONTRACT = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
 }
 _AFTER_CANDIDATE = {
     "trial-pack",
@@ -6644,6 +6921,7 @@ _AFTER_CANDIDATE = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
 }
 _INVALIDATION_RULES = {
     "host-target": {
@@ -6729,6 +7007,7 @@ _INVALIDATION_RULES = {
             "target-scorecard",
             "verification-record",
             "release-record",
+            "evaluation-report",
         },
     },
     "verification-input": {
@@ -6752,6 +7031,15 @@ _INVALIDATION_RULES = {
         "invalidates": set(),
     },
 }
+
+_MODE_INVALIDATION_DESTINATIONS = {"evaluate": {"contract": "baseline"}}
+
+
+def _invalidation_destination(change_kind: str, mode: str) -> str:
+    return _MODE_INVALIDATION_DESTINATIONS.get(mode, {}).get(
+        change_kind, _INVALIDATION_RULES[change_kind]["destination"]
+    )
+
 
 _CURRENT_EVENT_BY_ARTIFACT_TYPE = {
     "resolution-record": "initialize",
@@ -6853,7 +7141,8 @@ def _validate_invalidation_binding(
         or changed_envelope["artifact_type"] not in rule["changed_types"]
         or invalidation["changed_artifact_id"] != changed_item["artifact_id"]
         or invalidation["changed_artifact_digest"] != changed_item["envelope_digest"]
-        or receipt["destination_stage"] != rule["destination"]
+        or receipt["destination_stage"]
+        != _invalidation_destination(invalidation["change_kind"], current["mode"]["name"])
         or invalidation_envelope["created_sequence"] != receipt["sequence"]
     ):
         raise RunStateError("invalidation change, artifact, or destination is mismatched")
@@ -6919,9 +7208,9 @@ def invalidate_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] not in _STAGES[:-3]:
+        if current["stage"] not in _WORK_STAGES:
             raise RunStateError("terminal or paused runs cannot be invalidated")
-        destination = rule["destination"]
+        destination = _invalidation_destination(change_kind, current["mode"]["name"])
         invalidated_types = rule["invalidates"]
         if destination != "abandoned" and _STAGES.index(destination) > _STAGES.index(current["stage"]):
             raise RunStateError("material change does not apply at the current stage")
@@ -7349,12 +7638,8 @@ def _validate_cleanup_authority_binding(
 ) -> None:
     authority_envelope, raw_digests = _artifact_raw_digests(run, authority_id)
     cleanup_authority = _artifact_payload_json(run, authority_id)
-    delivery_id, delivery_envelope, delivery = _current_event_artifact(
-        run,
-        current,
-        "record-delivery",
-        "delivery-acceptance-record",
-        event_artifacts,
+    finished_id, finished_envelope, finished_field = _cleanup_basis(
+        run, current, event_artifacts
     )
     if (
         cleanup_authority["workflow_id"] != current["workflow_id"]
@@ -7362,16 +7647,35 @@ def _validate_cleanup_authority_binding(
         != current["target_identity"]["canonical"]
         or cleanup_authority["authority_event_digest"] != authority_event_digest
         or raw_digests.get("authority-event.bin") != authority_event_digest
-        or cleanup_authority["accepted_delivery_digest"]
-        != delivery_envelope["envelope_digest"]
-        or delivery["accepted"] is not True
+        or cleanup_authority[finished_field] != finished_envelope["envelope_digest"]
     ):
         raise RunStateError("cleanup authority or accepted-delivery binding is invalid")
     _require_input_bindings(
         authority_envelope,
-        {delivery_id: delivery_envelope["envelope_digest"]},
+        {finished_id: finished_envelope["envelope_digest"]},
         "cleanup authority",
     )
+
+
+def _cleanup_basis(
+    run: Path,
+    current: dict[str, Any],
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any], str]:
+    """Name the record a finished run's cleanup binds: its report or accepted delivery."""
+    if current["stage"] == "reported":
+        report_id, report_envelope, _ = _current_event_artifact(
+            run, current, "report", "evaluation-report", event_artifacts
+        )
+        return report_id, report_envelope, "evaluation_report_digest"
+    if current["stage"] != "delivered":
+        raise RunStateError("cleanup requires accepted delivery or a reported evaluation")
+    delivery_id, delivery_envelope, delivery = _current_event_artifact(
+        run, current, "record-delivery", "delivery-acceptance-record", event_artifacts
+    )
+    if delivery["accepted"] is not True:
+        raise RunStateError("cleanup authority or accepted-delivery binding is invalid")
+    return delivery_id, delivery_envelope, "accepted_delivery_digest"
 
 
 def finalize_run(
@@ -7390,6 +7694,7 @@ def finalize_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event("finalize", current["mode"]["name"])
         if current["stage"] != "verified":
             raise RunStateError("finalization requires the verified stage")
         _validate_target_unchanged(current, root)
@@ -7423,6 +7728,159 @@ def finalize_run(
             "receipt_digest": derived["head_transition_digest"],
             "release_artifact_id": release_artifact_id,
             "release_artifact_digest": current["artifact_index"][release_artifact_id]["digest"],
+        }
+
+
+def _validate_report_evidence(
+    run: Path,
+    current: dict[str, Any],
+    report_artifact_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Bind one evaluation report to the current scored evidence of an evaluate run."""
+    _require_mode_event("report", current["mode"]["name"])
+    bound: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {
+        artifact_type: _current_event_artifact(
+            run, current, event, artifact_type, event_artifacts
+        )
+        for event, artifact_type in (
+            ("accept-candidate", "candidate-record"),
+            ("complete-trials", "trial-pack"),
+            ("accept-review", "review-record"),
+            ("accept-scores", "builder-run-conformance-ledger"),
+            ("accept-scores", "target-scorecard"),
+            ("accept-contract", "skill-contract"),
+            ("confirm-contract", "user-confirmation-record"),
+            ("freeze-evaluation", "evaluation-pack"),
+        )
+    }
+    _validate_score_bindings(
+        run,
+        current,
+        bound["builder-run-conformance-ledger"][0],
+        bound["target-scorecard"][0],
+        event_artifacts,
+    )
+
+    def digest(artifact_type: str) -> str:
+        return bound[artifact_type][1]["envelope_digest"]
+
+    candidate = bound["candidate-record"][2]
+    review = bound["review-record"][2]
+    scorecard = bound["target-scorecard"][2]
+    if (
+        bound["trial-pack"][2]["candidate_digest"] != digest("candidate-record")
+        or review["candidate_digest"] != digest("candidate-record")
+        or scorecard["schema_version"] != SCORECARD_SCHEMA
+        or [category["name"] for category in scorecard["categories"]]
+        != list(_SCORE_CATEGORIES)
+        or any(
+            set(category["criteria"]) != _SCORE_CRITERIA[category["name"]]
+            or category["score"]
+            != sum(result["passed"] for result in category["criteria"].values())
+            for category in scorecard["categories"]
+        )
+    ):
+        raise RunStateError("evaluation scores do not sum the ten criteria per category")
+    record = current["artifact_index"].get(report_artifact_id)
+    if (
+        record is None
+        or record["type"] != "evaluation-report"
+        or record["derived_status"] != "accepted"
+    ):
+        raise RunStateError("current evaluation report is missing")
+    report_envelope, _ = _validate_envelope(run, report_artifact_id)
+    report = _artifact_payload_json(run, report_artifact_id)
+    expected = {
+        "target_identity": current["target_identity"]["canonical"],
+        "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
+        "candidate_digest": digest("candidate-record"),
+        "candidate_revision": candidate["candidate_revision"],
+        "contract_digest": digest("skill-contract"),
+        "confirmation_digest": digest("user-confirmation-record"),
+        "evaluation_digest": digest("evaluation-pack"),
+        "review_digest": digest("review-record"),
+        "review_verdict": review["verdict"],
+        "conformance_digest": digest("builder-run-conformance-ledger"),
+        "scorecard_digest": digest("target-scorecard"),
+        "scores": [
+            {
+                "name": category["name"],
+                "score": category["score"],
+                "failing_criteria": sorted(
+                    criterion_id
+                    for criterion_id, result in category["criteria"].items()
+                    if not result["passed"]
+                ),
+            }
+            for category in scorecard["categories"]
+        ],
+    }
+    if any(report[key] != value for key, value in expected.items()):
+        raise RunStateError("evaluation report has a stale or substituted binding")
+    _require_input_bindings(
+        report_envelope,
+        {
+            bound[artifact_type][0]: digest(artifact_type)
+            for artifact_type in (
+                "candidate-record",
+                "review-record",
+                "builder-run-conformance-ledger",
+                "target-scorecard",
+            )
+        },
+        "evaluation report",
+    )
+    return [artifact_id for artifact_id, _, _ in bound.values()] + [report_artifact_id]
+
+
+def report_run(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    report_artifact_id: str,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    if isinstance(expected_sequence, bool) or not isinstance(expected_sequence, int) or expected_sequence < 0:
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event("report", current["mode"]["name"])
+        if current["stage"] != "scored":
+            raise RunStateError("a report requires the scored stage")
+        _validate_target_unchanged(current, root)
+        artifact_ids = _validate_report_evidence(run, current, report_artifact_id)
+        derived, _, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="report",
+            destination_stage="reported",
+            authority_event_digest=None,
+            existing_bindings=[
+                {
+                    "artifact_id": artifact_id,
+                    "envelope_digest": current["artifact_index"][artifact_id]["digest"],
+                    "status": "accepted",
+                }
+                for artifact_id in artifact_ids
+            ],
+            artifact_requests=[],
+        )
+        _release_owned_target_lock(root, current, current["active_target_lock"])
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "report",
+            "workflow_id": workflow_id,
+            "sequence": derived["head_sequence"],
+            "stage": derived["stage"],
+            "receipt_digest": derived["head_transition_digest"],
+            "report_artifact_id": report_artifact_id,
+            "report_artifact_digest": current["artifact_index"][report_artifact_id]["digest"],
         }
 
 
@@ -7482,6 +7940,7 @@ def record_delivery(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event("record-delivery", current["mode"]["name"])
         if current["stage"] != "finalized":
             raise RunStateError("delivery may be recorded only for a finalized run")
         candidate_id, candidate_envelope, candidate = _current_event_artifact(
@@ -7580,14 +8039,16 @@ def record_cleanup_authority(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] != "delivered":
-            raise RunStateError("cleanup authority requires accepted delivery")
-        delivery_id, delivery_envelope, _ = _current_event_artifact(
-            run, current, "record-delivery", "delivery-acceptance-record"
-        )
+        if current["stage"] not in {"delivered", "reported"}:
+            raise RunStateError(
+                "cleanup authority requires accepted delivery or a reported evaluation"
+            )
+        finished_id, finished_envelope, finished_field = _cleanup_basis(run, current)
         artifact_id = f"cleanup-authority-{expected_sequence + 1:08d}"
         payload = {
-            "schema_version": "skill-builder-cleanup-authority.v1",
+            "schema_version": CLEANUP_AUTHORITY_SCHEMA
+            if current["stage"] == "reported"
+            else LEGACY_CLEANUP_AUTHORITY_SCHEMA,
             "workflow_id": workflow_id,
             "target_identity": current["target_identity"]["canonical"],
             "action": "cleanup",
@@ -7595,13 +8056,13 @@ def record_cleanup_authority(
             "authority_event_digest": authority_event_digest,
             "actor": actor,
             "timestamp": _now(),
-            "accepted_delivery_digest": delivery_envelope["envelope_digest"],
+            finished_field: finished_envelope["envelope_digest"],
         }
         derived, created, _ = _append_transaction(
             run=run,
             current=current,
             event="record-cleanup-authority",
-            destination_stage="delivered",
+            destination_stage=current["stage"],
             authority_event_digest=authority_event_digest,
             existing_bindings=[],
             artifact_requests=[
@@ -7616,8 +8077,8 @@ def record_cleanup_authority(
                     "producer": actor,
                     "input_bindings": [
                         {
-                            "artifact_id": delivery_id,
-                            "digest": delivery_envelope["envelope_digest"],
+                            "artifact_id": finished_id,
+                            "digest": finished_envelope["envelope_digest"],
                         }
                     ],
                     "limitations": [],
@@ -7637,25 +8098,29 @@ def record_cleanup_authority(
         }
 
 
-_TOMBSTONE_FIELDS = {
+_TOMBSTONE_COMMON_FIELDS = {
     "schema_version",
     "workflow_id",
     "target_identity",
     "run_directory_identity",
     "final_transition_receipt_digest",
     "final_run_manifest_digest",
-    "accepted_delivery_record_digest",
     "cleanup_authority_event_digest",
     "created_at",
     "tombstone_digest",
+}
+_TOMBSTONE_BASIS_FIELDS = {
+    LEGACY_TOMBSTONE_SCHEMA: "accepted_delivery_record_digest",
+    TOMBSTONE_SCHEMA: "evaluation_report_digest",
 }
 
 
 def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
     tombstone = _read_json(path)
+    basis_field = _TOMBSTONE_BASIS_FIELDS.get(tombstone.get("schema_version"))
     if (
-        set(tombstone) != _TOMBSTONE_FIELDS
-        or tombstone.get("schema_version") != "skill-builder-cleanup-tombstone.v1"
+        basis_field is None
+        or set(tombstone) != _TOMBSTONE_COMMON_FIELDS | {basis_field}
         or tombstone.get("workflow_id") != workflow_id
         or tombstone.get("tombstone_digest")
         != canonical_digest(tombstone, "tombstone_digest")
@@ -7664,7 +8129,7 @@ def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
     for field in (
         "final_transition_receipt_digest",
         "final_run_manifest_digest",
-        "accepted_delivery_record_digest",
+        basis_field,
         "cleanup_authority_event_digest",
         "tombstone_digest",
     ):
@@ -7682,16 +8147,30 @@ def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
 
 def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
     chain = _load_receipt_chain(run)
-    finalization_receipt = next(
-        (receipt for receipt in reversed(chain) if receipt["event"] == "finalize"),
+    reported = current["stage"] == "reported"
+    closing_event = "report" if reported else "finalize"
+    closing_receipt = next(
+        (receipt for receipt in reversed(chain) if receipt["event"] == closing_event),
         None,
     )
-    if finalization_receipt is None:
-        raise RunStateError("final run manifest lacks a finalization receipt")
-    _, release_envelope = _event_artifact(run, "finalize", "release-record")
-    _, delivery_envelope = _event_artifact(
-        run, "record-delivery", "delivery-acceptance-record"
-    )
+    if closing_receipt is None:
+        raise RunStateError(f"final run manifest lacks a {closing_event} receipt")
+    if reported:
+        _, report_envelope = _event_artifact(run, "report", "evaluation-report")
+        bindings = {
+            "report_receipt_digest": closing_receipt["receipt_digest"],
+            "evaluation_report_digest": report_envelope["envelope_digest"],
+        }
+    else:
+        _, release_envelope = _event_artifact(run, "finalize", "release-record")
+        _, delivery_envelope = _event_artifact(
+            run, "record-delivery", "delivery-acceptance-record"
+        )
+        bindings = {
+            "finalization_receipt_digest": closing_receipt["receipt_digest"],
+            "release_record_digest": release_envelope["envelope_digest"],
+            "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
+        }
     entries: list[dict[str, Any]] = []
     for path in sorted(run.rglob("*")):
         relative = path.relative_to(run).as_posix()
@@ -7712,12 +8191,12 @@ def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
             }
         )
     manifest: dict[str, Any] = {
-        "schema_version": "skill-builder-final-run-manifest.v1",
+        "schema_version": FINAL_RUN_MANIFEST_SCHEMA
+        if reported
+        else LEGACY_FINAL_RUN_MANIFEST_SCHEMA,
         "workflow_id": current["workflow_id"],
         "target_identity": current["target_identity"]["canonical"],
-        "finalization_receipt_digest": finalization_receipt["receipt_digest"],
-        "release_record_digest": release_envelope["envelope_digest"],
-        "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
+        **bindings,
         "head_transition_digest": current["head_transition_digest"],
         "entries": entries,
         "observed_item_count": len(entries),
@@ -7935,15 +8414,17 @@ def cleanup_run(
                 raise RunStateError("cleanup retry current index is stale or corrupt")
             if current["head_sequence"] != expected_sequence:
                 raise RevisionConflict("cleanup retry receipt sequence conflict")
-            if current["stage"] != "delivered":
-                raise RunStateError("cleanup retry requires accepted delivery")
+            if current["stage"] not in {"delivered", "reported"}:
+                raise RunStateError(
+                    "cleanup retry requires accepted delivery or a reported evaluation"
+                )
             _validate_target_unchanged(current, root)
-            _, delivery_envelope, delivery = _current_event_artifact(
-                run_candidate,
-                current,
-                "record-delivery",
-                "delivery-acceptance-record",
-            )
+            _, finished_envelope, _ = _cleanup_basis(run_candidate, current)
+            basis_field = _TOMBSTONE_BASIS_FIELDS[
+                TOMBSTONE_SCHEMA
+                if current["stage"] == "reported"
+                else LEGACY_TOMBSTONE_SCHEMA
+            ]
             _, _, cleanup_authority = _current_event_artifact(
                 run_candidate,
                 current,
@@ -7955,7 +8436,6 @@ def cleanup_run(
             if (
                 not os.path.lexists(final_manifest_path)
                 or _read_json(final_manifest_path) != final_manifest
-                or delivery.get("accepted") is not True
                 or cleanup_authority.get("authorized") is not True
                 or tombstone["target_identity"]
                 != current["target_identity"]["canonical"]
@@ -7963,8 +8443,8 @@ def cleanup_run(
                 != current["head_transition_digest"]
                 or tombstone["final_run_manifest_digest"]
                 != final_manifest["manifest_digest"]
-                or tombstone["accepted_delivery_record_digest"]
-                != delivery_envelope["envelope_digest"]
+                or tombstone.get(basis_field)
+                != finished_envelope["envelope_digest"]
                 or tombstone["cleanup_authority_event_digest"]
                 != cleanup_authority["authority_event_digest"]
             ):
@@ -7993,12 +8473,13 @@ def cleanup_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] != "delivered":
-            raise RunStateError("cleanup requires accepted delivery")
+        if current["stage"] not in {"delivered", "reported"}:
+            raise RunStateError(
+                "cleanup requires accepted delivery or a reported evaluation"
+            )
         _validate_target_unchanged(current, root)
-        delivery_id, delivery_envelope, delivery = _current_event_artifact(
-            run, current, "record-delivery", "delivery-acceptance-record"
-        )
+        finished_id, finished_envelope, finished_field = _cleanup_basis(run, current)
+        reported = current["stage"] == "reported"
         authority_id, _, cleanup_authority = _current_event_artifact(
             run, current, "record-cleanup-authority", "cleanup-authority-record"
         )
@@ -8008,10 +8489,9 @@ def cleanup_run(
             if receipt["event"] == "record-cleanup-authority"
         )
         if (
-            delivery.get("accepted") is not True
-            or cleanup_authority.get("authorized") is not True
-            or cleanup_authority.get("accepted_delivery_digest")
-            != delivery_envelope["envelope_digest"]
+            cleanup_authority.get("authorized") is not True
+            or cleanup_authority.get(finished_field)
+            != finished_envelope["envelope_digest"]
             or cleanup_authority.get("authority_event_digest")
             != authority_receipt["authority_event_digest"]
         ):
@@ -8024,8 +8504,9 @@ def cleanup_run(
         else:
             _exclusive_json(final_manifest_path, final_manifest)
         run_info = run.lstat()
+        tombstone_schema = TOMBSTONE_SCHEMA if reported else LEGACY_TOMBSTONE_SCHEMA
         tombstone: dict[str, Any] = {
-            "schema_version": "skill-builder-cleanup-tombstone.v1",
+            "schema_version": tombstone_schema,
             "workflow_id": workflow_id,
             "target_identity": current["target_identity"]["canonical"],
             "run_directory_identity": {
@@ -8035,7 +8516,9 @@ def cleanup_run(
             },
             "final_transition_receipt_digest": current["head_transition_digest"],
             "final_run_manifest_digest": final_manifest["manifest_digest"],
-            "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
+            _TOMBSTONE_BASIS_FIELDS[tombstone_schema]: finished_envelope[
+                "envelope_digest"
+            ],
             "cleanup_authority_event_digest": cleanup_authority[
                 "authority_event_digest"
             ],
@@ -8071,7 +8554,7 @@ def cleanup_run(
             "stage": "cleaned",
             "receipt_digest": current["head_transition_digest"],
             "tombstone_digest": tombstone["tombstone_digest"],
-            "delivery_artifact_id": delivery_id,
+            ("report_artifact_id" if reported else "delivery_artifact_id"): finished_id,
             "authority_artifact_id": authority_id,
         }
 
@@ -8103,13 +8586,16 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "request schemas (one strict JSON object on stdin):\n"
             "  initialize request: host_identity, target_identity, mode (create, "
-            "improve, or modify), authority, and mode evidence (create needs "
-            "absence_evidence and overlap_map, improve or modify needs "
+            "improve, modify, or evaluate), authority, and mode evidence (create "
+            "needs absence_evidence and overlap_map, the others need "
             "target_manifest), with an optional queue\n"
             "  retain request: workflow_id, expected_sequence, artifact_id, "
             "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
             "  transition request: workflow_id, expected_sequence, event, "
             "destination_stage, artifact_ids, and optional authority_event_digest\n"
+            "  finalize request: workflow_id, expected_sequence, release_artifact_id\n"
+            "  report request: workflow_id, expected_sequence, report_artifact_id "
+            "(evaluate runs only)\n"
             "  deliver request: workflow_id, expected_sequence, delivery, "
             "authority_event_digest, authority_event_base64, evidence_files_base64\n"
             "  cleanup-authority request: workflow_id, expected_sequence, "
@@ -8133,6 +8619,7 @@ def main(argv: list[str] | None = None) -> int:
             "resume",
             "recover",
             "finalize",
+            "report",
             "deliver",
             "cleanup-authority",
             "cleanup",
@@ -8192,6 +8679,8 @@ def main(argv: list[str] | None = None) -> int:
             result = recover_run(state_root=state_root, **payload)
         elif args.command == "finalize":
             result = finalize_run(state_root=state_root, **payload)
+        elif args.command == "report":
+            result = report_run(state_root=state_root, **payload)
         elif args.command == "deliver":
             encoded_authority = payload.pop("authority_event_base64", None)
             encoded_evidence = payload.pop("evidence_files_base64", None)
