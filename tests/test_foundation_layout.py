@@ -20,6 +20,7 @@ from scripts.artifact_contract import (
     artifact_output_relative,
 )
 from scripts.render_opencode import RenderError, render_agents, render_all, render_catalog
+from tests.build_cache import shared_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -213,9 +214,8 @@ class FoundationLayoutTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
-            first = temporary_root / "first"
+            first = shared_artifact("opencode")
             second = temporary_root / "second"
-            build_opencode_package(ROOT, first)
             build_opencode_package(ROOT, second)
             first_files = sorted(path.relative_to(first).as_posix() for path in first.rglob("*"))
             second_files = sorted(path.relative_to(second).as_posix() for path in second.rglob("*"))
@@ -341,34 +341,32 @@ class FoundationLayoutTests(unittest.TestCase):
             self.assertEqual(command_description.strip('"'), description)
 
     def test_build_derives_command_activation_from_canonical_skill_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            artifact = Path(temporary) / "artifact"
-            build_opencode_package(ROOT, artifact)
+        artifact = shared_artifact("opencode")
 
-            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 17)
-            commands = sorted((artifact / "commands").glob("*.md"))
-            self.assertEqual(len(commands), 17)
-            self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
-            catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
-            self.assertEqual(set(catalog["commands"]), {path.stem for path in commands})
-            for command in commands:
-                name = command.stem
-                contents = command.read_text(encoding="utf-8")
-                expected = name == "use-expskill"
-                implicit_marker = "This is the only skill that may activate without an explicit invocation."
-                explicit_marker = "This command is explicit-only."
-                self.assertIn(expected and implicit_marker or explicit_marker, contents)
-                self.assertEqual(implicit_marker in contents, expected)
-                self.assertEqual(
-                    contents.split("---\n", 2)[2],
-                    catalog["commands"][name]["template"],
-                )
-                self.assertEqual(
-                    implicit_marker in catalog["commands"][name]["template"],
-                    expected,
-                )
-                self.assertNotIn("opencode/autoinvoke", contents)
-                self.assertNotIn("opencode/autoinvoke", catalog["commands"][name]["template"])
+        self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 17)
+        commands = sorted((artifact / "commands").glob("*.md"))
+        self.assertEqual(len(commands), 17)
+        self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
+        catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(catalog["commands"]), {path.stem for path in commands})
+        for command in commands:
+            name = command.stem
+            contents = command.read_text(encoding="utf-8")
+            expected = name == "use-expskill"
+            implicit_marker = "This is the only skill that may activate without an explicit invocation."
+            explicit_marker = "This command is explicit-only."
+            self.assertIn(expected and implicit_marker or explicit_marker, contents)
+            self.assertEqual(implicit_marker in contents, expected)
+            self.assertEqual(
+                contents.split("---\n", 2)[2],
+                catalog["commands"][name]["template"],
+            )
+            self.assertEqual(
+                implicit_marker in catalog["commands"][name]["template"],
+                expected,
+            )
+            self.assertNotIn("opencode/autoinvoke", contents)
+            self.assertNotIn("opencode/autoinvoke", catalog["commands"][name]["template"])
 
     def test_renderer_rejects_missing_or_malformed_canonical_skill_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

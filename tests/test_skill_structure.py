@@ -11,6 +11,7 @@ from scripts.build_codex_marketplace import build_codex_marketplace
 from scripts.build_hermes_package import build_hermes_package
 from scripts.build_opencode_package import build_opencode_package
 from scripts.render_opencode import parse_skill_frontmatter
+from tests.build_cache import shared_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,18 +74,26 @@ class SkillStructureTests(unittest.TestCase):
     def test_host_builds_carry_every_skill_and_reference_byte_for_byte(self) -> None:
         sources = _source_files()
         self.assertTrue(any(key.endswith("/SKILL.md") for key in sources))
+
+        def check(output: Path) -> None:
+            built = [path for path in output.rglob("*") if path.is_file()]
+            for relative, source in sources.items():
+                with self.subTest(file=relative):
+                    matches = [path for path in built if path.relative_to(output).as_posix().endswith(relative)]
+                    self.assertTrue(matches, relative)
+                    expected = _digest(source)
+                    for match in matches:
+                        self.assertEqual(_digest(match), expected, match.relative_to(output).as_posix())
+
         for host, builder in DIGEST_BUILDERS:
-            with self.subTest(host=host), tempfile.TemporaryDirectory() as temporary:
-                output = Path(temporary) / host
-                builder(ROOT, output)
-                built = [path for path in output.rglob("*") if path.is_file()]
-                for relative, source in sources.items():
-                    with self.subTest(file=relative):
-                        matches = [path for path in built if path.relative_to(output).as_posix().endswith(relative)]
-                        self.assertTrue(matches, relative)
-                        expected = _digest(source)
-                        for match in matches:
-                            self.assertEqual(_digest(match), expected, match.relative_to(output).as_posix())
+            with self.subTest(host=host):
+                if host in ("claude", "hermes", "opencode"):
+                    check(shared_artifact(host))
+                else:
+                    with tempfile.TemporaryDirectory() as temporary:
+                        output = Path(temporary) / host
+                        builder(ROOT, output)
+                        check(output)
 
 
 if __name__ == "__main__":

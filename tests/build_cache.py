@@ -42,6 +42,8 @@ def shared_artifact(builder_name: str, root: Path | str | None = None) -> Path:
         from scripts.build_opencode_package import build_opencode_package as builder
     elif builder_name == "codex":
         from scripts.build_codex_package import build_codex_package as builder
+    elif builder_name == "claude":
+        from scripts.build_claude_package import build_claude_package as builder
     elif builder_name == "hermes":
         from scripts.build_hermes_package import build_hermes_package as builder
     else:

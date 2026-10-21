@@ -55,6 +55,24 @@ jobs:
             exit 1
           fi
 
+  oracle:
+    # Slow oracle suite off the CI critical path: publish jobs do not wait
+    # for it, so validate stays the fast signal.
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+      - name: Oracle tests
+        run: >-
+          python3 -m pytest -q -n auto --dist load
+          tests/test_skill_builder.py
+
   networked-validate:
     # The networked suites are off the pull request path, so a release tag
     # still proves that the real Codex CLI accepts the published profiles.
