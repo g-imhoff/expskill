@@ -928,21 +928,20 @@ def _durable_cache_key(value: Any) -> Any:
     """Return an exact memoization key for one durable value.
 
     The key keeps every durable type apart, ignores the insertion order of
-    object keys, and describes exactly what the canonical form encodes. It
-    rejects every value the canonical form rejects, in the same traversal
-    order.
+    object keys, and describes exactly what the canonical form encodes. Only
+    exact built-in types are keyed, with exact text names, because the
+    canonical form sorts object names by the name objects themselves. Every
+    other value takes the unmemoized path, so its bytes stay identical to
+    the base form.
     """
 
     cls = value.__class__
     if cls is dict:
         pairs = []
         for name, nested in value.items():
-            if not isinstance(name, str):
+            if name.__class__ is not str:
                 raise TypeError("durable object keys must be strings")
-            # The name is keyed by the text the canonical form encodes, not
-            # by the caller's object, so a name that lies about its own
-            # equality cannot share a result with a different name.
-            pairs.append((str.__str__(name), _durable_cache_key(nested)))
+            pairs.append((name, _durable_cache_key(nested)))
         pairs.sort()
         return ("d", tuple(pairs))
     if cls is list:
@@ -955,32 +954,6 @@ def _durable_cache_key(value: Any) -> Any:
         return ("b", value)
     if value is None:
         return None
-    if isinstance(value, float):
-        raise TypeError("floating-point values are outside the durable schema")
-    if isinstance(value, dict):
-        # ``json`` encodes a dict subclass through its ``items()`` view, but
-        # only when the stored mapping is not empty. The reported view is
-        # checked, and its names are kept as they are, because the canonical
-        # form keeps a repeated name too.
-        pairs = []
-        for name, nested in value.items():
-            if not isinstance(name, str):
-                raise TypeError("durable object keys must be strings")
-            pairs.append((str.__str__(name), _durable_cache_key(nested)))
-        pairs.sort()
-        if not dict.__len__(value):
-            return ("D", type(value), ("d", ()))
-        return ("D", type(value), ("d", tuple(pairs)))
-    if isinstance(value, list):
-        # ``json`` encodes a list subclass through its iteration, whatever
-        # the stored list holds.
-        return ("L", type(value), tuple([_durable_cache_key(item) for item in value]))
-    if isinstance(value, str):
-        # ``json`` encodes the underlying text, not an overridden ``__str__``.
-        return ("s", type(value), str.__str__(value))
-    if isinstance(value, int):
-        # ``json`` encodes the underlying number, not an overridden ``__int__``.
-        return ("i", type(value), int.__int__(value))
     raise TypeError(f"unsupported durable value: {type(value).__name__}")
 
 
@@ -16937,6 +16910,25 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
         self.assertEqual(canonical_bytes(first), b'{"alpha":0}\n')
         self.assertEqual(canonical_bytes(second), b'{"beta":0}\n')
         self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+    def test_a_name_that_lies_about_equality_keeps_its_own_digest(self) -> None:
+        """A name that lies about its equality cannot share a result."""
+
+        class EqualText(str):
+            """A text subclass whose equality and hash lie."""
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, str)
+
+            def __hash__(self) -> int:
+                return 1
+
+        _CANONICAL_CACHE.clear()
+        lying = {"z": 0, EqualText("a"): 1}
+        plain = {"a": 1, "z": 0}
+        self.assertNotEqual(canonical_bytes(lying), canonical_bytes(plain))
+        self.assertNotEqual(canonical_digest(lying), canonical_digest(plain))
+        self.assertEqual(canonical_bytes(plain), reference_canonical_bytes(plain))
 
     def test_a_repeated_name_keeps_its_own_digest(self) -> None:
         """A reported view that repeats a name encodes both entries."""
