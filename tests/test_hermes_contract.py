@@ -13,6 +13,7 @@ from scripts.render_hermes import (
     skill_inventory,
 )
 from scripts.validate import _parse_frontmatter, _parse_overlay_frontmatter, validate_repository
+from tests.build_cache import shared_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,7 @@ class HermesContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        ignored = ["__pycache__", "*.pyc", "*.pyo"]
+        ignored = ["__pycache__", "*.pyc", "*.pyo", ".testbin"]
         if not include_git:
             ignored.append(".git")
         shutil.copytree(
@@ -52,7 +53,9 @@ class HermesContractTests(unittest.TestCase):
         )
         return temporary / "repo"
 
-    def build_artifact(self, root: Path) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+    def build_artifact(self, root: Path) -> tuple[tempfile.TemporaryDirectory[str] | None, Path]:
+        if Path(root).resolve() == ROOT.resolve():
+            return None, shared_artifact("hermes")
         temporary = tempfile.TemporaryDirectory()
         artifact = Path(temporary.name) / "artifact"
         build_hermes_package(root, artifact)

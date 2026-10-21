@@ -3,6 +3,10 @@ name: brainstorm
 description: Shape a vague idea into a stress-tested concept in a read-only workshop with the user. Only the user or another ExpSkill skill can load $brainstorm.
 ---
 
+## When to use
+
+Run only when the user explicitly invokes `$brainstorm` for an idea. When a request mixes brainstorming with later work, perform only brainstorming.
+
 ## Understand and confirm
 
 1. State the brainstorm-only, read-only, conceptual boundary. Inspect supplied and relevant accessible context with read-only tools before asking questions. Inspect only relevant lightweight context, such as structure, documentation, interfaces, terminology, behavior, configuration, and history, not repository detail.

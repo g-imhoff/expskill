@@ -186,7 +186,7 @@ class DesignStateAdversarialTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             receipt, _, state_home, workflow_id = _start(module, root)
-            context = multiprocessing.get_context("fork")
+            context = multiprocessing.get_context("forkserver")
             queue = context.Queue()
             processes = [
                 context.Process(target=_process_apply, args=(str(state_home), workflow_id, receipt["revision"], marker, queue))

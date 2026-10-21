@@ -7,9 +7,10 @@ import json
 import re
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable, Iterator
 from unittest import mock
 
 
@@ -919,13 +920,95 @@ class OracleFailure:
     ledger: str = "builder-run"
 
 
-def canonical_bytes(value: Any, *, digest_field: str | None = None) -> bytes:
-    """Return the one canonical JSON byte representation used by every digest."""
+CANONICAL_CACHE_LIMIT = 8192
+_CANONICAL_CACHE: dict[Any, dict[str, Any]] = {}
 
-    if digest_field is not None:
-        if not isinstance(value, dict):
-            raise TypeError("digest-field exclusion requires an object")
-        value = {key: item for key, item in value.items() if key != digest_field}
+
+def _durable_cache_key(value: Any) -> Any:
+    """Return an exact memoization key for one durable value.
+
+    The key keeps every durable type apart, ignores the insertion order of
+    object keys, and describes exactly what the canonical form encodes. Only
+    exact built-in types are keyed, with exact text names, because the
+    canonical form sorts object names by the name objects themselves. Every
+    other value takes the unmemoized path, so its bytes stay identical to
+    the base form.
+    """
+
+    cls = type(value)
+    if cls is dict:
+        pairs = []
+        for name, nested in value.items():
+            if type(name) is not str:
+                raise TypeError("durable object keys must be strings")
+            pairs.append((name, _durable_cache_key(nested)))
+        pairs.sort()
+        return ("d", tuple(pairs))
+    if cls is list:
+        return ("l", tuple([_durable_cache_key(item) for item in value]))
+    if cls is str:
+        return value
+    if cls is int:
+        return value
+    if cls is bool:
+        return ("b", value)
+    if value is None:
+        return None
+    raise TypeError(f"unsupported durable value: {type(value).__name__}")
+
+
+def _store_canonical(key: Any, entry: dict[str, Any]) -> None:
+    """Keep the memoization cache bounded."""
+
+    while len(_CANONICAL_CACHE) >= CANONICAL_CACHE_LIMIT:
+        _CANONICAL_CACHE.pop(next(iter(_CANONICAL_CACHE)))
+    _CANONICAL_CACHE[key] = entry
+
+
+def _canonical_payload(value: Any, digest_field: str | None) -> Any:
+    """Return the value the canonical form encodes.
+
+    The digest-field exclusion copies the reported object view into a plain
+    object, exactly as the unmemoized form did before the copy.
+    """
+
+    if digest_field is None:
+        return value
+    return {name: item for name, item in value.items() if name != digest_field}
+
+
+def _canonical_entry(payload: Any, key: Any) -> dict[str, Any]:
+    """Return the memoized entry of one already keyed payload."""
+
+    entry = _CANONICAL_CACHE.get(key)
+    if entry is not None:
+        return entry
+    entry = {
+        "bytes": (
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8"),
+        "digest": None,
+    }
+    _store_canonical(key, entry)
+    return entry
+
+
+def _uncached_canonical_bytes(value: Any) -> bytes:
+    """Return the canonical bytes without the memo.
+
+    This is the reference form of the canonical bytes. The memoized path
+    falls back to it for every value it cannot key, so a rejected value
+    fails with the same error it failed with before the memo existed. The
+    value it receives is the payload the canonical form encodes, so the
+    reported view of a value is read once, as it was before the memo.
+    """
 
     def reject_floats(item: Any) -> None:
         if isinstance(item, float):
@@ -954,8 +1037,98 @@ def canonical_bytes(value: Any, *, digest_field: str | None = None) -> bytes:
     ).encode("utf-8")
 
 
+def canonical_bytes(value: Any, *, digest_field: str | None = None) -> bytes:
+    """Return the one canonical JSON byte representation used by every digest."""
+
+    if digest_field is not None and not isinstance(value, dict):
+        raise TypeError("digest-field exclusion requires an object")
+    payload = _canonical_payload(value, digest_field)
+    try:
+        key = _durable_cache_key(payload)
+    except (TypeError, ValueError, AttributeError):
+        return _uncached_canonical_bytes(payload)
+    return _canonical_entry(payload, key)["bytes"]
+
+
 def canonical_digest(value: Any, *, digest_field: str | None = None) -> str:
-    return hashlib.sha256(canonical_bytes(value, digest_field=digest_field)).hexdigest()
+    """Return the digest of the canonical bytes used by every digest."""
+
+    if digest_field is not None and not isinstance(value, dict):
+        raise TypeError("digest-field exclusion requires an object")
+    payload = _canonical_payload(value, digest_field)
+    try:
+        key = _durable_cache_key(payload)
+    except (TypeError, ValueError, AttributeError):
+        return hashlib.sha256(_uncached_canonical_bytes(payload)).hexdigest()
+    entry = _canonical_entry(payload, key)
+    digest = entry["digest"]
+    if digest is None:
+        digest = hashlib.sha256(entry["bytes"]).hexdigest()
+        entry["digest"] = digest
+    return digest
+
+
+def reference_canonical_text(value: Any) -> str:
+    """Return the canonical text from the canonical form rules alone.
+
+    This oracle never calls the helpers under test, so it can disagree with
+    them when they drift away from the canonical form.
+    """
+
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return str(int.__int__(value))
+    if isinstance(value, str):
+        return json.dumps(str.__str__(value), ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(reference_canonical_text(item) for item in value) + "]"
+    if isinstance(value, dict):
+        if not dict.__len__(value):
+            return "{}"
+        return (
+            "{"
+            + ",".join(
+                json.dumps(str.__str__(name), ensure_ascii=False)
+                + ":"
+                + reference_canonical_text(item)
+                for name, item in sorted(value.items())
+            )
+            + "}"
+        )
+    raise AssertionError(f"not a durable value: {value!r}")
+
+
+def reference_canonical_bytes(value: Any) -> bytes:
+    """Return the canonical bytes of one durable value."""
+
+    return (reference_canonical_text(value) + "\n").encode("utf-8")
+
+
+def reference_canonical_digest(value: Any) -> str:
+    """Return the canonical digest of one durable value."""
+
+    return hashlib.sha256(reference_canonical_bytes(value)).hexdigest()
+
+
+@contextmanager
+def _counted_canonical_dumps() -> Iterator[Callable[[], int]]:
+    """Count how often the canonical form is serialized while the block runs."""
+
+    calls = 0
+    original_dumps = json.dumps
+
+    def counting_dumps(*args: Any, **kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return original_dumps(*args, **kwargs)
+
+    with mock.patch.object(json, "dumps", counting_dumps):
+        yield lambda: calls
 
 
 def digest_value(value: Any) -> str:
@@ -16454,6 +16627,385 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
                     evaluate_trace(trace, BUILDER_FIXTURES, scenario),
                     (),
                 )
+
+
+class SkillBuilderCanonicalDigestTests(unittest.TestCase):
+    """Pin the canonical byte form every oracle digest is built from."""
+
+    def test_canonical_bytes_matches_an_independent_reference(self) -> None:
+        """The canonical form stays one JSON object per value, whatever the cache does."""
+
+        cases = [
+            {"nested": {"list": [1, 2, {"deep": [True, None, "ünïcödé"]}]}},
+            {},
+            [],
+            {
+                "empty_object": {},
+                "empty_list": [],
+                "text": "ünïcödé ✅",
+                "int": 7,
+                "bool": False,
+                "null": None,
+            },
+            [{}, [], {"a": {"b": {"c": []}}}],
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    canonical_bytes(value),
+                    reference_canonical_bytes(value),
+                )
+                self.assertEqual(
+                    canonical_digest(value),
+                    reference_canonical_digest(value),
+                )
+
+    def test_canonical_digest_excludes_only_the_named_top_level_field(self) -> None:
+        """One named top-level field is dropped before the digest is taken."""
+
+        value = {
+            "receipt_digest": "0" * 64,
+            "schema_version": "skill-builder-transition-receipt-v1",
+            "nested": {"receipt_digest": "1" * 64},
+        }
+        excluded = {
+            name: item for name, item in value.items() if name != "receipt_digest"
+        }
+        self.assertEqual(
+            canonical_bytes(value, digest_field="receipt_digest"),
+            reference_canonical_bytes(excluded),
+        )
+        self.assertEqual(
+            canonical_digest(value, digest_field="receipt_digest"),
+            reference_canonical_digest(excluded),
+        )
+
+    def test_digest_field_exclusion_drops_a_key_before_the_keys_are_validated(
+        self,
+    ) -> None:
+        """An excluded key is dropped, so it is never reported as a bad key."""
+
+        value = {"a": 1, 2: 3}
+        excluded = {name: item for name, item in value.items() if name != 2}
+        self.assertEqual(
+            canonical_bytes(value, digest_field=2),
+            reference_canonical_bytes(excluded),
+        )
+        self.assertEqual(
+            canonical_digest(value, digest_field=2),
+            reference_canonical_digest(excluded),
+        )
+        with self.assertRaises(TypeError) as caught:
+            canonical_bytes(value, digest_field="a")
+        self.assertEqual(
+            str(caught.exception),
+            "durable object keys must be strings",
+        )
+
+    def test_rejected_values_keep_their_type_error_messages(self) -> None:
+        """Every value outside the durable schema fails the same way as before."""
+
+        cases = [
+            (1.0, "floating-point values are outside the durable schema"),
+            (
+                {"a": 1.0, "b": (1, 2)},
+                "floating-point values are outside the durable schema",
+            ),
+            ({"a": (1, 2), "b": 1.0}, "unsupported durable value: tuple"),
+            ({"a": "b", 2: "c"}, "durable object keys must be strings"),
+            ({"a": {"b": (1, 2)}}, "unsupported durable value: tuple"),
+            ([1.0], "floating-point values are outside the durable schema"),
+        ]
+        for value, message in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(TypeError) as caught:
+                    canonical_bytes(value)
+                self.assertEqual(str(caught.exception), message)
+                with self.assertRaises(TypeError) as caught:
+                    canonical_digest(value)
+                self.assertEqual(str(caught.exception), message)
+
+        with self.assertRaises(TypeError) as caught:
+            canonical_bytes([], digest_field="receipt_digest")
+        self.assertEqual(
+            str(caught.exception),
+            "digest-field exclusion requires an object",
+        )
+        with self.assertRaises(TypeError) as caught:
+            canonical_digest([], digest_field="receipt_digest")
+        self.assertEqual(
+            str(caught.exception),
+            "digest-field exclusion requires an object",
+        )
+
+    def test_repeated_equal_calls_reuse_the_memoized_canonical_form(self) -> None:
+        """An equal value is digested once, not once per call."""
+
+        _CANONICAL_CACHE.clear()
+        value = {"b": [1, True, None], "a": {"x": "ünïcödé"}}
+        with _counted_canonical_dumps() as dumps_calls:
+            first = canonical_bytes(value)
+            after_first = dumps_calls()
+            second = canonical_bytes(value)
+            after_second = dumps_calls()
+        self.assertEqual(first, second)
+        self.assertEqual(
+            after_first,
+            1,
+            "the first call must miss and serialize once",
+        )
+        self.assertEqual(
+            after_second,
+            1,
+            "an equal value must reuse the memoized canonical form",
+        )
+
+        _CANONICAL_CACHE.clear()
+        sha_calls = 0
+        original_sha256 = hashlib.sha256
+
+        def counting_sha256(*args: Any, **kwargs: Any) -> Any:
+            nonlocal sha_calls
+            sha_calls += 1
+            return original_sha256(*args, **kwargs)
+
+        with _counted_canonical_dumps() as dumps_calls:
+            with mock.patch.object(hashlib, "sha256", counting_sha256):
+                first_digest = canonical_digest(value)
+                second_digest = canonical_digest(value)
+        self.assertEqual(first_digest, second_digest)
+        self.assertEqual(
+            dumps_calls(),
+            1,
+            "an equal digest must reuse the memoized canonical form",
+        )
+        self.assertEqual(
+            sha_calls,
+            1,
+            "an equal digest must reuse the memoized sha256 digest",
+        )
+
+    def test_distinct_durable_values_do_not_share_a_memoized_result(self) -> None:
+        """Only values that are equal in the durable schema share one result."""
+
+        _CANONICAL_CACHE.clear()
+        with _counted_canonical_dumps() as dumps_calls:
+            canonical_bytes(True)
+            before = dumps_calls()
+            canonical_bytes(1)
+            self.assertEqual(
+                dumps_calls(),
+                before + 1,
+                "True and 1 are different durable values",
+            )
+
+            before = dumps_calls()
+            canonical_bytes({"1": 2})
+            canonical_bytes({"a": 2})
+            self.assertEqual(
+                dumps_calls(),
+                before + 2,
+                'the string key "1" and the string key "a" are different values',
+            )
+
+            before = dumps_calls()
+            canonical_bytes({"a": 1, "b": 2})
+            canonical_bytes({"b": 2, "a": 1})
+            self.assertEqual(
+                dumps_calls(),
+                before + 1,
+                "the insertion order of object keys must not change the result",
+            )
+
+    def test_dict_subclass_is_encoded_and_keyed_by_its_reported_items_view(self) -> None:
+        """A dict subclass is digested through the view it reports, not the one it stores."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: dict[str, Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return self._reported.items()
+
+        _CANONICAL_CACHE.clear()
+        first = ReportedItems({"a": 1}, {"a": 1, "b": 2})
+        second = ReportedItems({"a": 1}, {"a": 9})
+        self.assertEqual(canonical_bytes(first), reference_canonical_bytes(first))
+        self.assertEqual(canonical_bytes(second), reference_canonical_bytes(second))
+        self.assertNotEqual(canonical_bytes(first), canonical_bytes(second))
+        self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+    def test_empty_dict_subclass_encodes_as_an_empty_object(self) -> None:
+        """An empty stored mapping encodes as an empty object, whatever it reports."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: dict[str, Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return self._reported.items()
+
+        _CANONICAL_CACHE.clear()
+        empty = ReportedItems({}, {"a": 2})
+        reported = ReportedItems({"x": 1}, {"a": 2})
+        self.assertEqual(canonical_bytes(empty), b"{}\n")
+        self.assertEqual(canonical_bytes(reported), b'{"a":2}\n')
+        self.assertNotEqual(canonical_bytes(empty), canonical_bytes(reported))
+        self.assertNotEqual(canonical_digest(empty), canonical_digest(reported))
+
+    def test_text_and_number_subclasses_keep_their_own_data(self) -> None:
+        """A subclass that overrides a conversion is still keyed by its own data."""
+
+        class ReportedText(str):
+            """A text subclass whose string conversion lies."""
+
+            def __str__(self) -> str:
+                return "alpha"
+
+        class ReportedNumber(int):
+            """A number subclass whose integer conversion lies."""
+
+            def __int__(self) -> int:
+                return 7
+
+        _CANONICAL_CACHE.clear()
+        first = ReportedText("alpha")
+        second = ReportedText("beta")
+        self.assertEqual(canonical_bytes(first), b'"alpha"\n')
+        self.assertEqual(canonical_bytes(second), b'"beta"\n')
+        self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+        first_number = ReportedNumber(1)
+        second_number = ReportedNumber(2)
+        self.assertEqual(canonical_bytes(first_number), b"1\n")
+        self.assertEqual(canonical_bytes(second_number), b"2\n")
+        self.assertNotEqual(canonical_digest(first_number), canonical_digest(second_number))
+
+    def test_object_names_are_keyed_by_the_text_they_encode(self) -> None:
+        """A name that lies about its own equality keeps its own digest."""
+
+        class EqualText(str):
+            """A text subclass whose equality and hash lie."""
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, str)
+
+            def __hash__(self) -> int:
+                return 1
+
+        _CANONICAL_CACHE.clear()
+        first = {EqualText("alpha"): 0}
+        second = {EqualText("beta"): 0}
+        self.assertEqual(canonical_bytes(first), b'{"alpha":0}\n')
+        self.assertEqual(canonical_bytes(second), b'{"beta":0}\n')
+        self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+    def test_a_name_that_lies_about_equality_keeps_its_own_digest(self) -> None:
+        """A name that lies about its equality cannot share a result."""
+
+        class EqualText(str):
+            """A text subclass whose equality and hash lie."""
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, str)
+
+            def __hash__(self) -> int:
+                return 1
+
+        class SpoofedText(str):
+            """A text subclass that claims to be an exact text."""
+
+            @property
+            def __class__(self) -> type:
+                return str
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, str)
+
+            def __hash__(self) -> int:
+                return hash("beta")
+
+        _CANONICAL_CACHE.clear()
+        lying = {"z": 0, EqualText("a"): 1}
+        plain = {"a": 1, "z": 0}
+        self.assertNotEqual(canonical_bytes(lying), canonical_bytes(plain))
+        self.assertNotEqual(canonical_digest(lying), canonical_digest(plain))
+        self.assertEqual(canonical_bytes(plain), reference_canonical_bytes(plain))
+
+        spoofed = {SpoofedText("beta"): 0}
+        self.assertEqual(canonical_bytes(spoofed), b'{"beta":0}\n')
+        self.assertNotEqual(
+            canonical_digest(spoofed),
+            canonical_digest({SpoofedText("alpha"): 0}),
+        )
+
+    def test_a_repeated_name_keeps_its_own_digest(self) -> None:
+        """A reported view that repeats a name encodes both entries."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: list[Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return list(self._reported)
+
+        _CANONICAL_CACHE.clear()
+        repeated = ReportedItems({"x": 1}, [("a", 1), ("a", 2)])
+        single = ReportedItems({"x": 1}, [("a", 1)])
+        self.assertEqual(canonical_bytes(repeated), b'{"a":1,"a":2}\n')
+        self.assertEqual(canonical_bytes(single), b'{"a":1}\n')
+        self.assertNotEqual(canonical_digest(repeated), canonical_digest(single))
+
+    def test_an_empty_stored_mapping_still_rejects_what_it_reports(self) -> None:
+        """An empty stored mapping is checked before it encodes as an empty object."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: dict[str, Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return self._reported.items()
+
+        _CANONICAL_CACHE.clear()
+        cases = [
+            ({"a": 1.0}, "floating-point values are outside the durable schema"),
+            ({"a": (1, 2)}, "unsupported durable value: tuple"),
+            ({2: 3}, "durable object keys must be strings"),
+        ]
+        for reported, message in cases:
+            with self.subTest(reported=reported):
+                with self.assertRaises(TypeError) as caught:
+                    canonical_bytes(ReportedItems({}, reported))
+                self.assertEqual(str(caught.exception), message)
+                with self.assertRaises(TypeError) as caught:
+                    canonical_digest(ReportedItems({}, reported))
+                self.assertEqual(str(caught.exception), message)
+
+    def test_canonical_cache_stays_bounded(self) -> None:
+        """The memo keeps at most the configured number of entries."""
+
+        _CANONICAL_CACHE.clear()
+        try:
+            for index in range(CANONICAL_CACHE_LIMIT + 10):
+                canonical_bytes({"index": index})
+            self.assertLessEqual(
+                len(_CANONICAL_CACHE),
+                CANONICAL_CACHE_LIMIT,
+            )
+        finally:
+            _CANONICAL_CACHE.clear()
 
 
 if __name__ == "__main__":

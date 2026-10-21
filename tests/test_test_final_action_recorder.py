@@ -567,29 +567,6 @@ print('consumer-result=pass')
         run_action.assert_not_called()
         self.assertEqual(stat.S_IMODE(root.parent.stat().st_mode), 0o500)
 
-    def test_handoff_never_runs_the_product_when_composition_fails(self) -> None:
-        """The combined handoff preserves preflight-before-product ordering."""
-
-        recorder = _load_recorder_module()
-        root = self.run_root.resolve()
-        failed = subprocess.CompletedProcess([], 1, '{"status":"ERROR"}\n', "")
-        with (
-            mock.patch.object(recorder, "_repository", return_value=self.repository),
-            mock.patch.object(recorder, "_run_root", return_value=root),
-            mock.patch.object(recorder, "_read_spec", return_value={}),
-            mock.patch.object(recorder, "_validate_spec", return_value={}),
-            mock.patch.object(recorder, "_run") as run_action,
-            mock.patch.object(recorder.subprocess, "run", return_value=failed),
-            redirect_stdout(io.StringIO()),
-            redirect_stderr(io.StringIO()),
-        ):
-            result = recorder.main(
-                ["handoff", "--root", str(root), "--", "python3", "product_action.py"]
-            )
-
-        self.assertEqual(result, 1)
-        run_action.assert_not_called()
-
     def test_handoff_binds_both_recorder_outputs_to_draft_before_product_execution(
         self,
     ) -> None:

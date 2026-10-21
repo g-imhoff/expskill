@@ -11,9 +11,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from scripts.build_codex_package import build_codex_package
-from scripts.build_hermes_package import build_hermes_package
-from scripts.build_opencode_package import build_opencode_package
+from tests.build_cache import checkout_copy, shared_artifact
 from tests.test_hermes_package import hermes_agent_runtime
 
 
@@ -47,13 +45,9 @@ class AuthoringRuntimeTests(unittest.TestCase):
         self.assertNotIn(RULE, UNSLOP_SKILL.read_text())
 
     def test_packages_and_fresh_agent_profiles_carry_the_rule(self) -> None:
-        for host, builder in (
-            ("codex", build_codex_package),
-            ("opencode", build_opencode_package),
-            ("hermes", build_hermes_package),
-        ):
-            with self.subTest(host=host), tempfile.TemporaryDirectory() as temporary:
-                package = builder(ROOT, Path(temporary) / host)
+        for host in ("codex", "opencode", "hermes"):
+            with self.subTest(host=host):
+                package = shared_artifact(host)
                 self.assertEqual((package / "assets/authoring-runtime.json").read_bytes(), POLICY.read_bytes())
                 profiles = list((package / "agents").iterdir())
                 self.assertEqual(len(profiles), 7)
@@ -68,29 +62,27 @@ class AuthoringRuntimeTests(unittest.TestCase):
                         self.assertIn(RULE, agent["prompt"], name)
 
     def test_codex_injects_the_rule_for_every_session_start_source(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            package = build_codex_package(ROOT, Path(temporary) / "codex")
-            config = json.loads((package / "hooks/hooks.json").read_text())
-            handlers = config["hooks"]["SessionStart"][0]["hooks"]
-            self.assertTrue(any("inject_authoring.py" in handler["command"] for handler in handlers))
-            env = dict(os.environ)
-            env.pop("PLUGIN_ROOT", None)
-            for source in ("startup", "resume", "clear", "compact"):
-                with self.subTest(source=source):
-                    result = subprocess.run(
-                        [sys.executable, str(package / "hooks/inject_authoring.py")],
-                        input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
-                        capture_output=True, text=True, env=env,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-                    self.assertEqual(context, RULE)
+        package = shared_artifact("codex")
+        config = json.loads((package / "hooks/hooks.json").read_text())
+        handlers = config["hooks"]["SessionStart"][0]["hooks"]
+        self.assertTrue(any("inject_authoring.py" in handler["command"] for handler in handlers))
+        env = dict(os.environ)
+        env.pop("PLUGIN_ROOT", None)
+        for source in ("startup", "resume", "clear", "compact"):
+            with self.subTest(source=source):
+                result = subprocess.run(
+                    [sys.executable, str(package / "hooks/inject_authoring.py")],
+                    input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
+                    capture_output=True, text=True, env=env,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+                self.assertEqual(context, RULE)
 
     @unittest.skipUnless(shutil.which("node"), "node is required")
     def test_opencode_injects_into_v1_and_v2_sessions_and_compaction(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            package = build_opencode_package(ROOT, Path(temporary) / "opencode")
-            script = r'''
+        package = shared_artifact("opencode")
+        script = r'''
 import assert from "node:assert/strict";
 const { default: plugin } = await import(process.argv[1]);
 const rule = process.argv[2];
@@ -133,50 +125,48 @@ const reminder = { context: [] };
 for (const callback of registered.compaction) await callback(reminder);
 assert.ok(reminder.context.join("\n").includes(rule));
 '''
-            env = dict(os.environ)
-            env.pop("EXPSKILL_HOME", None)
-            result = subprocess.run(
-                [shutil.which("node"), "--input-type=module", "-e", script,
-                 (package / "index.js").as_uri(), RULE, _unslop_body(), _unslop_scope()],
-                capture_output=True, text=True, env=env,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        env = dict(os.environ)
+        env.pop("EXPSKILL_HOME", None)
+        result = subprocess.run(
+            [shutil.which("node"), "--input-type=module", "-e", script,
+             (package / "index.js").as_uri(), RULE, _unslop_body(), _unslop_scope()],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_hermes_registers_a_durable_section_and_keeps_skills_available(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            package = build_hermes_package(ROOT, Path(temporary) / "hermes")
-            self.assertIn("name: expskill", (package / "plugin.yaml").read_text())
-            spec = importlib.util.spec_from_file_location("hermes_authoring_test", package / "__init__.py")
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            sections, skills = {}, {}
+        package = shared_artifact("hermes")
+        self.assertIn("name: expskill", (package / "plugin.yaml").read_text())
+        spec = importlib.util.spec_from_file_location("hermes_authoring_test", package / "__init__.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sections, skills = {}, {}
 
-            class Context:
-                def register_system_prompt_section(self, name, text, **options):
-                    sections[name] = (text, options)
+        class Context:
+            def register_system_prompt_section(self, name, text, **options):
+                sections[name] = (text, options)
 
-                def register_skill(self, name, skill_md):
-                    skills[name] = skill_md
+            def register_skill(self, name, skill_md):
+                skills[name] = skill_md
 
-            module.register(Context())
-            self.assertEqual(sections["expskill.authoring"][0], RULE)
-            self.assertEqual(sections["expskill.authoring"][1]["position"], "after_memory")
-            unslop = json.loads((package / "assets/unslop-runtime.json").read_text())
-            loaded = "\n\n".join(text for name, (text, _) in sorted(sections.items()) if name.startswith("expskill.unslop"))
-            self.assertTrue(loaded.startswith(unslop["scope"]))
-            self.assertEqual(" ".join(loaded.split()), _unslop_expected())
-            self.assertTrue(all(len(text) <= 4000 for text, _ in sections.values()))
-            self.assertEqual(len(skills), 17)
-            self.assertTrue(all(path.is_file() for path in skills.values()))
+        module.register(Context())
+        self.assertEqual(sections["expskill.authoring"][0], RULE)
+        self.assertEqual(sections["expskill.authoring"][1]["position"], "after_memory")
+        unslop = json.loads((package / "assets/unslop-runtime.json").read_text())
+        loaded = "\n\n".join(text for name, (text, _) in sorted(sections.items()) if name.startswith("expskill.unslop"))
+        self.assertTrue(loaded.startswith(unslop["scope"]))
+        self.assertEqual(" ".join(loaded.split()), _unslop_expected())
+        self.assertTrue(all(len(text) <= 4000 for text, _ in sections.values()))
+        self.assertEqual(len(skills), 17)
+        self.assertTrue(all(path.is_file() for path in skills.values()))
 
     def test_hermes_native_loader_and_core_preserve_the_section(self) -> None:
         runtime = hermes_agent_runtime()
         if runtime is None:
             self.skipTest("Hermes runtime is not installed")
         python, runtime_root = runtime
-        with tempfile.TemporaryDirectory() as temporary:
-            package = build_hermes_package(ROOT, Path(temporary) / "expskill")
-            script = '''
+        package = shared_artifact("hermes")
+        script = '''
 import json, sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -191,7 +181,7 @@ assert not manifest.portable
 manager._load_plugin(manifest)
 loaded = manager.list_plugins()
 assert loaded[0]["enabled"], loaded
-assert len(manager.list_plugin_skills("expskill")) == 16
+assert len(manager.list_plugin_skills("expskill")) == 17
 rendered = manager.render_system_prompt_sections({})
 assert rendered[0].content == sys.argv[3]
 loaded = "\\n\\n".join(item.content for item in rendered[1:])
@@ -208,6 +198,7 @@ restore_plugin_prompt_sections(resumed, prompt)
 assert [item.content for item in _frozen_plugin_prompt_sections(resumed)] == expected
 print(json.dumps({"enabled": True, "preserved": True}))
 '''
+        with tempfile.TemporaryDirectory() as temporary:
             env = dict(os.environ)
             env["HERMES_HOME"] = str(Path(temporary) / "home")
             result = subprocess.run(
@@ -217,25 +208,24 @@ print(json.dumps({"enabled": True, "preserved": True}))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_missing_or_invalid_policy_cannot_silently_disable_injection(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            package = build_codex_package(ROOT, Path(temporary) / "codex")
-            policy_path = package / "assets/authoring-runtime.json"
-            env = dict(os.environ)
-            env.pop("PLUGIN_ROOT", None)
-            for invalid in (None, {}, {"schema_version": "authoring-runtime.v1", "instructions": ""}):
-                with self.subTest(policy=invalid):
-                    if invalid is None:
-                        policy_path.unlink()
-                    else:
-                        policy_path.write_text(json.dumps(invalid))
-                    result = subprocess.run(
-                        [sys.executable, str(package / "hooks/inject_authoring.py")],
-                        input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
-                        capture_output=True, text=True, env=env,
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(result.stdout, "")
-                    self.assertIn("Authoring hook could not load", result.stderr)
+        package = checkout_copy(shared_artifact("codex"), self)
+        policy_path = package / "assets/authoring-runtime.json"
+        env = dict(os.environ)
+        env.pop("PLUGIN_ROOT", None)
+        for invalid in (None, {}, {"schema_version": "authoring-runtime.v1", "instructions": ""}):
+            with self.subTest(policy=invalid):
+                if invalid is None:
+                    policy_path.unlink(missing_ok=True)
+                else:
+                    policy_path.write_text(json.dumps(invalid))
+                result = subprocess.run(
+                    [sys.executable, str(package / "hooks/inject_authoring.py")],
+                    input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
+                    capture_output=True, text=True, env=env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Authoring hook could not load", result.stderr)
 
 
 if __name__ == "__main__":

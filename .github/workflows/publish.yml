@@ -13,6 +13,8 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,13 +23,13 @@ jobs:
       - name: Repository contract
         run: python3 scripts/validate.py
       - name: Install test dependencies
-        run: python3 -m pip install pytest
+        run: python3 -m pip install -r requirements-dev.txt
       - name: Host contract tests
         run: >-
-          python3 -m pytest -q
+          python3 -m pytest -q -n auto --dist load
           tests/test_installer.py
-          tests/test_codex_agent_discovery.py
           tests/test_codex_source_correction.py
+          tests/test_cli_verification.py
           tests/test_authoring_runtime.py
           tests/test_content_host_layout.py
           tests/test_hermes_contract.py
@@ -37,6 +39,7 @@ jobs:
           tests/test_opencode_contract.py
           tests/test_opencode_package.py
           tests/test_skill_structure.py
+          tests/test_skill_builder.py::SkillBuilderCanonicalDigestTests
 
   check-release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -52,8 +55,49 @@ jobs:
             exit 1
           fi
 
+  oracle:
+    # Slow oracle suite off the CI critical path: publish jobs do not wait
+    # for it, so validate stays the fast signal.
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+      - name: Oracle tests
+        run: >-
+          python3 -m pytest -q -n auto --dist load
+          tests/test_skill_builder.py
+
+  networked-validate:
+    # The networked suites are off the pull request path, so a release tag
+    # still proves that the real Codex CLI accepts the published profiles.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+      # Both suites acquire the same verified executable cache, so they run
+      # one after the other.
+      - name: Networked CLI tests
+        env:
+          EXPSKILL_RUN_NETWORK_TESTS: "1"
+          EXPSKILL_CLI_MODE: required
+        run: >-
+          python3 -m pytest -q -n 0
+          tests/test_cli_install_integration.py
+          tests/test_codex_agent_discovery.py
+
   publish-codex-dist:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -111,7 +155,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-npm:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -149,7 +193,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-claude-dist:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -205,7 +249,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 152416066+g-imhoff@users.noreply.github.com
 
   publish-hermes-dist:
-    needs: [validate, check-release]
+    needs: [validate, check-release, networked-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

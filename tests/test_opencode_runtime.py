@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.build_opencode_package import build_opencode_package
+from tests.build_cache import checkout_copy, shared_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -545,7 +545,7 @@ import(%s).then(async (module) => {
   );
   assert(
     'catalog-inventory-shape',
-    expectedCommands.length === 16 && expectedAgents.length === 7,
+    expectedCommands.length === 17 && expectedAgents.length === 7,
   );
 
   const userCommand = { description: 'user command', template: 'user template' };
@@ -1026,11 +1026,7 @@ def run_node_case(
 
 class OpencodeRuntimeTests(unittest.TestCase):
     def artifact(self) -> Path:
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        artifact = Path(temporary.name) / "artifact"
-        build_opencode_package(ROOT, artifact)
-        return artifact
+        return shared_artifact("opencode")
 
     @needs_node
     def test_plugins_pass_syntax_check(self) -> None:
@@ -1176,7 +1172,7 @@ class OpencodeRuntimeTests(unittest.TestCase):
 
     @needs_node
     def test_native_root_plugin_fails_closed_on_malformed_catalog(self) -> None:
-        artifact = self.artifact()
+        artifact = checkout_copy(self.artifact(), self)
         (artifact / "catalog.json").write_text("{invalid", encoding="utf-8")
         result = run_node_case(artifact / "index.js", NATIVE_ROOT_MALFORMED_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1277,7 +1273,7 @@ class OpencodeRuntimeTests(unittest.TestCase):
         )
         for name, mutate in variants:
             with self.subTest(variant=name):
-                artifact = self.artifact()
+                artifact = checkout_copy(self.artifact(), self)
                 catalog_path = artifact / "catalog.json"
                 catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
                 mutate(catalog)

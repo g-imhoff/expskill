@@ -20,6 +20,7 @@ from scripts.artifact_contract import (
     artifact_output_relative,
 )
 from scripts.render_opencode import RenderError, render_agents, render_all, render_catalog
+from tests.build_cache import shared_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,7 +170,7 @@ class FoundationLayoutTests(unittest.TestCase):
     def test_builder_uses_plugin_tree_when_legacy_package_mirror_is_present(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source"
-            shutil.copytree(ROOT, source)
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(".testbin"))
 
             # A stale checkout can still contain an untracked package-shaped
             # mirror.  It must never become a second build input.
@@ -213,9 +214,8 @@ class FoundationLayoutTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
-            first = temporary_root / "first"
+            first = shared_artifact("opencode")
             second = temporary_root / "second"
-            build_opencode_package(ROOT, first)
             build_opencode_package(ROOT, second)
             first_files = sorted(path.relative_to(first).as_posix() for path in first.rglob("*"))
             second_files = sorted(path.relative_to(second).as_posix() for path in second.rglob("*"))
@@ -244,7 +244,7 @@ class FoundationLayoutTests(unittest.TestCase):
             self.assertFalse(any("__pycache__" in path or path.endswith((".pyc", ".pyo")) for path in first_files))
 
             source = temporary_root / "source"
-            shutil.copytree(ROOT, source)
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(".testbin"))
             skill = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
             skill.write_text(skill.read_text(encoding="utf-8").replace("\ndescription: ", "\ndescription: Changed skill marker. ", 1), encoding="utf-8")
             profile = source / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
@@ -260,7 +260,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             source = temporary_root / "source"
-            shutil.copytree(ROOT, source)
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(".testbin"))
             outside = temporary_root / "outside"
             outside.write_text("unsafe\n", encoding="utf-8")
             link = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "unsafe.txt"
@@ -272,7 +272,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             source = temporary_root / "source"
-            shutil.copytree(ROOT, source)
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(".testbin"))
             real_plugins = temporary_root / "real-plugins"
             shutil.move(source / "plugins", real_plugins)
             (source / "plugins").symlink_to(real_plugins, target_is_directory=True)
@@ -341,39 +341,37 @@ class FoundationLayoutTests(unittest.TestCase):
             self.assertEqual(command_description.strip('"'), description)
 
     def test_build_derives_command_activation_from_canonical_skill_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            artifact = Path(temporary) / "artifact"
-            build_opencode_package(ROOT, artifact)
+        artifact = shared_artifact("opencode")
 
-            self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 17)
-            commands = sorted((artifact / "commands").glob("*.md"))
-            self.assertEqual(len(commands), 17)
-            self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
-            catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
-            self.assertEqual(set(catalog["commands"]), {path.stem for path in commands})
-            for command in commands:
-                name = command.stem
-                contents = command.read_text(encoding="utf-8")
-                expected = name == "use-expskill"
-                implicit_marker = "This is the only skill that may activate without an explicit invocation."
-                explicit_marker = "This command is explicit-only."
-                self.assertIn(expected and implicit_marker or explicit_marker, contents)
-                self.assertEqual(implicit_marker in contents, expected)
-                self.assertEqual(
-                    contents.split("---\n", 2)[2],
-                    catalog["commands"][name]["template"],
-                )
-                self.assertEqual(
-                    implicit_marker in catalog["commands"][name]["template"],
-                    expected,
-                )
-                self.assertNotIn("opencode/autoinvoke", contents)
-                self.assertNotIn("opencode/autoinvoke", catalog["commands"][name]["template"])
+        self.assertEqual(len([path for path in (artifact / "skills").iterdir() if path.is_dir()]), 17)
+        commands = sorted((artifact / "commands").glob("*.md"))
+        self.assertEqual(len(commands), 17)
+        self.assertEqual(len(list((artifact / "agents").glob("*.md"))), 7)
+        catalog = json.loads((artifact / "catalog.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(catalog["commands"]), {path.stem for path in commands})
+        for command in commands:
+            name = command.stem
+            contents = command.read_text(encoding="utf-8")
+            expected = name == "use-expskill"
+            implicit_marker = "This is the only skill that may activate without an explicit invocation."
+            explicit_marker = "This command is explicit-only."
+            self.assertIn(expected and implicit_marker or explicit_marker, contents)
+            self.assertEqual(implicit_marker in contents, expected)
+            self.assertEqual(
+                contents.split("---\n", 2)[2],
+                catalog["commands"][name]["template"],
+            )
+            self.assertEqual(
+                implicit_marker in catalog["commands"][name]["template"],
+                expected,
+            )
+            self.assertNotIn("opencode/autoinvoke", contents)
+            self.assertNotIn("opencode/autoinvoke", catalog["commands"][name]["template"])
 
     def test_renderer_rejects_missing_or_malformed_canonical_skill_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
-            shutil.copytree(ROOT, root)
+            shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns(".testbin"))
             policy = root / "plugins" / "expskill" / "content" / "policies" / "skills.json"
 
             policy.unlink()
@@ -427,7 +425,7 @@ class FoundationLayoutTests(unittest.TestCase):
         self.assertEqual(before, after)
         with tempfile.TemporaryDirectory() as temporary:
             copied = Path(temporary) / "repo"
-            shutil.copytree(ROOT, copied)
+            shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".testbin"))
             overlay = copied / "plugins" / "expskill" / "content" / "agents.json"
             spec = json.loads(overlay.read_text(encoding="utf-8"))
             spec["agents"]["expskill-review"].pop("closing")
@@ -439,7 +437,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             source = temporary_root / "source"
-            shutil.copytree(ROOT, source)
+            shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(".testbin"))
             sentinel = temporary_root / "sentinel"
             sentinel.mkdir()
             marker = sentinel / "must-survive.txt"
@@ -476,7 +474,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             root = temporary_root / "root"
-            shutil.copytree(ROOT, root)
+            shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns(".testbin"))
             spec_path = root / "plugins" / "expskill" / "opencode" / "agents.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8"))
 
@@ -528,7 +526,7 @@ class FoundationLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             root = temporary_root / "root"
-            shutil.copytree(ROOT, root)
+            shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns(".testbin"))
             profile = root / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
             profile.write_text(
                 profile.read_text(encoding="utf-8") + "\nMutation marker: review prompt.\n",

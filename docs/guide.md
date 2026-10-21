@@ -369,7 +369,15 @@ inconsistent evidence.
 
 ## Repository commands
 
+Install the test dependencies once. The suite runs in parallel by default,
+because `pytest.ini` sets `-n auto`, so a plain `python3 -m pytest` spreads
+the tests over the available cores. The parallel default needs pytest-xdist,
+which the install step below provides. Pass `-n 0` for a serial run. Each
+worker holds its own copy of the memoized canonical form that the trace
+oracle builds, so a run needs a few hundred megabytes per worker.
+
 ```bash
+python3 -m pip install -r requirements-dev.txt
 python3 scripts/validate.py
 python3 -m pytest -q tests/test_codex_source_correction.py tests/test_worktrees.py
 python3 -m pytest -q tests/test_brainstorm_contract.py tests/test_plan_contract.py tests/test_plan_graph.py tests/test_plan_graph_stage10.py
@@ -383,19 +391,23 @@ the official release archive SHA-256, retains or reacquires that verified
 archive, checks the expected executable member before reusing cached bytes,
 exercises Codex through the real Codex CLI marketplace and plugin commands
 and exercises OpenCode through npm pack/install plus file-URI config wiring,
-and verifies detection. Run it in
-the required, fail-closed mode:
+and verifies detection. Both networked suites skip unless
+`EXPSKILL_RUN_NETWORK_TESTS` holds 1, true, yes, or on. The nightly
+`networked-tests` workflow sets that variable and runs both suites, and a
+release tag runs them again before anything is published. Run them locally in
+the required, fail-closed mode, serially, because both acquire the same
+verified executable cache:
 
 ```bash
-EXPSKILL_CLI_MODE=required python3 -m pytest -q tests/test_cli_install_integration.py
+EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q -n 0 tests/test_cli_install_integration.py tests/test_codex_agent_discovery.py
 ```
 
 The checked-in manifest records the archive digests and their authoritative
-release metadata URLs from the Codex and opencode GitHub release APIs. A
-missing binary, unsupported platform, download failure, corrupt archive or
-cache, unexpected archive layout, and any digest mismatch fails this command;
-none can become a skip. The suite runs only install/list/remove and
-config-startup smoke commands, never a model call.
+release metadata URLs from the Codex and opencode GitHub release APIs. Once
+opted in, a missing binary, unsupported platform, download failure, corrupt
+archive or cache, unexpected archive layout, and any digest mismatch fails
+this command. The suites run only install/list/remove and config-startup smoke
+commands, never a model call.
 
 An explicit executable override is permitted only with an independently
 verified companion digest. Do not compute a digest from an untrusted file and
@@ -408,13 +420,13 @@ export EXPSKILL_TEST_CODEX_BIN="/path/to/codex"
 export EXPSKILL_TEST_CODEX_BIN_SHA256="independently-verified-sha256"
 export EXPSKILL_TEST_OPENCODE_BIN="/path/to/opencode"
 export EXPSKILL_TEST_OPENCODE_BIN_SHA256="independently-verified-sha256"
-export EXPSKILL_CLI_MODE=required
-python3 -m pytest -q tests/test_cli_install_integration.py
+EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=required python3 -m pytest -q -n 0 tests/test_cli_install_integration.py
 ```
 
-For a deliberately local/offline check, opt in explicitly with
-`EXPSKILL_CLI_MODE=optional`; only unavailable acquisition is skippable there.
-It must not be used as a substitute for required verification.
+For a deliberately local/offline check, opt in with
+`EXPSKILL_RUN_NETWORK_TESTS=1 EXPSKILL_CLI_MODE=optional`; only unavailable
+acquisition is skippable there. It must not be used as a substitute for
+required verification.
 
 ## OpenCode package
 

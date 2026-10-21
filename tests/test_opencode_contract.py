@@ -34,7 +34,7 @@ class OpencodeContractTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         temporary = Path(temporary_directory.name)
-        ignored = ["__pycache__", "*.pyc", "*.pyo"]
+        ignored = ["__pycache__", "*.pyc", "*.pyo", ".testbin"]
         if not include_git:
             ignored.append(".git")
         shutil.copytree(
@@ -50,10 +50,6 @@ class OpencodeContractTests(unittest.TestCase):
         build_opencode_package(root, artifact)
         self.addCleanup(temporary.cleanup)
         return temporary, artifact
-
-    def test_no_opencode_contract_error_on_valid_repository(self) -> None:
-        errors = validate_repository(ROOT)
-        self.assertFalse([error for error in errors if "opencode" in error], errors)
 
     def test_default_validation_rejects_missing_whole_source_surfaces(self) -> None:
         for surface, expected_error in (

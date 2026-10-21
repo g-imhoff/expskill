@@ -13,6 +13,7 @@ from pathlib import Path
 from scripts.artifact_contract import HERMES_PROVENANCE_SCHEMA_VERSION
 from scripts.build_hermes_package import BuildError, build_hermes_package
 from scripts.render_hermes import render_agents, skill_inventory
+from tests.build_cache import shared_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +48,9 @@ def hermes_agent_runtime() -> tuple[Path, Path] | None:
 
 
 class HermesPackageTests(unittest.TestCase):
-    def build_artifact(self, root: Path) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+    def build_artifact(self, root: Path) -> tuple[tempfile.TemporaryDirectory[str] | None, Path]:
+        if Path(root).resolve() == ROOT.resolve():
+            return None, shared_artifact("hermes")
         temporary = tempfile.TemporaryDirectory()
         artifact = Path(temporary.name) / "artifact"
         build_hermes_package(root, artifact)
@@ -55,20 +58,22 @@ class HermesPackageTests(unittest.TestCase):
         return temporary, artifact
 
     def test_build_is_deterministic_across_runs(self) -> None:
-        _first_temporary, first = self.build_artifact(ROOT)
-        _second_temporary, second = self.build_artifact(ROOT)
-        first_files = sorted(
-            path.relative_to(first).as_posix() for path in first.rglob("*") if path.is_file()
-        )
-        second_files = sorted(
-            path.relative_to(second).as_posix() for path in second.rglob("*") if path.is_file()
-        )
-        self.assertEqual(first_files, second_files)
-        for relative in first_files:
-            with self.subTest(path=relative):
-                self.assertEqual(
-                    (first / relative).read_bytes(), (second / relative).read_bytes()
-                )
+        _shared_temporary, first = self.build_artifact(ROOT)
+        with tempfile.TemporaryDirectory() as temporary:
+            second = Path(temporary) / "artifact"
+            build_hermes_package(ROOT, second)
+            first_files = sorted(
+                path.relative_to(first).as_posix() for path in first.rglob("*") if path.is_file()
+            )
+            second_files = sorted(
+                path.relative_to(second).as_posix() for path in second.rglob("*") if path.is_file()
+            )
+            self.assertEqual(first_files, second_files)
+            for relative in first_files:
+                with self.subTest(path=relative):
+                    self.assertEqual(
+                        (first / relative).read_bytes(), (second / relative).read_bytes()
+                    )
 
     def test_artifact_holds_no_symlinks_or_caches_and_normalized_metadata(self) -> None:
         _temporary, artifact = self.build_artifact(ROOT)
@@ -96,7 +101,7 @@ class HermesPackageTests(unittest.TestCase):
             shutil.copytree(
                 ROOT,
                 root,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".testbin"),
             )
             (root / "plugins" / "expskill" / "hermes" / "agents").mkdir()
             artifact = Path(temporary) / "artifact"

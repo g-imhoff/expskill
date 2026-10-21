@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import errno
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -15,6 +16,7 @@ import unittest
 import urllib.error
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 from unittest import mock
 
 from tests import cli_verification
@@ -1062,6 +1064,74 @@ class CliVerificationTests(unittest.TestCase):
                     platform_key=("haiku", "riscv64"),
                     environ={},
                 )
+
+    def test_network_test_gate_enables_only_documented_values(self) -> None:
+        enabled_values = ("1", "true", "TRUE", " True ", "yes", "YES", "on", "ON", " On\n")
+        for value in enabled_values:
+            with self.subTest(value=value):
+                self.assertTrue(
+                    cli_verification.network_tests_enabled(
+                        {cli_verification.NETWORK_TEST_ENV: value}
+                    )
+                )
+        rejected_values = ("", " ", "0", "false", "no", "off", "2", "enabled", "y", "t")
+        for value in rejected_values:
+            with self.subTest(value=value):
+                self.assertFalse(
+                    cli_verification.network_tests_enabled(
+                        {cli_verification.NETWORK_TEST_ENV: value}
+                    )
+                )
+        self.assertFalse(cli_verification.network_tests_enabled({}))
+
+    def test_parallel_worker_rule_detects_a_worker_process(self) -> None:
+        """The worker variable is the only signal that the CLI cache is shared."""
+
+        self.assertTrue(
+            cli_verification.parallel_worker_detected(
+                {cli_verification.XDIST_WORKER_ENV: "gw0"}
+            )
+        )
+        self.assertFalse(cli_verification.parallel_worker_detected({}))
+        self.assertFalse(
+            cli_verification.parallel_worker_detected(
+                {cli_verification.XDIST_WORKER_ENV: " "}
+            )
+        )
+        self.assertIn("-n 0", cli_verification.PARALLEL_WORKER_REASON)
+
+    def test_networked_suites_refuse_a_parallel_worker(self) -> None:
+        """Both networked suites skip in a worker and stay runnable outside one."""
+
+        for module_name, class_name in (
+            ("test_cli_install_integration", "CliInstallIntegrationTests"),
+            ("test_codex_agent_discovery", "CodexAgentDiscoveryTests"),
+        ):
+            with self.subTest(suite=module_name):
+                worker = self._load_suite_module(module_name, worker="gw0")
+                skipped = getattr(worker, class_name)
+                self.assertTrue(getattr(skipped, "__unittest_skip__", False))
+                self.assertIn("-n 0", getattr(skipped, "__unittest_skip_why__", ""))
+                serial = self._load_suite_module(module_name, worker=None)
+                self.assertFalse(
+                    getattr(getattr(serial, class_name), "__unittest_skip__", False)
+                )
+
+    def _load_suite_module(self, module_name: str, worker: str | None) -> ModuleType:
+        """Load one networked suite module with or without the worker variable."""
+
+        path = Path(__file__).with_name(f"{module_name}.py")
+        spec = importlib.util.spec_from_file_location(f"_worker_probe_{module_name}", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        environment = {cli_verification.NETWORK_TEST_ENV: "1"}
+        if worker is not None:
+            environment[cli_verification.XDIST_WORKER_ENV] = worker
+        with mock.patch.dict(os.environ, environment):
+            if worker is None:
+                os.environ.pop(cli_verification.XDIST_WORKER_ENV, None)
+            spec.loader.exec_module(module)
+        return module
 
 
 if __name__ == "__main__":

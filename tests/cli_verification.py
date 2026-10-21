@@ -31,9 +31,15 @@ from typing import Callable, Mapping
 
 MANIFEST_PATH = Path(__file__).with_name("cli_release_manifest.json")
 CLI_MODE_ENV = "EXPSKILL_CLI_MODE"
+NETWORK_TEST_ENV = "EXPSKILL_RUN_NETWORK_TESTS"
+XDIST_WORKER_ENV = "PYTEST_XDIST_WORKER"
+PARALLEL_WORKER_REASON = (
+    f"run the networked CLI suites with -n 0; {XDIST_WORKER_ENV} is set"
+)
 REQUIRED_MODE = "required"
 OPTIONAL_MODE = "optional"
 _VALID_MODES = frozenset({REQUIRED_MODE, OPTIONAL_MODE})
+_NETWORK_TEST_ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
 _CHUNK_SIZE = 1024 * 1024
 _NETWORK_TIMEOUT = 300
 _INTEGRITY_FILENAME = ".integrity.json"
@@ -120,6 +126,32 @@ def _mode(value: str | None, environ: Mapping[str, str]) -> str:
         choices = ", ".join(sorted(_VALID_MODES))
         raise CliVerificationError(f"{CLI_MODE_ENV} must be one of {choices}, got {selected!r}")
     return selected
+
+
+def network_tests_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the networked CLI suites are opted in.
+
+    The suites stay skipped unless ``EXPSKILL_RUN_NETWORK_TESTS`` holds one of
+    ``1``, ``true``, ``yes`` or ``on``.  Surrounding whitespace and letter
+    case are ignored.  Every other value, including an empty one, keeps the
+    suites skipped.
+    """
+
+    env = os.environ if environ is None else environ
+    return env.get(NETWORK_TEST_ENV, "").strip().lower() in _NETWORK_TEST_ENABLED_VALUES
+
+
+def parallel_worker_detected(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the current process runs inside a pytest-xdist worker.
+
+    Both networked suites install into the same verified CLI cache and the
+    install renames that directory, so two workers doing it at once can fail.
+    A worker therefore refuses to run the networked suites, and the skip
+    message names the serial command that runs them.
+    """
+
+    env = os.environ if environ is None else environ
+    return env.get(XDIST_WORKER_ENV, "").strip() != ""
 
 
 def _failure(
@@ -827,8 +859,13 @@ __all__ = [
     "CliAcquisitionUnavailable",
     "CliAsset",
     "CliVerificationError",
+    "NETWORK_TEST_ENV",
     "OPTIONAL_MODE",
+    "PARALLEL_WORKER_REASON",
     "REQUIRED_MODE",
+    "XDIST_WORKER_ENV",
     "ensure_binary",
+    "network_tests_enabled",
+    "parallel_worker_detected",
     "platform_key",
 ]

@@ -10,10 +10,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.build_codex_package import build_codex_package
-from scripts.build_opencode_package import build_opencode_package
 from scripts.render_codex import render_agents as render_codex_agents
 from scripts.render_opencode import render_agents as render_opencode_agents
+from tests.build_cache import shared_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,7 +111,11 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             copied = Path(temporary) / "repo"
             import shutil
 
-            shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(
+                ROOT,
+                copied,
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".testbin"),
+            )
             content_path = copied / "plugins" / "expskill" / "content" / "agents.json"
             content = json.loads(content_path.read_text(encoding="utf-8"))
             marker = "Canonical metadata mutation marker."
@@ -141,13 +144,11 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             self.assertNotIn(policy["scope"].strip(), source)
             self.assertNotIn(skill_body, source)
 
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            codex = build_codex_package(ROOT, root / "codex")
-            opencode = build_opencode_package(ROOT, root / "opencode")
-            expected = policy_path.read_bytes()
-            self.assertEqual((codex / "assets" / "unslop-runtime.json").read_bytes(), expected)
-            self.assertEqual((opencode / "assets" / "unslop-runtime.json").read_bytes(), expected)
+        codex = shared_artifact("codex")
+        opencode = shared_artifact("opencode")
+        expected = policy_path.read_bytes()
+        self.assertEqual((codex / "assets" / "unslop-runtime.json").read_bytes(), expected)
+        self.assertEqual((opencode / "assets" / "unslop-runtime.json").read_bytes(), expected)
 
     def test_codex_agent_profiles_ship_inside_the_built_marketplace(self) -> None:
         from scripts.build_codex_marketplace import build_codex_marketplace
@@ -164,62 +165,60 @@ class CodexSourceCorrectionTests(unittest.TestCase):
                 self.assertIn("developer_instructions", profile.read_text(encoding="utf-8"))
 
     def test_codex_package_is_regular_and_provenanced(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            output = build_codex_package(ROOT, Path(temporary) / "package")
-            skill_names = {
-                path.parent.name
-                for path in (PLUGIN_ROOT / "content" / "skills").glob("*/SKILL.md")
-            }
-            self.assertEqual(
-                {path.parent.name for path in output.glob("skills/*/SKILL.md")},
-                skill_names,
+        output = shared_artifact("codex")
+        skill_names = {
+            path.parent.name
+            for path in (PLUGIN_ROOT / "content" / "skills").glob("*/SKILL.md")
+        }
+        self.assertEqual(
+            {path.parent.name for path in output.glob("skills/*/SKILL.md")},
+            skill_names,
+        )
+        self.assertEqual(
+            {path.parents[1].name for path in output.glob("skills/*/agents/openai.yaml")},
+            skill_names,
+        )
+        self.assertFalse(
+            any(
+                "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+                for path in output.rglob("*")
             )
-            self.assertEqual(
-                {path.parents[1].name for path in output.glob("skills/*/agents/openai.yaml")},
-                skill_names,
-            )
-            self.assertFalse(
-                any(
-                    "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
-                    for path in output.rglob("*")
-                )
-            )
-            provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
-            self.assertIn(
-                "scripts/artifact_contract.py",
-                {entry["path"] for entry in provenance["inputs"]},
-            )
-            self.assertIn(
-                "scripts/build_codex_marketplace.py",
-                {entry["path"] for entry in provenance["inputs"]},
-            )
+        )
+        provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+        self.assertIn(
+            "scripts/artifact_contract.py",
+            {entry["path"] for entry in provenance["inputs"]},
+        )
+        self.assertIn(
+            "scripts/build_codex_marketplace.py",
+            {entry["path"] for entry in provenance["inputs"]},
+        )
 
     def test_packaged_hook_uses_packaged_skill_path(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            output = build_codex_package(ROOT, Path(temporary) / "package")
-            environment = dict(os.environ)
-            environment.pop("PLUGIN_ROOT", None)
-            policies = PLUGIN_ROOT / "content" / "policies"
-            authoring_rule = json.loads((policies / "authoring-runtime.json").read_text(encoding="utf-8"))["instructions"]
-            unslop_policy = json.loads((policies / "unslop-runtime.json").read_text(encoding="utf-8"))
-            skill = (output / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8")
-            self.assertNotIn(authoring_rule, skill)
-            for source in ("startup", "compact"):
-                with self.subTest(source=source):
-                    result = subprocess.run(
-                        [sys.executable, str(output / "hooks" / "inject_unslop.py")],
-                        input=json.dumps({"hook_event_name": "SessionStart", "source": source}) + "\n",
-                        capture_output=True,
-                        text=True,
-                        env=environment,
-                        check=False,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-                    self.assertIn("$expskill:unslop", context)
-                    expected = unslop_policy["compaction_reminder" if source == "compact" else "scope"]
-                    self.assertEqual(context, expected)
-                    self.assertLess(len(context), 500)
+        output = shared_artifact("codex")
+        environment = dict(os.environ)
+        environment.pop("PLUGIN_ROOT", None)
+        policies = PLUGIN_ROOT / "content" / "policies"
+        authoring_rule = json.loads((policies / "authoring-runtime.json").read_text(encoding="utf-8"))["instructions"]
+        unslop_policy = json.loads((policies / "unslop-runtime.json").read_text(encoding="utf-8"))
+        skill = (output / "skills" / "unslop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn(authoring_rule, skill)
+        for source in ("startup", "compact"):
+            with self.subTest(source=source):
+                result = subprocess.run(
+                    [sys.executable, str(output / "hooks" / "inject_unslop.py")],
+                    input=json.dumps({"hook_event_name": "SessionStart", "source": source}) + "\n",
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("$expskill:unslop", context)
+                expected = unslop_policy["compaction_reminder" if source == "compact" else "scope"]
+                self.assertEqual(context, expected)
+                self.assertLess(len(context), 500)
 
 
 if __name__ == "__main__":
