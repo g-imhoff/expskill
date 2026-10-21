@@ -4225,6 +4225,16 @@ def _artifact_raw_digests(
     }
 
 
+def _candidate_skill_digest(candidate: dict[str, Any]) -> str:
+    """Name the loadable skill content that trials install for a candidate."""
+    if candidate["schema_version"] in {
+        HISTORICAL_CANDIDATE_SCHEMA,
+        *_PACKAGED_CANDIDATE_SCHEMAS,
+    }:
+        return candidate["loaded_skill_digest"]
+    return candidate["resulting_digest"]
+
+
 def _validate_trial_binding(
     run: Path,
     current: dict[str, Any],
@@ -4301,12 +4311,7 @@ def _validate_trial_binding(
         "after_target_manifest_digest": "after-manifest",
         "filesystem_result_digest": "filesystem-result",
     }
-    expected_loaded_skill_digest = (
-        candidate["loaded_skill_digest"]
-        if candidate["schema_version"]
-        in {HISTORICAL_CANDIDATE_SCHEMA, *_PACKAGED_CANDIDATE_SCHEMAS}
-        else candidate["resulting_digest"]
-    )
+    expected_loaded_skill_digest = _candidate_skill_digest(candidate)
 
     def run_key(case: dict[str, Any]) -> str:
         if runs_are_versioned:
@@ -5136,7 +5141,7 @@ def _validate_evaluation_binding(
             if receipt["event"] == "confirm-contract"
         )
     )
-    _validate_confirmation_binding(
+    confirmation, _ = _validate_confirmation_binding(
         run,
         current,
         confirmation_id,
@@ -5173,14 +5178,38 @@ def _validate_evaluation_binding(
         for cases in evaluation["partitions"].values()
         for case in cases
     }
+    clauses = _contract_clauses(_artifact_payload_json(run, contract_id))
+    reused = confirmation["schema_version"] == REUSED_CONFIRMATION_SCHEMA
+    by_digest = {
+        (record["type"], record["digest"]): record["artifact_id"]
+        for record in current["artifact_index"].values()
+    }
     for record in current["artifact_index"].values():
         if (
             record["type"] != "evaluation-pack"
-            or record["derived_status"] != "superseded"
+            or record["derived_status"] == "accepted"
         ):
             continue
         earlier = _artifact_payload_json(run, record["artifact_id"])
-        if earlier["confirmation_digest"] != evaluation["confirmation_digest"]:
+        earlier_confirmation_id = by_digest.get(
+            ("user-confirmation-record", earlier["confirmation_digest"])
+        )
+        earlier_contract_id = by_digest.get(
+            ("skill-contract", earlier["contract_digest"])
+        )
+        if earlier_confirmation_id is None or earlier_contract_id is None:
+            continue
+        same_event = (
+            _artifact_payload_json(run, earlier_confirmation_id)[
+                "confirmation_event_digest"
+            ]
+            == confirmation["confirmation_event_digest"]
+        )
+        if not same_event and not (
+            reused
+            and _contract_clauses(_artifact_payload_json(run, earlier_contract_id))
+            == clauses
+        ):
             continue
         for cases in earlier["partitions"].values():
             for case in cases:
@@ -7962,13 +7991,15 @@ def _validate_final_evidence(
         for case in trials["cases"]
     ):
         raise RunStateError("delivery requires a trial that loaded the candidate")
+    skill_digest = _candidate_skill_digest(candidate)
     for record in current["artifact_index"].values():
-        if record["type"] != "trial-pack" or record["derived_status"] != "superseded":
+        if record["type"] != "trial-pack":
             continue
-        earlier = _artifact_payload_json(run, record["artifact_id"])
-        if earlier["candidate_digest"] == candidate_digest and any(
-            case.get("exposure") == "selection" and case["verdict"] == "fail"
-            for case in earlier["cases"]
+        if any(
+            case.get("exposure") == "selection"
+            and case["verdict"] == "fail"
+            and case["installed_skill_digest"] == skill_digest
+            for case in _artifact_payload_json(run, record["artifact_id"])["cases"]
         ):
             raise RunStateError(
                 "selection trials already failed for this candidate, so repair it"

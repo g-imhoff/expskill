@@ -139,16 +139,36 @@ def advance_to_contract(
             event=event,
             destination_stage=stage,
         )["sequence"]
+    return accept_contract(
+        helper,
+        state_root,
+        workflow_id,
+        sequence,
+        "contract" + suffix,
+        "design" + suffix,
+        overrides,
+    )
+
+
+def accept_contract(
+    helper: ModuleType,
+    state_root: Path,
+    workflow_id: str,
+    sequence: int,
+    contract_id: str = "contract",
+    design_id: str = "design",
+    overrides: dict[str, object] | None = None,
+) -> int:
     contract = support.contract_payload(helper, state_root, workflow_id)
     for binding in contract["evidence_bindings"]:
-        binding["artifact_id"] = "design" + suffix
+        binding["artifact_id"] = design_id
     contract.update(overrides or {})
     retained = support.retain_json(
         helper,
         state_root=state_root,
         workflow_id=workflow_id,
         sequence=sequence,
-        artifact_id="contract" + suffix,
+        artifact_id=contract_id,
         artifact_type="skill-contract",
         payload=contract,
         input_bindings=support.current_bindings(helper, state_root, workflow_id),
@@ -158,7 +178,7 @@ def advance_to_contract(
         expected_sequence=retained["sequence"],
         event="accept-contract",
         destination_stage="contract",
-        artifact_ids=["contract" + suffix],
+        artifact_ids=[contract_id],
         state_root=state_root,
     )["sequence"]
 
@@ -184,9 +204,9 @@ def confirm_with_user(
     sequence: int,
     contract_id: str = "contract",
     suffix: str = "",
+    authority_digest: str = "2" * 64,
 ) -> int:
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
-    authority_digest = "2" * 64
     retained = support.retain_json(
         helper,
         state_root=state_root,
@@ -222,6 +242,7 @@ def freeze_evaluation(
     contract_id: str,
     confirmation_id: str,
     artifact_id: str = "evaluation",
+    cases: list[dict[str, object]] | None = None,
 ) -> int:
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
     retained = support.retain_json(
@@ -235,7 +256,7 @@ def freeze_evaluation(
             contract_digest=current["artifact_index"][contract_id]["digest"],
             confirmation_digest=current["artifact_index"][confirmation_id]["digest"],
             snapshot_digest=current["target_snapshot"]["snapshot_digest"],
-            cases=support.frozen_cases(),
+            cases=support.frozen_cases() if cases is None else cases,
         ),
         input_bindings=support.current_bindings(helper, state_root, workflow_id),
     )
@@ -508,6 +529,76 @@ def test_evaluate_and_improve_reuse_a_kept_contract_on_unchanged_files(
     assert rekept["confirmation_limitations"] == kept["confirmation_limitations"]
     assert rekept["contract"] == payload_of(state_root, third_id, "contract")
     assert (rekept["source_workflow_id"], rekept["source_mode"]) == (third_id, "improve")
+
+
+def test_an_identical_contract_keeps_frozen_selection_cases(tmp_path: Path) -> None:
+    """Re-accepting the same contract keeps selection cases until the user confirms again."""
+    helper = support.load_helper()
+    state_root, _, _ = evaluate.build_reported(helper, tmp_path)
+    selected = support.frozen_cases({"case-1": "candidate"})
+    relabelled = support.frozen_cases({"case-1": "none"})
+
+    def confirm(workflow_id: str, sequence: int, how: str, contract_id: str) -> tuple[int, str]:
+        if how == "reuse":
+            reused = reuse(helper, state_root, workflow_id, sequence)
+            return reused["sequence"], str(reused["confirmation_artifact_id"])
+        suffix = contract_id.removeprefix("contract")
+        sequence = confirm_with_user(
+            helper, state_root, workflow_id, sequence, contract_id, suffix, how
+        )
+        return sequence, "confirmation" + suffix
+
+    def refreeze(first: str, second: str, cases: list[dict[str, object]]) -> str:
+        _, workflow_id, sequence = build_run_to_contract(helper, tmp_path, "improve")
+        try:
+            sequence, confirmation_id = confirm(workflow_id, sequence, first, "contract")
+            sequence = freeze_evaluation(
+                helper,
+                state_root,
+                workflow_id,
+                sequence,
+                "contract",
+                confirmation_id,
+                cases=selected,
+            )
+            sequence = helper.invalidate_run(
+                workflow_id=workflow_id,
+                expected_sequence=sequence,
+                change_kind="contract",
+                changed_artifact_id="contract",
+                reason="accept the same contract again",
+                state_root=state_root,
+            )["sequence"]
+            sequence = accept_contract(helper, state_root, workflow_id, sequence, "contract-2")
+            sequence, confirmation_id = confirm(workflow_id, sequence, second, "contract-2")
+            freeze_evaluation(
+                helper,
+                state_root,
+                workflow_id,
+                sequence,
+                "contract-2",
+                confirmation_id,
+                artifact_id="evaluation-2",
+                cases=cases,
+            )
+            return helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"]
+        finally:
+            helper.invalidate_run(
+                workflow_id=workflow_id,
+                expected_sequence=helper.load_run(
+                    workflow_id=workflow_id, state_root=state_root
+                )["head_sequence"],
+                change_kind="target-snapshot",
+                changed_artifact_id="resolution",
+                reason="free the target for the next run",
+                state_root=state_root,
+            )
+
+    for first in ("reuse", "5" * 64):
+        with pytest.raises(helper.RunStateError, match="changes a case's selection"):
+            refreeze(first, "reuse", relabelled)
+    assert refreeze("reuse", "reuse", selected) == "evaluation"
+    assert refreeze("reuse", "6" * 64, relabelled) == "evaluation"
 
 
 def test_reuse_is_refused_when_files_contract_or_record_differ(tmp_path: Path) -> None:

@@ -2518,6 +2518,82 @@ def build_current_trials_stage(
     return state_root, workflow_id, sequence, candidate
 
 
+def resubmit_identical_candidate(
+    helper: ModuleType,
+    tmp_path: Path,
+    state_root: Path,
+    workflow_id: str,
+    sequence: int,
+    *,
+    cases: list[dict[str, object]],
+    resulting_bytes: bytes | None,
+    loaded_skill_bytes: bytes,
+    additional_skill_files: dict[str, bytes] | None,
+    owned_paths: list[str] | None,
+    load_policy: dict[str, object] | None,
+    hosts: list[str] | None,
+) -> tuple[int, dict[str, object]]:
+    """Accept the superseded candidate's exact bytes again under a new identity."""
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    digests = {
+        name: current["artifact_index"][name]["digest"]
+        for name in ("contract", "confirmation", "evaluation")
+    }
+    resolved_owned_paths = (
+        default_owned_paths(additional_skill_files)
+        if owned_paths is None
+        else owned_paths
+    )
+    brief = retain_brief(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="brief-2",
+        contract_digest=digests["contract"],
+        confirmation_digest=digests["confirmation"],
+        evaluation_digest=digests["evaluation"],
+        cases=cases,
+        owned_paths=resolved_owned_paths,
+        load_policy=load_policy,
+        hosts=hosts,
+    )
+    candidate = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=brief["sequence"],
+        artifact_id="candidate-2",
+        artifact_type="candidate-record",
+        payload=candidate_payload(
+            tmp_path=tmp_path,
+            candidate_id="candidate-2",
+            revision="candidate-1",
+            contract_digest=digests["contract"],
+            confirmation_digest=digests["confirmation"],
+            evaluation_digest=digests["evaluation"],
+            snapshot_digest=current["target_snapshot"]["snapshot_digest"],
+            brief_digest=brief["artifact_digest"],
+            resulting_bytes=resulting_bytes,
+            loaded_skill_bytes=loaded_skill_bytes,
+            additional_skill_files=additional_skill_files,
+            owned_paths=owned_paths,
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        retain_review_source_components=True,
+        candidate_resulting_bytes=resulting_bytes,
+    )
+    sequence = helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=candidate["sequence"],
+        event="accept-candidate",
+        destination_stage="candidate",
+        artifact_ids=["candidate-2"],
+        state_root=state_root,
+    )["sequence"]
+    return sequence, candidate
+
+
 def build_verified_stage(
     helper: ModuleType,
     tmp_path: Path,
@@ -2549,6 +2625,7 @@ def build_verified_stage(
     selection: dict[str, str] | None = None,
     trial_run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     superseded_trial_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
+    earlier_trials_change: str = "trial",
     mode: str = "create",
     load_policy: dict[str, object] | None = None,
     hosts: list[str] | None = None,
@@ -2616,11 +2693,28 @@ def build_verified_stage(
         sequence = helper.invalidate_run(
             workflow_id=workflow_id,
             expected_sequence=sequence,
-            change_kind="trial",
-            changed_artifact_id="trials-superseded",
+            change_kind=earlier_trials_change,
+            changed_artifact_id="trials-superseded"
+            if earlier_trials_change == "trial"
+            else "candidate",
             reason="rerun trials for the same candidate",
             state_root=state_root,
         )["sequence"]
+        if earlier_trials_change == "candidate":
+            sequence, candidate = resubmit_identical_candidate(
+                helper,
+                tmp_path,
+                state_root,
+                workflow_id,
+                sequence,
+                cases=cases,
+                resulting_bytes=candidate_resulting_bytes,
+                loaded_skill_bytes=candidate_loaded_skill_bytes,
+                additional_skill_files=candidate_additional_skill_files,
+                owned_paths=candidate_owned_paths,
+                load_policy=load_policy,
+                hosts=hosts,
+            )
     trials_payload = trial_payload(
         candidate["artifact_digest"],
         loaded_skill_bytes=trial_loaded_skill_bytes,
@@ -9261,8 +9355,11 @@ def test_selection_runs_bind_the_frozen_setup_with_the_accepted_candidate(
             complete_selection_trials(helper, state_root, workflow_id, sequence)
 
 
-def test_rerun_trials_cannot_hide_a_failing_selection_run(tmp_path: Path) -> None:
-    """A candidate whose selection trials failed needs a repair before release."""
+@pytest.mark.parametrize("earlier_trials_change", ["trial", "candidate"])
+def test_rerun_trials_cannot_hide_a_failing_selection_run(
+    tmp_path: Path, earlier_trials_change: str
+) -> None:
+    """Candidate content whose selection trials failed needs a repair before release."""
     helper = load_helper()
     state_root, workflow_id, sequence, _ = build_verified_stage(
         helper,
@@ -9270,6 +9367,7 @@ def test_rerun_trials_cannot_hide_a_failing_selection_run(tmp_path: Path) -> Non
         superseded_trial_overrides={
             ("case-2", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}
         },
+        earlier_trials_change=earlier_trials_change,
     )
     with pytest.raises(helper.RunStateError, match="already failed"):
         helper.finalize_run(
@@ -9280,7 +9378,10 @@ def test_rerun_trials_cannot_hide_a_failing_selection_run(tmp_path: Path) -> Non
         )
 
     state_root, workflow_id, sequence, _ = build_verified_stage(
-        helper, tmp_path / "rerun", superseded_trial_overrides={}
+        helper,
+        tmp_path / "rerun",
+        superseded_trial_overrides={},
+        earlier_trials_change=earlier_trials_change,
     )
     finalized = helper.finalize_run(
         workflow_id=workflow_id,
@@ -9292,6 +9393,37 @@ def test_rerun_trials_cannot_hide_a_failing_selection_run(tmp_path: Path) -> Non
     assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
         "stage"
     ] == "finalized"
+
+
+def test_an_unsubmitted_failing_selection_pack_blocks_release(tmp_path: Path) -> None:
+    """A retained selection failure for the candidate blocks release without trials completing."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    cases = frozen_cases(SCORED_SELECTION)
+    failed = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="trials-unsubmitted",
+        artifact_type="trial-pack",
+        payload=trial_payload(
+            helper.load_run(workflow_id=workflow_id, state_root=state_root)[
+                "artifact_index"
+            ]["candidate"]["digest"],
+            cases=cases,
+            run_overrides={("case-2", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}},
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        frozen_trial_cases=cases,
+    )
+    with pytest.raises(helper.RunStateError, match="already failed"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=failed["sequence"],
+            release_artifact_id="release",
+            state_root=state_root,
+        )
 
 
 def test_refreezing_under_one_confirmation_keeps_case_selection(
