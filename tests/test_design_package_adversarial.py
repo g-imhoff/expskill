@@ -95,6 +95,22 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 "skill-builder references/shared-stages.md",
                 "lifecycle wording",
             ),
+            "shared-stages-jargon": (
+                "skill-builder references/shared-stages.md",
+                "private policy vocabulary",
+            ),
+            "create-stage-jargon": (
+                "skill-builder references/create.md",
+                "private policy vocabulary",
+            ),
+            "modify-stage-retired": (
+                "skill-builder references/modify.md",
+                "references a retired skill",
+            ),
+            "evaluate-stage-retired": (
+                "skill-builder references/evaluate.md",
+                "references a retired skill",
+            ),
             "router-coupling": (
                 "use-expskill",
                 "must not name skill-builder",
@@ -107,6 +123,10 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "modify-stage-placeholder": ("references/modify.md", "\n[TODO: finish this stage]\n"),
             "evaluate-stage-route": ("references/evaluate.md", "\nInvoke $roast after scoring.\n"),
             "shared-stages-lifecycle": ("references/shared-stages.md", "\n## Lifecycle routing\n"),
+            "shared-stages-jargon": ("references/shared-stages.md", "\nPick the full model with no caps.\n"),
+            "create-stage-jargon": ("references/create.md", "\nRun a Quick pass first.\n"),
+            "modify-stage-retired": ("references/modify.md", "\nHand off to quick-code-change.\n"),
+            "evaluate-stage-retired": ("references/evaluate.md", "\nCompare against Setup-UI-Testing.\n"),
         }
         for mutation, fragments in expected_fragments.items():
             with self.subTest(mutation=mutation):

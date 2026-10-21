@@ -26,7 +26,7 @@ Present the current contract, the planned description, and each host limitation 
 
 ### 8. Freeze acceptance before candidate work
 
-Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Mark each case `selection` when it tests whether the host loads the candidate, as trigger, non-trigger, and near-neighbour requests do, and `loaded` when it tests behavior after loading. Give each selection case a target host the load-policy table runs selection trials on. Where no target host runs them, the static flag check stands in for selection cases. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze the evaluation pack, and enter candidate work only after the helper confirms the four candidate-entry bindings.
+Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Mark each case `selection` when it tests whether the host loads the candidate, as trigger, non-trigger, and near-neighbour requests do, and `loaded` when it tests behavior after loading. Give each selection case a target host the load-policy table runs selection trials on, covering those hosts as the artifact contracts' target scorecard requires. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Freeze the evaluation pack, and enter candidate work only after the helper confirms the four candidate-entry bindings.
 
 ### 9. Build one isolated candidate
 
@@ -46,6 +46,6 @@ Record the conformance ledger against the rubric's gates BR1 to BR10. Score the 
 
 ### 13. Review, verify, and finalize one exact revision
 
-Once every category is 10 and every builder-run gate passes, run a final target review of the same revision under stage 11's rules. After a valid `ready` final review, verify that revision, then finalize through the helper once every finalize condition in the rubric holds. Put the candidate's final description in the finalization report.
+Once every category is 10 and every builder-run gate passes, run a final target review of the same revision under stage 11's rules. After a valid `ready` final review, verify that revision, then finalize through the helper once every finalize condition in the rubric holds.
 
 Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect, and record any accepted installation or integration against the finalized revision. Clean up through the helper only with explicit cleanup authority and a recorded accepted installation or integration.

@@ -27,7 +27,7 @@ A failed builder-run gate blocks release but by itself leaves category scores un
 
 ## Target scoring method
 
-Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. Only bound results count as scoring evidence. Where a selection trial applies, TR2, TR3, TR6, TE3, and CP5 require all 3 real-host runs of each selection case to match its expected selection, and where a host flag applies, they pass on the helper's static flag check.
+Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. Only bound results count as scoring evidence. TR2, TR3, TR6, TE3, and CP5 pass only on the evidence the artifact contracts' target scorecard requires.
 
 ## Reviewer evidence contract
 
@@ -158,14 +158,14 @@ Use an independent target reviewer distinct from every researcher, designer, imp
 | ID | One point requires |
 |---|---|
 | CE1 | Entrypoint size stays within the frozen host and target budget. |
-| CE2 | The description states what the skill does, and adds a load sentence only when the policy limits who loads it. |
+| CE2 | The description is one sentence stating what the skill does, followed by the load sentence only when the policy limits who loads it, and holds nothing else. |
 | CE3 | Core behavior loads with only the resources it needs. |
 | CE4 | Supporting resources exist only when justified by reuse, size, precision, or deterministic behavior. |
 | CE5 | Resource links state the exact condition for needing each resource. |
 | CE6 | Each concept and requirement has one authoritative location, every other mention agrees with it, and the body holds no sentence that only restates the description, the load policy, a non-trigger, or a non-goal. |
 | CE7 | Examples, tables, and templates earn their context cost by resolving a tested ambiguity. |
 | CE8 | Repeated or raw material is bounded and stored outside the entrypoint when the host allows it. |
-| CE9 | Terminology is consistent, concise, and matched to the frozen target audience. |
+| CE9 | Terminology is consistent, concise, and matched to the frozen target audience, and instructions state each rule as its wanted action, each limit as its allowed actions and targets, and a prohibition only for an irreversible action no allowlist covers, once, with its reason and the action to take instead. |
 | CE10 | Removing any remaining instruction would measurably reduce contracted behavior or evidence quality. |
 
 ## 10. Testability

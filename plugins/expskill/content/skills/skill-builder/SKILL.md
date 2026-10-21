@@ -52,7 +52,7 @@ When an improve request changes the contract, or a modify request keeps it, ask 
 
 ## Status
 
-During work, report the exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At a failed gate, report the gate, retained evidence, invalidated artifacts, and the next decision or proof needed. At finalization, report the revision, the ten scores, the review verdict, verification, limitations, the release-record locator, and the delivery result. At `reported`, report the ten scores with their failing criteria, the conformance ledger, the review verdict, and limitations, with the target unchanged.
+During work, report the exact target, mode, kept contract used, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At a failed gate, report the gate, retained evidence, invalidated artifacts, and the next decision or proof needed. At finalization, before asking for delivery authority, report the revision, the final description, the ten scores, the review verdict, verification, limitations, and the release-record locator, then report the delivery result. At `reported`, report the ten scores with their failing criteria, the conformance ledger, the review verdict, and limitations, with the target unchanged.
 
 ## Review context contract
 

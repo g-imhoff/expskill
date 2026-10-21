@@ -75,7 +75,7 @@ Record host evidence, exact-target evidence, overlap and near-neighbour map, sel
 
 ### Baseline report
 
-For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve and modify modes, record current behavior, failures, strengths, context cost, tool and permission behavior, preserved regressions, and body restatement marked for removal. For modify mode, also record the contract delta and each retired behavior with the change that replaces it. For evaluate mode, record the same current-target evidence, with body restatement as CE6 findings. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
+For create mode, record the absent-target proof, overlap map, host conventions, and preserved neighbour regressions. For improve and modify modes, record current behavior, failures, strengths, context cost, tool and permission behavior, preserved regressions, body restatement marked for removal, and prohibitions marked for rewrite. For modify mode, also record the contract delta and each retired behavior with the change that replaces it. For evaluate mode, record the same current-target evidence, with body restatement as CE6 findings and prohibitions as CE9 findings. Include exact prompts, outputs, checks, and snapshot bindings that support the baseline.
 
 ### Research pack
 
@@ -172,7 +172,7 @@ Record reviewer identity, independence and read-only attestation, exact candidat
 
 ### Target scorecard
 
-Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, with every run of those cases passing. Under contract v2, each selection case's host is a contract host, and those cases cover every host the load-policy table runs selection trials on.
+Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, on every contract host the load-policy table runs selection trials on, or on any one host under contract v1, with every run of those cases passing. A contract host without selection trials needs no such cases, resting on the helper's static flag check for a hide flag or on the recorded limitation for Hermes under `user`. Under contract v2, each selection case's host is a contract host.
 
 ### Verification record
 

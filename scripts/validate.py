@@ -1518,8 +1518,13 @@ def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> 
         if relative == "SKILL.md":
             if not _contains_exact_skill_token(contents, SKILL_BUILDER_TOKEN):
                 errors.append("skill-builder contract must identify $skill-builder directly")
-        elif PLACEHOLDER in contents:
-            errors.append(f"{label} contains a placeholder")
+        else:
+            if PLACEHOLDER in contents:
+                errors.append(f"{label} contains a placeholder")
+            if any(retired in contents.lower() for retired in RETIRED_SKILLS):
+                errors.append(f"{label} references a retired skill")
+            if PUBLIC_SKILL_JARGON.search(contents):
+                errors.append(f"{label} contains private policy vocabulary")
         if any(
             _contains_exact_skill_token(contents, token)
             for token in SKILL_BUILDER_FORBIDDEN_TOKENS
