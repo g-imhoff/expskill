@@ -48,6 +48,8 @@ Write each contract field where the artifact contracts' placement table puts it.
 
 A changed target identity, mode, behavior, success, scope, delivery intent, or other material decision invalidates its dependent artifacts through the helper, as the artifact contracts' invalidation table lists, and returns the run to the earliest affected stage. Keep unrelated valid evidence while its bindings match.
 
+When an improve request changes the contract, or a modify request keeps it, ask the user one question. On their yes, switch the mode through the helper and read the new mode file.
+
 ## Status
 
 During work, report the exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At a failed gate, report the gate, retained evidence, invalidated artifacts, and the next decision or proof needed. At finalization, report the revision, the ten scores, the review verdict, verification, limitations, the release-record locator, and the delivery result. At `reported`, report the ten scores with their failing criteria, the conformance ledger, the review verdict, and limitations, with the target unchanged.

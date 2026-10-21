@@ -2,7 +2,7 @@
 
 ## Storage boundary
 
-Store live run state under the private XDG root selected by `scripts/run_state.py`, outside every target repository. Let the helper create and own one run directory under that root. Keep raw artifacts bounded and record every retained file in a strict manifest with a digest. Accept only regular files inside the run directory, with every raw file in a manifest, safe permissions, unambiguous ownership, and a supported schema. Support Git and non-Git targets. A missing Git identity is valid only for a recorded non-Git target. Record only repository, branch, and commit values read from Git (helper-detected).
+Store live run state under the private XDG root selected by `scripts/run_state.py`, outside every target repository. Let the helper create and own one run directory per run and the kept-contract store under that root. Keep raw artifacts bounded and record every retained file in a strict manifest with a digest. Accept only regular files inside the run directory, with every raw file in a manifest, safe permissions, unambiguous ownership, and a supported schema. Support Git and non-Git targets. A missing Git identity is valid only for a recorded non-Git target. Record only repository, branch, and commit values read from Git (helper-detected).
 
 ## Durable source of truth
 
@@ -43,7 +43,7 @@ Derive the current index from the chain with these fields:
 | `stage` | Destination stage of the validated chain head. |
 | `host_identity` | Host kind, canonical identifier, locator, and discovery evidence. |
 | `target_identity` | Requested identity, canonical identity, name, invocation token, and locator. |
-| `mode` | Exactly `create`, `improve`, `modify`, or `evaluate`, plus the evidence that selected it. |
+| `mode` | Exactly `create`, `improve`, `modify`, or `evaluate`, plus the evidence that selected it and, after a mode switch, `mode_switch_digest`. |
 | `authority` | Allowed reads, writes, delegation, candidate effects, and delivery effects. |
 | `git_identity` | Presence flag and, when present, repository identity, branch, commit, and dirty-state digest. |
 | `target_snapshot` | Existence flag, snapshot kind, manifest digest, content digest, and capture sequence. |
@@ -119,7 +119,7 @@ Give each contract field one home:
 
 ### User-confirmation record
 
-Record user identity as available to the host, confirmation timestamp, exact confirmation text or event digest, canonical target identity, contract artifact identifier, contract digest, target-snapshot digest, and accepted status. Under a restricted load policy with a Hermes target, list in the artifact's `limitations` a Hermes entry naming the missing hide flag. Only an explicit user event can create an accepted confirmation artifact.
+Record user identity as available to the host, confirmation timestamp, exact confirmation text or event digest, canonical target identity, contract artifact identifier, contract digest, target-snapshot digest, and accepted status. Under a restricted load policy with a Hermes target, list in the artifact's `limitations` a Hermes entry naming the missing hide flag. Only an explicit user event, or `run_state.py reuse-contract` carrying a kept user confirmation, creates an accepted confirmation artifact. The reused form (`skill-builder-reused-confirmation.v1`) replaces the user identity, timestamp, and text with `kept_contract`, the whole kept record, and its `kept_contract_digest`, and takes its event digest and limitations from the kept confirmation.
 
 ### Evaluation pack
 
@@ -205,7 +205,8 @@ Record invalidation as a new transition receipt, leaving the invalidated artifac
 | Material change | Invalidate at least |
 |---|---|
 | Host or exact target identity | Mode and every downstream artifact. |
-| Mode | Baseline and every downstream artifact. |
+| Mode, other than a switch between improve and modify | Baseline and every downstream artifact. |
+| Switch between improve and modify | Evidence sieve and every downstream artifact, keeping the baseline and research. |
 | Target snapshot | Baseline and every downstream artifact. |
 | Research or sieve conclusion | Dependent design decisions and every dependent artifact. |
 | Design decision or skill contract | Confirmation and every downstream artifact. |
@@ -217,6 +218,16 @@ Record invalidation as a new transition receipt, leaving the invalidated artifac
 | Delivery intent | Authority and delivery portions of the release record. |
 
 Retain invalidated artifacts for audit within configured bounds and derive their invalidated status from the new receipt. Recompute and rebind the affected evidence rather than restoring it because its text appears unchanged.
+
+## Kept contracts
+
+The helper keeps one record per canonical target at `contracts/<SHA-256 of the canonical target>.json` in its private root, outside every run directory. `finalize` replaces it with the run's v2 contract and confirmation keyed to the finalized candidate's loadable-skill digest, and `report` with those keyed to the evaluated snapshot's. Cleanup leaves it in place. The store holds only private regular records named this way, and any other entry or a symlink fails closed for every target. When the store write fails after the final receipt, the run stays finished and the result names the failure in `kept_contract_error`. The helper checks a record's own consistency and trusts it as it trusts an agent-recorded confirmation. A record (`skill-builder-kept-contract.v1`) holds `schema_version`, `target_identity`, `skill_file_digest`, `contract_schema`, `contract`, `contract_digest`, `confirmation_schema`, `confirmation` (the original user confirmation), `confirmation_digest`, `confirmation_limitations`, `source_workflow_id`, `source_mode`, `source_stage` (`finalized` or `reported`), `source_final_transition_digest`, `created_at`, and `record_digest`.
+
+`run_state.py kept-contract` shows the target's record, whether it matches the run's target files and contract schema, and whether the run may reuse it. At `contract`, an improve or evaluate run whose target's loadable-skill digest equals `skill_file_digest` and whose accepted contract has the kept schema and equals the kept one in every field except `schema_version`, `design_digest`, and `evidence_bindings` confirms it with `reuse-contract` and the shown, unchanged `kept_contract_digest`. A modify run starts from a matching record and records a fresh user confirmation.
+
+## Mode switch
+
+`run_state.py switch-mode` moves an active improve run to modify, or back, on the user's yes. Its `mode-switch-record` (`skill-builder-mode-switch.v1`) holds `from_mode`, `to_mode`, `reason`, `user_identity`, `confirmed_at`, `confirmation_text`, `confirmation_event_digest` (the receipt's authority), `accepted`, and `invalidated_artifact_ids`, and the helper trusts that confirmation as it trusts a contract confirmation. From `research` or later the run returns to `research`, so the sieve runs next. A baseline written before the switch keeps its mode, and every later artifact carries the new mode.
 
 ## Fail-closed recovery
 

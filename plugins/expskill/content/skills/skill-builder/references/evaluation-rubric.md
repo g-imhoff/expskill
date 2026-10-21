@@ -13,7 +13,7 @@ Evaluate builder-run conformance separately from target quality. Each gate is pa
 | BR1 | Canonical host and exact target identity, mode, authority, queue, lock, and target snapshot were validated. |
 | BR2 | Mode-specific baseline was captured before candidate work. |
 | BR3 | Exactly three blind research lanes ran, every card was sieved, and retained dissent remained visible. |
-| BR4 | Coherent designs were challenged and the user confirmed the exact target contract. |
+| BR4 | Coherent designs were challenged and the user confirmed the exact target contract, in this run or through a reused kept confirmation. |
 | BR5 | Visible, frozen validation, and hidden release cases were bound and frozen before candidate editing. |
 | BR6 | Candidate and trials stayed isolated, production remained unchanged, and one implementer held candidate write authority. |
 | BR7 | Fresh-context trial evidence retained prompts, outputs, tool events, manifests, receipts, and blindness checks. |
@@ -21,7 +21,7 @@ Evaluate builder-run conformance separately from target quality. Each gate is pa
 | BR9 | Every completed state transition, invalidation, recovery, finalization, and evidence-retention action followed the helper contract. |
 | BR10 | Every delivery and cleanup stayed within explicit authority. When cleanup occurred, a durable tombstone preceded owned-run deletion. |
 
-An evaluate run records BR3 and BR10 as `skip`, passes BR4 on the user's confirmation of the rebuilt contract, and passes BR6 on isolated trials and an unchanged target.
+An evaluate run records BR3 and BR10 as `skip`, passes BR4 on the user's confirmation of its contract, and passes BR6 on isolated trials and an unchanged target.
 
 A failed builder-run gate blocks release but by itself leaves category scores unchanged. When the failure also leaves target evidence missing, invalid, or stale, the affected target criterion earns zero for that evidence reason. Repair builder-run conformance at the earliest affected stage and preserve category scores only while their evidence bindings remain valid.
 

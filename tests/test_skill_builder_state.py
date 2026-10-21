@@ -2800,9 +2800,9 @@ def build_verified_stage(
             contract_digest=helper.load_run(
                 workflow_id=workflow_id, state_root=state_root
             )["artifact_index"]["contract"]["digest"],
-            confirmation_digest=helper.load_run(
-                workflow_id=workflow_id, state_root=state_root
-            )["artifact_index"]["confirmation"]["digest"],
+            confirmation_digest=accepted_artifact(
+                helper, state_root, workflow_id, "user-confirmation-record"
+            )[1],
             evaluation_digest=helper.load_run(
                 workflow_id=workflow_id, state_root=state_root
             )["artifact_index"]["evaluation"]["digest"],

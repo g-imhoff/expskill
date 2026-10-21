@@ -188,7 +188,9 @@ def evaluate_candidate_payload(
         candidate_id="candidate",
         revision="candidate-1",
         contract_digest=current["artifact_index"]["contract"]["digest"],
-        confirmation_digest=current["artifact_index"]["confirmation"]["digest"],
+        confirmation_digest=support.accepted_artifact(
+            helper, state_root, workflow_id, "user-confirmation-record"
+        )[1],
         evaluation_digest=current["artifact_index"]["evaluation"]["digest"],
         snapshot_digest=current["target_snapshot"]["snapshot_digest"],
         brief_digest=EMPTY_DIGEST,
@@ -395,7 +397,9 @@ def report_payload(
         "candidate_digest": index["candidate"]["digest"],
         "candidate_revision": "candidate-1",
         "contract_digest": index["contract"]["digest"],
-        "confirmation_digest": index["confirmation"]["digest"],
+        "confirmation_digest": support.accepted_artifact(
+            helper, state_root, workflow_id, "user-confirmation-record"
+        )[1],
         "evaluation_digest": index["evaluation"]["digest"],
         "review_digest": index["final-review"]["digest"],
         "review_verdict": "ready",

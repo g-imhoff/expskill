@@ -67,6 +67,10 @@ LEGACY_TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v1"
 TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v2"
 LEGACY_FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v1"
 FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v2"
+CONFIRMATION_SCHEMA = "skill-builder-user-confirmation.v1"
+REUSED_CONFIRMATION_SCHEMA = "skill-builder-reused-confirmation.v1"
+KEPT_CONTRACT_SCHEMA = "skill-builder-kept-contract.v1"
+MODE_SWITCH_SCHEMA = "skill-builder-mode-switch.v1"
 MAX_ARTIFACT_ITEMS = 256
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -112,11 +116,36 @@ _ARTIFACT_TYPES = {
     "cleanup-authority-record",
     "final-run-manifest",
     "invalidation-record",
+    "mode-switch-record",
 }
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 _EXISTING_TARGET_MODES = frozenset({"improve", "modify", "evaluate"})
 _MODES = frozenset({"create", *_EXISTING_TARGET_MODES})
+_SWITCH_MODES = frozenset({"improve", "modify"})
+_REUSE_MODES = frozenset({"improve", "evaluate"})
+_KEPT_CONTRACT_NAME_RE = re.compile(r"[0-9a-f]{64}\.json\Z")
+_KEPT_CONTRACT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "target_identity",
+        "skill_file_digest",
+        "contract_schema",
+        "contract",
+        "contract_digest",
+        "confirmation_schema",
+        "confirmation",
+        "confirmation_digest",
+        "confirmation_limitations",
+        "source_workflow_id",
+        "source_mode",
+        "source_stage",
+        "source_final_transition_digest",
+        "created_at",
+        "record_digest",
+    }
+)
+_CONTRACT_BINDING_FIELDS = frozenset({"schema_version", "design_digest", "evidence_bindings"})
 _EMPTY_DIFF_DIGEST = hashlib.sha256(b"").hexdigest()
 _EVALUATE_SKIPPED_GATES = frozenset({"BR3", "BR10"})
 _EVALUATE_SKIPPED_EVENTS = frozenset(
@@ -305,7 +334,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "evidence-sieve": "skill-builder-evidence-sieve.v1",
     "design-record": "skill-builder-design.v1",
     "skill-contract": {LEGACY_CONTRACT_SCHEMA, CONTRACT_SCHEMA},
-    "user-confirmation-record": "skill-builder-user-confirmation.v1",
+    "user-confirmation-record": {CONFIRMATION_SCHEMA, REUSED_CONFIRMATION_SCHEMA},
     "evaluation-pack": {LOADED_EVALUATION_SCHEMA, EVALUATION_SCHEMA},
     "implementer-brief": BRIEF_SCHEMA,
     "candidate-record": {
@@ -328,6 +357,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
         CLEANUP_AUTHORITY_SCHEMA,
     },
     "invalidation-record": "skill-builder-invalidation.v1",
+    "mode-switch-record": MODE_SWITCH_SCHEMA,
 }
 
 _PAYLOAD_REQUIRED_FIELDS = {
@@ -570,7 +600,26 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "reason",
         "invalidated_artifact_ids",
     },
+    "mode-switch-record": {
+        "schema_version",
+        "from_mode",
+        "to_mode",
+        "reason",
+        "user_identity",
+        "confirmed_at",
+        "confirmation_text",
+        "confirmation_event_digest",
+        "accepted",
+        "invalidated_artifact_ids",
+    },
 }
+
+
+def _switch_destination(stage: str) -> str:
+    """A mode switch keeps the baseline and research and rewinds to the sieve."""
+    if _STAGES.index(stage) >= _STAGES.index("research"):
+        return "research"
+    return stage
 
 
 def _stage_transition(event: str, mode: str) -> tuple[str, str] | None:
@@ -1129,10 +1178,11 @@ def _locked_root(state_root: Path | None, *, create: bool) -> Any:
         "tombstones",
         "target-locks",
         "deleting",
+        "contracts",
     ):
         child = root / name
         if create or (
-            name in {"deleting", "initializing"}
+            name in {"deleting", "initializing", "contracts"}
             and not os.path.lexists(child)
         ):
             _ensure_private_directory(child)
@@ -1748,6 +1798,13 @@ def _validate_artifact_payload(
     if artifact_type == "skill-contract" and schema_version == CONTRACT_SCHEMA:
         versioned_fields |= _CONTRACT_V2_FIELDS
     if (
+        artifact_type == "user-confirmation-record"
+        and schema_version == REUSED_CONFIRMATION_SCHEMA
+    ):
+        versioned_fields = (
+            versioned_fields - {"user_identity", "confirmed_at", "confirmation_text"}
+        ) | {"kept_contract", "kept_contract_digest"}
+    if (
         artifact_type == "cleanup-authority-record"
         and schema_version == CLEANUP_AUTHORITY_SCHEMA
     ):
@@ -1904,9 +1961,19 @@ def _validate_artifact_payload(
         return
 
     if artifact_type == "user-confirmation-record":
-        _text(payload["user_identity"], "confirmation user identity")
-        _timestamp(payload["confirmed_at"], "confirmation timestamp")
-        _text(payload["confirmation_text"], "confirmation text")
+        if schema_version == REUSED_CONFIRMATION_SCHEMA:
+            kept = _validate_kept_contract_record(payload["kept_contract"])
+            if (
+                payload["kept_contract_digest"] != kept["record_digest"]
+                or payload["confirmation_event_digest"]
+                != kept["confirmation"]["confirmation_event_digest"]
+                or payload["target_identity"] != kept["target_identity"]
+            ):
+                raise RunStateError("reused confirmation does not match its kept contract")
+        else:
+            _text(payload["user_identity"], "confirmation user identity")
+            _timestamp(payload["confirmed_at"], "confirmation timestamp")
+            _text(payload["confirmation_text"], "confirmation text")
         _digest(payload["confirmation_event_digest"], "confirmation event")
         _text(payload["target_identity"], "confirmation target")
         _text(payload["contract_artifact_id"], "confirmation contract artifact")
@@ -2431,6 +2498,98 @@ def _validate_artifact_payload(
         identifiers = _text_list(payload["invalidated_artifact_ids"], "invalidated artifacts")
         if identifiers != sorted(identifiers) or len(identifiers) != len(set(identifiers)):
             raise RunStateError("invalidated artifact identifiers are not deterministic")
+        return
+
+    if artifact_type == "mode-switch-record":
+        if {payload["from_mode"], payload["to_mode"]} != _SWITCH_MODES or (
+            mode is not None and payload["from_mode"] != mode
+        ):
+            raise RunStateError("a run switches in place only between improve and modify")
+        _text(payload["reason"], "mode switch reason")
+        _text(payload["user_identity"], "mode switch user identity")
+        _timestamp(payload["confirmed_at"], "mode switch confirmation timestamp")
+        _text(payload["confirmation_text"], "mode switch confirmation text")
+        _digest(payload["confirmation_event_digest"], "mode switch confirmation event")
+        if payload["accepted"] is not True:
+            raise RunStateError("mode switch is not confirmed by the user")
+        identifiers = _text_list(payload["invalidated_artifact_ids"], "invalidated artifacts")
+        if identifiers != sorted(identifiers) or len(identifiers) != len(set(identifiers)):
+            raise RunStateError("invalidated artifact identifiers are not deterministic")
+
+
+def _validate_kept_contract_record(record: object) -> dict[str, Any]:
+    """Check one kept-contract store record and the payloads it carries."""
+    if not isinstance(record, dict) or set(record) != _KEPT_CONTRACT_FIELDS:
+        raise RunStateError("kept contract schema is invalid")
+    if (
+        record["schema_version"] != KEPT_CONTRACT_SCHEMA
+        or record["source_mode"] not in _MODES
+        or record["source_stage"]
+        != ("reported" if record["source_mode"] == "evaluate" else "finalized")
+        or not isinstance(record["source_workflow_id"], str)
+        or not _WORKFLOW_RE.fullmatch(record["source_workflow_id"])
+        or record["record_digest"] != canonical_digest(record, "record_digest")
+    ):
+        raise RunStateError("kept contract identity or digest is invalid")
+    _text(record["target_identity"], "kept contract target")
+    _digest(record["skill_file_digest"], "kept contract skill files")
+    _digest(record["source_final_transition_digest"], "kept contract final transition")
+    _timestamp(record["created_at"], "kept contract timestamp")
+    _text_list(record["confirmation_limitations"], "kept contract confirmation limitations")
+    contract = _nonempty_mapping(record["contract"], "kept contract payload")
+    confirmation = _nonempty_mapping(record["confirmation"], "kept confirmation payload")
+    if (
+        contract.get("schema_version") != record["contract_schema"]
+        or confirmation.get("schema_version") != record["confirmation_schema"]
+        or record["contract_schema"] != CONTRACT_SCHEMA
+        or record["confirmation_schema"] != CONFIRMATION_SCHEMA
+        or record["contract_digest"] != canonical_digest(contract)
+        or record["confirmation_digest"] != canonical_digest(confirmation)
+        or confirmation.get("target_identity") != record["target_identity"]
+    ):
+        raise RunStateError("kept contract payload binding is invalid")
+    _validate_artifact_payload("skill-contract", contract, record["source_mode"])
+    _validate_artifact_payload("user-confirmation-record", confirmation)
+    return record
+
+
+def _contract_clauses(contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: value
+        for field, value in contract.items()
+        if field not in _CONTRACT_BINDING_FIELDS
+    }
+
+
+def _target_skill_file_digest(current: dict[str, Any]) -> str | None:
+    snapshot = current["target_snapshot"]
+    if snapshot["exists"] is not True:
+        return None
+    try:
+        return _loadable_skill_digest_from_target_manifest(
+            snapshot["manifest"], "target skill files"
+        )
+    except RunStateError:
+        return None
+
+
+def _check_kept_contract_fits(
+    current: dict[str, Any], contract: dict[str, Any], kept: dict[str, Any]
+) -> None:
+    """A kept contract applies only to unchanged files under the same contract schema."""
+    if current["mode"]["name"] not in _REUSE_MODES:
+        raise RunStateError(
+            "only improve and evaluate runs reuse a kept contract, and "
+            "modify confirms its changed contract with the user"
+        )
+    if kept["target_identity"] != current["target_identity"]["canonical"]:
+        raise RunStateError("kept contract belongs to another target")
+    if kept["skill_file_digest"] != _target_skill_file_digest(current):
+        raise RunStateError("kept contract was confirmed against other skill files")
+    if kept["contract_schema"] != contract["schema_version"]:
+        raise RunStateError("kept contract schema differs from the run's contract schema")
+    if _contract_clauses(kept["contract"]) != _contract_clauses(contract):
+        raise RunStateError("the run's contract differs from the kept contract")
 
 
 def _identity_records(
@@ -3851,6 +4010,16 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
                 statuses = [item["status"] for item in relevant]
                 if statuses.count("accepted") != 1 or statuses.count("superseded") != 1:
                     raise RunStateError("invalidation receipt lacks causal artifact status")
+            elif event == "switch-mode":
+                statuses = [item["status"] for item in relevant]
+                if (
+                    source not in _WORK_STAGES
+                    or destination != _switch_destination(source)
+                    or not isinstance(receipt.get("authority_event_digest"), str)
+                    or statuses.count("accepted") != 1
+                    or "superseded" in statuses
+                ):
+                    raise RunStateError("mode-switch receipt is invalid")
             elif event == "finalize":
                 if source != "verified" or destination != "finalized":
                     raise RunStateError("finalization receipt has an invalid stage")
@@ -4008,8 +4177,16 @@ def _validate_baseline_binding(
         run, "initialize", "resolution-record", event_artifacts
     )
     snapshot = current["target_snapshot"]
+    mode = current["mode"]["name"]
     if (
-        baseline.get("mode") != current["mode"]["name"]
+        baseline.get("mode") != baseline_envelope["mode"]
+        or not (
+            baseline_envelope["mode"] == mode
+            or (
+                "mode_switch_digest" in current["mode"].get("evidence", {})
+                and {baseline_envelope["mode"], mode} == _SWITCH_MODES
+            )
+        )
         or baseline.get("target_snapshot_digest") != snapshot["snapshot_digest"]
     ):
         raise RunStateError("baseline mode or target-snapshot binding is stale")
@@ -4910,6 +5087,11 @@ def _validate_confirmation_binding(
     ):
         raise RunStateError("user confirmation binding is missing or mismatched")
     contract = _artifact_payload_json(run, contract_id)
+    if confirmation["schema_version"] == REUSED_CONFIRMATION_SCHEMA:
+        kept = confirmation["kept_contract"]
+        _check_kept_contract_fits(current, contract, kept)
+        if confirmation_envelope["limitations"] != kept["confirmation_limitations"]:
+            raise RunStateError("reused confirmation limitations differ from the kept contract")
     if (
         contract["schema_version"] == CONTRACT_SCHEMA
         and contract["load_policy"]["policy"] != "agent"
@@ -5554,6 +5736,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         raise RunStateError("receipt target snapshot binding mismatch")
     artifact_status: dict[str, dict[str, Any]] = {}
     event_artifacts: dict[str, dict[str, Any]] = {}
+    mode_record = resolution["mode"]
     for receipt in chain:
         prior_artifact_status = dict(artifact_status)
         validated_bindings: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -5571,7 +5754,10 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 envelope["workflow_id"] != workflow_id
                 or envelope["target_identity"]
                 != resolution["target_identity"]["canonical"]
-                or envelope["mode"] != resolution["mode"]["name"]
+                or (
+                    artifact_id not in prior_artifact_status
+                    and envelope["mode"] != mode_record["name"]
+                )
             ):
                 raise RunStateError("artifact workflow, target, or mode identity mismatch")
             if item["envelope_digest"] != envelope["envelope_digest"]:
@@ -5589,7 +5775,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
                         raise RunStateError("artifact dependency is missing or stale")
             validated_bindings.append((item, envelope))
         event = receipt["event"]
-        mode = resolution["mode"]["name"]
+        mode = mode_record["name"]
         if event in _STAGE_TRANSITIONS or event in {"finalize", "report", "record-delivery"}:
             _require_mode_event(event, mode)
         if event in _STAGE_TRANSITIONS and (
@@ -5648,13 +5834,16 @@ def _derive_index(run: Path) -> dict[str, Any]:
         elif event == "initialize":
             if accepted_types != ["resolution-record"] or len(validated_bindings) != 1:
                 raise RunStateError("genesis artifact binding is invalid")
+        elif event == "switch-mode":
+            if accepted_types != ["mode-switch-record"]:
+                raise RunStateError("mode-switch receipt artifact binding is invalid")
         elif event != "invalidate":
             raise RunStateError("receipt event semantics are unsupported")
         replay_current = {
             "workflow_id": workflow_id,
             "stage": receipt["source_stage"],
             "target_identity": resolution["target_identity"],
-            "mode": resolution["mode"],
+            "mode": mode_record,
             "authority": resolution["authority"],
             "target_snapshot": snapshot,
             "artifact_index": prior_artifact_status,
@@ -5664,6 +5853,13 @@ def _derive_index(run: Path) -> dict[str, Any]:
             for item, _ in validated_bindings
             if item["status"] == "accepted"
         ]
+        if event == "confirm-contract" and any(
+            artifact_id in prior_artifact_status
+            and _artifact_payload_json(run, artifact_id)["schema_version"]
+            == REUSED_CONFIRMATION_SCHEMA
+            for artifact_id in accepted_ids
+        ):
+            raise RunStateError("a reused confirmation enters only through reuse-contract")
         if event in _STAGE_TRANSITIONS:
             _validate_transition_semantics(
                 run,
@@ -5673,6 +5869,8 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 receipt["authority_event_digest"],
                 event_artifacts,
             )
+        elif event == "switch-mode":
+            _validate_switch_binding(run, replay_current, receipt, validated_bindings)
         elif event == "finalize":
             release_id = _artifact_id_of_type(run, accepted_ids, "release-record")
             if set(_validate_final_evidence(
@@ -5746,6 +5944,15 @@ def _derive_index(run: Path) -> dict[str, Any]:
             event_artifacts[event]["authority_event_digest"] = receipt[
                 "authority_event_digest"
             ]
+        if event == "switch-mode":
+            switch_id = accepted_ids[0]
+            mode_record = {
+                "name": _artifact_payload_json(run, switch_id)["to_mode"],
+                "evidence": {
+                    **mode_record.get("evidence", {}),
+                    "mode_switch_digest": artifact_status[switch_id]["digest"],
+                },
+            }
     for artifact_id, record in artifact_status.items():
         if (
             chain[-1]["destination_stage"] in _TERMINAL_STAGES
@@ -5819,7 +6026,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         "stage": stage,
         "host_identity": resolution["host_identity"],
         "target_identity": resolution["target_identity"],
-        "mode": resolution["mode"],
+        "mode": mode_record,
         "authority": resolution["authority"],
         "git_identity": resolution["git_identity"],
         "target_snapshot": snapshot,
@@ -5853,6 +6060,92 @@ def _run_directory(root: Path, workflow_id: str) -> Path:
 
 def _target_lock_name(canonical_target: str) -> str:
     return f"{raw_digest(canonical_target.encode('utf-8'))}.json"
+
+
+def _kept_contract_directory(root: Path) -> Path:
+    """Validate the kept-contract store: private regular records named by target digest."""
+    directory = root / "contracts"
+    _validate_private_directory(directory, "kept-contract store")
+    _normalize_interrupted_publications(directory)
+    for entry in directory.iterdir():
+        if (
+            not stat.S_ISREG(entry.lstat().st_mode)
+            or not _KEPT_CONTRACT_NAME_RE.fullmatch(entry.name)
+        ):
+            raise RunStateError("kept-contract store contains an unexpected entry")
+        _validate_regular(entry, "kept contract")
+    return directory
+
+
+def _read_kept_contract(root: Path, canonical_target: str) -> dict[str, Any] | None:
+    path = _kept_contract_directory(root) / _target_lock_name(canonical_target)
+    if not os.path.lexists(path):
+        return None
+    record = _validate_kept_contract_record(_read_json(path))
+    if record["target_identity"] != canonical_target:
+        raise RunStateError("kept contract belongs to another target")
+    return record
+
+
+def _keep_contract(
+    root: Path,
+    run: Path,
+    current: dict[str, Any],
+    final_receipt: dict[str, Any],
+    skill_file_digest: str,
+) -> str | None:
+    """Replace the target's kept contract with the one this finished run confirmed."""
+    _, contract_envelope, contract = _current_event_artifact(
+        run, current, "accept-contract", "skill-contract"
+    )
+    if contract["schema_version"] != CONTRACT_SCHEMA:
+        return None
+    _, confirmation_envelope, confirmation = _current_event_artifact(
+        run, current, "confirm-contract", "user-confirmation-record"
+    )
+    limitations = list(confirmation_envelope["limitations"])
+    if confirmation["schema_version"] == REUSED_CONFIRMATION_SCHEMA:
+        limitations = list(confirmation["kept_contract"]["confirmation_limitations"])
+        confirmation = confirmation["kept_contract"]["confirmation"]
+    record: dict[str, Any] = {
+        "schema_version": KEPT_CONTRACT_SCHEMA,
+        "target_identity": current["target_identity"]["canonical"],
+        "skill_file_digest": skill_file_digest,
+        "contract_schema": contract["schema_version"],
+        "contract": contract,
+        "contract_digest": contract_envelope["payload_digest"],
+        "confirmation_schema": confirmation["schema_version"],
+        "confirmation": confirmation,
+        "confirmation_digest": canonical_digest(confirmation),
+        "confirmation_limitations": limitations,
+        "source_workflow_id": current["workflow_id"],
+        "source_mode": current["mode"]["name"],
+        "source_stage": final_receipt["destination_stage"],
+        "source_final_transition_digest": final_receipt["receipt_digest"],
+        "created_at": _now(),
+    }
+    record["record_digest"] = canonical_digest(record, "record_digest")
+    _validate_kept_contract_record(record)
+    path = _kept_contract_directory(root) / _target_lock_name(record["target_identity"])
+    _atomic_json(path, record)
+    return record["record_digest"]
+
+
+def _keep_finished_contract(
+    root: Path,
+    run: Path,
+    current: dict[str, Any],
+    final_receipt: dict[str, Any],
+    skill_file_digest: str | None,
+) -> dict[str, Any]:
+    """Keep the contract after the final receipt, leaving the finished run intact on failure."""
+    if skill_file_digest is None:
+        return {"kept_contract_digest": None, "kept_contract_error": None}
+    try:
+        digest = _keep_contract(root, run, current, final_receipt, skill_file_digest)
+    except (RunStateError, OSError) as error:
+        return {"kept_contract_digest": None, "kept_contract_error": str(error)}
+    return {"kept_contract_digest": digest, "kept_contract_error": None}
 
 
 def _owned_result_digest(
@@ -6624,6 +6917,15 @@ def retain_artifact(
         artifact = _artifact_directory(run, artifact_id)
         if os.path.lexists(artifact):
             raise RunStateError("immutable artifact already exists")
+        if artifact_type == "mode-switch-record" or (
+            artifact_type == "user-confirmation-record"
+            and isinstance(files, dict)
+            and isinstance(files.get(primary_path), bytes)
+            and REUSED_CONFIRMATION_SCHEMA.encode("utf-8") in files[primary_path]
+        ):
+            raise RunStateError(
+                "switch-mode and reuse-contract record their own artifacts"
+            )
         derived, created, receipt = _append_transaction(
             run=run,
             current=current,
@@ -6704,8 +7006,11 @@ def transition_run(
             raise RunStateError(
                 "transition requires exact singular artifact type cardinality"
             )
-        for artifact_id in artifact_ids:
-            _artifact_payload_json(run, artifact_id)
+        payloads = [_artifact_payload_json(run, artifact_id) for artifact_id in artifact_ids]
+        if event == "confirm-contract" and any(
+            payload["schema_version"] == REUSED_CONFIRMATION_SCHEMA for payload in payloads
+        ):
+            raise RunStateError("a reused confirmation enters only through reuse-contract")
         _validate_transition_semantics(
             run,
             current,
@@ -7301,6 +7606,284 @@ def invalidate_run(
         }
 
 
+_SWITCH_INVALIDATES = _AFTER_BASELINE - {"research-pack"}
+
+
+def _switch_invalidated_ids(current: dict[str, Any]) -> list[str]:
+    return sorted(
+        record["artifact_id"]
+        for record in current["artifact_index"].values()
+        if record["type"] in _SWITCH_INVALIDATES and record["derived_status"] == "accepted"
+    )
+
+
+def _validate_switch_binding(
+    run: Path,
+    current: dict[str, Any],
+    receipt: dict[str, Any],
+    validated_bindings: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> None:
+    """Bind one in-place improve/modify switch to its user confirmation and rewind."""
+    accepted = [
+        (item, envelope)
+        for item, envelope in validated_bindings
+        if item["status"] == "accepted"
+    ]
+    switch_item, switch_envelope = accepted[0]
+    switch = _artifact_payload_json(run, switch_item["artifact_id"])
+    resolution_envelope, _ = _validate_envelope(run, "resolution")
+    expected = _switch_invalidated_ids(current)
+    invalidated = sorted(
+        item["artifact_id"]
+        for item, _ in validated_bindings
+        if item["status"] == "invalidated"
+    )
+    if (
+        switch_envelope["created_sequence"] != receipt["sequence"]
+        or switch["from_mode"] != current["mode"]["name"]
+        or switch["confirmation_event_digest"] != receipt["authority_event_digest"]
+        or invalidated != expected
+        or switch["invalidated_artifact_ids"] != expected
+        or switch_envelope["input_bindings"]
+        != [{"artifact_id": "resolution", "digest": resolution_envelope["envelope_digest"]}]
+        or any(
+            current["artifact_index"][item["artifact_id"]]["digest"]
+            != item["envelope_digest"]
+            for item, _ in validated_bindings
+            if item["status"] == "invalidated"
+        )
+    ):
+        raise RunStateError("mode switch confirmation, rewind, or invalidation is mismatched")
+
+
+def switch_mode_run(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    mode: str,
+    reason: str,
+    confirmation: dict[str, Any],
+    authority_event_digest: str,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Switch an improve or modify run in place on the user's confirmed answer."""
+    if isinstance(expected_sequence, bool) or not isinstance(expected_sequence, int) or expected_sequence < 0:
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    if not isinstance(confirmation, dict) or set(confirmation) != {
+        "user_identity",
+        "confirmed_at",
+        "confirmation_text",
+    }:
+        raise RunStateError(
+            "a mode switch needs the user's confirmation: "
+            "user_identity, confirmed_at, and confirmation_text"
+        )
+    if not isinstance(authority_event_digest, str) or not _DIGEST_RE.fullmatch(
+        authority_event_digest
+    ):
+        raise RunStateError("a mode switch needs the user's confirmation event digest")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 4096:
+        raise RunStateError("mode switch reason must be nonempty bounded text")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        if current["stage"] not in _WORK_STAGES:
+            raise RunStateError("only an active run switches mode")
+        from_mode = current["mode"]["name"]
+        if not isinstance(mode, str) or {from_mode, mode} != _SWITCH_MODES:
+            raise RunStateError("a run switches in place only between improve and modify")
+        _validate_target_unchanged(current, root)
+        invalidated = _switch_invalidated_ids(current)
+        switch_id = f"mode-switch-{expected_sequence + 1:08d}"
+        if os.path.lexists(_artifact_directory(run, switch_id)):
+            raise RunStateError("immutable artifact already exists")
+        payload = {
+            "schema_version": MODE_SWITCH_SCHEMA,
+            "from_mode": from_mode,
+            "to_mode": mode,
+            "reason": reason,
+            **confirmation,
+            "confirmation_event_digest": authority_event_digest,
+            "accepted": True,
+            "invalidated_artifact_ids": invalidated,
+        }
+        _validate_artifact_payload("mode-switch-record", payload, from_mode)
+        resolution = current["artifact_index"]["resolution"]
+        derived, created, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="switch-mode",
+            destination_stage=_switch_destination(current["stage"]),
+            authority_event_digest=authority_event_digest,
+            existing_bindings=[
+                {
+                    "artifact_id": artifact_id,
+                    "envelope_digest": current["artifact_index"][artifact_id]["digest"],
+                    "status": "invalidated",
+                }
+                for artifact_id in invalidated
+            ],
+            artifact_requests=[
+                {
+                    "artifact_id": switch_id,
+                    "artifact_type": "mode-switch-record",
+                    "files": {"record.json": canonical_json_bytes(payload)},
+                    "primary_path": "record.json",
+                    "producer": "main-agent",
+                    "input_bindings": [
+                        {"artifact_id": "resolution", "digest": resolution["digest"]}
+                    ],
+                    "limitations": [],
+                }
+            ],
+        )
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "switch-mode",
+            "workflow_id": workflow_id,
+            "sequence": derived["head_sequence"],
+            "stage": derived["stage"],
+            "receipt_digest": derived["head_transition_digest"],
+            "mode": derived["mode"]["name"],
+            "switch_artifact_id": switch_id,
+            "switch_artifact_digest": created[switch_id]["envelope_digest"],
+            "invalidated_artifact_ids": invalidated,
+        }
+
+
+def read_kept_contract(
+    *, workflow_id: str, state_root: Path | None = None
+) -> dict[str, Any]:
+    """Show the run's target's kept contract and whether this run may reuse it."""
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        record = _read_kept_contract(root, current["target_identity"]["canonical"])
+        resolution, _ = _resolution_payload(run, workflow_id)
+        skill_file_digest = _target_skill_file_digest(current)
+        matches = (
+            record is not None
+            and record["skill_file_digest"] == skill_file_digest
+            and record["contract_schema"]
+            == resolution.get("contract_schema", LEGACY_CONTRACT_SCHEMA)
+        )
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "kept-contract",
+            "workflow_id": workflow_id,
+            "mode": current["mode"]["name"],
+            "target_skill_file_digest": skill_file_digest,
+            "kept_contract": record,
+            "kept_contract_digest": None if record is None else record["record_digest"],
+            "matches_target": matches,
+            "reusable": matches and current["mode"]["name"] in _REUSE_MODES,
+        }
+
+
+def reuse_kept_contract(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    kept_contract_digest: str,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Confirm the accepted contract with the target's kept confirmation."""
+    if isinstance(expected_sequence, bool) or not isinstance(expected_sequence, int) or expected_sequence < 0:
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    _digest(kept_contract_digest, "kept contract record")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        if current["mode"]["name"] not in _REUSE_MODES:
+            raise RunStateError(
+                "only improve and evaluate runs reuse a kept contract, and "
+                "modify confirms its changed contract with the user"
+            )
+        if current["stage"] != "contract":
+            raise RunStateError("a kept contract confirms only an accepted contract")
+        _validate_target_unchanged(current, root)
+        canonical = current["target_identity"]["canonical"]
+        kept = _read_kept_contract(root, canonical)
+        if kept is None:
+            raise RunStateError("the target has no kept contract")
+        if kept["record_digest"] != kept_contract_digest:
+            raise RunStateError("the kept contract changed since it was read")
+        contract_id, contract_envelope, contract = _current_event_artifact(
+            run, current, "accept-contract", "skill-contract"
+        )
+        _check_kept_contract_fits(current, contract, kept)
+        if (
+            contract["load_policy"]["policy"] != "agent"
+            and "hermes" in contract["hosts"]
+            and not any(
+                "hermes" in item.casefold() for item in kept["confirmation_limitations"]
+            )
+        ):
+            raise RunStateError(
+                "the kept confirmation does not record the Hermes load-policy limitation"
+            )
+        confirmation_id = f"kept-confirmation-{expected_sequence + 1:08d}"
+        if os.path.lexists(_artifact_directory(run, confirmation_id)):
+            raise RunStateError("immutable artifact already exists")
+        payload = {
+            "schema_version": REUSED_CONFIRMATION_SCHEMA,
+            "kept_contract": kept,
+            "kept_contract_digest": kept["record_digest"],
+            "confirmation_event_digest": kept["confirmation"]["confirmation_event_digest"],
+            "target_identity": canonical,
+            "contract_artifact_id": contract_id,
+            "contract_digest": contract_envelope["envelope_digest"],
+            "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
+            "accepted": True,
+        }
+        _validate_artifact_payload("user-confirmation-record", payload, current["mode"]["name"])
+        resolution = current["artifact_index"]["resolution"]
+        derived, created, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="confirm-contract",
+            destination_stage="confirmed",
+            authority_event_digest=payload["confirmation_event_digest"],
+            existing_bindings=[],
+            artifact_requests=[
+                {
+                    "artifact_id": confirmation_id,
+                    "artifact_type": "user-confirmation-record",
+                    "files": {"record.json": canonical_json_bytes(payload)},
+                    "primary_path": "record.json",
+                    "producer": "main-agent",
+                    "input_bindings": [
+                        {"artifact_id": "resolution", "digest": resolution["digest"]},
+                        {"artifact_id": contract_id, "digest": contract_envelope["envelope_digest"]},
+                    ],
+                    "limitations": list(kept["confirmation_limitations"]),
+                }
+            ],
+        )
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "reuse-contract",
+            "workflow_id": workflow_id,
+            "sequence": derived["head_sequence"],
+            "stage": derived["stage"],
+            "receipt_digest": derived["head_transition_digest"],
+            "confirmation_artifact_id": confirmation_id,
+            "confirmation_artifact_digest": created[confirmation_id]["envelope_digest"],
+            "kept_contract_digest": kept["record_digest"],
+            "kept_contract_source": kept["source_workflow_id"],
+        }
+
+
 _SCORE_CATEGORIES = (
     "triggering",
     "scope discipline",
@@ -7699,6 +8282,7 @@ def finalize_run(
             raise RunStateError("finalization requires the verified stage")
         _validate_target_unchanged(current, root)
         artifact_ids = _validate_final_evidence(run, current, release_artifact_id)
+        _kept_contract_directory(root)
         bindings = [
             {
                 "artifact_id": artifact_id,
@@ -7707,7 +8291,7 @@ def finalize_run(
             }
             for artifact_id in artifact_ids
         ]
-        derived, _, _ = _append_transaction(
+        derived, _, receipt = _append_transaction(
             run=run,
             current=current,
             event="finalize",
@@ -7719,6 +8303,12 @@ def finalize_run(
         _release_owned_target_lock(
             root, current, current["active_target_lock"]
         )
+        candidate = _current_event_artifact(
+            run, derived, "accept-candidate", "candidate-record"
+        )[2]
+        kept = _keep_finished_contract(
+            root, run, derived, receipt, candidate.get("loaded_skill_digest")
+        )
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "finalize",
@@ -7728,6 +8318,7 @@ def finalize_run(
             "receipt_digest": derived["head_transition_digest"],
             "release_artifact_id": release_artifact_id,
             "release_artifact_digest": current["artifact_index"][release_artifact_id]["digest"],
+            **kept,
         }
 
 
@@ -7855,7 +8446,9 @@ def report_run(
             raise RunStateError("a report requires the scored stage")
         _validate_target_unchanged(current, root)
         artifact_ids = _validate_report_evidence(run, current, report_artifact_id)
-        derived, _, _ = _append_transaction(
+        skill_file_digest = _target_skill_file_digest(current)
+        _kept_contract_directory(root)
+        derived, _, receipt = _append_transaction(
             run=run,
             current=current,
             event="report",
@@ -7872,6 +8465,7 @@ def report_run(
             artifact_requests=[],
         )
         _release_owned_target_lock(root, current, current["active_target_lock"])
+        kept = _keep_finished_contract(root, run, derived, receipt, skill_file_digest)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "report",
@@ -7881,6 +8475,7 @@ def report_run(
             "receipt_digest": derived["head_transition_digest"],
             "report_artifact_id": report_artifact_id,
             "report_artifact_digest": current["artifact_index"][report_artifact_id]["digest"],
+            **kept,
         }
 
 
@@ -8602,7 +9197,13 @@ def main(argv: list[str] | None = None) -> int:
             "authority_event_digest, authority_event_base64, actor\n"
             "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
             "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence\n"
-            "  load-sentence request: load_policy and the target name"
+            "  load-sentence request: load_policy and the target name\n"
+            "  kept-contract request: workflow_id\n"
+            "  reuse-contract request: workflow_id, expected_sequence, and "
+            "kept_contract_digest (improve or evaluate runs at the contract stage)\n"
+            "  switch-mode request: workflow_id, expected_sequence, mode (improve or "
+            "modify), reason, confirmation (user_identity, confirmed_at, "
+            "confirmation_text), and authority_event_digest"
         ),
     )
     parser.add_argument(
@@ -8625,6 +9226,9 @@ def main(argv: list[str] | None = None) -> int:
             "cleanup",
             "activate-next",
             "load-sentence",
+            "kept-contract",
+            "reuse-contract",
+            "switch-mode",
         ),
     )
     parser.add_argument(
@@ -8731,6 +9335,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "activate-next":
             result = activate_next_target(state_root=state_root, **payload)
+        elif args.command == "kept-contract":
+            result = read_kept_contract(state_root=state_root, **payload)
+        elif args.command == "reuse-contract":
+            result = reuse_kept_contract(state_root=state_root, **payload)
+        elif args.command == "switch-mode":
+            result = switch_mode_run(state_root=state_root, **payload)
         elif args.command == "load-sentence":
             if set(payload) != {"load_policy", "name"}:
                 raise RunStateError("load-sentence requires load_policy and name")
