@@ -17,7 +17,7 @@ Load [the `$roast` skill](../roast/SKILL.md) and follow its pin, derive, review,
 
 Spawn one fixer per non empty top issue. Fixers stay within the pinned scope and change only their assigned issue.
 
-When fixes could touch the same files, give each fixer its own worktree using `../../scripts/worktrees.py` and integrate one at a time. Fixes in disjoint files may share the checkout. When unsure, use worktrees.
+Give each fixer its own worktree using `../../scripts/worktrees.py` and integrate one at a time. Fixes never share a checkout. See `../../rules/isolate-writes.md`.
 
 Fixers rerun affected checks and report what ran and what passed. A fixer that cannot land its issue stops with the reason. That issue stays open and keeps its failing score.
 
