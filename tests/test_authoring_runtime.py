@@ -181,7 +181,7 @@ assert not manifest.portable
 manager._load_plugin(manifest)
 loaded = manager.list_plugins()
 assert loaded[0]["enabled"], loaded
-assert len(manager.list_plugin_skills("expskill")) == 16
+assert len(manager.list_plugin_skills("expskill")) == 17
 rendered = manager.render_system_prompt_sections({})
 assert rendered[0].content == sys.argv[3]
 loaded = "\\n\\n".join(item.content for item in rendered[1:])

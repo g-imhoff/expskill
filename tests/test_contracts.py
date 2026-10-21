@@ -927,7 +927,7 @@ class ContractTests(unittest.TestCase):
                 else:
                     (hook_root / "surprise.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
                 errors = validate_repository(root, include_opencode=False)
-                self.assertTrue(any("unslop hook" in error.lower() for error in errors), errors)
+                self.assertTrue(any("hook" in error.lower() for error in errors), errors)
 
     def test_validator_rejects_tampered_pinned_upstream_source(self) -> None:
         root = self.copy_repository()

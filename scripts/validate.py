@@ -55,6 +55,7 @@ try:
     from scripts.render_claude import RenderError as ClaudeRenderError
     from scripts.render_claude import render_agents as render_claude_agents
     from scripts.render_claude import render_all as render_claude_all
+    from scripts.render_claude import skill_inventory as claude_skill_inventory
     from scripts.render_hermes import RenderError as HermesRenderError
     from scripts.render_hermes import render_agents as render_hermes_agents
     from scripts.render_hermes import render_all as render_hermes_all
@@ -103,6 +104,7 @@ except ModuleNotFoundError:
     from render_claude import RenderError as ClaudeRenderError
     from render_claude import render_agents as render_claude_agents
     from render_claude import render_all as render_claude_all
+    from render_claude import skill_inventory as claude_skill_inventory
     from render_hermes import RenderError as HermesRenderError
     from render_hermes import render_agents as render_hermes_agents
     from render_hermes import render_all as render_hermes_all
@@ -5144,7 +5146,7 @@ def _validate_claude_package(repository_root: Path, errors: list[str]) -> None:
         return
     _validate_claude_platform_source(package_root, errors)
     try:
-        skill_names = skill_inventory(repository_root)
+        skill_names = claude_skill_inventory(repository_root)
         rendered = render_claude_all(repository_root)
     except ClaudeRenderError as error:
         errors.append(f"claude sources cannot be rendered: {error}")

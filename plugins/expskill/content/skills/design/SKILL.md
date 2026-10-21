@@ -5,6 +5,10 @@ description: Build production-intended UI components and get user approval throu
 
 # Design
 
+## Ground
+
+Inspect the repository, baseline, worktree, target seam, adjacent components, primitives, content patterns, tests, and specimen capability before writing. Bind the scope ledger, baseline, and dirty fingerprint with `scripts/design_state.py` and confirm a concise Design brief with its digest before writing.
+
 ## Choose
 
 When evidence implies one structure, build it directly. If consequential structural ambiguity remains, render two or three lightweight structural probes and let the user select or correct the direction. A component/template seed requires explicit permission for its exact source, version, adaptation, dependency, provenance, and license consequences. A changed seed requires renewed permission.

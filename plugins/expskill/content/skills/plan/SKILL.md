@@ -3,7 +3,7 @@ name: plan
 description: Turn a concrete direction into an accepted technical plan. Only the user or another ExpSkill skill can load $plan.
 ---
 
-## Precondition
+## Boundary
 
 Accept a completed Concept Brief coming from `$expskill:brainstorm` or another sufficiently concrete direction. 
 
