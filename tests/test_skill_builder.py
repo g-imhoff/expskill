@@ -935,11 +935,11 @@ def _durable_cache_key(value: Any) -> Any:
     the base form.
     """
 
-    cls = value.__class__
+    cls = type(value)
     if cls is dict:
         pairs = []
         for name, nested in value.items():
-            if name.__class__ is not str:
+            if type(name) is not str:
                 raise TypeError("durable object keys must be strings")
             pairs.append((name, _durable_cache_key(nested)))
         pairs.sort()
@@ -16923,12 +16923,32 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
             def __hash__(self) -> int:
                 return 1
 
+        class SpoofedText(str):
+            """A text subclass that claims to be an exact text."""
+
+            @property
+            def __class__(self) -> type:
+                return str
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, str)
+
+            def __hash__(self) -> int:
+                return hash("beta")
+
         _CANONICAL_CACHE.clear()
         lying = {"z": 0, EqualText("a"): 1}
         plain = {"a": 1, "z": 0}
         self.assertNotEqual(canonical_bytes(lying), canonical_bytes(plain))
         self.assertNotEqual(canonical_digest(lying), canonical_digest(plain))
         self.assertEqual(canonical_bytes(plain), reference_canonical_bytes(plain))
+
+        spoofed = {SpoofedText("beta"): 0}
+        self.assertEqual(canonical_bytes(spoofed), b'{"beta":0}\n')
+        self.assertNotEqual(
+            canonical_digest(spoofed),
+            canonical_digest({SpoofedText("alpha"): 0}),
+        )
 
     def test_a_repeated_name_keeps_its_own_digest(self) -> None:
         """A reported view that repeats a name encodes both entries."""

@@ -3696,7 +3696,7 @@ def test_competing_processes_cannot_both_acquire_same_target(tmp_path: Path) -> 
     """Process-local checks alone would permit two genesis chains for one target."""
     state_root = tmp_path / "state"
     target = target_identity(tmp_path / "skills" / "sample-skill")
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("forkserver")
     start = context.Event()
     results = context.Queue()
     processes = [
