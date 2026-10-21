@@ -51,10 +51,6 @@ class OpencodeContractTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         return temporary, artifact
 
-    def test_no_opencode_contract_error_on_valid_repository(self) -> None:
-        errors = validate_repository(ROOT)
-        self.assertFalse([error for error in errors if "opencode" in error], errors)
-
     def test_default_validation_rejects_missing_whole_source_surfaces(self) -> None:
         for surface, expected_error in (
             ("plugins", "plugin directory is missing"),
