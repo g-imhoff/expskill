@@ -150,7 +150,7 @@ def _await_agent_list(
             raise AssertionError(
                 f"agents never detected: {names}\nstdout: {last_stdout}\nstderr: {last_stderr}"
             )
-        _time.sleep(3)
+        _time.sleep(0.5)
 
 
 @needs_network_tests

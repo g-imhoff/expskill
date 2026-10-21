@@ -295,11 +295,26 @@ def initialize_process(
 HARD_EXIT_CODE = 86
 
 
+def _preferred_mp_context(fallback: str) -> multiprocessing.context.BaseContext:
+    """Prefer fork on Linux for speed; keep os._exit crash semantics.
+
+    Fork avoids spawn/forkserver startup cost. os._exit in the child still
+    terminates with HARD_EXIT_CODE without cleanup, so crash-fidelity holds.
+    Non-Linux platforms fall back to the original method.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            return multiprocessing.get_context("fork")
+        except Exception:
+            pass
+    return multiprocessing.get_context(fallback)
+
+
 def run_hard_exit_process(target: object, *args: object) -> None:
-    context = multiprocessing.get_context("spawn")
+    context = _preferred_mp_context("spawn")
     process = context.Process(target=target, args=args)
     process.start()
-    process.join(30)
+    process.join(10)
     if process.is_alive():
         process.terminate()
         process.join(10)
@@ -3696,7 +3711,7 @@ def test_competing_processes_cannot_both_acquire_same_target(tmp_path: Path) -> 
     """Process-local checks alone would permit two genesis chains for one target."""
     state_root = tmp_path / "state"
     target = target_identity(tmp_path / "skills" / "sample-skill")
-    context = multiprocessing.get_context("forkserver")
+    context = _preferred_mp_context("forkserver")
     start = context.Event()
     results = context.Queue()
     processes = [
@@ -3716,9 +3731,9 @@ def test_competing_processes_cannot_both_acquire_same_target(tmp_path: Path) -> 
     for process in processes:
         process.start()
     start.set()
-    outcomes = [results.get(timeout=15) for _ in processes]
+    outcomes = [results.get(timeout=10) for _ in processes]
     for process in processes:
-        process.join(15)
+        process.join(10)
         assert process.exitcode == 0
 
     assert [item[0] for item in outcomes].count("success") == 1

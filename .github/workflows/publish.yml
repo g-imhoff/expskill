@@ -13,6 +13,8 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,7 +26,7 @@ jobs:
         run: python3 -m pip install -r requirements-dev.txt
       - name: Host contract tests
         run: >-
-          python3 -m pytest -q -n auto
+          python3 -m pytest -q -n auto --dist load
           tests/test_installer.py
           tests/test_codex_source_correction.py
           tests/test_cli_verification.py
