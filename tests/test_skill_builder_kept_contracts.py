@@ -594,9 +594,9 @@ def test_an_identical_contract_keeps_frozen_selection_cases(tmp_path: Path) -> N
                 state_root=state_root,
             )
 
-    for first in ("reuse", "5" * 64):
+    for first, second in (("reuse", "reuse"), ("5" * 64, "reuse"), ("5" * 64, "5" * 64)):
         with pytest.raises(helper.RunStateError, match="changes a case's selection"):
-            refreeze(first, "reuse", relabelled)
+            refreeze(first, second, relabelled)
     assert refreeze("reuse", "reuse", selected) == "evaluation"
     assert refreeze("reuse", "6" * 64, relabelled) == "evaluation"
 

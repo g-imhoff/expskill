@@ -2552,7 +2552,7 @@ def resubmit_identical_candidate(
     load_policy: dict[str, object] | None,
     hosts: list[str] | None,
 ) -> tuple[int, dict[str, object]]:
-    """Accept the superseded candidate's exact bytes again under a new identity."""
+    """Accept a candidate under a new identity, by default with the superseded bytes."""
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
     digests = {
         name: current["artifact_index"][name]["digest"]
@@ -2646,6 +2646,7 @@ def build_verified_stage(
     trial_run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     superseded_trial_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     earlier_trials_change: str = "trial",
+    repaired_skill_bytes: bytes | None = None,
     mode: str = "create",
     load_policy: dict[str, object] | None = None,
     hosts: list[str] | None = None,
@@ -2734,12 +2735,13 @@ def build_verified_stage(
                 sequence,
                 cases=cases,
                 resulting_bytes=candidate_resulting_bytes,
-                loaded_skill_bytes=candidate_loaded_skill_bytes,
+                loaded_skill_bytes=repaired_skill_bytes or candidate_loaded_skill_bytes,
                 additional_skill_files=candidate_additional_skill_files,
                 owned_paths=candidate_owned_paths,
                 load_policy=load_policy,
                 hosts=hosts,
             )
+            trial_loaded_skill_bytes = repaired_skill_bytes or trial_loaded_skill_bytes
     trials_payload = trial_payload(
         candidate["artifact_digest"],
         loaded_skill_bytes=trial_loaded_skill_bytes,
@@ -9402,22 +9404,30 @@ def test_rerun_trials_cannot_hide_a_failing_selection_run(
             state_root=state_root,
         )
 
-    state_root, workflow_id, sequence, _ = build_verified_stage(
-        helper,
-        tmp_path / "rerun",
-        superseded_trial_overrides={},
-        earlier_trials_change=earlier_trials_change,
-    )
-    finalized = helper.finalize_run(
-        workflow_id=workflow_id,
-        expected_sequence=sequence,
-        release_artifact_id="release",
-        state_root=state_root,
-    )
-    assert finalized["stage"] == "finalized"
-    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
-        "stage"
-    ] == "finalized"
+    passing = {"rerun": ({}, None)}
+    if earlier_trials_change == "candidate":
+        passing["repaired"] = (
+            {("case-2", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}},
+            CANDIDATE_SKILL_BYTES + b"\nRepaired.\n",
+        )
+    for label, (earlier_overrides, repaired_bytes) in passing.items():
+        state_root, workflow_id, sequence, _ = build_verified_stage(
+            helper,
+            tmp_path / label,
+            superseded_trial_overrides=earlier_overrides,
+            earlier_trials_change=earlier_trials_change,
+            repaired_skill_bytes=repaired_bytes,
+        )
+        finalized = helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+        assert finalized["stage"] == "finalized"
+        assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
+            "stage"
+        ] == "finalized"
 
 
 def test_an_unsubmitted_failing_selection_pack_blocks_release(tmp_path: Path) -> None:
