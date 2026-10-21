@@ -1000,18 +1000,15 @@ def _canonical_entry(payload: Any, key: Any) -> dict[str, Any]:
     return entry
 
 
-def _uncached_canonical_bytes(value: Any, digest_field: str | None) -> bytes:
+def _uncached_canonical_bytes(value: Any) -> bytes:
     """Return the canonical bytes without the memo.
 
     This is the reference form of the canonical bytes. The memoized path
     falls back to it for every value it cannot key, so a rejected value
-    fails with the same error it failed with before the memo existed.
+    fails with the same error it failed with before the memo existed. The
+    value it receives is the payload the canonical form encodes, so the
+    reported view of a value is read once, as it was before the memo.
     """
-
-    if digest_field is not None:
-        if not isinstance(value, dict):
-            raise TypeError("digest-field exclusion requires an object")
-        value = {key: item for key, item in value.items() if key != digest_field}
 
     def reject_floats(item: Any) -> None:
         if isinstance(item, float):
@@ -1049,7 +1046,7 @@ def canonical_bytes(value: Any, *, digest_field: str | None = None) -> bytes:
     try:
         key = _durable_cache_key(payload)
     except (TypeError, ValueError, AttributeError):
-        return _uncached_canonical_bytes(value, digest_field)
+        return _uncached_canonical_bytes(payload)
     return _canonical_entry(payload, key)["bytes"]
 
 
@@ -1062,9 +1059,7 @@ def canonical_digest(value: Any, *, digest_field: str | None = None) -> str:
     try:
         key = _durable_cache_key(payload)
     except (TypeError, ValueError, AttributeError):
-        return hashlib.sha256(
-            _uncached_canonical_bytes(value, digest_field)
-        ).hexdigest()
+        return hashlib.sha256(_uncached_canonical_bytes(payload)).hexdigest()
     entry = _canonical_entry(payload, key)
     digest = entry["digest"]
     if digest is None:
