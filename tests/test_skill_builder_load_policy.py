@@ -981,6 +981,7 @@ def verified_with_policy(
     load_policy: dict[str, object],
     hosts: list[str],
     selection: dict[str, str],
+    selection_hosts: dict[str, str] | None = None,
 ) -> tuple[Path, str, int, dict[str, object]]:
     package = (
         restricted_package(
@@ -998,6 +999,7 @@ def verified_with_policy(
         load_policy=load_policy,
         hosts=hosts,
         selection=selection,
+        selection_hosts=selection_hosts,
         candidate_loaded_skill_bytes=package["SKILL.md"],
         candidate_additional_skill_files=extra or None,
         trial_loaded_skill_files=package,
@@ -1048,6 +1050,60 @@ def test_restricted_claude_code_target_passes_with_selection_trials(tmp_path: Pa
         load_policy=policy("user"),
         hosts=["claude-code", "codex"],
         selection=support.SCORED_SELECTION,
+    )
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "verified"
+
+
+def test_pack_freeze_rejects_a_selection_case_off_the_contract_hosts(
+    tmp_path: Path,
+) -> None:
+    helper = support.load_helper()
+    with pytest.raises(helper.RunStateError, match="not a contract host"):
+        verified_with_policy(
+            helper,
+            tmp_path,
+            load_policy=policy("agent"),
+            hosts=["codex"],
+            selection=support.SCORED_SELECTION,
+        )
+
+
+@pytest.mark.parametrize(
+    ("load_policy", "hosts", "missing"),
+    (
+        (policy("agent"), ["claude-code", "codex"], "codex"),
+        (policy("user-or-skills", ["use-expskill"]), ["claude-code", "hermes"], "hermes"),
+    ),
+)
+def test_selection_rows_need_passing_trials_on_every_trial_host(
+    tmp_path: Path, load_policy: dict[str, object], hosts: list[str], missing: str
+) -> None:
+    helper = support.load_helper()
+    with pytest.raises(helper.RunStateError, match=f"selection trials on {missing}"):
+        verified_with_policy(
+            helper,
+            tmp_path,
+            load_policy=load_policy,
+            hosts=hosts,
+            selection=support.SCORED_SELECTION,
+        )
+
+
+@pytest.mark.parametrize(
+    ("load_policy", "host"),
+    ((policy("agent"), "codex"), (policy("user-or-skills", ["use-expskill"]), "hermes")),
+)
+def test_selection_trials_on_the_contract_host_back_the_selection_rows(
+    tmp_path: Path, load_policy: dict[str, object], host: str
+) -> None:
+    helper = support.load_helper()
+    state_root, workflow_id, _, _ = verified_with_policy(
+        helper,
+        tmp_path,
+        load_policy=load_policy,
+        hosts=[host],
+        selection=support.SCORED_SELECTION,
+        selection_hosts={case_id: host for case_id in support.SCORED_SELECTION},
     )
     assert helper.load_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "verified"
 

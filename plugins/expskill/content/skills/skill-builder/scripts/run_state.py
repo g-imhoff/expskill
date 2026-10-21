@@ -4939,15 +4939,14 @@ def _validate_score_bindings(
     )
     contract = _artifact_payload_json(run, contract_id)
     trial_hosts: frozenset[str] | None = None
-    if (
-        contract["schema_version"] == CONTRACT_SCHEMA
-        and contract["load_policy"]["policy"] != "agent"
-    ):
-        trial_hosts = frozenset(contract["hosts"]) & (
-            _RESTRICTED_TRIAL_HOSTS | {"hermes"}
-            if contract["load_policy"]["policy"] == "user-or-skills"
-            else _RESTRICTED_TRIAL_HOSTS
-        )
+    if contract["schema_version"] == CONTRACT_SCHEMA:
+        trial_hosts = frozenset(contract["hosts"])
+        if contract["load_policy"]["policy"] != "agent":
+            trial_hosts &= (
+                _RESTRICTED_TRIAL_HOSTS | {"hermes"}
+                if contract["load_policy"]["policy"] == "user-or-skills"
+                else _RESTRICTED_TRIAL_HOSTS
+            )
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
@@ -4964,17 +4963,20 @@ def _validate_score_bindings(
                     and selection_cases[case["case_id"]]["expected_selection"]
                     in backing_kinds
                 ]
-                required_runs = [
-                    case
-                    for case in backing_runs
-                    if trial_hosts is None
-                    or selection_cases[case["case_id"]]["host"] in trial_hosts
-                ]
-                if (
-                    (trial_hosts is None or trial_hosts) and not required_runs
-                ) or any(case["verdict"] != "pass" for case in backing_runs):
+                covered = {
+                    selection_cases[case["case_id"]]["host"] for case in backing_runs
+                }
+                # A v1 contract names no hosts, so any one host's runs back the row.
+                missing = sorted(
+                    trial_hosts - covered
+                    if trial_hosts is not None
+                    else set() if covered else {"any host"}
+                )
+                if missing or any(case["verdict"] != "pass" for case in backing_runs):
+                    where = f" on {', '.join(missing)}" if missing else ""
                     raise RunStateError(
-                        f"scorecard passes {criterion_id} without passing selection trials"
+                        f"scorecard passes {criterion_id} without passing selection "
+                        f"trials{where}"
                     )
             expected_raw_digests = sorted(
                 {case["output_digest"] for case in trial_runs}
@@ -5173,6 +5175,13 @@ def _validate_evaluation_binding(
         },
         "evaluation pack",
     )
+    contract = _artifact_payload_json(run, contract_id)
+    if contract["schema_version"] == CONTRACT_SCHEMA and any(
+        case.get("exposure") == "selection" and case["host"] not in contract["hosts"]
+        for cases in evaluation["partitions"].values()
+        for case in cases
+    ):
+        raise RunStateError("selection case host is not a contract host")
     refrozen = {
         case["case_id"]: case
         for cases in evaluation["partitions"].values()

@@ -172,7 +172,7 @@ Record reviewer identity, independence and read-only attestation, exact candidat
 
 ### Target scorecard
 
-Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, with every run of those cases passing. Under a restricted load policy, those cases are needed only on Claude Code, and on Hermes under `user-or-skills`.
+Record the exact ten target category names in accepted order with, per category, the integer score, each binary target criterion result, frozen parameter identifiers, evidence identifiers, related valid-review findings, and repair history. Bind the scorecard to the rubric digest, candidate revision, evaluation-pack digest, and current valid review record. A passing TR2 needs selection cases expecting `candidate`, and a passing TR3, TR6, TE3, or CP5 needs selection cases expecting `none` or `other`, with every run of those cases passing. Under contract v2, each selection case's host is a contract host, and those cases cover every host the load-policy table runs selection trials on.
 
 ### Verification record
 

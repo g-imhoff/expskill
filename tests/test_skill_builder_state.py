@@ -211,6 +211,7 @@ def evaluation_case(
     *,
     exposure: str | None = "loaded",
     expected_selection: str = "candidate",
+    host: str = "claude-code",
 ) -> dict[str, object]:
     case: dict[str, object] = {
         "case_id": case_id,
@@ -246,7 +247,7 @@ def evaluation_case(
             )
         case.update(
             {
-                "host": "claude-code",
+                "host": host,
                 "expected_selection": expected_selection,
                 "repeats": 3,
                 "setup_manifest": {
@@ -259,10 +260,14 @@ def evaluation_case(
 
 
 def frozen_cases(
-    selection: dict[str, str] | None = None, *, legacy: bool = False
+    selection: dict[str, str] | None = None,
+    *,
+    legacy: bool = False,
+    selection_hosts: dict[str, str] | None = None,
 ) -> list[dict[str, object]]:
     """Return case-1..3 with the named cases frozen as selection cases."""
     plan = selection or {}
+    hosts = selection_hosts or {}
     return [
         evaluation_case(
             case_id,
@@ -271,6 +276,7 @@ def frozen_cases(
                 None if legacy else "selection" if case_id in plan else "loaded"
             ),
             expected_selection=plan.get(case_id, "candidate"),
+            host=hosts.get(case_id, "claude-code"),
         )
         for case_id, partition in CASE_PARTITIONS.items()
     ]
@@ -301,15 +307,23 @@ def selection_setup_bytes(
     )
 
 
+SELECTION_END_MARKERS = {"codex": "turn.completed", "opencode": "step_finish"}
+
+
 def selection_trace_bytes(
-    label: str, *events: dict[str, object], ended: bool = True
+    label: str,
+    *events: dict[str, object],
+    ended: bool = True,
+    host: str = "claude-code",
 ) -> bytes:
     lines: list[dict[str, object]] = [
         {"type": "system", "subtype": "init", "session_id": label},
         *events,
     ]
     if ended:
-        lines.append({"type": "result", "session_id": label})
+        lines.append(
+            {"type": SELECTION_END_MARKERS.get(host, "result"), "session_id": label}
+        )
     return b"".join(fixture_canonical_bytes(line) for line in lines)
 
 
@@ -321,7 +335,7 @@ def trial_run_evidence_bytes(
         if kind == "before-manifest":
             return selection_setup_bytes(frozen_case, candidate_digest)
         if kind == "tool-events":
-            return selection_trace_bytes(label)
+            return selection_trace_bytes(label, host=str(frozen_case["host"]))
     if kind in {"request", "before-manifest"}:
         return trial_evidence_bytes(case_id, kind)
     return trial_evidence_bytes(label, kind)
@@ -2249,6 +2263,7 @@ def build_candidate_stage(
     loaded_trial_v4: bool = False,
     selection_v5: bool = False,
     selection: dict[str, str] | None = None,
+    selection_hosts: dict[str, str] | None = None,
     retain_review_source_components: bool = False,
     omitted_review_source_component: str | None = None,
     mode: str = "create",
@@ -2390,7 +2405,11 @@ def build_candidate_stage(
             contract_digest=contract["artifact_digest"],
             confirmation_digest=confirmation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
-            cases=frozen_cases(selection, legacy=bool(compatibility_modes)),
+            cases=frozen_cases(
+                selection,
+                legacy=bool(compatibility_modes),
+                selection_hosts=selection_hosts,
+            ),
             schema_version=(
                 "skill-builder-evaluation-pack.v1"
                 if compatibility_modes
@@ -2420,7 +2439,7 @@ def build_candidate_stage(
             contract_digest=contract["artifact_digest"],
             confirmation_digest=confirmation["artifact_digest"],
             evaluation_digest=evaluation["artifact_digest"],
-            cases=frozen_cases(selection),
+            cases=frozen_cases(selection, selection_hosts=selection_hosts),
             owned_paths=default_owned_paths(candidate_additional_skill_files)
             if candidate_owned_paths is None
             else candidate_owned_paths,
@@ -2623,6 +2642,7 @@ def build_verified_stage(
     loaded_trial_v4: bool = False,
     selection_v5: bool = False,
     selection: dict[str, str] | None = None,
+    selection_hosts: dict[str, str] | None = None,
     trial_run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     superseded_trial_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
     earlier_trials_change: str = "trial",
@@ -2644,6 +2664,7 @@ def build_verified_stage(
         loaded_trial_v4=loaded_trial_v4,
         selection_v5=selection_v5,
         selection=selection,
+        selection_hosts=selection_hosts,
         queued_targets=queued_targets,
         granted_authority=granted_authority,
         candidate_schema_version=candidate_schema_version,
@@ -2665,7 +2686,11 @@ def build_verified_stage(
     historical_trials = (
         legacy_candidate_v1 or historical_candidate_v2 or historical_candidate_v3
     )
-    cases = frozen_cases(selection, legacy=historical_trials or loaded_trial_v4)
+    cases = frozen_cases(
+        selection,
+        legacy=historical_trials or loaded_trial_v4,
+        selection_hosts=selection_hosts,
+    )
     if superseded_trial_overrides is not None:
         superseded = retain_json(
             helper,
