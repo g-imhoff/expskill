@@ -277,20 +277,68 @@ def retain_candidate(
     sequence: int,
     files: dict[str, bytes] = TARGET_FILES,
     overrides: dict[str, object] | None = None,
+    artifact_id: str = "candidate",
 ) -> dict[str, object]:
     payload = evaluate_candidate_payload(helper, tmp_path, state_root, workflow_id, files)
-    payload.update(overrides or {})
+    payload.update({"candidate_id": artifact_id, **(overrides or {})})
     return retain(
         helper,
         state_root,
         workflow_id,
         sequence,
-        "candidate",
+        artifact_id,
         "candidate-record",
         payload,
         retain_review_source_components=True,
         extra_files={"review-components/empty-diff.bin": b""},
     )
+
+
+def supersede_trials(
+    helper: ModuleType,
+    tmp_path: Path,
+    state_root: Path,
+    workflow_id: str,
+    sequence: int,
+    candidate: dict[str, object],
+    files: dict[str, bytes],
+    cases: list[dict[str, object]],
+    run_overrides: dict[tuple[str, int], dict[str, object]],
+    change_kind: str,
+) -> tuple[int, dict[str, object]]:
+    """Complete one trial pack, then invalidate it or the candidate and accept the same copy again."""
+    superseded = retain(
+        helper,
+        state_root,
+        workflow_id,
+        sequence,
+        "trials-superseded",
+        "trial-pack",
+        support.trial_payload(
+            candidate["artifact_digest"], cases=cases, loaded_skill_files=files, run_overrides=run_overrides
+        ),
+        frozen_trial_cases=cases,
+        trial_loaded_skill_files=files,
+    )
+    sequence = advance(
+        helper, state_root, workflow_id, superseded["sequence"], "complete-trials", "trials", ["trials-superseded"]
+    )
+    sequence = helper.invalidate_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        change_kind=change_kind,
+        changed_artifact_id="trials-superseded" if change_kind == "trial" else "candidate",
+        reason="rerun trials for the same target copy",
+        state_root=state_root,
+    )["sequence"]
+    if change_kind == "candidate":
+        candidate = retain_candidate(
+            helper, tmp_path, state_root, workflow_id, sequence, files, artifact_id="candidate-2"
+        )
+        sequence = advance(
+            helper, state_root, workflow_id, candidate["sequence"], "accept-candidate", "candidate", ["candidate-2"]
+        )
+    return sequence, candidate
 
 
 def build_reviewed(
@@ -299,6 +347,10 @@ def build_reviewed(
     files: dict[str, bytes] = TARGET_FILES,
     contract_overrides: dict[str, object] | None = None,
     selection: dict[str, str] = support.SCORED_SELECTION,
+    *,
+    trial_run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
+    superseded_trial_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
+    earlier_trials_change: str = "trial",
 ) -> tuple[Path, str, int, dict[str, object], dict[str, object], dict[str, object]]:
     state_root, workflow_id, sequence = build_evaluation(
         helper, tmp_path, files, contract_overrides, selection
@@ -308,8 +360,21 @@ def build_reviewed(
         helper, state_root, workflow_id, candidate["sequence"], "accept-candidate", "candidate", ["candidate"]
     )
     cases = support.frozen_cases(selection)
+    if superseded_trial_overrides is not None:
+        sequence, candidate = supersede_trials(
+            helper,
+            tmp_path,
+            state_root,
+            workflow_id,
+            sequence,
+            candidate,
+            files,
+            cases,
+            superseded_trial_overrides,
+            earlier_trials_change,
+        )
     trials_payload = support.trial_payload(
-        candidate["artifact_digest"], cases=cases, loaded_skill_files=files
+        candidate["artifact_digest"], cases=cases, loaded_skill_files=files, run_overrides=trial_run_overrides
     )
     trials = retain(
         helper,
@@ -386,7 +451,7 @@ def build_scored(
 
 
 def report_payload(
-    helper: ModuleType, state_root: Path, workflow_id: str
+    helper: ModuleType, state_root: Path, workflow_id: str, failing: tuple[str, ...] = ("CE6",)
 ) -> dict[str, object]:
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
     index = current["artifact_index"]
@@ -394,7 +459,9 @@ def report_payload(
         "schema_version": "skill-builder-evaluation-report.v1",
         "target_identity": current["target_identity"]["canonical"],
         "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
-        "candidate_digest": index["candidate"]["digest"],
+        "candidate_digest": support.accepted_artifact(
+            helper, state_root, workflow_id, "candidate-record"
+        )[1],
         "candidate_revision": "candidate-1",
         "contract_digest": index["contract"]["digest"],
         "confirmation_digest": support.accepted_artifact(
@@ -408,8 +475,8 @@ def report_payload(
         "scores": [
             {
                 "name": name,
-                "score": 9 if name == "context efficiency" else 10,
-                "failing_criteria": ["CE6"] if name == "context efficiency" else [],
+                "score": sum(criterion not in failing for criterion in support.SCORE_CRITERIA[name]),
+                "failing_criteria": sorted(set(failing) & set(support.SCORE_CRITERIA[name])),
             }
             for name in support.SCORE_CATEGORIES
         ],
@@ -818,6 +885,86 @@ def test_report_reaches_reported_and_releases_the_lock(tmp_path: Path) -> None:
             reason="late objection",
             state_root=state_root,
         )
+
+
+def score_and_retain_report(
+    helper: ModuleType,
+    tmp_path: Path,
+    failing: tuple[str, ...] = ("CE6",),
+    **options: object,
+) -> tuple[Path, str, int]:
+    state_root, workflow_id, sequence, *reviewed = build_reviewed(helper, tmp_path, **options)
+    scores = retain_scorecard(helper, state_root, workflow_id, sequence, tuple(reviewed), failing=failing)
+    sequence = advance(
+        helper, state_root, workflow_id, scores["sequence"], "accept-scores", "scored", ["conformance", "scores"]
+    )
+    report = retain(
+        helper,
+        state_root,
+        workflow_id,
+        sequence,
+        "report",
+        "evaluation-report",
+        report_payload(helper, state_root, workflow_id, failing),
+    )
+    return state_root, workflow_id, report["sequence"]
+
+
+@pytest.mark.parametrize("earlier_trials_change", ["trial", "candidate"])
+def test_rerun_trials_cannot_hide_a_failing_selection_run(
+    tmp_path: Path, earlier_trials_change: str
+) -> None:
+    """A report cannot rest on rerun trials after the same target copy failed a selection run."""
+    helper = support.load_helper()
+    state_root, workflow_id, sequence = score_and_retain_report(
+        helper,
+        tmp_path / "rerolled",
+        superseded_trial_overrides={
+            ("case-2", 1): {"observed_load": support.NONE_LOAD, "verdict": "fail"}
+        },
+        earlier_trials_change=earlier_trials_change,
+    )
+    with pytest.raises(helper.RunStateError, match="already failed"):
+        helper.report_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            report_artifact_id="report",
+            state_root=state_root,
+        )
+
+    state_root, workflow_id, sequence = score_and_retain_report(
+        helper,
+        tmp_path / "rerun",
+        superseded_trial_overrides={},
+        earlier_trials_change=earlier_trials_change,
+    )
+    reported = helper.report_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        report_artifact_id="report",
+        state_root=state_root,
+    )
+    assert reported["stage"] == "reported"
+    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "reported"
+
+
+def test_a_failing_selection_run_in_the_reported_trials_still_reports(tmp_path: Path) -> None:
+    """An evaluation reports the failed selection run it scored."""
+    helper = support.load_helper()
+    state_root, workflow_id, sequence = score_and_retain_report(
+        helper,
+        tmp_path,
+        ("CE6", "TR2"),
+        trial_run_overrides={("case-2", 1): {"observed_load": support.NONE_LOAD, "verdict": "fail"}},
+    )
+    reported = helper.report_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        report_artifact_id="report",
+        state_root=state_root,
+    )
+    assert reported["stage"] == "reported"
+    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)["stage"] == "reported"
 
 
 def test_build_runs_cannot_report(tmp_path: Path) -> None:

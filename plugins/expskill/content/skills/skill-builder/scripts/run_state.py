@@ -7968,6 +7968,25 @@ def _current_event_artifact(
     return artifact_id, envelope, _artifact_payload_json(run, artifact_id)
 
 
+def _reject_failed_selection_runs(
+    run: Path, current: dict[str, Any], candidate: dict[str, Any], trials_id: str
+) -> None:
+    """Keep a rerun from hiding another retained pack's selection failure for this candidate content."""
+    skill_digest = _candidate_skill_digest(candidate)
+    for record in current["artifact_index"].values():
+        if record["type"] != "trial-pack" or record["artifact_id"] == trials_id:
+            continue
+        if any(
+            case.get("exposure") == "selection"
+            and case["verdict"] == "fail"
+            and case["installed_skill_digest"] == skill_digest
+            for case in _artifact_payload_json(run, record["artifact_id"])["cases"]
+        ):
+            raise RunStateError(
+                "selection trials already failed for this candidate, and a rerun cannot replace them"
+            )
+
+
 def _validate_final_evidence(
     run: Path,
     current: dict[str, Any],
@@ -8000,19 +8019,7 @@ def _validate_final_evidence(
         for case in trials["cases"]
     ):
         raise RunStateError("delivery requires a trial that loaded the candidate")
-    skill_digest = _candidate_skill_digest(candidate)
-    for record in current["artifact_index"].values():
-        if record["type"] != "trial-pack":
-            continue
-        if any(
-            case.get("exposure") == "selection"
-            and case["verdict"] == "fail"
-            and case["installed_skill_digest"] == skill_digest
-            for case in _artifact_payload_json(run, record["artifact_id"])["cases"]
-        ):
-            raise RunStateError(
-                "selection trials already failed for this candidate, so repair it"
-            )
+    _reject_failed_selection_runs(run, current, candidate, trials_id)
     review_id, review_envelope, review = _current_event_artifact(
         run, current, "accept-review", "review-record", event_artifacts
     )
@@ -8397,6 +8404,7 @@ def _validate_report_evidence(
         return bound[artifact_type][1]["envelope_digest"]
 
     candidate = bound["candidate-record"][2]
+    _reject_failed_selection_runs(run, current, candidate, bound["trial-pack"][0])
     review = bound["review-record"][2]
     scorecard = bound["target-scorecard"][2]
     if (
