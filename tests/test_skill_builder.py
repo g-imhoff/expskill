@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
+import importlib.util
 import json
 import re
 import tempfile
@@ -10654,6 +10655,39 @@ class SkillBuilderStaticIntegrationTests(unittest.TestCase):
             self.assertEqual(len(Path(resource).parts), 2)
             self.assertTrue((SKILL_ROOT / resource).is_file())
         self.assertFalse(any(path.is_dir() for path in (SKILL_ROOT / "references").iterdir()))
+
+    def test_mode_table_routes_each_helper_mode_to_its_own_file(self) -> None:
+        """Public contract: the Modes table lists each helper mode once and links references/<mode>.md."""
+
+        spec = importlib.util.spec_from_file_location(
+            "skill_builder_router_modes", SKILL_ROOT / "scripts" / "run_state.py"
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        run_state = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run_state)
+
+        lines = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines.count("## Modes"), 1)
+        section: list[str] = []
+        for line in lines[lines.index("## Modes") + 1 :]:
+            if line.startswith("## "):
+                break
+            section.append(line)
+        table = [line for line in section if line.startswith("|")]
+        self.assertGreater(len(table), 2)
+        self.assertRegex(table[1], r"^\|(?:\s*:?-+:?\s*\|)+$")
+
+        modes = []
+        for row in table[2:]:
+            mode = row.strip("|").split("|")[0].strip()
+            modes.append(mode)
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    re.findall(r"\]\((references/[^)]+\.md)\)", row),
+                    [f"references/{mode}.md"],
+                )
+        self.assertCountEqual(modes, run_state._MODES)
 
     def test_entrypoint_fits_the_codex_injection_limit(self) -> None:
         """Public contract: Codex truncates an injected SKILL.md, frontmatter included, past 8,000 bytes."""

@@ -75,11 +75,38 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                 "another product skill invocation token",
             ),
             "lifecycle-coupling": ("skill-builder", "lifecycle wording"),
+            "create-stage-route": (
+                "skill-builder references/create.md",
+                "another product skill invocation token",
+            ),
+            "improve-stage-lifecycle": (
+                "skill-builder references/improve.md",
+                "lifecycle wording",
+            ),
+            "modify-stage-placeholder": (
+                "skill-builder references/modify.md",
+                "contains a placeholder",
+            ),
+            "evaluate-stage-route": (
+                "skill-builder references/evaluate.md",
+                "another product skill invocation token",
+            ),
+            "shared-stages-lifecycle": (
+                "skill-builder references/shared-stages.md",
+                "lifecycle wording",
+            ),
             "router-coupling": (
                 "use-expskill",
                 "must not name skill-builder",
             ),
             "repository-local-duplicate": (".agents/skills/improve-skill", "must be absent"),
+        }
+        stage_additions = {
+            "create-stage-route": ("references/create.md", "\nUse $use-expskill after finalization.\n"),
+            "improve-stage-lifecycle": ("references/improve.md", "\nRun the lifecycle after finalization.\n"),
+            "modify-stage-placeholder": ("references/modify.md", "\n[TODO: finish this stage]\n"),
+            "evaluate-stage-route": ("references/evaluate.md", "\nInvoke $roast after scoring.\n"),
+            "shared-stages-lifecycle": ("references/shared-stages.md", "\n## Lifecycle routing\n"),
         }
         for mutation, fragments in expected_fragments.items():
             with self.subTest(mutation=mutation):
@@ -140,6 +167,13 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     contract.write_text(
                         contract.read_text(encoding="utf-8")
                         + "\n## Lifecycle routing\n\nRun the lifecycle after finalization.\n",
+                        encoding="utf-8",
+                    )
+                elif mutation in stage_additions:
+                    relative, addition = stage_additions[mutation]
+                    stage = builder / relative
+                    stage.write_text(
+                        stage.read_text(encoding="utf-8") + addition,
                         encoding="utf-8",
                     )
                 elif mutation == "router-coupling":

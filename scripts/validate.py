@@ -204,14 +204,17 @@ PUBLIC_SKILL_TOKENS = {
 }
 PUBLIC_SKILL_COUNT_TEXT = "sixteen independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
-SKILL_BUILDER_REQUIRED_REFERENCES = (
-    "references/artifact-contracts.md",
-    "references/evaluation-rubric.md",
+SKILL_BUILDER_STAGE_FILES = (
     "references/create.md",
     "references/improve.md",
     "references/modify.md",
     "references/evaluate.md",
     "references/shared-stages.md",
+)
+SKILL_BUILDER_REQUIRED_REFERENCES = (
+    "references/artifact-contracts.md",
+    "references/evaluation-rubric.md",
+    *SKILL_BUILDER_STAGE_FILES,
 )
 SETUP_SKILLS_REQUIRED_RESOURCES = (
     "references/record-format.md",
@@ -1501,24 +1504,29 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
 
 
 def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> None:
-    builder_path = skills_root / "skill-builder" / "SKILL.md"
-    if builder_path.is_file() and not builder_path.is_symlink():
+    builder_root = skills_root / "skill-builder"
+    for relative in ("SKILL.md", *SKILL_BUILDER_STAGE_FILES):
+        path = builder_root / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        label = "skill-builder" if relative == "SKILL.md" else f"skill-builder {relative}"
         try:
-            builder = builder_path.read_text(encoding="utf-8")
-        except OSError as error:
-            errors.append(f"skill-builder contract could not be read: {error}")
-        else:
-            if not _contains_exact_skill_token(builder, SKILL_BUILDER_TOKEN):
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            errors.append(f"{label} contract could not be read: {error}")
+            continue
+        if relative == "SKILL.md":
+            if not _contains_exact_skill_token(contents, SKILL_BUILDER_TOKEN):
                 errors.append("skill-builder contract must identify $skill-builder directly")
-            if any(
-                _contains_exact_skill_token(builder, token)
-                for token in SKILL_BUILDER_FORBIDDEN_TOKENS
-            ):
-                errors.append(
-                    "skill-builder contains another product skill invocation token"
-                )
-            if re.search(r"\blifecycle\b", builder, re.IGNORECASE):
-                errors.append("skill-builder contains lifecycle wording")
+        elif PLACEHOLDER in contents:
+            errors.append(f"{label} contains a placeholder")
+        if any(
+            _contains_exact_skill_token(contents, token)
+            for token in SKILL_BUILDER_FORBIDDEN_TOKENS
+        ):
+            errors.append(f"{label} contains another product skill invocation token")
+        if re.search(r"\blifecycle\b", contents, re.IGNORECASE):
+            errors.append(f"{label} contains lifecycle wording")
 
     router_path = skills_root / "use-expskill" / "SKILL.md"
     if router_path.is_file() and not router_path.is_symlink():

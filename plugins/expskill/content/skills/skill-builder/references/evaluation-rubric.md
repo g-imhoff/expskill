@@ -27,7 +27,7 @@ A failed builder-run gate blocks release but by itself leaves category scores un
 
 ## Target scoring method
 
-Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. Only bound results count as scoring evidence. Where a selection trial applies, TR2, TR3, TR6, TR7, TE3, and CP5 require all 3 real-host runs of each selection case to match its expected selection, and where a host flag applies, they pass on the helper's static flag check.
+Per target category, build an assertion matrix from the frozen parameters naming the parameter, cases, expected observations, forbidden effects, and retained evidence. Award one point per numbered criterion only when fresh evidence proves it for the exact candidate revision, summing the ten binary criteria to an integer score from 0 to 10. Missing, stale, inaccessible, conflicting, contaminated, or unauditable evidence earns zero for that criterion. A category earns 10 only when all ten criteria pass. Each category score stands alone on its own criteria and evidence. Bind every criterion result to frozen parameter identifiers, case identifiers, raw-artifact digests, trial receipts, reviewer findings, and the exact candidate revision. Only bound results count as scoring evidence. Where a selection trial applies, TR2, TR3, TR6, TE3, and CP5 require all 3 real-host runs of each selection case to match its expected selection, and where a host flag applies, they pass on the helper's static flag check.
 
 ## Reviewer evidence contract
 
@@ -39,7 +39,7 @@ Use an independent target reviewer distinct from every researcher, designer, imp
 |---|---|
 | TR1 | Candidate identity and invocation token match the frozen target identity and host rules. |
 | TR2 | Every accepted positive trigger class selects the candidate with the required priority and context. |
-| TR3 | Every accepted non-trigger class leaves the candidate inactive or produces the contracted decline. |
+| TR3 | Every accepted non-trigger class selects no skill or the neighbour its selection case expects. |
 | TR4 | The load sentence and every target host's flag match the frozen load policy, or the host's limitation is recorded, as for Hermes. |
 | TR5 | Contracted aliases, names, file types, tools, and domain signals resolve to the intended target. |
 | TR6 | Near-neighbour requests stay with their accepted neighbouring responsibility. |
