@@ -101,6 +101,7 @@ ORDERED_WORKFLOW_HEADINGS = (
 )
 
 REQUIRED_BOUNDARY_HEADINGS = (
+    "## When to use",
     "## Boundaries and recovery",
 )
 
