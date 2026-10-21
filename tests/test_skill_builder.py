@@ -959,14 +959,18 @@ def _durable_cache_key(value: Any) -> Any:
         raise TypeError("floating-point values are outside the durable schema")
     if isinstance(value, dict):
         # ``json`` encodes a dict subclass through its ``items()`` view, but
-        # only when the stored mapping is not empty. An empty stored mapping
-        # encodes as an empty object whatever ``items()`` reports. The
-        # reported view is still checked, because the canonical form rejects
-        # a value it reports.
-        reported = _durable_cache_key(dict(value.items()))
+        # only when the stored mapping is not empty. The reported view is
+        # checked, and its names are kept as they are, because the canonical
+        # form keeps a repeated name too.
+        pairs = []
+        for name, nested in value.items():
+            if not isinstance(name, str):
+                raise TypeError("durable object keys must be strings")
+            pairs.append((str.__str__(name), _durable_cache_key(nested)))
+        pairs.sort()
         if not dict.__len__(value):
             return ("D", type(value), ("d", ()))
-        return ("D", type(value), reported)
+        return ("D", type(value), ("d", tuple(pairs)))
     if isinstance(value, list):
         # ``json`` encodes a list subclass through its iteration, whatever
         # the stored list holds.
@@ -16933,6 +16937,26 @@ class SkillBuilderCanonicalDigestTests(unittest.TestCase):
         self.assertEqual(canonical_bytes(first), b'{"alpha":0}\n')
         self.assertEqual(canonical_bytes(second), b'{"beta":0}\n')
         self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+    def test_a_repeated_name_keeps_its_own_digest(self) -> None:
+        """A reported view that repeats a name encodes both entries."""
+
+        class ReportedItems(dict):
+            """A dict subclass whose reported view differs from its stored items."""
+
+            def __init__(self, stored: dict[str, Any], reported: list[Any]) -> None:
+                super().__init__(stored)
+                self._reported = reported
+
+            def items(self) -> Any:
+                return list(self._reported)
+
+        _CANONICAL_CACHE.clear()
+        repeated = ReportedItems({"x": 1}, [("a", 1), ("a", 2)])
+        single = ReportedItems({"x": 1}, [("a", 1)])
+        self.assertEqual(canonical_bytes(repeated), b'{"a":1,"a":2}\n')
+        self.assertEqual(canonical_bytes(single), b'{"a":1}\n')
+        self.assertNotEqual(canonical_digest(repeated), canonical_digest(single))
 
     def test_an_empty_stored_mapping_still_rejects_what_it_reports(self) -> None:
         """An empty stored mapping is checked before it encodes as an empty object."""
