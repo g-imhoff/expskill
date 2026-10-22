@@ -7,7 +7,7 @@
 
 ## Boundary
 
-Do not fan out across seams without disjoint ownership plus independent proof plus a join. Do not share a checkout between concurrent writers. Do not change a worker question, branch, query, or budget after dispatch. Add a new assignment to change any of them. Do not average divergent designs. Reframe plus rerun instead.
+Fan out only across seams with disjoint ownership plus independent proof plus a join, one checkout per writer. Keep every dispatched worker question, branch, query, and budget frozen; add a new assignment to change any of them. Reframe divergent designs and rerun instead of averaging them.
 
 ## Evidence
 
