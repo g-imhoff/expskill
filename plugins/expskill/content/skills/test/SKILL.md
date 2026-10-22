@@ -395,3 +395,7 @@ limitations, artifacts, and receipt-bound identity.
 Write the authored summary in revision-neutral terms, leaving HEAD and branch to the receipt.
 If response evidence names the exact revision, copy `payload.receipt.head` byte-for-byte.
 Limit conformance claims to what the selected scope proves.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

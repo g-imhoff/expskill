@@ -68,3 +68,7 @@ The graph records later Git execution as planned topology. The non-protected wor
 On standalone success, say concisely that the plan is ready, summarize its high-level execution shape, material protections, proof intent, and workflow branch in human terms, and disclose honest non-blocking risks. Name the workflow branch, the baseline commit, and the confirmed material decisions so a later phase continues from that summary plus the graph with no re-asking. Keep the private graph for later direct phases or `use-expskill`. Hand off only that plain summary and the kept graph, then stop before implementation.
 
 A later authorized lifecycle, not `$plan`, may push after the first coherent implementation commit, open a draft request against a protected destination, and bind checks to its exact head. It may reach `ready-for-human-review` only after planned work, review findings, independent verification, target and join proof, required checks, and lane cleanup are current. At that terminal gate the helper emits a durable receipt and deletes owned graph generations. The human alone approves, merges, enables auto-merge, and enters the merge queue.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

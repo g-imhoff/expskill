@@ -122,23 +122,21 @@ or a protected-branch boundary. Only an explicit user grant permits pushing,
 creating or updating a merge request, approving, merging, enabling auto-merge,
 or entering a merge queue.
 
+## Shared rules index
+
+Load a rule leaf only when its trigger matches. Rules live in `../../rules/`.
+
+- `pin-scope.md` pins scope to an exact revision, stops plus notifies on drift, never runs two agents on the same job.
+- `isolate-writes.md` gives each concurrent writer its own worktree from the exact accepted commit, coordinator owned, no shared checkout.
+- `ask-owned-only.md` routes every user question through `$grill-me` frontier rounds after discovery is exhausted.
+- `explicit-confirmation.md` binds confirmation to the exact digest or proposal presented, invalidates on material change, derives ready only from current confirmations.
+- `bounded-fanout.md` uses three bounded readers for narrow discovery with retry once then ask, N reviewers fail closed for scoring, deep research for broad work.
+- `evidence-report.md` roots retained proof at home state with one run folder per run, closed verdicts, pin bound evidence.
+
 ## Resolve a decision frontier
 
-Let the owning skill handle one isolated user decision. Keep discovering
-facts and resolving quality problems autonomously.
+Keep discovering facts and resolving quality problems autonomously. Exhaust supplied context, repository evidence, prior accepted evidence, and authoritative sources before any user question.
 
-Use `$grill-me` only when every condition below is true:
+Route every remaining user question through `$grill-me`. Map decisions as a design tree. Work the frontier in rounds with a recommended answer per question. Use a one question frontier round for an isolated decision. Use complete frontier rounds for connected decisions where one answer changes which later questions matter. Wait for user answers before the next round. Act only after the user confirms shared understanding.
 
-- Facts are exhausted.
-- The owning skill cannot continue because multiple consequential decisions
-  remain.
-- Those decisions are connected, so one answer changes which later questions
-  matter.
-- Only the user can decide them.
-
-Explain the blocker briefly, then offer `$grill-me` for the decision frontier,
-and invoke it only with explicit consent. Keep the owning skill paused while `$grill-me`, a
-frontier-by-round interview with a recommended answer per question, resolves
-the decision tree. When the user confirms shared understanding, return
-the confirmed decision delta and resume the owning skill. The owning skill
-remains responsible for its state and invalidating any dependent work.
+Keep the owning skill paused while `$grill-me` resolves the tree. Return the confirmed decision delta and resume the owning skill. The owning skill remains responsible for its state and invalidating any dependent work. Ask the user for explicit consent before opening `$grill-me` from a routed lifecycle, then invoke it without further gate checks.

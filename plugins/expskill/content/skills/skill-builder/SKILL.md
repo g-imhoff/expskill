@@ -124,6 +124,10 @@ Stop at the current gate while identity, authority, evidence, confirmation, isol
 
 During work, report exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At finalization, report exact revision, builder-run conformance, ten target category scores, review validity and verdict, verification evidence, retained limitations, release-record locator, and authorized delivery result. A status report only describes the run. A validated hash-chained helper receipt alone advances it. The cleaned terminal state additionally needs its valid durable tombstone and deletion of only the helper-owned run directory.
 
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
+
 ## Review context contract
 
 This final section is the only authoritative review-context policy in this file. Earlier conflicting handoff instructions yield to it.

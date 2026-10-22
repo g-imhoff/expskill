@@ -32,3 +32,7 @@ A score may rise only when the issue was fixed or disproved with evidence. A ris
 ## Report
 
 Write a short report with categories and weights, every cycle score in a table, fixes with verification, and the final pass or fail reason. Keep it under 300 lines and point at the exact pins reviewed.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

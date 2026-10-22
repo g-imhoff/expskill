@@ -117,6 +117,10 @@ Keep every Git write local. Other product skills, remote delivery (push, merge r
 auto-merge, merge queues), hands-on or end-to-end testing, and the user's final review remain separate lifecycle
 decisions coordinated outside this skill.
 
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
+
 ## Review context contract
 
 This final section is the only authoritative review-context policy in this file. Earlier conflicting handoff instructions yield to it.

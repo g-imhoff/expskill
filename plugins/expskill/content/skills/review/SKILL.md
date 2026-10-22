@@ -158,3 +158,7 @@ referenced separately, and the report stays intact.
 After context loss, reconstruct scope and pinned evidence only from records,
 asking the user for anything missing. A requested scope or revision change
 reopens only affected conclusions.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

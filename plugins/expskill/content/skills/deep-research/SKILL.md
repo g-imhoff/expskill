@@ -233,3 +233,7 @@ claim in the report traces to the record. Anything untraced is labeled a gap.
 
 Save a report file only when the user asks for one at a resolved destination
 they authorized, and make it match the recorded state.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

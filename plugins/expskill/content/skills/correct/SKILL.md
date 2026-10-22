@@ -92,3 +92,7 @@ costly run.
 Leave repair changes uncommitted unless the user explicitly requests a commit.
 Leave pushing, publishing, pull requests, merging, global installs, and other
 remote delivery to the user.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

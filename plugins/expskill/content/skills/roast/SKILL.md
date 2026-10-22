@@ -26,3 +26,7 @@ Fail closed. A missing reply, invalid JSON, or a reply missing any field counts 
 ## Report
 
 Write a short report with categories and weights, scores in a table, top issues with evidence, and the final pass or fail reason. Pass means 9 or higher in every category. Keep it under 300 lines and point at the exact pin reviewed.
+
+## Shared rules
+
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
