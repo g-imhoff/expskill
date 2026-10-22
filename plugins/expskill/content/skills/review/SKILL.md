@@ -33,7 +33,7 @@ permissions. Preserve unrelated changes and profiles.
 
 ## Resolve report storage
 
-Resolve the home state root first. Use XDG state expskill when XDG STATE HOME is set, else use HOME dot expskill. Never write reports into the target repository or the skill installation.
+Resolve the home state root first. Root is always home dot expskill. Never write reports into the target repository or the skill installation.
 
 Use one run folder per run. Shape is state root, then skills, then review, then runs, then repo hash, then run id. Create the run folder with strict private permissions. Write the report as review date time unique dot md with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
 
