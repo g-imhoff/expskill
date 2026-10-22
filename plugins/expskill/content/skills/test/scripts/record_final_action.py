@@ -234,16 +234,31 @@ def _release_evidence_parent_for_cleanup(root: Path) -> None:
             os.close(descriptor)
 
 
+def _repository_hash(repository: Path) -> str:
+    return hashlib.sha256(str(repository).encode("utf-8")).hexdigest()
+
+
+def _home_runs_base(repository: Path) -> Path:
+    return (
+        Path.home()
+        / ".expskill"
+        / "skills"
+        / "test"
+        / "runs"
+        / _repository_hash(repository)
+    )
+
+
 def _run_root(repository: Path, supplied: str) -> Path:
     raw = Path(supplied)
     absolute = Path(os.path.abspath(repository / raw if not raw.is_absolute() else raw))
-    evidence = repository / ".test-evidence"
+    evidence = _home_runs_base(repository)
     if absolute.parent != evidence or not RUN_ID_RE.fullmatch(absolute.name):
         _error(
             "invalid-run-root",
-            "root must be exactly <repository>/.test-evidence/<run-id>",
+            "root must be exactly <home>/.expskill/skills/test/runs/<repo-hash>/<run-id>",
         )
-    _private_directory(evidence, ".test-evidence")
+    _private_directory(evidence, "runs home")
     _private_directory(absolute, "run root")
     return absolute
 
@@ -364,7 +379,7 @@ def _validate_spec(
         _relative_path(path, label="integrity_paths[]").as_posix()
         for path in _string_array(value.get("integrity_paths"), label="integrity_paths", minimum=1)
     ]
-    if any(path.split("/", 1)[0] in {".git", ".test-evidence"} for path in integrity_paths):
+    if any(path.split("/", 1)[0] in {".git"} for path in integrity_paths):
         _error("invalid-integrity-path", "integrity paths cannot include control data")
 
     cleanup_paths: list[str] = []

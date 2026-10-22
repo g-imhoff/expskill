@@ -9,6 +9,7 @@ snapshot for the opening grounding call.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -98,15 +99,35 @@ def _secure_directory(path: Path, label: str) -> None:
         os.close(descriptor)
 
 
+def _repository_hash(repository: Path) -> str:
+    return hashlib.sha256(str(repository).encode("utf-8")).hexdigest()
+
+
+def _home_runs_base(repository: Path) -> Path:
+    return (
+        Path.home()
+        / ".expskill"
+        / "skills"
+        / "test"
+        / "runs"
+        / _repository_hash(repository)
+    )
+
+
 def _allocate_root(repository: Path, now: datetime) -> Path:
-    evidence = repository / ".test-evidence"
+    chain = Path.home() / ".expskill" / "skills" / "test" / "runs"
+    try:
+        chain.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as error:
+        _error("invalid-run-root", f"cannot create home runs root: {error}")
+    evidence = chain / _repository_hash(repository)
     try:
         evidence.mkdir(mode=0o700)
     except FileExistsError:
         pass
     except OSError as error:
-        _error("invalid-run-root", f"cannot create .test-evidence: {error}")
-    _secure_directory(evidence, ".test-evidence")
+        _error("invalid-run-root", f"cannot create runs home: {error}")
+    _secure_directory(evidence, "runs home")
 
     flags = (
         os.O_RDONLY
@@ -117,14 +138,14 @@ def _allocate_root(repository: Path, now: datetime) -> Path:
     try:
         descriptor = os.open(evidence, flags)
     except OSError as error:
-        _error("invalid-run-root", f"cannot open .test-evidence: {error}")
+        _error("invalid-run-root", f"cannot open runs home: {error}")
     authenticated = False
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
             _error(
                 "invalid-run-root",
-                ".test-evidence must be an owned real directory",
+                "runs home must be an owned real directory",
             )
         authenticated = True
         try:
@@ -152,9 +173,9 @@ def _allocate_root(repository: Path, now: datetime) -> Path:
             if authenticated:
                 os.fchmod(descriptor, 0o500)
                 if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o500:
-                    _error("invalid-run-root", "cannot seal .test-evidence")
+                    _error("invalid-run-root", "cannot seal runs home")
         except OSError as error:
-            _error("invalid-run-root", f"cannot seal .test-evidence: {error}")
+            _error("invalid-run-root", f"cannot seal runs home: {error}")
         finally:
             os.close(descriptor)
 
@@ -182,7 +203,7 @@ def _inventory(repository: Path) -> list[str]:
             or ".." in path.parts
             or "\n" in raw_path
             or "\x00" in raw_path
-            or raw_path.startswith((".git/", ".test-evidence/"))
+            or raw_path.startswith(".git/")
         ):
             continue
         safe.append(path.as_posix())
