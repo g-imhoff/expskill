@@ -92,7 +92,8 @@ class ResearchRecordTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
         self.root = self.base / "records"
-        self.env = dict(os.environ, XDG_STATE_HOME=str(self.base / "xdg-state"))
+        self.env = dict(os.environ, HOME=str(self.base / "home"))
+        self.env.pop("XDG_STATE_HOME", None)
 
     def run_script(self, *args: str, stdin: object = None, code: int = 0) -> tuple[bytes, str]:
         if stdin is None:
@@ -1617,18 +1618,20 @@ class ResearchRecordTests(unittest.TestCase):
         os.mkfifo(other / "lock", 0o600)
         self.assertIn("lock is not a regular file", self.errors(self.cli("status", str(other), code=1)))
 
-    def test_default_root_ignores_relative_xdg_and_explains_repository_refusal(self) -> None:
+    def test_default_root_uses_home_expskill_runs_and_explains_repository_refusal(self) -> None:
         home = self.base / "home"
         repository = self.base / "repository"
         (repository / ".git").mkdir(parents=True)
-        self.env = dict(self.env, HOME=str(home), XDG_STATE_HOME=str(repository / "state"))
+        self.env = dict(self.env, HOME=str(repository), XDG_STATE_HOME=str(self.base / "xdg-bogus"))
         result = self.cli("init", stdin={"question": "Q?"}, code=1)
         self.assertIn("--root", self.errors(result))
         self.assertIn("this is the default root", self.errors(result))
-        self.assertIn(str((repository / "state" / "expskill" / "deep-research").resolve()), self.errors(result))
-        self.env["XDG_STATE_HOME"] = "relative-state"
+        self.assertIn(
+            str((repository / ".expskill" / "skills" / "deep-research" / "runs").resolve()), self.errors(result)
+        )
+        self.env = dict(self.env, HOME=str(home), XDG_STATE_HOME=str(repository / "state"))
         run = Path(self.cli("init", stdin={"question": "Q?"})["run_dir"])
-        self.assertEqual(run.parent, (home / ".local" / "state" / "expskill" / "deep-research").resolve())
+        self.assertEqual(run.parent, (home / ".expskill" / "skills" / "deep-research" / "runs").resolve())
 
     def test_complete_phase_duplicates_defaults_to_recorded_duplicates(self) -> None:
         run = self.init(branches=1)

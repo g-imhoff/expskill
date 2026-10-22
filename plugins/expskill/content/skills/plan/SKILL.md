@@ -49,7 +49,7 @@ shared Design to Plan expectations live in
 
 ## Canonical private graph
 
-The deterministic helper is the only graph writer. Resolve it from the loaded skill at `../../scripts/plan_graph.py`. Its source-package path is `plugins/expskill/content/scripts/plan_graph.py`. Use its dependency-free API or CLI for initialize, discover, load, apply, recover, pause, resume, discard, confirmed branch creation, and terminal completion. Omit `--state-home` in normal use so it owns a private XDG state root. Explicit roots exist only for isolated tests.
+The deterministic helper is the only graph writer. Resolve it from the loaded skill at `../../scripts/plan_graph.py`. Its source-package path is `plugins/expskill/content/scripts/plan_graph.py`. Use its dependency-free API or CLI for initialize, discover, load, apply, recover, pause, resume, discard, confirmed branch creation, and terminal completion. Omit `--state-home` in normal use so it owns a private home state root at ~/.expskill. Explicit roots exist only for isolated tests.
 
 The graph is strict JSON-compatible YAML private state outside the repository. It permits one active graph per canonical repository identity and target branch, binds an opaque workflow ID, exact repository baseline, dirty-state fingerprint, and monotonic graph revision, and derives lifecycle state rather than trusting an edited status. It records outcomes, evidence, decisions, work, proof, Git topology, delivery state, and user projections without storing secrets, source copies, transcripts, or unbounded output.
 

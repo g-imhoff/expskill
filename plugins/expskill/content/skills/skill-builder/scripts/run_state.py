@@ -440,9 +440,8 @@ def raw_digest(payload: bytes) -> str:
 
 
 def default_state_root() -> Path:
-    configured = os.environ.get("XDG_STATE_HOME")
-    base = Path(configured) if configured else Path.home() / ".local" / "state"
-    return base / "expskill" / "skill-builder"
+    """Return the private home state root, ignoring XDG_STATE_HOME."""
+    return Path.home() / ".expskill" / "skill-builder"
 
 
 def _absolute_root(state_root: Path | None) -> Path:

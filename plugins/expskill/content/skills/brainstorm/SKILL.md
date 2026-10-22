@@ -64,7 +64,7 @@ Strongest objections, harmful outcomes, failure modes, resulting corrections, an
 
 Only uncertainties needing later technical design, execution, experimentation, or real-world evidence, plus observable success signals. Deferred uncertainties are normally none. Omit this material when none exists.
 
-Keep the brief to the six conceptual sections above, with summarized evidence and material alternatives only. Implementation details, a technical plan, repository destination, and routing belong to later phases. Save the confirmed Concept Brief to the file path stated and confirmed with the user. A later phase works only from the saved brief at that path, which carries every consequential decision, rejected alternative, and reason. Anything open belongs in Deferred uncertainties.
+Keep the brief to the six conceptual sections above, with summarized evidence and material alternatives only. Implementation details, a technical plan, repository destination, and routing belong to later phases. Save the confirmed Concept Brief under home state at `~/.expskill/skills/brainstorm/runs/<repo-hash>/<run-id>/` unless the user explicitly names another authorized destination, and confirm the exact path with the user. A later phase works only from the saved brief at that path, which carries every consequential decision, rejected alternative, and reason. Anything open belongs in Deferred uncertainties.
 
 ## Boundaries and recovery
 

@@ -27,6 +27,10 @@ Fail closed. A missing reply, invalid JSON, or a reply missing any field counts 
 
 Write a short report with categories and weights, scores in a table, top issues with evidence, and the final pass or fail reason. Pass means 9 or higher in every category. Keep it under 300 lines and point at the exact pin reviewed.
 
+## Report storage
+
+Save each roast pass under home state at `~/.expskill/skills/roast/runs/<repo-hash>/<run-id>/` with one run folder per run, strict private permissions, and exclusive create. Keep the chat report as the primary verdict and point at the saved file path. Never reuse a run folder for a new head.
+
 ## Shared rules
 
 Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

@@ -3312,10 +3312,11 @@ def test_cleanup_tombstone_publication_failure_deletes_nothing(
     assert not (state_root / "tombstones" / f"{workflow_id}.json").exists()
 
 
-def test_cli_help_strict_json_xdg_default_and_success_receipts(tmp_path: Path) -> None:
+def test_cli_help_strict_json_home_default_and_success_receipts(tmp_path: Path) -> None:
     """An undocumented or permissive CLI would force callers to edit durable state."""
     env = os.environ.copy()
-    env["XDG_STATE_HOME"] = str(tmp_path / "xdg")
+    env["HOME"] = str(tmp_path / "home")
+    env["XDG_STATE_HOME"] = str(tmp_path / "xdg-decoy")
 
     help_result = subprocess.run(
         [sys.executable, str(HELPER), "--help"],
@@ -3361,8 +3362,9 @@ def test_cli_help_strict_json_xdg_default_and_success_receipts(tmp_path: Path) -
     receipt = json.loads(initialized.stdout)
     assert receipt["operation"] == "initialize"
     assert receipt["sequence"] == 0
-    default_root = tmp_path / "xdg" / "expskill" / "skill-builder"
+    default_root = tmp_path / "home" / ".expskill" / "skill-builder"
     assert (default_root / "live" / receipt["workflow_id"]).is_dir()
+    assert not (tmp_path / "xdg-decoy").exists()
     before = {
         path.relative_to(default_root).as_posix(): path.read_bytes()
         for path in default_root.rglob("*")
