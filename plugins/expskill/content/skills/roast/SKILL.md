@@ -29,7 +29,7 @@ Write a short report with categories and weights, scores in a table, top issues 
 
 ## Report storage
 
-Save each roast pass under home state at `~/.expskill/skills/roast/runs/<repo-hash>/<run-id>/` with one run folder per run, strict private permissions, and exclusive create. Keep the chat report as the primary verdict and point at the saved file path. Never reuse a run folder for a new head.
+Save each roast pass under home state at `~/.expskill/skills/roast/runs/<repo-hash>/<run-id>/` with one run folder per run, strict private permissions, and exclusive create. Keep the chat report as the primary verdict and point at the saved file path. Create a fresh run folder for each new head.
 
 ## Shared rules
 

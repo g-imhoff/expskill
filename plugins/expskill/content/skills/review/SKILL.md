@@ -33,9 +33,9 @@ permissions. Preserve unrelated changes and profiles.
 
 ## Resolve report storage
 
-Resolve the home state root first. Root is always home dot expskill. Never write reports into the target repository or the skill installation.
+Resolve the home state root first. Root is always `~/.expskill`. Never write reports into the target repository or the skill installation.
 
-Use one run folder per run. Shape is state root, then skills, then review, then runs, then repo hash, then run id. Create the run folder with strict private permissions. Write the report as review date time unique dot md with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
+Use one run folder per run: `~/.expskill/skills/review/runs/<repo-hash>/<run-id>`. Create the run folder with strict private permissions. Write the report as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
 
 Keep directory checks to read only metadata. Leave permissions, ownership, and permission configuration to the user. When the state root is unavailable or unwritable, ask the user for access and wait.
 
