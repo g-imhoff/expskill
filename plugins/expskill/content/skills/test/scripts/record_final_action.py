@@ -240,7 +240,7 @@ def _repository_hash(repository: Path) -> str:
 
 def _home_runs_base(repository: Path) -> Path:
     return (
-        Path.home()
+        Path.home().expanduser().resolve()
         / ".expskill"
         / "skills"
         / "test"

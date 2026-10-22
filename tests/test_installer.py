@@ -363,16 +363,17 @@ class InstallerTests(unittest.TestCase):
         custom_home = self.root / "custom codex legacy"
         agents = custom_home / "agents"
         agents.mkdir(parents=True)
-        for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml"):
+        stales = ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml", "expskill-designer.toml", "expskill-explorer.toml", "expskill-implementer.toml", "expskill-planner.toml", "expskill-review.toml", "expskill-spec.toml", "expskill-test-engineer.toml")
+        for stale in stales:
             (agents / stale).write_text("stale\n")
         result = self.run_installer("Codex\n", CODEX_HOME=str(custom_home))
         self.assertEqual(result.returncode, 0, result.stderr)
-        for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml"):
+        for stale in stales:
             self.assertFalse((agents / stale).exists(), stale)
         backups = list((custom_home / "agent-backups").glob("expskill-backup-*"))
         self.assertTrue(backups, "retired profiles must be backed up")
         moved = [p.name for b in backups for p in b.iterdir()]
-        for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml"):
+        for stale in stales:
             self.assertIn(stale, moved, stale)
 
     def test_codex_default_home_and_identical_profiles_need_no_backup(self):

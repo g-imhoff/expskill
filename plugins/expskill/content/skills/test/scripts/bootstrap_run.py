@@ -105,7 +105,7 @@ def _repository_hash(repository: Path) -> str:
 
 def _home_runs_base(repository: Path) -> Path:
     return (
-        Path.home()
+        Path.home().expanduser().resolve()
         / ".expskill"
         / "skills"
         / "test"
@@ -115,7 +115,7 @@ def _home_runs_base(repository: Path) -> Path:
 
 
 def _allocate_root(repository: Path, now: datetime) -> Path:
-    chain = Path.home() / ".expskill" / "skills" / "test" / "runs"
+    chain = Path.home().expanduser().resolve() / ".expskill" / "skills" / "test" / "runs"
     try:
         chain.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as error:

@@ -144,9 +144,12 @@ file changes, update the v2 copy and the sentinel test in
 State left by the retired installer (`$XDG_STATE_HOME/expskill` receipts and
 journals, `codex-marketplace` and recovery packages) is inert without it;
 remove those directories by hand if they exist. The retired Codex agent
-profiles (`expskill-critical-reviewer.toml`,
+profiles (the five `expskill-critical-reviewer.toml`,
 `expskill-implementer-high.toml`, `expskill-reviewer.toml`,
-`expskill-verifier.toml`, and `expskill-verifier-low.toml`) are moved
+`expskill-verifier.toml`, `expskill-verifier-low.toml` plus the seven
+pre-rename `expskill-designer.toml`, `expskill-explorer.toml`,
+`expskill-implementer.toml`, `expskill-planner.toml`, `expskill-review.toml`,
+`expskill-spec.toml`, `expskill-test-engineer.toml`) are moved
 automatically into `agent-backups` on upgrade. The retired opencode links are not inert: entries the installer created
 under `$OPENCODE_CONFIG_DIR` (`skills/`, `commands/`, `agents/`, `plugins/`)
 and the state-home `expskill/opencode-artifact` directory keep pointing at

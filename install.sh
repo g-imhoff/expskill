@@ -123,7 +123,7 @@ try:
         if destination.exists() and not destination.is_symlink() and not destination.is_file():
             raise ValueError("profile destination is not a regular file: " + str(destination))
     target.mkdir(parents=True, exist_ok=True)
-    for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml"):
+    for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml", "expskill-designer.toml", "expskill-explorer.toml", "expskill-implementer.toml", "expskill-planner.toml", "expskill-review.toml", "expskill-spec.toml", "expskill-test-engineer.toml"):
         stale_path = target / stale
         if os.path.lexists(str(stale_path)):
             backup_root.mkdir(parents=True, exist_ok=True)
