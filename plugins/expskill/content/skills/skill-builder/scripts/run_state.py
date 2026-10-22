@@ -1739,6 +1739,12 @@ def _validate_selection_trace(
         _selection_load_event(host, event) for event in events
     ):
         raise RunStateError("selection trial that loaded nothing records a load event")
+    if trial_run["observed_load"]["kind"] in {"candidate", "other"} and not any(
+        _selection_load_event(host, event) for event in events
+    ):
+        raise RunStateError(
+            "selection trial claiming a skill load records no load event"
+        )
 
 
 def _validate_trial_run(case: dict[str, Any]) -> None:

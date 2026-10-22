@@ -176,7 +176,7 @@ Record the exact ten target category names in accepted order with, per category,
 
 ### Verification record
 
-Record verifier identity, independence and read-only attestation, exact candidate revision, exact commands or operations, start and end timestamps, exit status, relevant raw-output digests, before and after manifests, and conclusion.
+Record verifier identity, independence and read-only attestation, exact candidate revision, exact commands or operations, start and end timestamps, exit status, relevant raw-output digests, before and after manifests, and conclusion. The verifier opens each trial tool-events file and checks it carries the host's stream framing from the selection-trial table, reporting a mismatch as a finding.
 
 ### Release record
 

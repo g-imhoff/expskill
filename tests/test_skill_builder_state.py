@@ -310,6 +310,29 @@ def selection_setup_bytes(
 SELECTION_END_MARKERS = {"codex": "turn.completed", "opencode": "step_finish"}
 
 
+def selection_load_event(host: str) -> dict[str, object]:
+    """One load event in the host's shape, matching the helper's detector."""
+    if host == "opencode":
+        return {"type": "tool_use", "part": {"tool": "skill"}}
+    if host == "codex":
+        return {
+            "type": "response",
+            "item": {
+                "type": "command_execution",
+                "command": "read work/.agents/skills/sample-skill/SKILL.md",
+            },
+        }
+    if host == "hermes":
+        return {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "skill_view"}]},
+        }
+    return {
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "name": "Skill"}]},
+    }
+
+
 def selection_trace_bytes(
     label: str,
     *events: dict[str, object],
@@ -328,13 +351,28 @@ def selection_trace_bytes(
 
 
 def trial_run_evidence_bytes(
-    frozen_case: dict[str, object], label: str, kind: str, candidate_digest: str
+    frozen_case: dict[str, object],
+    label: str,
+    kind: str,
+    candidate_digest: str,
+    observed_kind: str | None = None,
 ) -> bytes:
     case_id = str(frozen_case["case_id"])
     if frozen_case.get("exposure") == "selection":
         if kind == "before-manifest":
             return selection_setup_bytes(frozen_case, candidate_digest)
         if kind == "tool-events":
+            expected = (
+                observed_kind
+                if observed_kind is not None
+                else str(frozen_case.get("expected_selection"))
+            )
+            if expected in {"candidate", "other"}:
+                return selection_trace_bytes(
+                    label,
+                    selection_load_event(str(frozen_case["host"])),
+                    host=str(frozen_case["host"]),
+                )
             return selection_trace_bytes(label, host=str(frozen_case["host"]))
     if kind in {"request", "before-manifest"}:
         return trial_evidence_bytes(case_id, kind)
@@ -382,10 +420,22 @@ def trial_files(
         )
         for kind in TRIAL_DIGEST_FIELDS.values():
             if kind != "loaded-skill":
+                observed_load = trial_case.get("observed_load")
+                observed_kind = (
+                    observed_load.get("kind")
+                    if isinstance(observed_load, dict)
+                    else None
+                )
                 files[f"evidence/{label}/{kind}.bin"] = evidence(
                     kind,
                     trial_run_evidence_bytes(
-                        frozen_by_id[case_id], label, kind, candidate_digest
+                        frozen_by_id[case_id],
+                        label,
+                        kind,
+                        candidate_digest,
+                        observed_kind=observed_kind
+                        if isinstance(observed_kind, str)
+                        else None,
                     ),
                 )
                 continue
@@ -1751,6 +1801,13 @@ def trial_payload(
                     {"repeat_index": repeat_index, "exposure": frozen_case["exposure"]}
                 )
             label = trial_run_label(run, schema_version)
+            override = overrides.get((case_id, repeat_index), {})
+            override_observed = override.get("observed_load")
+            override_kind = (
+                override_observed.get("kind")
+                if isinstance(override_observed, dict)
+                else None
+            )
             for field, kind in TRIAL_DIGEST_FIELDS.items():
                 if kind in {"request", "loaded-skill"}:
                     continue
@@ -1760,6 +1817,9 @@ def trial_payload(
                         label,
                         kind,
                         fixture_loadable_skill_digest(package),
+                        observed_kind=override_kind
+                        if isinstance(override_kind, str)
+                        else None,
                     )
                 )
             if selection:
@@ -8916,7 +8976,14 @@ def test_selection_run_claims_no_load_only_with_a_complete_trace(
         **replace_run_evidence(
             ("case-1", 0),
             "tool-events",
-            selection_trace_bytes("case-1/run-0", ended=False),
+            selection_trace_bytes(
+                "case-1/run-0",
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "name": "Skill"}]},
+                },
+                ended=False,
+            ),
             complete_trace=False,
         ),
     )
@@ -8956,6 +9023,20 @@ def test_selection_run_claims_no_load_only_with_a_complete_trace(
             b"case-2/run-2 trace\n",
             {},
             "JSON lines",
+        ),
+        "candidate without load event": (
+            {"case-1": "candidate"},
+            ("case-1", 0),
+            selection_trace_bytes("case-1/run-0"),
+            {},
+            "no load event",
+        ),
+        "other without load event": (
+            {"case-3": "other"},
+            ("case-3", 0),
+            selection_trace_bytes("case-3/run-0"),
+            {},
+            "no load event",
         ),
     }
     for label, (selection, run_key, trace, fields, message) in rejected.items():
