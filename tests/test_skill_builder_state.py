@@ -1514,6 +1514,34 @@ def confirmation_payload(
     }
 
 
+def test_agent_written_confirmations_are_rejected() -> None:
+    """Only a host user event confirms; agent roles, assumed identities, and future timestamps fail."""
+    helper = load_helper()
+    valid = confirmation_payload(
+        contract_id="contract",
+        contract_digest="1" * 64,
+        target="sample",
+        snapshot_digest="2" * 64,
+        authority_digest="3" * 64,
+    )
+    helper._validate_artifact_payload("user-confirmation-record", valid)
+
+    mutations = {
+        "main-agent identity": {"user_identity": "main-agent"},
+        "reviewer identity": {"user_identity": "independent-reviewer-1"},
+        "verifier identity": {"user_identity": "independent-verifier-2"},
+        "implementer identity": {"user_identity": "implementer"},
+        "assumed identity": {"user_identity": "repo-user-assumed-non-interactive"},
+        "future timestamp": {"confirmed_at": "2099-01-01T00:00:00Z"},
+    }
+    for label, fields in mutations.items():
+        payload = dict(valid)
+        payload.update(fields)
+        with pytest.raises(helper.RunStateError):
+            helper._validate_artifact_payload("user-confirmation-record", payload)
+            raise AssertionError(f"confirmation accepted {label}")
+
+
 def evaluation_payload(
     *,
     contract_digest: str,

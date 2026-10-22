@@ -119,7 +119,7 @@ Give each contract field one home:
 
 ### User-confirmation record
 
-Record user identity as available to the host, confirmation timestamp, exact confirmation text or event digest, canonical target identity, contract artifact identifier, contract digest, target-snapshot digest, and accepted status. Under a restricted load policy with a Hermes target, list in the artifact's `limitations` a Hermes entry naming the missing hide flag. Only an explicit user event, or `run_state.py reuse-contract` carrying a kept user confirmation, creates an accepted confirmation artifact. The reused form (`skill-builder-reused-confirmation.v1`) replaces the user identity, timestamp, and text with `kept_contract`, the whole kept record, and its `kept_contract_digest`, and takes its event digest and limitations from the kept confirmation.
+Record user identity as available to the host, confirmation timestamp, exact confirmation text or event digest, canonical target identity, contract artifact identifier, contract digest, target-snapshot digest, and accepted status. Under a restricted load policy with a Hermes target, list in the artifact's `limitations` a Hermes entry naming the missing hide flag. Only an explicit user event, or `run_state.py reuse-contract` carrying a kept user confirmation, creates an accepted confirmation artifact. When the host cancels a question or no user answer arrives, stall the run at the current stage with the question restated and record nothing. The reused form (`skill-builder-reused-confirmation.v1`) replaces the user identity, timestamp, and text with `kept_contract`, the whole kept record, and its `kept_contract_digest`, and takes its event digest and limitations from the kept confirmation.
 
 ### Evaluation pack
 

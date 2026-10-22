@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1770,6 +1770,31 @@ def _validate_trial_run(case: dict[str, Any]) -> None:
         raise RunStateError("selection trial observed load kind is invalid")
 
 
+_AGENT_CONFIRMATION_IDENTITIES = (
+    "main-agent",
+    "implementer",
+    "independent-reviewer",
+    "independent-verifier",
+    "trial-agent",
+)
+
+
+def _reject_agent_confirmation_identity(identity: str) -> None:
+    """An agent role never confirms for the user. Only a host user event does."""
+    folded = identity.strip().casefold()
+    if "assum" in folded or any(
+        folded == marker or folded.startswith(marker + "-") for marker in _AGENT_CONFIRMATION_IDENTITIES
+    ):
+        raise RunStateError("user confirmation identity is an agent role, not the user")
+
+
+def _reject_future_confirmation_time(confirmed_at: str) -> None:
+    """A confirmation timestamp ahead of now is agent-composed, not observed."""
+    parsed = datetime.fromisoformat(confirmed_at[:-1] + "+00:00")
+    if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise RunStateError("user confirmation timestamp is in the future")
+
+
 def _validate_artifact_payload(
     artifact_type: str, payload: dict[str, Any], mode: str | None = None
 ) -> None:
@@ -1971,8 +1996,10 @@ def _validate_artifact_payload(
             ):
                 raise RunStateError("reused confirmation does not match its kept contract")
         else:
-            _text(payload["user_identity"], "confirmation user identity")
-            _timestamp(payload["confirmed_at"], "confirmation timestamp")
+            identity = _text(payload["user_identity"], "confirmation user identity")
+            _reject_agent_confirmation_identity(identity)
+            confirmed_at = _timestamp(payload["confirmed_at"], "confirmation timestamp")
+            _reject_future_confirmation_time(confirmed_at)
             _text(payload["confirmation_text"], "confirmation text")
         _digest(payload["confirmation_event_digest"], "confirmation event")
         _text(payload["target_identity"], "confirmation target")
