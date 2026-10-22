@@ -33,23 +33,13 @@ permissions. Preserve unrelated changes and profiles.
 
 ## Resolve report storage
 
-Resolve the exact loaded `SKILL.md` and its canonical containing directory.
-The only report destination is `<review-skill>/tmp/reports/` under that
-installation, outside every repository, not merely outside the reviewed project.
-Resolve symlinks and check destination ancestry, including existing parents of
-missing directories plus other repositories and Git worktrees, for repository
-containment and write access.
+Resolve the home state root first. Use XDG state expskill when XDG STATE HOME is set, else use HOME dot expskill. Never write reports into the target repository or the skill installation.
 
-If the loaded skill is repository-local, ask for access to an outside-repository
-installed Review skill location and wait, then use its `tmp/reports/`. Leave
-installing and copying the skill to the user. When destination, containment, or
-storage access stays unresolved, ask the user and wait. Check access by reading
-metadata only, leaving permissions, ownership, and permission configuration to
-the user.
+Use one run folder per run. Shape is state root, then skills, then review, then runs, then repo hash, then run id. Create the run folder with strict private permissions. Write the report as review date time unique dot md with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
 
-Announce the resolved report directory. Reports are user data, not
-shipped skill assets. The user deletes them manually, and existing reports stay
-unchanged. Plugin updates may delete reports.
+Keep directory checks to read only metadata. Leave permissions, ownership, and permission configuration to the user. When the state root is unavailable or unwritable, ask the user for access and wait.
+
+Announce the resolved run folder. Reports are user data, not shipped skill assets. The user deletes them manually, and existing reports stay unchanged. Plugin updates never delete home state.
 
 ## Stay read-only
 

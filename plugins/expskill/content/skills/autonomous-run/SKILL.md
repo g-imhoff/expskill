@@ -35,14 +35,16 @@ Evaluate the results against the human's intent and request revisions when they 
 
 ## Deliver the draft PR
 
-Follow the review-ready draft PR's requirements through delivery. Push, and authorize pushing, only the non-protected feature branch, and authorize only a draft PR. The human reviews, and alone approves, merges, enables auto-merge, and enters the merge queue.
+Follow the review-ready requirements through delivery. Push, and authorize pushing, only the non-protected feature branch. Open the PR as a draft and keep it as a draft through the closing loop. The human alone approves, merges, enables auto-merge, and enters the merge queue.
 
 Ask for a PR description that explains the goal, delegated AI decisions, rejected alternatives and their evidence, checks with results, retained risks, and anything unproven. Include links to supporting records and the head SHA so the human can retrace the run.
 
 ## Run the final roast loop
 
-Once the `$use-expskill` workflow has finished and delivered the draft PR, load [the `$roast-loop` skill](../roast-loop/SKILL.md) and run it yourself, only in this invoking conversation, on the delivered PR diff. Follow the skill's procedure, including its reviewer and fixer agents. This final run is required even if the workflow used the skill earlier.
+Once the `$use-expskill` workflow has finished and delivered the draft PR, load [the `$roast-loop` skill](../roast-loop/SKILL.md) and run it yourself, only in this invoking conversation, on the delivered PR diff. Follow the skill procedure, including its reviewer and fixer agents. This final run is required even if the workflow used the skill earlier.
 
-If the loop makes fixes, commit them and push only to the existing non-protected PR branch, refresh the affected checks, and update the PR description. Require its passing result to cover the final published revision. If it fails or stops blocked, report its result and unresolved issues, and call the PR ready for human review only after a passing loop.
+If the loop makes fixes, commit them and push only to the existing non-protected PR branch, refresh the affected checks, and update the PR description. Require its passing result to cover the final published revision.
 
-Report completion only when the draft PR exists, the workflow's completion requirements are satisfied, and this final roast loop passes. Return the PR URL, final head SHA, roast-loop report, checks with results, and retained risks. If blocked, report the cause, outstanding request, and relevant conversation identifiers so the run can resume. Then stop.
+When the loop passes on the final published revision, mark the PR ready for review. Use gh pr ready or the host equivalent. Keep the PR as a draft when the loop fails or stops blocked. Report its result and unresolved issues. Call the PR ready for human review only after a passing loop.
+
+Report completion only when a ready PR exists, the workflow completion requirements are satisfied, and this final roast loop passes. Return the PR URL, final head SHA, roast-loop report, checks with results, and retained risks. If blocked, report the cause, outstanding request, and relevant conversation identifiers so the run can resume. Then stop.
