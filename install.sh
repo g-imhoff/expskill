@@ -123,6 +123,13 @@ try:
         if destination.exists() and not destination.is_symlink() and not destination.is_file():
             raise ValueError("profile destination is not a regular file: " + str(destination))
     target.mkdir(parents=True, exist_ok=True)
+    for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml"):
+        stale_path = target / stale
+        if os.path.lexists(str(stale_path)):
+            backup_root.mkdir(parents=True, exist_ok=True)
+            archive = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(backup_root)))
+            os.replace(str(stale_path), str(archive / stale))
+            print("Retired profile moved to " + str(archive / stale), flush=True)
     for legacy in sorted(target.glob("expskill-backup-*")):
         if legacy.is_symlink() or not legacy.is_dir():
             continue

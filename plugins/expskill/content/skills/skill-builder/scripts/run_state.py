@@ -441,7 +441,7 @@ def raw_digest(payload: bytes) -> str:
 
 def default_state_root() -> Path:
     """Return the private home state root, ignoring XDG_STATE_HOME."""
-    return Path.home() / ".expskill" / "skill-builder"
+    return Path.home().expanduser().resolve() / ".expskill" / "skill-builder"
 
 
 def _absolute_root(state_root: Path | None) -> Path:

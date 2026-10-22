@@ -394,7 +394,7 @@ def _identity_key(context: _RepoContext) -> str:
 
 def default_state_home() -> Path:
     """Return the helper-owned private strict-home state root."""
-    return Path.home() / ".expskill"
+    return Path.home().expanduser().resolve() / ".expskill"
 
 
 def _absolute_state_path(path: Path | None) -> Path:

@@ -411,7 +411,7 @@ def _is_dir(path: Path) -> bool:
 def _prepare_root(value: str | None) -> Path:
     hint = "pass --root outside any repository or omit --root to use the private default"
     if value is None:
-        value = str(Path.home() / ".expskill" / "skills" / "deep-research" / "runs")
+        value = str(Path.home().expanduser().resolve() / ".expskill" / "skills" / "deep-research" / "runs")
         hint = f"this is the default root {value}, ask the user for a root outside any repository and pass --root"
     root = Path(os.path.realpath(os.path.abspath(os.path.expanduser(value))))
     for directory in (root, *root.parents):
