@@ -129,7 +129,7 @@ Load a rule leaf only when its trigger matches. Rules live in `../../rules/`.
 - `pin-scope.md` pins scope to an exact revision, stops plus notifies on drift, never runs two agents on the same job.
 - `isolate-writes.md` gives each concurrent writer its own worktree from the exact accepted commit, coordinator owned, no shared checkout.
 - `explicit-confirmation.md` binds confirmation to the exact digest or proposal presented, invalidates on material change, derives ready only from current confirmations.
-- `bounded-fanout.md` uses three bounded readers for narrow discovery with retry once then ask, N reviewers fail closed for scoring, $expskill:deep-research for broad work.
+- `bounded-fanout.md` uses three bounded readers for narrow discovery with retry once then ask, $expskill:deep-research for broad work.
 - `evidence-report.md` roots retained proof at home state with one run folder per run, closed verdicts, pin bound evidence.
 
 ## Resolve a decision frontier
