@@ -9436,7 +9436,14 @@ def main(argv: list[str] | None = None) -> int:
             "kept_contract_digest (improve or evaluate runs at the contract stage)\n"
             "  switch-mode request: workflow_id, expected_sequence, mode (improve or "
             "modify), reason, confirmation (user_identity, confirmed_at, "
-            "confirmation_text), and authority_event_digest"
+            "confirmation_text), and authority_event_digest\n"
+            "  invalidate request: workflow_id, expected_sequence, change_kind, "
+            "changed_artifact_id, reason (abandon ends a run going nowhere and "
+            "releases its lock. Other kinds rewind to an earlier stage)\n"
+            "  artifact payload schemas live in references/artifact-contracts.md. "
+            "stage names are resolved, baseline, research, sieve, design, contract, "
+            "confirmed, evaluation, candidate, trials, reviewed, scored, verified, "
+            "finalized, reported, delivered, abandoned"
         ),
     )
     parser.add_argument(
