@@ -19,22 +19,22 @@ from tests.build_cache import shared_artifact
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-designer",
-    "expskill-implementer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "planner",
+    "designer",
+    "implementer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 FACETS = {
-    "expskill-designer": ("designer", "workspace-write"),
-    "expskill-explorer": ("explorer", "read-only"),
-    "expskill-implementer": ("implementer", "workspace-write"),
-    "expskill-planner": ("planner", "workspace-write"),
-    "expskill-review": ("review", "read-only"),
-    "expskill-spec": ("spec", "read-only"),
-    "expskill-test-engineer": ("test-engineer", "read-only"),
+    "designer": ("designer", "workspace-write"),
+    "explorer": ("explorer", "read-only"),
+    "implementer": ("implementer", "workspace-write"),
+    "planner": ("planner", "workspace-write"),
+    "review": ("review", "read-only"),
+    "spec": ("spec", "read-only"),
+    "test-engineer": ("test-engineer", "read-only"),
 }
 
 
@@ -150,7 +150,7 @@ class HermesContractTests(unittest.TestCase):
         root = self.copy_repository()
         overlay = root / "plugins" / "expskill" / "content" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
-        del spec["agents"]["expskill-review"]["closing"]
+        del spec["agents"]["review"]["closing"]
         overlay.write_text(json.dumps(spec), encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("closing" in error for error in errors), errors)
@@ -159,7 +159,7 @@ class HermesContractTests(unittest.TestCase):
         root = self.copy_repository()
         overlay = root / "plugins" / "expskill" / "hermes" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
-        spec["agents"]["expskill-review"]["sandbox"] = "workspace-write"
+        spec["agents"]["review"]["sandbox"] = "workspace-write"
         overlay.write_text(json.dumps(spec), encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("hermes agent" in error for error in errors), errors)

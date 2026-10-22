@@ -111,7 +111,7 @@ try:
     target = Path(sys.argv[2]) / "agents"
     backup_root = target.parent / "agent-backups"
     roles = ("designer", "explorer", "implementer", "planner", "review", "spec", "test-engineer")
-    names = ["expskill-" + role + ".toml" for role in roles]
+    names = [role + ".toml" for role in roles]
     if target.is_symlink():
         raise ValueError("agents directory is a symlink: " + str(target))
     if backup_root.is_symlink() or (backup_root.exists() and not backup_root.is_dir()):
@@ -151,7 +151,7 @@ except (OSError, ValueError) as error:
     print("Could not install Codex agent profiles: " + str(error), file=sys.stderr)
     sys.exit(1)
 PY
-            fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path or package error above, then copy its seven agents/expskill-*.toml profiles into your Codex agents directory (preserving existing files).'
+            fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path or package error above, then copy its seven agents/*.toml profiles into your Codex agents directory (preserving existing files).'
         printf 'ExpSkill installed or updated successfully for Codex. Review and trust the plugin hook in /hooks, then start a new Codex session.\n'
         ;;
     OpenCode)

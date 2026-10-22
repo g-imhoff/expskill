@@ -670,13 +670,13 @@ EXPECTED_UNSLOP_HOOKS = {
 }
 
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "explorer": ("gpt-6-luna", "max", "read-only"),
+    "test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "planner": ("gpt-6-luna", "max", "workspace-write"),
+    "designer": ("gpt-6-luna", "max", "workspace-write"),
+    "implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 
 REVIEW_HANDOFF_PATHS = (
@@ -685,7 +685,7 @@ REVIEW_HANDOFF_PATHS = (
     "content/skills/skill-builder/references/evaluation-rubric.md",
 )
 REVIEW_HANDOFF_HEADING = "## Review context contract\n"
-REVIEW_JUDGE_AGENTS = ("expskill-review", "expskill-spec")
+REVIEW_JUDGE_AGENTS = ("review", "spec")
 REQUIRED_AGENT_FIELDS = (
     "name",
     "description",
@@ -695,56 +695,56 @@ REQUIRED_AGENT_FIELDS = (
     "developer_instructions",
 )
 EXPECTED_POLICY_PROFILES = {
-    "expskill-explorer": {
-        "agent_type": "expskill-explorer",
+    "explorer": {
+        "agent_type": "explorer",
         "role": "explorer",
         "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "expskill-test-engineer": {
-        "agent_type": "expskill-test-engineer",
+    "test-engineer": {
+        "agent_type": "test-engineer",
         "role": "test-engineer",
         "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "expskill-implementer": {
-        "agent_type": "expskill-implementer",
+    "implementer": {
+        "agent_type": "implementer",
         "role": "implementer",
         "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
-    "expskill-planner": {
-        "agent_type": "expskill-planner",
+    "planner": {
+        "agent_type": "planner",
         "role": "planner",
         "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
-    "expskill-designer": {
-        "agent_type": "expskill-designer",
+    "designer": {
+        "agent_type": "designer",
         "role": "designer",
         "model": "gpt-6-luna",
         "effort": "max",
         "sandbox_mode": "workspace-write",
         "escalation": None,
     },
-    "expskill-review": {
-        "agent_type": "expskill-review",
+    "review": {
+        "agent_type": "review",
         "role": "review",
         "model": "gpt-6.1-sol",
         "effort": "xhigh",
         "sandbox_mode": "read-only",
         "escalation": None,
     },
-    "expskill-spec": {
-        "agent_type": "expskill-spec",
+    "spec": {
+        "agent_type": "spec",
         "role": "spec",
         "model": "gpt-6.1-sol",
         "effort": "xhigh",
@@ -757,19 +757,19 @@ EXPECTED_POLICY_ROUTES = {
     "use-expskill": {
         "parallel-plan-design": {
             "allowed_profiles": [
-                "expskill-planner",
-                "expskill-designer",
+                "planner",
+                "designer",
             ],
             "selected": [
                 {
                     "role": "planner",
-                    "profile": "expskill-planner",
-                    "agent_type": "expskill-planner",
+                    "profile": "planner",
+                    "agent_type": "planner",
                 },
                 {
                     "role": "designer",
-                    "profile": "expskill-designer",
-                    "agent_type": "expskill-designer",
+                    "profile": "designer",
+                    "agent_type": "designer",
                 },
             ],
             "max_agent_calls": 2,
@@ -782,25 +782,25 @@ EXPECTED_POLICY_ROUTES = {
     "implement": {
         "standard": {
             "allowed_profiles": [
-                "expskill-implementer",
-                "expskill-review",
-                "expskill-spec",
+                "implementer",
+                "review",
+                "spec",
             ],
             "selected": [
                 {
                     "role": "implementer",
-                    "profile": "expskill-implementer",
-                    "agent_type": "expskill-implementer",
+                    "profile": "implementer",
+                    "agent_type": "implementer",
                 },
                 {
                     "role": "review",
-                    "profile": "expskill-review",
-                    "agent_type": "expskill-review",
+                    "profile": "review",
+                    "agent_type": "review",
                 },
                 {
                     "role": "spec",
-                    "profile": "expskill-spec",
-                    "agent_type": "expskill-spec",
+                    "profile": "spec",
+                    "agent_type": "spec",
                 },
             ],
             "max_agent_calls": 30,
@@ -3151,23 +3151,23 @@ def _validate_agent_profile(path: Path, expected_name: str, errors: list[str]) -
 OPENCODE_PACKAGE_NAME = "opencode-expskill"
 OPENCODE_PLATFORM_FILES = PLATFORM_SOURCE_FILES
 OPENCODE_AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-designer",
-    "expskill-implementer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "planner",
+    "designer",
+    "implementer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 # These four profiles are intentionally stricter than the planner: their
 # Bash permission is an allow-list of bounded Git inspection forms.  The
 # revision/path tails are safe only after Git's option terminators; arbitrary
 # subcommands and arbitrary option-bearing Git invocations remain denied.
 OPENCODE_READ_ONLY_GIT_AGENTS = (
-    "expskill-explorer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 OPENCODE_READ_ONLY_GIT_RULE_ORDER = (
     ("*", "deny"),
@@ -3233,15 +3233,15 @@ OPENCODE_AGENT_ALLOWED_FRONTMATTER = {
     "permission",
 }
 OPENCODE_READ_ONLY_AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "planner",
+    "test-engineer",
+    "review",
+    "spec",
 )
 OPENCODE_WORKSPACE_AGENTS = (
-    "expskill-designer",
-    "expskill-implementer",
+    "designer",
+    "implementer",
 )
 
 
@@ -3918,7 +3918,7 @@ def _validate_opencode_agents(
                 "description, mode, model, reasoningEffort, temperature, and permission"
             )
             continue
-        if name in ("expskill-review", "expskill-spec") and "temperature" not in scalars:
+        if name in ("review", "spec") and "temperature" not in scalars:
             errors.append(f"opencode agent {name!r} frontmatter must declare temperature")
         if "permission" not in mappings:
             errors.append(f"opencode agent {name!r} permission must be a mapping")
@@ -4150,22 +4150,22 @@ def _validate_opencode_plugins(package_root: Path, errors: list[str]) -> None:
 
 HERMES_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 HERMES_EXPECTED_AGENTS = (
-    "expskill-designer",
-    "expskill-explorer",
-    "expskill-implementer",
-    "expskill-planner",
-    "expskill-review",
-    "expskill-spec",
-    "expskill-test-engineer",
+    "designer",
+    "explorer",
+    "implementer",
+    "planner",
+    "review",
+    "spec",
+    "test-engineer",
 )
 HERMES_AGENT_FACETS = {
-    "expskill-designer": ("designer", "workspace-write"),
-    "expskill-explorer": ("explorer", "read-only"),
-    "expskill-implementer": ("implementer", "workspace-write"),
-    "expskill-planner": ("planner", "workspace-write"),
-    "expskill-review": ("review", "read-only"),
-    "expskill-spec": ("spec", "read-only"),
-    "expskill-test-engineer": ("test-engineer", "read-only"),
+    "designer": ("designer", "workspace-write"),
+    "explorer": ("explorer", "read-only"),
+    "implementer": ("implementer", "workspace-write"),
+    "planner": ("planner", "workspace-write"),
+    "review": ("review", "read-only"),
+    "spec": ("spec", "read-only"),
+    "test-engineer": ("test-engineer", "read-only"),
 }
 HERMES_MODEL_POLICY = "active-hermes-provider"
 
@@ -4606,24 +4606,24 @@ def _validate_hermes_package(repository_root: Path, errors: list[str]) -> None:
 
 CLAUDE_PLUGIN_SCHEMA = "https://anthropic.com/claude-code/plugin.schema.json"
 CLAUDE_EXPECTED_AGENTS = (
-    "expskill-designer",
-    "expskill-explorer",
-    "expskill-implementer",
-    "expskill-planner",
-    "expskill-review",
-    "expskill-spec",
-    "expskill-test-engineer",
+    "designer",
+    "explorer",
+    "implementer",
+    "planner",
+    "review",
+    "spec",
+    "test-engineer",
 )
 CLAUDE_READ_TOOLS = ("Read", "Grep", "Glob", "Bash")
 CLAUDE_WRITE_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Bash")
 CLAUDE_AGENT_FACETS = {
-    "expskill-designer": ("haiku", CLAUDE_WRITE_TOOLS),
-    "expskill-explorer": ("haiku", CLAUDE_READ_TOOLS),
-    "expskill-implementer": ("haiku", CLAUDE_WRITE_TOOLS),
-    "expskill-planner": ("haiku", CLAUDE_READ_TOOLS),
-    "expskill-review": ("opus", CLAUDE_READ_TOOLS),
-    "expskill-spec": ("opus", CLAUDE_READ_TOOLS),
-    "expskill-test-engineer": ("haiku", CLAUDE_READ_TOOLS),
+    "designer": ("haiku", CLAUDE_WRITE_TOOLS),
+    "explorer": ("haiku", CLAUDE_READ_TOOLS),
+    "implementer": ("haiku", CLAUDE_WRITE_TOOLS),
+    "planner": ("haiku", CLAUDE_READ_TOOLS),
+    "review": ("opus", CLAUDE_READ_TOOLS),
+    "spec": ("opus", CLAUDE_READ_TOOLS),
+    "test-engineer": ("haiku", CLAUDE_READ_TOOLS),
 }
 CLAUDE_HOOK_SCRIPTS = ("inject_authoring.py", "inject_unslop.py")
 

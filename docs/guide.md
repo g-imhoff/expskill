@@ -61,10 +61,10 @@ only from the agents directory. Copy them from the built marketplace package:
 
 ```bash
 mkdir -p ~/.codex/agents
-rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
-  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
-  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
-  ~/.codex/agents/expskill-test-engineer.toml
+rm -f ~/.codex/agents/designer.toml ~/.codex/agents/explorer.toml \
+  ~/.codex/agents/implementer.toml ~/.codex/agents/planner.toml \
+  ~/.codex/agents/review.toml ~/.codex/agents/spec.toml \
+  ~/.codex/agents/test-engineer.toml
 cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
 ```
 
@@ -78,15 +78,14 @@ profiles are rediscovered. To remove:
 ```bash
 codex plugin remove expskill@expskill
 codex plugin marketplace remove expskill
-rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
-  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
-  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
-  ~/.codex/agents/expskill-test-engineer.toml
+rm -f ~/.codex/agents/designer.toml ~/.codex/agents/explorer.toml \
+  ~/.codex/agents/implementer.toml ~/.codex/agents/planner.toml \
+  ~/.codex/agents/review.toml ~/.codex/agents/spec.toml \
+  ~/.codex/agents/test-engineer.toml
 rm -rf "$codex_marketplace"
 ```
 
-The `~/.codex/agents` directory itself is left in place; only the
-`expskill-*.toml` copies are removed.
+The `~/.codex/agents` directory itself is left in place; only the seven installed profile copies are removed.
 
 To update, rebuild and reinstall (the CLI has no per-plugin upgrade; the
 `marketplace upgrade` command only refreshes Git marketplaces, and this one
@@ -99,10 +98,10 @@ codex plugin remove expskill@expskill
 codex plugin marketplace remove expskill
 codex plugin marketplace add "$codex_marketplace"
 codex plugin add expskill@expskill
-rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
-  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
-  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
-  ~/.codex/agents/expskill-test-engineer.toml
+rm -f ~/.codex/agents/designer.toml ~/.codex/agents/explorer.toml \
+  ~/.codex/agents/implementer.toml ~/.codex/agents/planner.toml \
+  ~/.codex/agents/review.toml ~/.codex/agents/spec.toml \
+  ~/.codex/agents/test-engineer.toml
 cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
 rm -rf "$codex_marketplace"
 ```

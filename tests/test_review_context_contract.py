@@ -45,13 +45,13 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_user_selected_agent_runtime_settings_are_preserved(self) -> None:
         expected = {
-            "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
-            "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
-            "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
-            "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
-            "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
-            "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
-            "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
+            "explorer": ("gpt-6-luna", "max", "read-only"),
+            "test-engineer": ("gpt-6-luna", "max", "read-only"),
+            "planner": ("gpt-6-luna", "max", "workspace-write"),
+            "designer": ("gpt-6-luna", "max", "workspace-write"),
+            "implementer": ("gpt-6-luna", "max", "workspace-write"),
+            "review": ("gpt-6.1-sol", "xhigh", "read-only"),
+            "spec": ("gpt-6.1-sol", "xhigh", "read-only"),
         }
         for name, settings in expected.items():
             profile = json.loads(
@@ -81,7 +81,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_review_and_spec_agents_keep_the_invalid_handoff_code_span(self) -> None:
         """Regression: both review agents keep the literal `invalid handoff` code span."""
 
-        for name in ("expskill-review.md", "expskill-spec.md"):
+        for name in ("review.md", "spec.md"):
             with self.subTest(agent=name):
                 contents = (PLUGIN / "content" / "agents" / name).read_text(encoding="utf-8")
                 self.assertIn("`invalid handoff`", contents)
@@ -161,7 +161,7 @@ class ReviewContextContractTests(unittest.TestCase):
     def test_review_agent_limits_must_match_the_contract(self) -> None:
         section = IMPLEMENT.read_text(encoding="utf-8").split("## Review context contract", 1)[1]
         limit = re.search(r"\b\d+\b", section).group()
-        for name in ("expskill-review", "expskill-spec"):
+        for name in ("review", "spec"):
             root = self.copy_repository()
             agent = root / "plugins" / "expskill" / "content" / "agents" / f"{name}.md"
             contents = agent.read_text(encoding="utf-8")

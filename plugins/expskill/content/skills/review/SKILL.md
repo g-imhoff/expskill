@@ -3,7 +3,7 @@ name: review
 description: Inspect a code scope and save a rated, evidence-backed report of defects, risks, and test gaps. Only the user can load $review.
 ---
 
-The `expskill-review` profile performs every step of this standalone review itself.
+The `review` profile performs every step of this standalone review itself.
 
 ## Anchor scope and evidence
 

@@ -52,13 +52,13 @@ CODEX_TAG = "rust-v0.153.4"
 OPENCODE_VERSION = "1.18.29"
 
 AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-designer",
-    "expskill-implementer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "planner",
+    "designer",
+    "implementer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 
 COMMAND_TIMEOUT = 300

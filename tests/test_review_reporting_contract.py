@@ -14,7 +14,7 @@ class ReviewReportingContractTests(unittest.TestCase):
         self.assertIn('tmp/reports', self.raw)
 
     def test_review_names_its_reviewer_profile(self):
-        self.assertIn('expskill-review', self.raw)
+        self.assertIn('review', self.raw)
 
     def test_review_names_the_severity_labels(self):
         for label in ('`BLOCKING`', '`HIGH`', '`MEDIUM`', '`LOW`'):

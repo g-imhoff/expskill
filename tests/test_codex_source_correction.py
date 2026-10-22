@@ -119,11 +119,11 @@ class CodexSourceCorrectionTests(unittest.TestCase):
             content_path = copied / "plugins" / "expskill" / "content" / "agents.json"
             content = json.loads(content_path.read_text(encoding="utf-8"))
             marker = "Canonical metadata mutation marker."
-            content["agents"]["expskill-review"]["description"] = marker
+            content["agents"]["review"]["description"] = marker
             content_path.write_text(json.dumps(content, indent=2) + "\n", encoding="utf-8")
 
-            codex = render_codex_agents(copied)["agents/expskill-review.toml"]
-            opencode = render_opencode_agents(copied)["expskill-review"]
+            codex = render_codex_agents(copied)["agents/review.toml"]
+            opencode = render_opencode_agents(copied)["review"]
             self.assertIn(marker, codex)
             self.assertIn(marker, opencode)
 

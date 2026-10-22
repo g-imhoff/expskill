@@ -2,31 +2,31 @@
   "schema_version": "agent-content.v1",
   "runtime_paragraph": "You run as an opencode subagent with a fresh context for exactly one assignment. You see no sibling agent outputs. Your prompt carries the only handoff you may trust. Report questions only to your caller.",
   "agents": {
-    "expskill-designer": {
+    "designer": {
       "description": "Run one Design session inside its isolated helper-owned worktree.",
       "closing": "Return only what your assignment requires."
     },
-    "expskill-explorer": {
+    "explorer": {
       "description": "Gather bounded codebase evidence read-only.",
       "closing": "For an explicitly assigned external-research lane, treat its bounded evidence question as the assignment: use available web tools, prefer direct primary or authoritative sources, state limitations and contradictions, read only web sources and any repository or target context the lane prompt expressly authorizes, excluding sibling output, and return evidence only. Return only what your assignment requires."
     },
-    "expskill-implementer": {
+    "implementer": {
       "description": "Implement exactly one owned node with task-local red-green-refactor.",
       "closing": "Your only Git write is one local commit. Remote writes and approval stay outside your role. Return only what your assignment requires."
     },
-    "expskill-planner": {
+    "planner": {
       "description": "Own one Plan session and its private Plan Graph, keeping tracked source read-only.",
       "closing": "Return only what your assignment requires."
     },
-    "expskill-review": {
+    "review": {
       "description": "Independently review one immutable implementation candidate.",
       "closing": "Return only what your assignment requires."
     },
-    "expskill-spec": {
+    "spec": {
       "description": "Independently judge one immutable candidate against its accepted specification.",
       "closing": "Return only what your assignment requires."
     },
-    "expskill-test-engineer": {
+    "test-engineer": {
       "description": "Define shared acceptance tests and regression targets for a development change.",
       "closing": "Return only what your assignment requires."
     }

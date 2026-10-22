@@ -30,7 +30,7 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
    tested in isolation.
 2. Use the target checkout for one safe serial writer. Give concurrent writers separate external
    worktrees from the exact accepted commit, one owner and one node per lane.
-3. Launch one fresh `expskill-implementer` per node with the accepted behavior, constraints, owned paths,
+3. Launch one fresh `implementer` per node with the accepted behavior, constraints, owned paths,
    base and branch, relevant code context, planned checks, and allowed effects. The worker works alone on its node,
    within the accepted behavior and owned paths.
 4. Require task-local red-green-refactor: show a meaningful failing test or regression before the production
@@ -69,10 +69,10 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
 For the exact immutable candidate commit, apply the final Review context
 contract and launch these fresh agents concurrently:
 
-- `expskill-review` inspects code quality, regressions, maintainability, safety,
+- `review` inspects code quality, regressions, maintainability, safety,
   and repository conventions. It returns only evidence-backed actionable
   findings and `ready` or `not ready`.
-- `expskill-spec` checks every accepted behavior, constraint, non-goal, proof
+- `spec` checks every accepted behavior, constraint, non-goal, proof
   obligation, and applicable Design decision. It may run checks and leaves
   tracked source unchanged. It returns a criterion-by-criterion verdict and `pass` or
   `fail`.
@@ -81,7 +81,7 @@ Keep the judges isolated from each other. Gate results come only from
 the fresh judges.
 
 If either gate fails, combine only current actionable findings into a correction
-brief, launch a new `expskill-implementer` on that node, and rerun both judges
+brief, launch a new `implementer` on that node, and rerun both judges
 against the new commit. Each attempt is a new agent. Stop
 for the user when a correction needs changed product intent, Design, scope, or
 authority. If the same cause survives three non-improving attempts, report that
@@ -97,7 +97,7 @@ Remove an external worktree and its local task branch only after its exact commi
 is on the target, the integrated checks pass, and the lane is clean. Keep
 dirty, failing, unmerged, unknown, or still-needed lanes intact.
 
-After all nodes are integrated, launch one fresh `expskill-review` and one fresh `expskill-spec`
+After all nodes are integrated, launch one fresh `review` and one fresh `spec`
 concurrently over the whole target branch, applying final corrections through the same fresh-worker loop
 and rerunning affected checks and both whole-branch gates.
 

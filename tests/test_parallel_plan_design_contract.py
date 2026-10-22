@@ -19,7 +19,7 @@ def test_router_drops_retired_ui_harness_names_and_bounds_the_route() -> None:
 
     policy = json.loads((PLUGIN / "content" / "policies" / "execution-policy.json").read_text())
     route = policy["routes"]["use-expskill"]["parallel-plan-design"]
-    assert route["allowed_profiles"] == ["expskill-planner", "expskill-designer"]
+    assert route["allowed_profiles"] == ["planner", "designer"]
     assert route["max_agent_calls"] == 2
     assert route["max_concurrency"] == 2
     assert route["max_depth"] == 1
@@ -40,11 +40,11 @@ def test_route_skills_name_their_own_tokens() -> None:
 
 def test_runtime_profile_source_files_exist() -> None:
     for name in (
-        "expskill-explorer.md",
-        "expskill-implementer.md",
-        "expskill-review.md",
-        "expskill-spec.md",
-        "expskill-test-engineer.md",
+        "explorer.md",
+        "implementer.md",
+        "review.md",
+        "spec.md",
+        "test-engineer.md",
     ):
         assert (PLUGIN / "content" / "agents" / name).is_file(), name
 
