@@ -1,11 +1,5 @@
 # Pin scope
 
-Single rule for pinning review and execution scope to an exact revision.
-
-## Trigger
-
-Use when scope names a diff, branch, commit, PR or MR, file set, subsystem, or named behavior.
-
 ## Procedure
 
 1. Resolve every Git target and baseline to exact commit IDs before inspection. Pin dirty or non Git content by path plus content hash. Pin related mutable evidence by content and hash as it enters.

@@ -1,11 +1,5 @@
 # Evidence report
 
-Single rule for where reports and evidence live. Home state is the root. One run folder per run. No shared mutable file across runs.
-
-## Trigger
-
-Use when saving a report, bundle, receipt, charter, ledger, or any retained proof artifact.
-
 ## Procedure
 1. Root all retained state at home dot expskill, always. Never write retained proof into the target repository except for approved owned paths like test owned code plus fixtures plus config, or setup owned record paths after confirmation.
 2. Use one run folder per run under home dot expskill. Shape is home dot expskill, then skills, then skill name, then runs, then repo hash, then run id. Worktrees live under home dot expskill slash worktrees. Keep raw evidence private to that run folder. Keep permissions strict. Never reuse a run folder for a new head.

@@ -1,11 +1,5 @@
 # Isolate writes
 
-Single rule for separating concurrent writers.
-
-## Trigger
-
-Use when concurrent actors might write the same files, branch, worktree, or evidence root.
-
 ## Procedure
 
 1. The coordinator or router creates every worktree from the exact accepted commit with `../scripts/worktrees.py` relative to this rules folder. Workers never create their own worktrees.

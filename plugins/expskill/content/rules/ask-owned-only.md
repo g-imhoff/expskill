@@ -1,11 +1,5 @@
 # Ask owned only
 
-Single rule for user questions. All user facing questions go through grill me.
-
-## Trigger
-
-Use before asking the user anything factual, or before asking for intent, preference, priority, lived experience, or authorization.
-
 ## Procedure
 
 1. Exhaust supplied context, repository evidence, prior accepted evidence, and authoritative sources first. Never ask for a fact discovery can settle.

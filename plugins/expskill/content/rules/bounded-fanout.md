@@ -1,11 +1,5 @@
 # Bounded fanout
 
-Single rule for parallel workers. Narrow discovery uses three bounded readers. Broad uncertain work uses deep research. Scoring uses adversarial reviewers with fail closed.
-
-## Trigger
-
-Use when dispatching parallel researchers, reviewers, or fixers.
-
 ## Procedure
 
 1. For narrow discovery with known questions, launch three independent bounded read-only workers. Brief each with repo root plus credential free facts, one bounded question, plus reading and reporting as only actions. Allow at most one targeted second round of up to three readers for a named gap or conflict. Retry a failed lane once for tool error, timeout, missing credible evidence, missing source links, or scope escape. After a second failure stop and ask the user to retry differently, continue with incomplete coverage, or skip the missing research.
