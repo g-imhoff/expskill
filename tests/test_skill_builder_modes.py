@@ -43,8 +43,9 @@ def record_current_delivery(
     workflow_id: str,
     sequence: int,
     target: Path,
+    grant_event: bytes = b"authorize exact package installation\n",
 ) -> dict[str, object]:
-    authority_event = b"authorize exact package installation\n"
+    authority_event = grant_event
     acceptance_evidence = b"exact package destination snapshot\n"
     return helper.record_delivery(
         workflow_id=workflow_id,
@@ -94,6 +95,58 @@ def finalized_modify_run(
         state_root=state_root,
     )
     return state_root, workflow_id, finalized["sequence"], target, package
+
+
+def test_delivery_accepts_a_post_finalize_grant_naming_the_scope(
+    tmp_path: Path,
+) -> None:
+    """Delivery authority is asked after finalization, so a retained user grant naming the scope extends empty initialize authority."""
+    helper = support.load_helper()
+    authority = dict(support.authority())
+    authority["delivery_effects"] = []
+    target = existing_target(tmp_path)
+    package = {
+        "SKILL.md": support.CANDIDATE_SKILL_BYTES,
+        "references/keep.md": KEPT_REFERENCE_BYTES,
+    }
+    state_root, workflow_id, sequence, _ = support.build_verified_stage(
+        helper,
+        tmp_path,
+        mode="modify",
+        granted_authority=authority,
+        candidate_additional_skill_files={
+            "references/keep.md": KEPT_REFERENCE_BYTES
+        },
+        candidate_owned_paths=["SKILL.md"],
+        candidate_resulting_bytes=support.candidate_result_bytes(),
+        trial_loaded_skill_files=package,
+    )
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    scope = "installation:codex:personal:sample-skill"
+    support.write_skill_package(target, package)
+    with pytest.raises(helper.RunStateError, match="authority scope"):
+        record_current_delivery(
+            helper,
+            state_root,
+            workflow_id,
+            finalized["sequence"],
+            target,
+            grant_event=b"yes, deliver it\n",
+        )
+    delivered = record_current_delivery(
+        helper,
+        state_root,
+        workflow_id,
+        finalized["sequence"],
+        target,
+        grant_event=f"yes, deliver {scope} now\n".encode("utf-8"),
+    )
+    assert delivered["stage"] == "delivered"
 
 
 def test_modify_initializes_against_the_exact_existing_target(

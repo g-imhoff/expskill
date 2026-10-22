@@ -40,7 +40,7 @@ Write each contract field where the artifact contracts' placement table puts it.
 
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, authority checks, scope changes, external delivery, and cleanup.
 - Research agents use web access read-only and return only evidence cards.
-- Exactly one implementer writes, and only inside the isolated candidate. Trial agents write only inside disposable targets.
+- Exactly one implementer writes, and only inside the isolated candidate. The implementer works in its own session and the main agent never writes candidate bytes. Trial agents write only inside disposable targets.
 - Reviewers and verifiers stay independent and read-only to tracked source.
 - The user alone confirms product intent.
 

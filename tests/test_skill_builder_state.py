@@ -1592,6 +1592,77 @@ def test_agent_written_confirmations_are_rejected() -> None:
             raise AssertionError(f"confirmation accepted {label}")
 
 
+def test_self_reviews_and_instant_verifications_are_rejected() -> None:
+    """The main agent never reviews or verifies its own candidate, timestamps stay present, and verification runs commands."""
+    helper = load_helper()
+    review = review_payload(candidate_digest="1" * 64)
+    helper._validate_artifact_payload("review-record", review)
+    for label, fields in {
+        "main-agent reviewer": {"reviewer_identity": "main-agent"},
+        "assumed reviewer": {"reviewer_identity": "assumed-user"},
+        "future review": {"reviewed_at": "2099-01-01T00:00:00Z"},
+    }.items():
+        payload = dict(review)
+        payload.update(fields)
+        with pytest.raises(helper.RunStateError):
+            helper._validate_artifact_payload("review-record", payload)
+            raise AssertionError(f"review accepted {label}")
+
+    verification = verification_payload(candidate_digest="1" * 64)
+    helper._validate_artifact_payload("verification-record", verification)
+    instant = dict(verification)
+    instant["ended_at"] = instant["started_at"]
+    with pytest.raises(helper.RunStateError):
+        helper._validate_artifact_payload("verification-record", instant)
+        raise AssertionError("verification accepted an instant window")
+    forged = dict(verification)
+    forged["verifier_identity"] = "main-agent"
+    with pytest.raises(helper.RunStateError):
+        helper._validate_artifact_payload("verification-record", forged)
+        raise AssertionError("verification accepted the main agent")
+
+
+def test_research_lanes_record_the_model_they_ran() -> None:
+    """Lanes run on the strongest model the host offers and record exactly that."""
+    helper = load_helper()
+    pack = {
+        "schema_version": "skill-builder-research-pack.v1",
+        "target_snapshot_digest": "1" * 64,
+        "baseline_digest": "2" * 64,
+        "lanes": [
+            {
+                "lane_id": f"lane-{index}",
+                "question": f"bounded question {index}",
+                "model": "muse-spark",
+                "reasoning": "default",
+                "source_scope": ["authoritative sources"],
+                "evidence_budget": 1,
+                "start_state": "fresh",
+                "end_state": "complete",
+                "limitations": [],
+                "evidence_cards": [],
+            }
+            for index in range(1, 4)
+        ],
+        "limitations": [],
+    }
+    helper._validate_artifact_payload("research-pack", pack)
+
+
+def test_file_digest_candidates_are_rejected_at_acceptance(tmp_path: Path) -> None:
+    """A resulting digest naming one retained file fails at acceptance, not delivery."""
+    helper = load_helper()
+    run = tmp_path / "run"
+    raw = run / "artifacts" / "candidate" / "raw"
+    raw.mkdir(parents=True)
+    skill_file = raw / "SKILL.md"
+    skill_file.write_bytes(b"# sample\n")
+    file_digest = hashlib.sha256(b"# sample\n").hexdigest()
+    with pytest.raises(helper.RunStateError, match="not the owned result"):
+        helper._reject_file_digest_result(run, "candidate", file_digest)
+    helper._reject_file_digest_result(run, "candidate", "0" * 64)
+
+
 def evaluation_payload(
     *,
     contract_digest: str,
@@ -2129,7 +2200,11 @@ def scorecard_payload(
             categories.append(
                 {
                     "name": name,
-                    "score": triggering_score if name == "triggering" else 10,
+                    "score": sum(
+                        1
+                        for passed in criterion_states.values()
+                        if passed is True
+                    ),
                     "criteria": criterion_results,
                     "repair_history": [],
                 }
@@ -3844,7 +3919,7 @@ def test_finalization_rejects_false_all_ten_scorecard_without_transition(
     """A score label cannot hide a category below the required independent 10."""
     helper = load_helper()
     state_root, workflow_id, sequence, release = build_verified_stage(
-        helper, tmp_path, triggering_score=9
+        helper, tmp_path, triggering_score=9, scorecard_criteria_overrides=failed_criteria("TR2")
     )
 
     try:
@@ -8946,6 +9021,30 @@ def test_selection_run_that_misses_its_expected_selection_fails_the_case(
         )
 
 
+def test_scorecard_scores_must_sum_their_criteria(tmp_path: Path) -> None:
+    """A score inflated above its passing criteria fails on replay."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path,
+        selection={"case-1": "candidate", "case-3": "none"},
+        scorecard_criteria_overrides=failed_criteria("TR2"),
+    )
+    run = state_root / "live" / workflow_id
+    forged = helper._artifact_payload_json(run, "scores")
+    forged["categories"][0]["score"] = 10
+    rewrite_artifact_payload_and_receipts(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        artifact_id="scores",
+        payload=forged,
+        rewrite_receipts=True,
+    )
+    with pytest.raises(helper.RunStateError, match="do not sum their passing"):
+        helper.load_run(workflow_id=workflow_id, state_root=state_root)
+
+
 def test_selection_run_claims_no_load_only_with_a_complete_trace(
     tmp_path: Path,
 ) -> None:
@@ -9048,6 +9147,19 @@ def test_selection_run_claims_no_load_only_with_a_complete_trace(
         )
         with pytest.raises(helper.RunStateError, match=message):
             complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+
+def test_opencode_text_ending_traces_count_as_complete(tmp_path: Path) -> None:
+    """Real OpenCode streams end with a text event, and honest no-load runs retain."""
+    helper = load_helper()
+
+    def trace(*events: dict[str, object]) -> bytes:
+        return b"".join(fixture_canonical_bytes(event) for event in events)
+
+    start = {"type": "start"}
+    text_end = {"type": "text", "content": "nothing to load here"}
+    no_load = {"complete_trace": True, "observed_load": NONE_LOAD}
+    helper._validate_selection_trace(host="opencode", payload=trace(start, text_end), trial_run=no_load)
 
 
 @pytest.mark.parametrize(

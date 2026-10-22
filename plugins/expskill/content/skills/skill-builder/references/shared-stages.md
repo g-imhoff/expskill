@@ -1,6 +1,6 @@
 ### 3. Run three blind research lanes
 
-Launch exactly three bounded, blind, independent web research lanes. Assign GPT-6-Luna at max reasoning to each lane:
+Launch exactly three bounded, blind, independent web research lanes. Run each lane on the most capable reasoning the host offers and record the exact choice and reasoning setting in the pack:
 
 1. Domain techniques for the target's job.
 2. Agent-skill design, instruction, interaction, and tooling practices.

@@ -63,8 +63,10 @@ LOADABLE_CONTENT_SCHEMA = "skill-builder-loadable-content.v1"
 EVALUATION_REPORT_SCHEMA = "skill-builder-evaluation-report.v1"
 LEGACY_CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v1"
 CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v2"
+ABANDONED_CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v3"
 LEGACY_TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v1"
 TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v2"
+ABANDONED_TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v3"
 LEGACY_FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v1"
 FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v2"
 CONFIRMATION_SCHEMA = "skill-builder-user-confirmation.v1"
@@ -195,7 +197,7 @@ _SELECTION_REPEATS = 3
 _SELECTION_END_MARKERS = {
     "claude-code": frozenset({"result"}),
     "codex": frozenset({"turn.completed", "turn.failed"}),
-    "opencode": frozenset({"step_finish"}),
+    "opencode": frozenset({"step_finish", "text"}),
     "hermes": frozenset({"result"}),
 }
 _SELECTION_BACKED_CRITERIA = {
@@ -355,6 +357,7 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "cleanup-authority-record": {
         LEGACY_CLEANUP_AUTHORITY_SCHEMA,
         CLEANUP_AUTHORITY_SCHEMA,
+        ABANDONED_CLEANUP_AUTHORITY_SCHEMA,
     },
     "invalidation-record": "skill-builder-invalidation.v1",
     "mode-switch-record": MODE_SWITCH_SCHEMA,
@@ -1783,15 +1786,30 @@ _AGENT_CONFIRMATION_IDENTITIES = (
     "independent-verifier",
     "trial-agent",
 )
+_AGENT_REVIEW_IDENTITIES = ("main-agent", "implementer", "trial-agent")
+
+
+def _reject_agent_actor_identity(identity: str, role: str) -> None:
+    """An agent role never speaks for another party. Only the named party does."""
+    _reject_agent_identity(identity, role, _AGENT_CONFIRMATION_IDENTITIES)
+
+
+def _reject_agent_reviewer_identity(identity: str, role: str) -> None:
+    """The main agent never reviews or verifies its own candidate. Numbered reviewer names stay the reviewer's checklist because the helper cannot tell who typed them."""
+    _reject_agent_identity(identity, role, _AGENT_REVIEW_IDENTITIES)
+
+
+def _reject_agent_identity(identity: str, role: str, markers: tuple[str, ...]) -> None:
+    folded = identity.strip().casefold()
+    if "assum" in folded or any(
+        folded == marker or folded.startswith(marker + "-") for marker in markers
+    ):
+        raise RunStateError(f"{role} identity is an agent role, not the named party")
 
 
 def _reject_agent_confirmation_identity(identity: str) -> None:
     """An agent role never confirms for the user. Only a host user event does."""
-    folded = identity.strip().casefold()
-    if "assum" in folded or any(
-        folded == marker or folded.startswith(marker + "-") for marker in _AGENT_CONFIRMATION_IDENTITIES
-    ):
-        raise RunStateError("user confirmation identity is an agent role, not the user")
+    _reject_agent_actor_identity(identity, "user confirmation")
 
 
 def _reject_future_confirmation_time(confirmed_at: str) -> None:
@@ -1799,6 +1817,36 @@ def _reject_future_confirmation_time(confirmed_at: str) -> None:
     parsed = datetime.fromisoformat(confirmed_at[:-1] + "+00:00")
     if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
         raise RunStateError("user confirmation timestamp is in the future")
+
+
+def _reject_instant_verification(started_at: str, ended_at: str) -> None:
+    """A verification that ran no commands finishes in milliseconds. Real command runs take longer."""
+    started = datetime.fromisoformat(started_at[:-1] + "+00:00")
+    ended = datetime.fromisoformat(ended_at[:-1] + "+00:00")
+    if (ended - started).total_seconds() < 1:
+        raise RunStateError("verification ran no commands in its recorded window")
+
+
+def _reject_file_digest_result(run: Path, candidate_id: str, resulting_digest: str) -> None:
+    """The owned-result digest describes a record, never one retained file. A file digest passes acceptance and fails only at delivery."""
+    raw = _artifact_directory(run, candidate_id) / "raw"
+    for path in sorted(raw.rglob("*")):
+        if not path.is_file() or path.name == "candidate-result.json":
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() == resulting_digest:
+            raise RunStateError(
+                "candidate resulting digest is one retained file, not the owned result"
+            )
+
+
+def _require_post_finalize_delivery_grant(delivery_scope: str, authority_event: bytes) -> None:
+    """Delivery authority is asked after finalization, so a scope missing from initialize authority must be named in the retained user grant."""
+    try:
+        grant_text = authority_event.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunStateError("delivery grant names no delivery scope") from error
+    if delivery_scope not in grant_text:
+        raise RunStateError("delivery action or destination exceeds recorded authority scope")
 
 
 def _validate_artifact_payload(
@@ -1841,6 +1889,13 @@ def _validate_artifact_payload(
     ):
         versioned_fields = (versioned_fields - {"accepted_delivery_digest"}) | {
             "evaluation_report_digest"
+        }
+    if (
+        artifact_type == "cleanup-authority-record"
+        and schema_version == ABANDONED_CLEANUP_AUTHORITY_SCHEMA
+    ):
+        versioned_fields = (versioned_fields - {"accepted_delivery_digest"}) | {
+            "abandon_receipt_digest"
         }
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
@@ -1894,8 +1949,8 @@ def _validate_artifact_payload(
                 raise RunStateError("research lane identities must be unique")
             lane_ids.add(lane_id)
             _text(lane["question"], "research lane question")
-            if lane["model"] != "GPT-6-Luna" or lane["reasoning"] != "max":
-                raise RunStateError("research lane model or reasoning is invalid")
+            _text(lane["model"], "research lane model")
+            _text(lane["reasoning"], "research lane reasoning")
             _text_list(lane["source_scope"], "research source scope")
             _exact_integer(lane["evidence_budget"], "research evidence budget", minimum=1)
             _text(lane["start_state"], "research lane start state")
@@ -2278,7 +2333,8 @@ def _validate_artifact_payload(
         return
 
     if artifact_type == "review-record":
-        _text(payload["reviewer_identity"], "reviewer identity")
+        reviewer = _text(payload["reviewer_identity"], "reviewer identity")
+        _reject_agent_reviewer_identity(reviewer, "reviewer")
         _digest(payload["candidate_digest"], "review candidate")
         _text(payload["candidate_revision"], "review candidate revision")
         if payload["independent"] is not True or payload["read_only"] is not True:
@@ -2303,7 +2359,8 @@ def _validate_artifact_payload(
                 _digest(binding["component_digest"], "review input component digest")
         _digest_list(payload["access_check_evidence"], "review access checks")
         _text(payload["contamination_check"], "review contamination check")
-        _timestamp(payload["reviewed_at"], "review timestamp")
+        reviewed_at = _timestamp(payload["reviewed_at"], "review timestamp")
+        _reject_future_confirmation_time(reviewed_at)
         if not isinstance(payload["fresh"], bool) or not isinstance(payload["valid"], bool):
             raise RunStateError("review freshness or validity is malformed")
         if payload["verdict"] not in {"ready", "not ready", None}:
@@ -2422,13 +2479,16 @@ def _validate_artifact_payload(
         return
 
     if artifact_type == "verification-record":
-        _text(payload["verifier_identity"], "verifier identity")
+        verifier = _text(payload["verifier_identity"], "verifier identity")
+        _reject_agent_reviewer_identity(verifier, "verifier")
         _digest(payload["candidate_digest"], "verification candidate")
         _text(payload["candidate_revision"], "verification candidate revision")
         if payload["independent"] is not True or payload["read_only"] is not True:
             raise RunStateError("verification independence attestation is invalid")
         _timestamp(payload["started_at"], "verification start")
-        _timestamp(payload["ended_at"], "verification end")
+        ended_at = _timestamp(payload["ended_at"], "verification end")
+        _reject_future_confirmation_time(ended_at)
+        _reject_instant_verification(payload["started_at"], ended_at)
         _digest(payload["before_manifest_digest"], "verification before manifest")
         _digest(payload["after_manifest_digest"], "verification after manifest")
         if not isinstance(payload["fresh"], bool) or payload["status"] not in {"pass", "fail"}:
@@ -2515,9 +2575,13 @@ def _validate_artifact_payload(
         _digest(payload["authority_event_digest"], "cleanup authority event")
         _text(payload["actor"], "cleanup authority actor")
         _timestamp(payload["timestamp"], "cleanup authority timestamp")
-        if (schema_version == CLEANUP_AUTHORITY_SCHEMA) != evaluate:
+        if schema_version == ABANDONED_CLEANUP_AUTHORITY_SCHEMA:
+            pass
+        elif (schema_version == CLEANUP_AUTHORITY_SCHEMA) != evaluate:
             raise RunStateError("cleanup authority schema does not match the run's mode")
-        if evaluate:
+        if schema_version == ABANDONED_CLEANUP_AUTHORITY_SCHEMA:
+            _digest(payload["abandon_receipt_digest"], "cleanup abandon receipt")
+        elif evaluate:
             _digest(payload["evaluation_report_digest"], "cleanup evaluation report")
         else:
             _digest(payload["accepted_delivery_digest"], "cleanup accepted delivery")
@@ -4063,7 +4127,7 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
                 if source != "finalized" or destination != "delivered" or not isinstance(receipt.get("authority_event_digest"), str):
                     raise RunStateError("delivery receipt has an invalid stage or authority")
             elif event == "record-cleanup-authority":
-                if source not in {"delivered", "reported"} or destination != source or not isinstance(receipt.get("authority_event_digest"), str):
+                if source not in {"delivered", "reported", "abandoned"} or destination != source or not isinstance(receipt.get("authority_event_digest"), str):
                     raise RunStateError("cleanup-authority receipt is invalid")
             else:
                 raise RunStateError("receipt event is unsupported")
@@ -4946,6 +5010,14 @@ def _validate_score_bindings(
     if scorecard["schema_version"] == LEGACY_SCORECARD_SCHEMA:
         return
 
+    for category in scorecard["categories"]:
+        if category["score"] != sum(
+            result["passed"] for result in category["criteria"].values()
+        ):
+            raise RunStateError(
+                "scorecard category scores do not sum their passing criteria"
+            )
+
     frozen_parameter_ids = sorted(evaluation["scoring_parameters"])
     if not frozen_parameter_ids:
         raise RunStateError("scorecard lacks frozen scoring-parameter evidence")
@@ -5364,6 +5436,11 @@ def _validate_candidate_entry(
         raise RunStateError(
             "an evaluate candidate must be an unchanged copy of the target"
         )
+    if (
+        candidate["schema_version"] in _PACKAGED_CANDIDATE_SCHEMAS
+        and current["mode"]["name"] != "evaluate"
+    ):
+        _reject_file_digest_result(run, candidate_id, candidate["resulting_digest"])
     _require_input_bindings(
         candidate_envelope,
         {
@@ -7300,6 +7377,11 @@ _AFTER_CANDIDATE = {
     "evaluation-report",
 }
 _INVALIDATION_RULES = {
+    "abandon": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
     "host-target": {
         "changed_types": {"resolution-record"},
         "destination": "abandoned",
@@ -7601,7 +7683,7 @@ def invalidate_run(
             changed_artifact_id,
             changed["type"],
         )
-        if change_kind != "target-snapshot":
+        if change_kind not in {"target-snapshot", "abandon"}:
             _validate_target_unchanged(current, root)
         invalidated_records = [
             record
@@ -8269,10 +8351,14 @@ def _validate_delivery_record_binding(
         or delivery["finalized_revision"] != candidate["candidate_revision"]
         or delivery["candidate_digest"] != candidate_envelope["envelope_digest"]
         or delivery["release_digest"] != release_envelope["envelope_digest"]
-        or delivery_scope not in current["authority"]["delivery_effects"]
         or delivery_scope not in release["authorized_delivery_scope"]
     ):
         raise RunStateError("delivery authority, revision, or release binding is invalid")
+    if delivery_scope not in current["authority"]["delivery_effects"]:
+        grant_path = (
+            _artifact_directory(run, delivery_id) / "raw" / "authority-event.bin"
+        )
+        _require_post_finalize_delivery_grant(delivery_scope, grant_path.read_bytes())
     retained_evidence = sorted(
         digest
         for path, digest in raw_digests.items()
@@ -8301,6 +8387,26 @@ def _validate_cleanup_authority_binding(
 ) -> None:
     authority_envelope, raw_digests = _artifact_raw_digests(run, authority_id)
     cleanup_authority = _artifact_payload_json(run, authority_id)
+    if current["stage"] == "abandoned":
+        abandon_digest = next(
+            (
+                entry["receipt_digest"]
+                for entry in reversed(_load_receipt_chain(run))
+                if entry.get("destination_stage") == "abandoned"
+                and entry.get("event") != "record-cleanup-authority"
+            ),
+            None,
+        )
+        if (
+            cleanup_authority["workflow_id"] != current["workflow_id"]
+            or cleanup_authority["target_identity"]
+            != current["target_identity"]["canonical"]
+            or cleanup_authority["authority_event_digest"] != authority_event_digest
+            or raw_digests.get("authority-event.bin") != authority_event_digest
+            or cleanup_authority.get("abandon_receipt_digest") != abandon_digest
+        ):
+            raise RunStateError("cleanup authority or abandon binding is invalid")
+        return
     finished_id, finished_envelope, finished_field = _cleanup_basis(
         run, current, event_artifacts
     )
@@ -8629,11 +8735,10 @@ def record_delivery(
             run, current, "finalize", "release-record"
         )
         delivery_scope = f"{delivery['action']}:{delivery['destination_identity']}"
-        if (
-            delivery_scope not in current["authority"]["delivery_effects"]
-            or delivery_scope not in release["authorized_delivery_scope"]
-        ):
+        if delivery_scope not in release["authorized_delivery_scope"]:
             raise RunStateError("delivery action or destination exceeds recorded authority scope")
+        if delivery_scope not in current["authority"]["delivery_effects"]:
+            _require_post_finalize_delivery_grant(delivery_scope, authority_event)
         artifact_id = f"delivery-{expected_sequence + 1:08d}"
         payload = {
             "schema_version": "skill-builder-delivery-acceptance.v1",
@@ -8715,16 +8820,27 @@ def record_cleanup_authority(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] not in {"delivered", "reported"}:
+        if current["stage"] not in {"delivered", "reported", "abandoned"}:
             raise RunStateError(
-                "cleanup authority requires accepted delivery or a reported evaluation"
+                "cleanup authority requires accepted delivery, a reported evaluation, or an abandoned run"
             )
-        finished_id, finished_envelope, finished_field = _cleanup_basis(run, current)
+        if current["stage"] == "abandoned":
+            finished_id, finished_envelope, finished_field = (
+                None,
+                {"envelope_digest": current["head_transition_digest"]},
+                "abandon_receipt_digest",
+            )
+        else:
+            finished_id, finished_envelope, finished_field = _cleanup_basis(run, current)
         artifact_id = f"cleanup-authority-{expected_sequence + 1:08d}"
         payload = {
-            "schema_version": CLEANUP_AUTHORITY_SCHEMA
-            if current["stage"] == "reported"
-            else LEGACY_CLEANUP_AUTHORITY_SCHEMA,
+            "schema_version": (
+                ABANDONED_CLEANUP_AUTHORITY_SCHEMA
+                if current["stage"] == "abandoned"
+                else CLEANUP_AUTHORITY_SCHEMA
+                if current["stage"] == "reported"
+                else LEGACY_CLEANUP_AUTHORITY_SCHEMA
+            ),
             "workflow_id": workflow_id,
             "target_identity": current["target_identity"]["canonical"],
             "action": "cleanup",
@@ -8751,12 +8867,16 @@ def record_cleanup_authority(
                     },
                     "primary_path": "record.json",
                     "producer": actor,
-                    "input_bindings": [
-                        {
-                            "artifact_id": finished_id,
-                            "digest": finished_envelope["envelope_digest"],
-                        }
-                    ],
+                    "input_bindings": (
+                        []
+                        if finished_id is None
+                        else [
+                            {
+                                "artifact_id": finished_id,
+                                "digest": finished_envelope["envelope_digest"],
+                            }
+                        ]
+                    ),
                     "limitations": [],
                 }
             ],
@@ -8788,6 +8908,7 @@ _TOMBSTONE_COMMON_FIELDS = {
 _TOMBSTONE_BASIS_FIELDS = {
     LEGACY_TOMBSTONE_SCHEMA: "accepted_delivery_record_digest",
     TOMBSTONE_SCHEMA: "evaluation_report_digest",
+    ABANDONED_TOMBSTONE_SCHEMA: "abandon_receipt_digest",
 }
 
 
@@ -8824,14 +8945,19 @@ def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
 def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
     chain = _load_receipt_chain(run)
     reported = current["stage"] == "reported"
+    abandoned = current["stage"] == "abandoned"
     closing_event = "report" if reported else "finalize"
     closing_receipt = next(
         (receipt for receipt in reversed(chain) if receipt["event"] == closing_event),
         None,
     )
-    if closing_receipt is None:
+    if closing_receipt is None and not abandoned:
         raise RunStateError(f"final run manifest lacks a {closing_event} receipt")
-    if reported:
+    if abandoned:
+        bindings = {
+            "abandon_receipt_digest": current["head_transition_digest"],
+        }
+    elif reported:
         _, report_envelope = _event_artifact(run, "report", "evaluation-report")
         bindings = {
             "report_receipt_digest": closing_receipt["receipt_digest"],
@@ -8868,7 +8994,7 @@ def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
         )
     manifest: dict[str, Any] = {
         "schema_version": FINAL_RUN_MANIFEST_SCHEMA
-        if reported
+        if reported or abandoned
         else LEGACY_FINAL_RUN_MANIFEST_SCHEMA,
         "workflow_id": current["workflow_id"],
         "target_identity": current["target_identity"]["canonical"],
@@ -9090,14 +9216,21 @@ def cleanup_run(
                 raise RunStateError("cleanup retry current index is stale or corrupt")
             if current["head_sequence"] != expected_sequence:
                 raise RevisionConflict("cleanup retry receipt sequence conflict")
-            if current["stage"] not in {"delivered", "reported"}:
+            if current["stage"] not in {"delivered", "reported", "abandoned"}:
                 raise RunStateError(
-                    "cleanup retry requires accepted delivery or a reported evaluation"
+                    "cleanup retry requires accepted delivery, a reported evaluation, or an abandoned run"
                 )
-            _validate_target_unchanged(current, root)
-            _, finished_envelope, _ = _cleanup_basis(run_candidate, current)
+            if current["stage"] != "abandoned":
+                _validate_target_unchanged(current, root)
+            if current["stage"] == "abandoned":
+                finished_digest = current["head_transition_digest"]
+            else:
+                _, finished_envelope, _ = _cleanup_basis(run_candidate, current)
+                finished_digest = finished_envelope["envelope_digest"]
             basis_field = _TOMBSTONE_BASIS_FIELDS[
-                TOMBSTONE_SCHEMA
+                ABANDONED_TOMBSTONE_SCHEMA
+                if tombstone.get("schema_version") == ABANDONED_TOMBSTONE_SCHEMA
+                else TOMBSTONE_SCHEMA
                 if current["stage"] == "reported"
                 else LEGACY_TOMBSTONE_SCHEMA
             ]
@@ -9119,8 +9252,7 @@ def cleanup_run(
                 != current["head_transition_digest"]
                 or tombstone["final_run_manifest_digest"]
                 != final_manifest["manifest_digest"]
-                or tombstone.get(basis_field)
-                != finished_envelope["envelope_digest"]
+                or tombstone.get(basis_field) != finished_digest
                 or tombstone["cleanup_authority_event_digest"]
                 != cleanup_authority["authority_event_digest"]
             ):
@@ -9149,12 +9281,29 @@ def cleanup_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] not in {"delivered", "reported"}:
+        if current["stage"] not in {"delivered", "reported", "abandoned"}:
             raise RunStateError(
-                "cleanup requires accepted delivery or a reported evaluation"
+                "cleanup requires accepted delivery, a reported evaluation, or an abandoned run"
             )
-        _validate_target_unchanged(current, root)
-        finished_id, finished_envelope, finished_field = _cleanup_basis(run, current)
+        abandoned = current["stage"] == "abandoned"
+        if not abandoned:
+            _validate_target_unchanged(current, root)
+        if abandoned:
+            finished_id, finished_digest, finished_field = (
+                None,
+                next(
+                    entry["receipt_digest"]
+                    for entry in reversed(_load_receipt_chain(run))
+                    if entry.get("destination_stage") == "abandoned"
+                    and entry.get("event") != "record-cleanup-authority"
+                ),
+                "abandon_receipt_digest",
+            )
+        else:
+            finished_id, finished_envelope, finished_field = _cleanup_basis(
+                run, current
+            )
+            finished_digest = finished_envelope["envelope_digest"]
         reported = current["stage"] == "reported"
         authority_id, _, cleanup_authority = _current_event_artifact(
             run, current, "record-cleanup-authority", "cleanup-authority-record"
@@ -9166,8 +9315,7 @@ def cleanup_run(
         )
         if (
             cleanup_authority.get("authorized") is not True
-            or cleanup_authority.get(finished_field)
-            != finished_envelope["envelope_digest"]
+            or cleanup_authority.get(finished_field) != finished_digest
             or cleanup_authority.get("authority_event_digest")
             != authority_receipt["authority_event_digest"]
         ):
@@ -9180,7 +9328,13 @@ def cleanup_run(
         else:
             _exclusive_json(final_manifest_path, final_manifest)
         run_info = run.lstat()
-        tombstone_schema = TOMBSTONE_SCHEMA if reported else LEGACY_TOMBSTONE_SCHEMA
+        tombstone_schema = (
+            ABANDONED_TOMBSTONE_SCHEMA
+            if abandoned
+            else TOMBSTONE_SCHEMA
+            if reported
+            else LEGACY_TOMBSTONE_SCHEMA
+        )
         tombstone: dict[str, Any] = {
             "schema_version": tombstone_schema,
             "workflow_id": workflow_id,
@@ -9192,9 +9346,7 @@ def cleanup_run(
             },
             "final_transition_receipt_digest": current["head_transition_digest"],
             "final_run_manifest_digest": final_manifest["manifest_digest"],
-            _TOMBSTONE_BASIS_FIELDS[tombstone_schema]: finished_envelope[
-                "envelope_digest"
-            ],
+            _TOMBSTONE_BASIS_FIELDS[tombstone_schema]: finished_digest,
             "cleanup_authority_event_digest": cleanup_authority[
                 "authority_event_digest"
             ],

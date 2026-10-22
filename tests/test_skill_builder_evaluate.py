@@ -1046,6 +1046,64 @@ def test_discovery_with_two_reported_runs(tmp_path: Path) -> None:
     assert discover(target)["workflow_id"] == newer["workflow_id"]
 
 
+def test_abandoned_runs_clean_up_with_an_abandon_bound_tombstone(
+    tmp_path: Path,
+) -> None:
+    """An explicitly abandoned run cleans up on user authority, leaving a v3 tombstone bound to the abandon receipt."""
+    helper = support.load_helper()
+    evaluate_target(tmp_path)
+    started = initialize(helper, tmp_path)
+    state_root = tmp_path / "state"
+    workflow_id = started["workflow_id"]
+    abandoned = helper.invalidate_run(
+        workflow_id=workflow_id,
+        expected_sequence=0,
+        change_kind="abandon",
+        changed_artifact_id="resolution",
+        reason="user ends this run honestly",
+        state_root=state_root,
+    )
+    assert abandoned["stage"] == "abandoned"
+    run = state_root / "live" / workflow_id
+    tombstone_path = state_root / "tombstones" / f"{workflow_id}.json"
+
+    with pytest.raises(helper.RunStateError, match="cleanup-authority-record"):
+        helper.cleanup_run(
+            workflow_id=workflow_id,
+            expected_sequence=abandoned["sequence"],
+            acknowledge_cleanup=True,
+            state_root=state_root,
+        )
+    assert run.is_dir() and not tombstone_path.exists()
+
+    event = b"user authorizes cleanup of the abandoned run\n"
+    authorized = helper.record_cleanup_authority(
+        workflow_id=workflow_id,
+        expected_sequence=abandoned["sequence"],
+        authority_event_digest=support.fixture_digest(event),
+        authority_event=event,
+        actor="user",
+        state_root=state_root,
+    )
+    assert authorized["stage"] == "abandoned"
+    cleaned = helper.cleanup_run(
+        workflow_id=workflow_id,
+        expected_sequence=authorized["sequence"],
+        acknowledge_cleanup=True,
+        state_root=state_root,
+    )
+    tombstone = json.loads(tombstone_path.read_text(encoding="utf-8"))
+    assert cleaned["stage"] == "cleaned"
+    assert not run.exists()
+    assert tombstone["schema_version"] == "skill-builder-cleanup-tombstone.v3"
+    assert tombstone["abandon_receipt_digest"] == abandoned["receipt_digest"]
+    assert tombstone["final_transition_receipt_digest"] == authorized["receipt_digest"]
+    assert "accepted_delivery_record_digest" not in tombstone
+    assert "evaluation_report_digest" not in tombstone
+    recovered = helper.recover_run(workflow_id=workflow_id, state_root=state_root)
+    assert (recovered["stage"], recovered["tombstone_digest"]) == ("cleaned", tombstone["tombstone_digest"])
+
+
 def test_cleanup_of_a_reported_run_needs_explicit_authority(tmp_path: Path) -> None:
     """Cleanup deletes a reported run only after recorded user authority, leaving a report-bound tombstone."""
     helper = support.load_helper()
