@@ -26,4 +26,4 @@ Report record path, copyable commands, measured three-size proof, approval rule,
 
 ## Shared rules
 
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, ask owned only, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
+Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
