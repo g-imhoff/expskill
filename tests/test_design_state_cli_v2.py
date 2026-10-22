@@ -56,13 +56,17 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         return subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain=v1", "--untracked-files=all"], text=True)
 
     def _run(self, command: str, payload: object | None, env: dict[str, str], *flags: str, raw: str | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        result = subprocess.run(
             [sys.executable, str(CLI), command, *flags],
             input=raw if raw is not None else (None if payload is None else json.dumps(payload)),
             text=True,
             capture_output=True,
             env=env,
         )
+        decoy = env.get("XDG_STATE_HOME")
+        if decoy:
+            self.assertFalse(Path(decoy).exists(), f"XDG decoy must stay untouched: {decoy}")
+        return result
 
     def _payload(self, repo: Path, head: str) -> dict:
         return {
@@ -117,7 +121,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             fixture_repo, _ = _repo(Path(temporary) / "fixture")
             env = os.environ.copy()
             env["HOME"] = str(Path(temporary) / "home")
-            env.pop("XDG_STATE_HOME", None)
+            env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             before_state = self._state_snapshot(Path(env["HOME"]) / ".expskill")
             before_repo = self._repo_snapshot(fixture_repo)
             result = self._run("--help", None, env)
@@ -145,7 +149,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             env = os.environ.copy()
             home = root / "home"
             env["HOME"] = str(home)
-            env.pop("XDG_STATE_HOME", None)
+            env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             state_root = home / ".expskill"
             payload = self._payload(repo, head)
             result = self._run("initialize", payload, env)
@@ -169,7 +173,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             repo, head = _repo(root)
             env = os.environ.copy()
             env["HOME"] = str(root / "home")
-            env.pop("XDG_STATE_HOME", None)
+            env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             receipt = self._initialize(env, repo, head)
             workflow = receipt["workflow_id"]
             discovered = self._run("discover", {"repository": str(repo), "branch": "feature/design"}, env)
@@ -193,7 +197,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, head = _repo(root)
-            env = os.environ.copy(); env["HOME"] = str(root / "home"); env.pop("XDG_STATE_HOME", None)
+            env = os.environ.copy(); env["HOME"] = str(root / "home"); env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             receipt = self._initialize(env, repo, head)
             rejected = self._run("discard", {"workflow_id": receipt["workflow_id"], "expected_revision": receipt["revision"], "confirmed": False}, env)
             self.assertNotEqual(rejected.returncode, 0)
@@ -206,7 +210,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, head = _repo(root)
-            env = os.environ.copy(); env["HOME"] = str(root / "home"); env.pop("XDG_STATE_HOME", None)
+            env = os.environ.copy(); env["HOME"] = str(root / "home"); env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             receipt = self._initialize(env, repo, head)
             workflow = receipt["workflow_id"]
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": receipt["revision"], "updates": {"scope": {"components": ["CheckoutForm"]}}}, env)
@@ -219,7 +223,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             self._receipt(recovered, "recover")
 
             delivery_repo, delivery_head = _repo(root / "delivery-repo")
-            delivery_env = os.environ.copy(); delivery_env["HOME"] = str(root / "delivery-home"); delivery_env.pop("XDG_STATE_HOME", None)
+            delivery_env = os.environ.copy(); delivery_env["HOME"] = str(root / "delivery-home"); delivery_env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             delivery_receipt = self._initialize(delivery_env, delivery_repo, delivery_head)
             workflow = delivery_receipt["workflow_id"]
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": delivery_receipt["revision"], "updates": self._records()}, delivery_env)

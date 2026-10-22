@@ -17,6 +17,10 @@ Use when saving a report, bundle, receipt, charter, ledger, or any retained proo
 
 Do not store retained proof in the target checkout except for approved owned paths. Do not share one mutable report file across runs or repos. Do not claim coverage of a new head from old evidence. Do not publish secrets, credentials, or private context in mirrored reports.
 
+## Migration
+
+Prior XDG live state (`$XDG_STATE_HOME/expskill`, `~/.local/state/expskill`), repo `.test-evidence/`, and review `tmp/reports` are retired and not read. They are orphaned on upgrade with no auto-migration. Remove them by hand after confirming the new `~/.expskill` runs are green. In-flight runs started before the move must restart.
+
 ## Evidence
 
 Report the state root used, the run folder path, the repo hash plus head bound, the final report path plus latest link where present, verdicts with math, and limitations with retained risks.

@@ -1632,6 +1632,7 @@ class ResearchRecordTests(unittest.TestCase):
         self.env = dict(self.env, HOME=str(home), XDG_STATE_HOME=str(repository / "state"))
         run = Path(self.cli("init", stdin={"question": "Q?"})["run_dir"])
         self.assertEqual(run.parent, (home / ".expskill" / "skills" / "deep-research" / "runs").resolve())
+        self.assertFalse((repository / "state").exists(), "XDG decoy must stay untouched")
 
     def test_complete_phase_duplicates_defaults_to_recorded_duplicates(self) -> None:
         run = self.init(branches=1)

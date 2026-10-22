@@ -7,7 +7,7 @@ description: Score a change with adversarial category reviewers and report each 
 
 ## Pin the scope
 
-Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. If scope drifts, keep the original pin and disclose both identities. Disclose any mix of revisions.
+Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. On drift, stop, assess relevance and conflict, notify the user with old and new identities, and wait for direction. Never silently rebind. Disclose any mix of revisions.
 
 ## Derive categories from the diff
 

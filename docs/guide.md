@@ -343,7 +343,7 @@ Correct checks its own repairs. When a repair needs a consequential choice,
 it explains a sound limited fix and its limitations, or offers Brainstorm.
 
 Review runs through the invoking agent and leaves Implement's internal reviewer
-alone. Reports live under home state in `skills/review/runs` with one run folder
+alone. Reports live under `~/.expskill/skills/review/runs/<repo-hash>/<run-id>/` with one run folder
 per run, outside every repository. Filenames include the date and time through seconds.
 The user deletes reports manually. Review does not apply corrections or start
 another skill.
