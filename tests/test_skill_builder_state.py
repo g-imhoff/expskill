@@ -63,7 +63,18 @@ SCORE_CRITERIA = {
     "testability": tuple(f"TE{index}" for index in range(1, 11)),
 }
 
-CANDIDATE_SKILL_BYTES = b"---\nname: sample-skill\n---\n# Sample skill\n"
+SAMPLE_DESCRIPTION = "Build the exact sample skill."
+CANDIDATE_SKILL_BYTES = (
+    b"---\nname: sample-skill\ndescription: Build the exact sample skill.\n---\n"
+    b"# Sample skill\n"
+)
+CURRENT_CANDIDATE_SCHEMA = "skill-builder-candidate.v5"
+AGENT_LOAD_POLICY = {"policy": "agent", "loader_skills": [], "loader_packages": []}
+CODEX_SHORT_DESCRIPTION = "Build the exact sample skill"
+CODEX_DEFAULT_PROMPT = "Use $sample-skill to build the exact sample skill."
+EXTERNAL_CODEX_ADAPTER_PATH = "../codex/sample-skill/agents/openai.yaml"
+HERMES_LIMITATION = "hermes has no hide flag, so only the load sentence restricts loading"
+USER_LOAD_POLICY = {"policy": "user", "loader_skills": [], "loader_packages": []}
 CANDIDATE_DIFF_BYTES = b"candidate diff\n"
 EVALUATION_RUBRIC_BYTES = b"frozen evaluation rubric\n"
 MULTIFILE_SKILL_FILES = {
@@ -182,8 +193,27 @@ def fixture_loadable_skill_digest(files: dict[str, bytes]) -> str:
     return fixture_digest(fixture_canonical_bytes(record))
 
 
-def evaluation_case(case_id: str, partition: str) -> dict[str, object]:
-    return {
+CASE_PARTITIONS = {
+    "case-1": "visible_development",
+    "case-2": "frozen_validation",
+    "case-3": "hidden_release",
+}
+CURRENT_TRIAL_SCHEMA = "skill-builder-trial-pack.v3"
+SCORED_SELECTION = {"case-2": "candidate", "case-3": "none"}
+NEIGHBOUR_SKILL_FILES = {
+    "SKILL.md": b"---\nname: neighbour-skill\n---\n# Neighbour skill\n"
+}
+
+
+def evaluation_case(
+    case_id: str,
+    partition: str,
+    *,
+    exposure: str | None = "loaded",
+    expected_selection: str = "candidate",
+    host: str = "claude-code",
+) -> dict[str, object]:
+    case: dict[str, object] = {
         "case_id": case_id,
         "partition": partition,
         "purpose": f"exercise {partition}",
@@ -199,59 +229,246 @@ def evaluation_case(case_id: str, partition: str) -> dict[str, object]:
         "evidence_requirements": ["raw output"],
         "pass_fail_rule": "all assertions pass",
     }
+    if exposure is None:
+        return case
+    case["exposure"] = exposure
+    if exposure == "selection":
+        del case["setup_manifest_digest"]
+        installs: list[dict[str, object]] = [
+            {"role": "candidate", "path": "sample-skill", "digest": None}
+        ]
+        if expected_selection == "other":
+            installs.append(
+                {
+                    "role": "neighbour",
+                    "path": "neighbour-skill",
+                    "digest": fixture_loadable_skill_digest(NEIGHBOUR_SKILL_FILES),
+                }
+            )
+        case.update(
+            {
+                "host": host,
+                "expected_selection": expected_selection,
+                "repeats": 3,
+                "setup_manifest": {
+                    "skill_root": ".claude/skills",
+                    "installs": installs,
+                },
+            }
+        )
+    return case
+
+
+def frozen_cases(
+    selection: dict[str, str] | None = None,
+    *,
+    legacy: bool = False,
+    selection_hosts: dict[str, str] | None = None,
+) -> list[dict[str, object]]:
+    """Return case-1..3 with the named cases frozen as selection cases."""
+    plan = selection or {}
+    hosts = selection_hosts or {}
+    return [
+        evaluation_case(
+            case_id,
+            partition,
+            exposure=(
+                None if legacy else "selection" if case_id in plan else "loaded"
+            ),
+            expected_selection=plan.get(case_id, "candidate"),
+            host=hosts.get(case_id, "claude-code"),
+        )
+        for case_id, partition in CASE_PARTITIONS.items()
+    ]
+
+
+def trial_run_label(trial_case: dict[str, object], schema_version: object) -> str:
+    case_id = str(trial_case["case_id"])
+    if schema_version != CURRENT_TRIAL_SCHEMA:
+        return case_id
+    return f"{case_id}/run-{trial_case['repeat_index']}"
+
+
+def selection_setup_bytes(
+    frozen_case: dict[str, object], candidate_digest: str
+) -> bytes:
+    setup = frozen_case["setup_manifest"]
+    assert isinstance(setup, dict)
+    return fixture_canonical_bytes(
+        {
+            "skill_root": setup["skill_root"],
+            "installs": [
+                {**install, "digest": candidate_digest}
+                if install["role"] == "candidate"
+                else install
+                for install in setup["installs"]
+            ],
+        }
+    )
+
+
+SELECTION_END_MARKERS = {"codex": "turn.completed", "opencode": "step_finish"}
+
+
+def selection_load_event(host: str) -> dict[str, object]:
+    """One load event in the host's shape, matching the helper's detector."""
+    if host == "opencode":
+        return {"type": "tool_use", "part": {"tool": "skill"}}
+    if host == "codex":
+        return {
+            "type": "response",
+            "item": {
+                "type": "command_execution",
+                "command": "read work/.agents/skills/sample-skill/SKILL.md",
+            },
+        }
+    if host == "hermes":
+        return {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "skill_view"}]},
+        }
+    return {
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "name": "Skill"}]},
+    }
+
+
+def selection_trace_bytes(
+    label: str,
+    *events: dict[str, object],
+    ended: bool = True,
+    host: str = "claude-code",
+) -> bytes:
+    lines: list[dict[str, object]] = [
+        {"type": "system", "subtype": "init", "session_id": label},
+        *events,
+    ]
+    if ended:
+        lines.append(
+            {"type": SELECTION_END_MARKERS.get(host, "result"), "session_id": label}
+        )
+    return b"".join(fixture_canonical_bytes(line) for line in lines)
+
+
+def trial_run_evidence_bytes(
+    frozen_case: dict[str, object],
+    label: str,
+    kind: str,
+    candidate_digest: str,
+    observed_kind: str | None = None,
+) -> bytes:
+    case_id = str(frozen_case["case_id"])
+    if frozen_case.get("exposure") == "selection":
+        if kind == "before-manifest":
+            return selection_setup_bytes(frozen_case, candidate_digest)
+        if kind == "tool-events":
+            expected = (
+                observed_kind
+                if observed_kind is not None
+                else str(frozen_case.get("expected_selection"))
+            )
+            if expected in {"candidate", "other"}:
+                return selection_trace_bytes(
+                    label,
+                    selection_load_event(str(frozen_case["host"])),
+                    host=str(frozen_case["host"]),
+                )
+            return selection_trace_bytes(label, host=str(frozen_case["host"]))
+    if kind in {"request", "before-manifest"}:
+        return trial_evidence_bytes(case_id, kind)
+    return trial_evidence_bytes(label, kind)
 
 
 def trial_files(
     payload: dict[str, object],
     *,
+    cases: list[dict[str, object]] | None = None,
     evidence_overrides: dict[tuple[str, str], bytes] | None = None,
     loaded_skill_bytes: bytes | None = None,
     loaded_skill_files: dict[str, bytes] | None = None,
+    other_skill_files: dict[str, bytes] = NEIGHBOUR_SKILL_FILES,
 ) -> dict[str, bytes]:
     files = {"record.json": fixture_canonical_bytes(payload)}
-    cases = payload.get("cases")
-    assert isinstance(cases, list)
-    current_schema = payload.get("schema_version") == "skill-builder-trial-pack.v2"
+    runs = payload.get("cases")
+    assert isinstance(runs, list)
+    schema_version = payload.get("schema_version")
+    legacy_schema = schema_version == "skill-builder-trial-pack.v1"
+    frozen_by_id = {
+        case["case_id"]: case
+        for case in (
+            frozen_cases(legacy=schema_version != CURRENT_TRIAL_SCHEMA)
+            if cases is None
+            else cases
+        )
+    }
     overrides = evidence_overrides or {}
-    for trial_case in cases:
+    skill = CANDIDATE_SKILL_BYTES if loaded_skill_bytes is None else loaded_skill_bytes
+    candidate_digest = fixture_loadable_skill_digest(
+        {"SKILL.md": skill} if loaded_skill_files is None else loaded_skill_files
+    )
+    for trial_case in runs:
         assert isinstance(trial_case, dict)
         case_id = trial_case["case_id"]
         assert isinstance(case_id, str)
-        partition = {
-            "case-1": "visible_development",
-            "case-2": "frozen_validation",
-            "case-3": "hidden_release",
-        }[case_id]
-        case_bytes = overrides.get(
-            (case_id, "case"),
-            fixture_canonical_bytes(evaluation_case(case_id, partition)),
+        label = trial_run_label(trial_case, schema_version)
+
+        def evidence(kind: str, default: bytes) -> bytes:
+            return overrides.get((label, kind), overrides.get((case_id, kind), default))
+
+        files[f"evidence/{case_id}/case.json"] = evidence(
+            "case", fixture_canonical_bytes(frozen_by_id[case_id])
         )
-        files[f"evidence/{case_id}/case.json"] = case_bytes
         for kind in TRIAL_DIGEST_FIELDS.values():
-            evidence = overrides.get(
-                (case_id, kind),
-                loaded_skill_bytes
-                if kind == "loaded-skill" and loaded_skill_bytes is not None
-                else trial_evidence_bytes(case_id, kind),
+            if kind != "loaded-skill":
+                observed_load = trial_case.get("observed_load")
+                observed_kind = (
+                    observed_load.get("kind")
+                    if isinstance(observed_load, dict)
+                    else None
+                )
+                files[f"evidence/{label}/{kind}.bin"] = evidence(
+                    kind,
+                    trial_run_evidence_bytes(
+                        frozen_by_id[case_id],
+                        label,
+                        kind,
+                        candidate_digest,
+                        observed_kind=observed_kind
+                        if isinstance(observed_kind, str)
+                        else None,
+                    ),
+                )
+                continue
+            observed = trial_case.get("observed_load")
+            kind_loaded = (
+                observed.get("kind") if isinstance(observed, dict) else "candidate"
             )
-            if current_schema and kind == "loaded-skill":
-                package = (
-                    {"SKILL.md": evidence}
-                    if loaded_skill_files is None
-                    else loaded_skill_files
-                )
-                files.update(
-                    {
-                        f"evidence/{case_id}/loaded-skill/{relative}": content
-                        for relative, content in package.items()
-                    }
-                )
-            else:
-                files[f"evidence/{case_id}/{kind}.bin"] = evidence
+            if kind_loaded == "none":
+                continue
+            skill = evidence(
+                kind,
+                CANDIDATE_SKILL_BYTES if loaded_skill_bytes is None else loaded_skill_bytes,
+            )
+            if legacy_schema:
+                files[f"evidence/{label}/loaded-skill.bin"] = skill
+                continue
+            package = (
+                other_skill_files
+                if kind_loaded == "other"
+                else {"SKILL.md": skill}
+                if loaded_skill_files is None
+                else loaded_skill_files
+            )
+            files.update(
+                {
+                    f"evidence/{label}/loaded-skill/{relative}": content
+                    for relative, content in package.items()
+                }
+            )
     aggregate = overrides.get(
         ("aggregate", "manifest"),
         fixture_canonical_bytes(
-            {"case_ids": [case["case_id"] for case in cases]}
+            {"case_ids": [case["case_id"] for case in runs]}
         ),
     )
     files["evidence/aggregate-manifest.json"] = aggregate
@@ -672,13 +889,17 @@ def retain_json(
     input_bindings: list[dict[str, str]] | None = None,
     trial_loaded_skill_bytes: bytes | None = None,
     trial_loaded_skill_files: dict[str, bytes] | None = None,
+    frozen_trial_cases: list[dict[str, object]] | None = None,
     retain_review_source_components: bool = False,
     candidate_resulting_bytes: bytes | None = None,
     omitted_review_source_component: str | None = None,
+    extra_files: dict[str, bytes] | None = None,
+    limitations: list[str] | None = None,
 ) -> dict[str, object]:
     if artifact_type == "trial-pack":
         files = trial_files(
             payload,
+            cases=frozen_trial_cases,
             loaded_skill_bytes=trial_loaded_skill_bytes,
             loaded_skill_files=trial_loaded_skill_files,
         )
@@ -705,10 +926,10 @@ def retain_json(
                     ),
                 }
             )
-        if (
-            artifact_type == "candidate-record"
-            and payload.get("schema_version") == "skill-builder-candidate.v4"
-        ):
+        if artifact_type == "candidate-record" and payload.get("schema_version") in {
+            "skill-builder-candidate.v4",
+            CURRENT_CANDIDATE_SCHEMA,
+        }:
             candidate_root = Path(str(payload["isolated_locator"]))
             files.update(
                 {
@@ -769,6 +990,7 @@ def retain_json(
             },
         }
         files.update(supporting_evidence.get(artifact_type, {}))
+    files.update(extra_files or {})
     return helper.retain_artifact(
         workflow_id=workflow_id,
         expected_sequence=sequence,
@@ -778,7 +1000,7 @@ def retain_json(
         primary_path="record.json",
         producer="main-agent",
         input_bindings=input_bindings or [],
-        limitations=[],
+        limitations=limitations or [],
         state_root=state_root,
     )
 
@@ -796,6 +1018,24 @@ def valid_create_baseline_payload(
             "absence_evidence_digest": snapshot["absence_evidence_digest"],
             "overlap_map_digest": snapshot["overlap_map_digest"],
         },
+        "host_conventions": [],
+        "preserved_regressions": [],
+        "raw_evidence_digests": [],
+        "limitations": [],
+    }
+
+
+def valid_baseline_payload(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> dict[str, object]:
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    if current["mode"]["name"] == "create":
+        return valid_create_baseline_payload(helper, state_root, workflow_id)
+    return {
+        "schema_version": "skill-builder-baseline.v1",
+        "mode": current["mode"]["name"],
+        "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
+        "absent_target_proof": None,
         "host_conventions": [],
         "preserved_regressions": [],
         "raw_evidence_digests": [],
@@ -882,6 +1122,9 @@ def rewrite_current_resolution_version(
     resolution_schema: str,
     candidate_schema: str,
     scorecard_schema: str | None,
+    trial_pack_schema: str | None = None,
+    review_record_schema: str | None = None,
+    evaluation_pack_schema: str | None = None,
 ) -> None:
     """Rewrite only genesis bytes to a previously emitted resolution format."""
     run = state_root / "live" / workflow_id
@@ -891,10 +1134,15 @@ def rewrite_current_resolution_version(
     assert payload["schema_version"] in {
         "skill-builder-resolution.v3",
         "skill-builder-resolution.v4",
+        "skill-builder-resolution.v5",
+        "skill-builder-resolution.v6",
     }
     for marker in (
         "candidate_record_schema",
+        "contract_schema",
+        "implementer_brief_schema",
         "scorecard_schema",
+        "evaluation_pack_schema",
         "trial_pack_schema",
         "review_record_schema",
     ):
@@ -904,6 +1152,12 @@ def rewrite_current_resolution_version(
         payload["candidate_record_schema"] = candidate_schema
     if scorecard_schema is not None:
         payload["scorecard_schema"] = scorecard_schema
+    if trial_pack_schema is not None:
+        payload["trial_pack_schema"] = trial_pack_schema
+    if review_record_schema is not None:
+        payload["review_record_schema"] = review_record_schema
+    if evaluation_pack_schema is not None:
+        payload["evaluation_pack_schema"] = evaluation_pack_schema
     payload_bytes = helper.canonical_json_bytes(payload)
     payload_path.write_bytes(payload_bytes)
 
@@ -973,6 +1227,37 @@ def mark_run_as_historical_candidate_v3(
         resolution_schema="skill-builder-resolution.v3",
         candidate_schema="skill-builder-candidate.v3",
         scorecard_schema="skill-builder-scorecard.v2",
+    )
+
+
+def mark_run_as_loaded_trial_v4(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> None:
+    rewrite_current_resolution_version(
+        helper,
+        state_root,
+        workflow_id,
+        resolution_schema="skill-builder-resolution.v4",
+        candidate_schema="skill-builder-candidate.v4",
+        scorecard_schema="skill-builder-scorecard.v2",
+        trial_pack_schema="skill-builder-trial-pack.v2",
+        review_record_schema="skill-builder-review.v2",
+    )
+
+
+def mark_run_as_selection_v5(
+    helper: ModuleType, state_root: Path, workflow_id: str
+) -> None:
+    rewrite_current_resolution_version(
+        helper,
+        state_root,
+        workflow_id,
+        resolution_schema="skill-builder-resolution.v5",
+        candidate_schema="skill-builder-candidate.v4",
+        scorecard_schema="skill-builder-scorecard.v2",
+        trial_pack_schema=CURRENT_TRIAL_SCHEMA,
+        review_record_schema="skill-builder-review.v2",
+        evaluation_pack_schema="skill-builder-evaluation-pack.v2",
     )
 
 
@@ -1112,7 +1397,7 @@ def stage_payload(
     current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
     snapshot_digest = current["target_snapshot"]["snapshot_digest"]
     if artifact_type == "baseline-report":
-        return valid_create_baseline_payload(helper, state_root, workflow_id)
+        return valid_baseline_payload(helper, state_root, workflow_id)
     if artifact_type == "research-pack":
         _, baseline_digest = accepted_artifact(
             helper, state_root, workflow_id, "baseline-report"
@@ -1187,10 +1472,46 @@ def current_bindings(
     ]
 
 
+def run_contract_schema(state_root: Path, workflow_id: str) -> str:
+    resolution = json.loads(
+        (
+            state_root
+            / "live"
+            / workflow_id
+            / "artifacts"
+            / "resolution"
+            / "raw"
+            / "payload.json"
+        ).read_text(encoding="utf-8")
+    )
+    return resolution.get("contract_schema", "skill-builder-contract.v1")
+
+
 def contract_payload(
-    helper: ModuleType, state_root: Path, workflow_id: str
+    helper: ModuleType,
+    state_root: Path,
+    workflow_id: str,
+    *,
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
 ) -> dict[str, object]:
     _, design_digest = accepted_artifact(helper, state_root, workflow_id, "design-record")
+    payload = contract_v1_payload(design_digest)
+    if run_contract_schema(state_root, workflow_id) == "skill-builder-contract.v2":
+        payload.update(
+            {
+                "schema_version": "skill-builder-contract.v2",
+                "load_policy": load_policy or AGENT_LOAD_POLICY,
+                "hosts": hosts or ["claude-code"],
+                "aliases": ["sample builder"],
+                "ambiguity": ["ask which sample before building"],
+                "collaboration": ["the user confirms the sample"],
+            }
+        )
+    return payload
+
+
+def contract_v1_payload(design_digest: str) -> dict[str, object]:
     return {
         "schema_version": "skill-builder-contract.v1",
         "design_digest": design_digest,
@@ -1243,16 +1564,123 @@ def confirmation_payload(
     }
 
 
+def test_agent_written_confirmations_are_rejected() -> None:
+    """Only a host user event confirms; agent roles, assumed identities, and future timestamps fail."""
+    helper = load_helper()
+    valid = confirmation_payload(
+        contract_id="contract",
+        contract_digest="1" * 64,
+        target="sample",
+        snapshot_digest="2" * 64,
+        authority_digest="3" * 64,
+    )
+    helper._validate_artifact_payload("user-confirmation-record", valid)
+
+    mutations = {
+        "main-agent identity": {"user_identity": "main-agent"},
+        "reviewer identity": {"user_identity": "independent-reviewer-1"},
+        "verifier identity": {"user_identity": "independent-verifier-2"},
+        "implementer identity": {"user_identity": "implementer"},
+        "assumed identity": {"user_identity": "repo-user-assumed-non-interactive"},
+        "future timestamp": {"confirmed_at": "2099-01-01T00:00:00Z"},
+    }
+    for label, fields in mutations.items():
+        payload = dict(valid)
+        payload.update(fields)
+        with pytest.raises(helper.RunStateError):
+            helper._validate_artifact_payload("user-confirmation-record", payload)
+            raise AssertionError(f"confirmation accepted {label}")
+
+
+def test_self_reviews_and_instant_verifications_are_rejected() -> None:
+    """The main agent never reviews or verifies its own candidate, timestamps stay present, and verification runs commands."""
+    helper = load_helper()
+    review = review_payload(candidate_digest="1" * 64)
+    helper._validate_artifact_payload("review-record", review)
+    for label, fields in {
+        "main-agent reviewer": {"reviewer_identity": "main-agent"},
+        "assumed reviewer": {"reviewer_identity": "assumed-user"},
+        "future review": {"reviewed_at": "2099-01-01T00:00:00Z"},
+    }.items():
+        payload = dict(review)
+        payload.update(fields)
+        with pytest.raises(helper.RunStateError):
+            helper._validate_artifact_payload("review-record", payload)
+            raise AssertionError(f"review accepted {label}")
+
+    verification = verification_payload(candidate_digest="1" * 64)
+    helper._validate_artifact_payload("verification-record", verification)
+    instant = dict(verification)
+    instant["ended_at"] = instant["started_at"]
+    with pytest.raises(helper.RunStateError):
+        helper._validate_artifact_payload("verification-record", instant)
+        raise AssertionError("verification accepted an instant window")
+    forged = dict(verification)
+    forged["verifier_identity"] = "main-agent"
+    with pytest.raises(helper.RunStateError):
+        helper._validate_artifact_payload("verification-record", forged)
+        raise AssertionError("verification accepted the main agent")
+
+
+def test_research_lanes_record_the_model_they_ran() -> None:
+    """Lanes run on the strongest model the host offers and record exactly that."""
+    helper = load_helper()
+    pack = {
+        "schema_version": "skill-builder-research-pack.v1",
+        "target_snapshot_digest": "1" * 64,
+        "baseline_digest": "2" * 64,
+        "lanes": [
+            {
+                "lane_id": f"lane-{index}",
+                "question": f"bounded question {index}",
+                "model": "muse-spark",
+                "reasoning": "default",
+                "source_scope": ["authoritative sources"],
+                "evidence_budget": 1,
+                "start_state": "fresh",
+                "end_state": "complete",
+                "limitations": [],
+                "evidence_cards": [],
+            }
+            for index in range(1, 4)
+        ],
+        "limitations": [],
+    }
+    helper._validate_artifact_payload("research-pack", pack)
+
+
+def test_file_digest_candidates_are_rejected_at_acceptance(tmp_path: Path) -> None:
+    """A resulting digest naming one retained file fails at acceptance, not delivery."""
+    helper = load_helper()
+    run = tmp_path / "run"
+    raw = run / "artifacts" / "candidate" / "raw"
+    raw.mkdir(parents=True)
+    skill_file = raw / "SKILL.md"
+    skill_file.write_bytes(b"# sample\n")
+    file_digest = hashlib.sha256(b"# sample\n").hexdigest()
+    with pytest.raises(helper.RunStateError, match="not the owned result"):
+        helper._reject_file_digest_result(run, "candidate", file_digest)
+    helper._reject_file_digest_result(run, "candidate", "0" * 64)
+
+
 def evaluation_payload(
-    *, contract_digest: str, confirmation_digest: str, snapshot_digest: str
+    *,
+    contract_digest: str,
+    confirmation_digest: str,
+    snapshot_digest: str,
+    cases: list[dict[str, object]] | None = None,
+    schema_version: str = "skill-builder-evaluation-pack.v2",
 ) -> dict[str, object]:
-    partitions: dict[str, list[dict[str, object]]] = {}
-    for index, partition in enumerate(
-        ("visible_development", "frozen_validation", "hidden_release"), start=1
-    ):
-        partitions[partition] = [evaluation_case(f"case-{index}", partition)]
+    if cases is None:
+        cases = frozen_cases(
+            legacy=schema_version == "skill-builder-evaluation-pack.v1"
+        )
+    partitions = {
+        partition: [case for case in cases if case["partition"] == partition]
+        for partition in CASE_PARTITIONS.values()
+    }
     return {
-        "schema_version": "skill-builder-evaluation-pack.v1",
+        "schema_version": schema_version,
         "frozen": True,
         "contract_digest": contract_digest,
         "confirmation_digest": confirmation_digest,
@@ -1261,6 +1689,61 @@ def evaluation_payload(
         "scoring_parameters": {"maximum": 10},
         "freeze_timestamp": "2026-09-05T12:01:00Z",
         "partitions": partitions,
+    }
+
+
+def default_owned_paths(additional_skill_files: dict[str, bytes] | None) -> list[str]:
+    return ["."] if additional_skill_files else ["SKILL.md"]
+
+
+def visible_loaded_brief_cases(
+    cases: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "case_id": case["case_id"],
+            "request": trial_evidence_bytes(str(case["case_id"]), "request").decode(
+                "utf-8"
+            ),
+            "expected": "returns pass",
+        }
+        for case in cases
+        if case["partition"] == "visible_development"
+        and case.get("exposure", "loaded") == "loaded"
+    ]
+
+
+def brief_payload(
+    *,
+    contract_digest: str,
+    confirmation_digest: str,
+    evaluation_digest: str,
+    cases: list[dict[str, object]],
+    owned_paths: list[str],
+    description: str = SAMPLE_DESCRIPTION,
+    load_sentence: str | None = None,
+    host_flags: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "skill-builder-implementer-brief.v1",
+        "contract_digest": contract_digest,
+        "confirmation_digest": confirmation_digest,
+        "evaluation_digest": evaluation_digest,
+        "description": description,
+        "load_sentence": load_sentence,
+        "host_flags": {"claude-code": {}} if host_flags is None else host_flags,
+        "body_rules": ["Validate the request, build the sample, then verify it."],
+        "irreversible_prohibitions": [
+            {
+                "forbidden_action": "remote delivery",
+                "action": "push the sample to a remote",
+                "reason": "a pushed sample cannot be recalled",
+                "alternative": "leave the sample in the isolated candidate",
+            }
+        ],
+        "owned_paths": owned_paths,
+        "resources": ["artifact contract"],
+        "visible_cases": visible_loaded_brief_cases(cases),
     }
 
 
@@ -1273,7 +1756,8 @@ def candidate_payload(
     confirmation_digest: str,
     evaluation_digest: str,
     snapshot_digest: str,
-    schema_version: str = "skill-builder-candidate.v4",
+    schema_version: str = CURRENT_CANDIDATE_SCHEMA,
+    brief_digest: str | None = None,
     resulting_bytes: bytes | None = None,
     loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     claimed_loaded_skill_bytes: bytes | None = None,
@@ -1301,9 +1785,9 @@ def candidate_payload(
             else resulting_bytes
         ),
         "writable_role": "implementer",
-        "owned_paths": (
-            ["."] if additional_skill_files else ["SKILL.md"]
-        ) if owned_paths is None else owned_paths,
+        "owned_paths": default_owned_paths(additional_skill_files)
+        if owned_paths is None
+        else owned_paths,
         "diff_digest": fixture_digest(CANDIDATE_DIFF_BYTES),
         "local_check_evidence": ["3" * 64],
         "contract_digest": contract_digest,
@@ -1311,7 +1795,11 @@ def candidate_payload(
         "evaluation_digest": evaluation_digest,
         "target_snapshot_digest": snapshot_digest,
     }
-    if schema_version == "skill-builder-candidate.v4":
+    if schema_version == CURRENT_CANDIDATE_SCHEMA:
+        assert brief_digest is not None
+        payload["brief_digest"] = brief_digest
+        payload["checker_version"] = "skill-builder-candidate-checks.v1"
+    if schema_version in {"skill-builder-candidate.v4", CURRENT_CANDIDATE_SCHEMA}:
         claimed_package = dict(package)
         if claimed_loaded_skill_bytes is not None:
             claimed_package["SKILL.md"] = claimed_loaded_skill_bytes
@@ -1327,13 +1815,33 @@ def candidate_payload(
     return payload
 
 
+def selection_observed_load(
+    expected_selection: str, candidate_package: dict[str, bytes]
+) -> dict[str, object]:
+    if expected_selection == "candidate":
+        return {
+            "kind": "candidate",
+            "name": "sample-skill",
+            "digest": fixture_loadable_skill_digest(candidate_package),
+        }
+    if expected_selection == "other":
+        return {
+            "kind": "other",
+            "name": "neighbour-skill",
+            "digest": fixture_loadable_skill_digest(NEIGHBOUR_SKILL_FILES),
+        }
+    return {"kind": "none", "name": None, "digest": None}
+
+
 def trial_payload(
     candidate_digest: str,
     revision: str = "candidate-1",
     *,
     loaded_skill_bytes: bytes | None = None,
     loaded_skill_files: dict[str, bytes] | None = None,
-    schema_version: str = "skill-builder-trial-pack.v2",
+    schema_version: str = CURRENT_TRIAL_SCHEMA,
+    cases: list[dict[str, object]] | None = None,
+    run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     loaded_skill = CANDIDATE_SKILL_BYTES if loaded_skill_bytes is None else loaded_skill_bytes
     package = (
@@ -1341,61 +1849,88 @@ def trial_payload(
         if loaded_skill_files is None
         else loaded_skill_files
     )
-    cases: list[dict[str, object]] = []
-    partitions = (
-        "visible_development",
-        "frozen_validation",
-        "hidden_release",
-    )
-    for index, partition in enumerate(partitions, start=1):
-        case_id = f"case-{index}"
-        frozen_case = evaluation_case(case_id, partition)
-        cases.append(
-            {
+    versioned_runs = schema_version == CURRENT_TRIAL_SCHEMA
+    if cases is None:
+        cases = frozen_cases(legacy=not versioned_runs)
+    overrides = run_overrides or {}
+    runs: list[dict[str, object]] = []
+    for index, frozen_case in enumerate(cases, start=1):
+        case_id = str(frozen_case["case_id"])
+        selection = frozen_case.get("exposure") == "selection"
+        for repeat_index in range(int(frozen_case.get("repeats", 1))):
+            run: dict[str, object] = {
                 "case_id": case_id,
                 "case_digest": fixture_digest(fixture_canonical_bytes(frozen_case)),
                 "request_digest": frozen_case["raw_request_digest"],
-                "raw_prompt_digest": fixture_digest(
-                    trial_evidence_bytes(case_id, "prompt")
-                ),
-                "loaded_skill_digest": (
-                    fixture_loadable_skill_digest(package)
-                    if schema_version == "skill-builder-trial-pack.v2"
-                    else fixture_digest(loaded_skill)
-                ),
-                "fresh_context_identity": f"fresh-context-{index}",
-                "tool_event_digest": fixture_digest(
-                    trial_evidence_bytes(case_id, "tool-events")
-                ),
-                "output_digest": fixture_digest(
-                    trial_evidence_bytes(case_id, "output")
-                ),
-                "before_target_manifest_digest": frozen_case[
-                    "setup_manifest_digest"
-                ],
-                "after_target_manifest_digest": fixture_digest(
-                    trial_evidence_bytes(case_id, "after-manifest")
-                ),
-                "filesystem_result_digest": fixture_digest(
-                    trial_evidence_bytes(case_id, "filesystem-result")
-                ),
+                "fresh_context_identity": f"fresh-context-{index}"
+                + (f"-{repeat_index}" if repeat_index else ""),
                 "verdict": "pass",
                 "limitations": [],
             }
-        )
+            if versioned_runs:
+                run.update(
+                    {"repeat_index": repeat_index, "exposure": frozen_case["exposure"]}
+                )
+            label = trial_run_label(run, schema_version)
+            override = overrides.get((case_id, repeat_index), {})
+            override_observed = override.get("observed_load")
+            override_kind = (
+                override_observed.get("kind")
+                if isinstance(override_observed, dict)
+                else None
+            )
+            for field, kind in TRIAL_DIGEST_FIELDS.items():
+                if kind in {"request", "loaded-skill"}:
+                    continue
+                run[field] = fixture_digest(
+                    trial_run_evidence_bytes(
+                        frozen_case,
+                        label,
+                        kind,
+                        fixture_loadable_skill_digest(package),
+                        observed_kind=override_kind
+                        if isinstance(override_kind, str)
+                        else None,
+                    )
+                )
+            if selection:
+                run.update(
+                    {
+                        "installed_skill_digest": fixture_loadable_skill_digest(
+                            package
+                        ),
+                        "observed_load": selection_observed_load(
+                            str(frozen_case["expected_selection"]), package
+                        ),
+                        "complete_trace": True,
+                    }
+                )
+            else:
+                run["loaded_skill_digest"] = (
+                    fixture_digest(loaded_skill)
+                    if schema_version == "skill-builder-trial-pack.v1"
+                    else fixture_loadable_skill_digest(package)
+                )
+            run.update(overrides.get((case_id, repeat_index), {}))
+            runs.append(run)
     aggregate = fixture_canonical_bytes(
-        {"case_ids": [case["case_id"] for case in cases]}
+        {"case_ids": [run["case_id"] for run in runs]}
     )
     return {
         "schema_version": schema_version,
         "candidate_digest": candidate_digest,
         "candidate_revision": revision,
-        "cases": cases,
-        "coverage": [case["case_id"] for case in cases],
+        "cases": runs,
+        "coverage": [
+            {"case_id": run["case_id"], "repeat_index": run["repeat_index"]}
+            if versioned_runs
+            else run["case_id"]
+            for run in runs
+        ],
         "isolation_evidence": ["fresh context"],
         "leakage_checks": ["no hidden leakage"],
         "aggregate_manifest_digest": fixture_digest(aggregate),
-        "status": "pass",
+        "status": "pass" if all(run["verdict"] == "pass" for run in runs) else "fail",
         "limitations": [],
     }
 
@@ -1629,7 +2164,7 @@ def scorecard_payload(
             else trial_cases
         )
         assert isinstance(cases, list)
-        case_ids = sorted(case["case_id"] for case in cases)
+        case_ids = sorted({case["case_id"] for case in cases})
         raw_artifact_digests = sorted({case["output_digest"] for case in cases})
         trial_receipt_ids = sorted(
             fixture_digest(fixture_canonical_bytes(case)) for case in cases
@@ -1665,7 +2200,11 @@ def scorecard_payload(
             categories.append(
                 {
                     "name": name,
-                    "score": triggering_score if name == "triggering" else 10,
+                    "score": sum(
+                        1
+                        for passed in criterion_states.values()
+                        if passed is True
+                    ),
                     "criteria": criterion_results,
                     "repair_history": [],
                 }
@@ -1778,13 +2317,104 @@ def advance_with_artifact(
     )
 
 
+def fixture_codex_adapter(
+    restricted: bool,
+    short_description: str = CODEX_SHORT_DESCRIPTION,
+    default_prompt: str = CODEX_DEFAULT_PROMPT,
+) -> bytes:
+    return (
+        "interface:\n"
+        '  display_name: "Sample"\n'
+        f'  short_description: "{short_description}"\n'
+        f'  default_prompt: "{default_prompt}"\n'
+        "policy:\n"
+        f"  allow_implicit_invocation: {'false' if restricted else 'true'}\n"
+    ).encode("utf-8")
+
+
+def fixture_host_flags(
+    load_policy: dict[str, object],
+    hosts: list[str],
+    codex_adapter_path: str = "agents/openai.yaml",
+) -> dict[str, dict[str, object]]:
+    restricted = load_policy["policy"] != "agent"
+    flags: dict[str, dict[str, object]] = {host: {} for host in hosts}
+    if "codex" in flags:
+        flags["codex"] = {
+            "allow_implicit_invocation": not restricted,
+            "adapter_path": codex_adapter_path,
+            "short_description": CODEX_SHORT_DESCRIPTION,
+            "default_prompt": CODEX_DEFAULT_PROMPT,
+        }
+    if "opencode" in flags and restricted:
+        flags["opencode"] = {"opencode/autoinvoke": "false"}
+    return flags
+
+
+def fixture_load_sentence(load_policy: dict[str, object]) -> str | None:
+    if load_policy["policy"] == "user":
+        return "Only the user can load $sample-skill."
+    if load_policy["policy"] == "agent":
+        return None
+    loaders = load_policy["loader_skills"]
+    if load_policy["loader_packages"] or not isinstance(loaders, list) or len(loaders) != 1:
+        raise AssertionError("fixtures render one named loader skill")
+    return f"Only the user or ${loaders[0]} can load $sample-skill."
+
+
+def retain_brief(
+    helper: ModuleType,
+    *,
+    state_root: Path,
+    workflow_id: str,
+    sequence: int,
+    artifact_id: str,
+    contract_digest: str,
+    confirmation_digest: str,
+    evaluation_digest: str,
+    cases: list[dict[str, object]],
+    owned_paths: list[str],
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
+    overrides: dict[str, object] | None = None,
+    codex_adapter_path: str = "agents/openai.yaml",
+) -> dict[str, object]:
+    policy = load_policy or AGENT_LOAD_POLICY
+    sentence = fixture_load_sentence(policy)
+    payload = brief_payload(
+        contract_digest=contract_digest,
+        confirmation_digest=confirmation_digest,
+        evaluation_digest=evaluation_digest,
+        cases=cases,
+        owned_paths=owned_paths,
+        description=SAMPLE_DESCRIPTION
+        if sentence is None
+        else f"{SAMPLE_DESCRIPTION} {sentence}",
+        load_sentence=sentence,
+        host_flags=fixture_host_flags(
+            policy, hosts or ["claude-code"], codex_adapter_path
+        ),
+    )
+    payload.update(overrides or {})
+    return retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id=artifact_id,
+        artifact_type="implementer-brief",
+        payload=payload,
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+    )
+
+
 def build_candidate_stage(
     helper: ModuleType,
     tmp_path: Path,
     *,
     queued_targets: list[dict[str, str]] | None = None,
     granted_authority: dict[str, object] | None = None,
-    candidate_schema_version: str = "skill-builder-candidate.v4",
+    candidate_schema_version: str | None = None,
     candidate_resulting_bytes: bytes | None = None,
     candidate_loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     candidate_claimed_loaded_skill_bytes: bytes | None = None,
@@ -1793,34 +2423,69 @@ def build_candidate_stage(
     legacy_candidate_v1: bool = False,
     historical_candidate_v2: bool = False,
     historical_candidate_v3: bool = False,
+    loaded_trial_v4: bool = False,
+    selection_v5: bool = False,
+    selection: dict[str, str] | None = None,
+    selection_hosts: dict[str, str] | None = None,
     retain_review_source_components: bool = False,
     omitted_review_source_component: str | None = None,
+    mode: str = "create",
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
+    brief_overrides: dict[str, object] | None = None,
+    external_codex_adapter: bytes | None = None,
+    retained_codex_adapter: bytes | None = None,
+    confirmation_limitations: list[str] | None = None,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root = tmp_path / "state"
     target = tmp_path / "skills" / "sample-skill"
+    mode_evidence: dict[str, object] = (
+        {
+            "absence_evidence": {"searched": [str(target)], "exists": False},
+            "overlap_map": {"exact": [], "near_neighbours": []},
+        }
+        if mode == "create"
+        else {"target_manifest": helper.snapshot_target(target)}
+    )
     started = helper.initialize_run(
         host_identity=host_identity(tmp_path),
         target_identity=target_identity(target),
-        mode="create",
+        mode=mode,
         authority=granted_authority or authority(),
-        absence_evidence={"searched": [str(target)], "exists": False},
-        overlap_map={"exact": [], "near_neighbours": []},
         git_identity={"present": False},
         queue=queued_targets,
         state_root=state_root,
+        **mode_evidence,
     )
     workflow_id = started["workflow_id"]
     compatibility_modes = sum(
-        (legacy_candidate_v1, historical_candidate_v2, historical_candidate_v3)
+        (
+            legacy_candidate_v1,
+            historical_candidate_v2,
+            historical_candidate_v3,
+            loaded_trial_v4,
+        )
     )
-    if compatibility_modes > 1:
+    if compatibility_modes + selection_v5 > 1:
         raise AssertionError("candidate compatibility modes are mutually exclusive")
+    if compatibility_modes and selection:
+        raise AssertionError("selection cases need the current evaluation pack")
+    if candidate_schema_version is None:
+        candidate_schema_version = (
+            "skill-builder-candidate.v4"
+            if loaded_trial_v4 or selection_v5
+            else CURRENT_CANDIDATE_SCHEMA
+        )
     if legacy_candidate_v1:
         mark_run_as_legacy_candidate_v1(helper, state_root, workflow_id)
     elif historical_candidate_v2:
         mark_run_as_historical_candidate_v2(helper, state_root, workflow_id)
     elif historical_candidate_v3:
         mark_run_as_historical_candidate_v3(helper, state_root, workflow_id)
+    elif loaded_trial_v4:
+        mark_run_as_loaded_trial_v4(helper, state_root, workflow_id)
+    elif selection_v5:
+        mark_run_as_selection_v5(helper, state_root, workflow_id)
     sequence = 0
     for artifact_id, artifact_type, event, stage in (
         ("baseline", "baseline-report", "capture-baseline", "baseline"),
@@ -1845,7 +2510,9 @@ def build_candidate_stage(
         sequence=sequence,
         artifact_id="contract",
         artifact_type="skill-contract",
-        payload=contract_payload(helper, state_root, workflow_id),
+        payload=contract_payload(
+            helper, state_root, workflow_id, load_policy=load_policy, hosts=hosts
+        ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
     sequence = helper.transition_run(
@@ -1872,6 +2539,14 @@ def build_candidate_stage(
             authority_digest=authority_digest,
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
+        limitations=(
+            [HERMES_LIMITATION]
+            if "hermes" in (hosts or [])
+            and (load_policy or AGENT_LOAD_POLICY)["policy"] != "agent"
+            else []
+        )
+        if confirmation_limitations is None
+        else confirmation_limitations,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -1893,6 +2568,16 @@ def build_candidate_stage(
             contract_digest=contract["artifact_digest"],
             confirmation_digest=confirmation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
+            cases=frozen_cases(
+                selection,
+                legacy=bool(compatibility_modes),
+                selection_hosts=selection_hosts,
+            ),
+            schema_version=(
+                "skill-builder-evaluation-pack.v1"
+                if compatibility_modes
+                else "skill-builder-evaluation-pack.v2"
+            ),
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
         retain_review_source_components=retain_review_source_components,
@@ -1906,6 +2591,35 @@ def build_candidate_stage(
         artifact_ids=["evaluation"],
         state_root=state_root,
     )["sequence"]
+    brief_digest: str | None = None
+    if candidate_schema_version == CURRENT_CANDIDATE_SCHEMA:
+        brief = retain_brief(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="brief",
+            contract_digest=contract["artifact_digest"],
+            confirmation_digest=confirmation["artifact_digest"],
+            evaluation_digest=evaluation["artifact_digest"],
+            cases=frozen_cases(selection, selection_hosts=selection_hosts),
+            owned_paths=default_owned_paths(candidate_additional_skill_files)
+            if candidate_owned_paths is None
+            else candidate_owned_paths,
+            load_policy=load_policy,
+            hosts=hosts,
+            overrides=brief_overrides,
+            codex_adapter_path=EXTERNAL_CODEX_ADAPTER_PATH
+            if external_codex_adapter is not None
+            else "agents/openai.yaml",
+        )
+        sequence = brief["sequence"]
+        brief_digest = brief["artifact_digest"]
+    if external_codex_adapter is not None:
+        write_skill_package(
+            (tmp_path / "candidate" / EXTERNAL_CODEX_ADAPTER_PATH).parent,
+            {"openai.yaml": external_codex_adapter},
+        )
     candidate = retain_json(
         helper,
         state_root=state_root,
@@ -1922,6 +2636,7 @@ def build_candidate_stage(
             evaluation_digest=evaluation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
             schema_version=candidate_schema_version,
+            brief_digest=brief_digest,
             resulting_bytes=candidate_resulting_bytes,
             loaded_skill_bytes=candidate_loaded_skill_bytes,
             claimed_loaded_skill_bytes=candidate_claimed_loaded_skill_bytes,
@@ -1932,6 +2647,9 @@ def build_candidate_stage(
         retain_review_source_components=retain_review_source_components,
         candidate_resulting_bytes=candidate_resulting_bytes,
         omitted_review_source_component=omitted_review_source_component,
+        extra_files={"codex-adapter/openai.yaml": retained_codex_adapter}
+        if retained_codex_adapter is not None
+        else None,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -1950,13 +2668,16 @@ def build_current_trials_stage(
     *,
     retain_review_source_components: bool = True,
     omitted_review_source_component: str | None = None,
+    selection: dict[str, str] | None = None,
 ) -> tuple[Path, str, int, dict[str, object]]:
     state_root, workflow_id, sequence, candidate = build_candidate_stage(
         helper,
         tmp_path,
+        selection=selection,
         retain_review_source_components=retain_review_source_components,
         omitted_review_source_component=omitted_review_source_component,
     )
+    cases = frozen_cases(selection)
     trials = retain_json(
         helper,
         state_root=state_root,
@@ -1964,8 +2685,9 @@ def build_current_trials_stage(
         sequence=sequence,
         artifact_id="trials",
         artifact_type="trial-pack",
-        payload=trial_payload(candidate["artifact_digest"]),
+        payload=trial_payload(candidate["artifact_digest"], cases=cases),
         input_bindings=current_bindings(helper, state_root, workflow_id),
+        frozen_trial_cases=cases,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -1976,6 +2698,82 @@ def build_current_trials_stage(
         state_root=state_root,
     )["sequence"]
     return state_root, workflow_id, sequence, candidate
+
+
+def resubmit_identical_candidate(
+    helper: ModuleType,
+    tmp_path: Path,
+    state_root: Path,
+    workflow_id: str,
+    sequence: int,
+    *,
+    cases: list[dict[str, object]],
+    resulting_bytes: bytes | None,
+    loaded_skill_bytes: bytes,
+    additional_skill_files: dict[str, bytes] | None,
+    owned_paths: list[str] | None,
+    load_policy: dict[str, object] | None,
+    hosts: list[str] | None,
+) -> tuple[int, dict[str, object]]:
+    """Accept a candidate under a new identity, by default with the superseded bytes."""
+    current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+    digests = {
+        name: current["artifact_index"][name]["digest"]
+        for name in ("contract", "confirmation", "evaluation")
+    }
+    resolved_owned_paths = (
+        default_owned_paths(additional_skill_files)
+        if owned_paths is None
+        else owned_paths
+    )
+    brief = retain_brief(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="brief-2",
+        contract_digest=digests["contract"],
+        confirmation_digest=digests["confirmation"],
+        evaluation_digest=digests["evaluation"],
+        cases=cases,
+        owned_paths=resolved_owned_paths,
+        load_policy=load_policy,
+        hosts=hosts,
+    )
+    candidate = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=brief["sequence"],
+        artifact_id="candidate-2",
+        artifact_type="candidate-record",
+        payload=candidate_payload(
+            tmp_path=tmp_path,
+            candidate_id="candidate-2",
+            revision="candidate-1",
+            contract_digest=digests["contract"],
+            confirmation_digest=digests["confirmation"],
+            evaluation_digest=digests["evaluation"],
+            snapshot_digest=current["target_snapshot"]["snapshot_digest"],
+            brief_digest=brief["artifact_digest"],
+            resulting_bytes=resulting_bytes,
+            loaded_skill_bytes=loaded_skill_bytes,
+            additional_skill_files=additional_skill_files,
+            owned_paths=owned_paths,
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        retain_review_source_components=True,
+        candidate_resulting_bytes=resulting_bytes,
+    )
+    sequence = helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=candidate["sequence"],
+        event="accept-candidate",
+        destination_stage="candidate",
+        artifact_ids=["candidate-2"],
+        state_root=state_root,
+    )["sequence"]
+    return sequence, candidate
 
 
 def build_verified_stage(
@@ -1994,8 +2792,9 @@ def build_verified_stage(
     scorecard_criteria_overrides: dict[str, dict[str, bool]] | None = None,
     scorecard_evidence_overrides: dict[str, dict[str, object]] | None = None,
     scorecard_schema_version: str | None = None,
-    candidate_schema_version: str = "skill-builder-candidate.v4",
+    candidate_schema_version: str | None = None,
     candidate_resulting_bytes: bytes | None = None,
+    candidate_loaded_skill_bytes: bytes = CANDIDATE_SKILL_BYTES,
     candidate_additional_skill_files: dict[str, bytes] | None = None,
     candidate_owned_paths: list[str] | None = None,
     trial_loaded_skill_bytes: bytes | None = None,
@@ -2003,14 +2802,40 @@ def build_verified_stage(
     legacy_candidate_v1: bool = False,
     historical_candidate_v2: bool = False,
     historical_candidate_v3: bool = False,
+    loaded_trial_v4: bool = False,
+    selection_v5: bool = False,
+    selection: dict[str, str] | None = None,
+    selection_hosts: dict[str, str] | None = None,
+    trial_run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
+    superseded_trial_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
+    earlier_trials_change: str = "trial",
+    repaired_skill_bytes: bytes | None = None,
+    mode: str = "create",
+    load_policy: dict[str, object] | None = None,
+    hosts: list[str] | None = None,
 ) -> tuple[Path, str, int, dict[str, object]]:
+    if selection is None and not (
+        legacy_candidate_v1
+        or historical_candidate_v2
+        or historical_candidate_v3
+        or loaded_trial_v4
+    ):
+        selection = SCORED_SELECTION
     state_root, workflow_id, sequence, candidate = build_candidate_stage(
         helper,
         tmp_path,
+        mode=mode,
+        loaded_trial_v4=loaded_trial_v4,
+        selection_v5=selection_v5,
+        selection=selection,
+        selection_hosts=selection_hosts,
         queued_targets=queued_targets,
         granted_authority=granted_authority,
         candidate_schema_version=candidate_schema_version,
         candidate_resulting_bytes=candidate_resulting_bytes,
+        candidate_loaded_skill_bytes=candidate_loaded_skill_bytes,
+        load_policy=load_policy,
+        hosts=hosts,
         candidate_additional_skill_files=candidate_additional_skill_files,
         candidate_owned_paths=candidate_owned_paths,
         legacy_candidate_v1=legacy_candidate_v1,
@@ -2022,17 +2847,77 @@ def build_verified_stage(
             or historical_candidate_v3
         ),
     )
+    historical_trials = (
+        legacy_candidate_v1 or historical_candidate_v2 or historical_candidate_v3
+    )
+    cases = frozen_cases(
+        selection,
+        legacy=historical_trials or loaded_trial_v4,
+        selection_hosts=selection_hosts,
+    )
+    if superseded_trial_overrides is not None:
+        superseded = retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="trials-superseded",
+            artifact_type="trial-pack",
+            payload=trial_payload(
+                candidate["artifact_digest"],
+                cases=cases,
+                run_overrides=superseded_trial_overrides,
+            ),
+            input_bindings=current_bindings(helper, state_root, workflow_id),
+            frozen_trial_cases=cases,
+        )
+        sequence = helper.transition_run(
+            workflow_id=workflow_id,
+            expected_sequence=superseded["sequence"],
+            event="complete-trials",
+            destination_stage="trials",
+            artifact_ids=["trials-superseded"],
+            state_root=state_root,
+        )["sequence"]
+        sequence = helper.invalidate_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            change_kind=earlier_trials_change,
+            changed_artifact_id="trials-superseded"
+            if earlier_trials_change == "trial"
+            else "candidate",
+            reason="rerun trials for the same candidate",
+            state_root=state_root,
+        )["sequence"]
+        if earlier_trials_change == "candidate":
+            sequence, candidate = resubmit_identical_candidate(
+                helper,
+                tmp_path,
+                state_root,
+                workflow_id,
+                sequence,
+                cases=cases,
+                resulting_bytes=candidate_resulting_bytes,
+                loaded_skill_bytes=repaired_skill_bytes or candidate_loaded_skill_bytes,
+                additional_skill_files=candidate_additional_skill_files,
+                owned_paths=candidate_owned_paths,
+                load_policy=load_policy,
+                hosts=hosts,
+            )
+            trial_loaded_skill_bytes = repaired_skill_bytes or trial_loaded_skill_bytes
     trials_payload = trial_payload(
         candidate["artifact_digest"],
         loaded_skill_bytes=trial_loaded_skill_bytes,
         loaded_skill_files=trial_loaded_skill_files,
         schema_version=(
             "skill-builder-trial-pack.v1"
-            if legacy_candidate_v1
-            or historical_candidate_v2
-            or historical_candidate_v3
+            if historical_trials
             else "skill-builder-trial-pack.v2"
+            if loaded_trial_v4
+            else CURRENT_TRIAL_SCHEMA
         ),
+        cases=cases,
+        run_overrides=trial_run_overrides,
     )
     trials = retain_json(
         helper,
@@ -2045,6 +2930,7 @@ def build_verified_stage(
         input_bindings=current_bindings(helper, state_root, workflow_id),
         trial_loaded_skill_bytes=trial_loaded_skill_bytes,
         trial_loaded_skill_files=trial_loaded_skill_files,
+        frozen_trial_cases=cases,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -2198,9 +3084,9 @@ def build_verified_stage(
             contract_digest=helper.load_run(
                 workflow_id=workflow_id, state_root=state_root
             )["artifact_index"]["contract"]["digest"],
-            confirmation_digest=helper.load_run(
-                workflow_id=workflow_id, state_root=state_root
-            )["artifact_index"]["confirmation"]["digest"],
+            confirmation_digest=accepted_artifact(
+                helper, state_root, workflow_id, "user-confirmation-record"
+            )[1],
             evaluation_digest=helper.load_run(
                 workflow_id=workflow_id, state_root=state_root
             )["artifact_index"]["evaluation"]["digest"],
@@ -2843,6 +3729,18 @@ def test_candidate_entry_requires_four_current_matching_bindings(tmp_path: Path)
         artifact_ids=["evaluation"],
         state_root=state_root,
     )
+    brief = retain_brief(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=evaluated["sequence"],
+        artifact_id="brief",
+        contract_digest=contract["artifact_digest"],
+        confirmation_digest=confirmation["artifact_digest"],
+        evaluation_digest=evaluation["artifact_digest"],
+        cases=frozen_cases(),
+        owned_paths=["SKILL.md"],
+    )
     valid_bindings = candidate_payload(
         tmp_path=tmp_path,
         candidate_id="candidate-boundary",
@@ -2851,8 +3749,9 @@ def test_candidate_entry_requires_four_current_matching_bindings(tmp_path: Path)
         confirmation_digest=confirmation["artifact_digest"],
         evaluation_digest=evaluation["artifact_digest"],
         snapshot_digest=started["target_snapshot_digest"],
+        brief_digest=brief["artifact_digest"],
     )
-    sequence = evaluated["sequence"]
+    sequence = brief["sequence"]
     for field in (
         "contract_digest",
         "confirmation_digest",
@@ -2905,6 +3804,7 @@ def test_candidate_entry_requires_four_current_matching_bindings(tmp_path: Path)
             confirmation_digest=confirmation["artifact_digest"],
             evaluation_digest=evaluation["artifact_digest"],
             snapshot_digest=started["target_snapshot_digest"],
+            brief_digest=brief["artifact_digest"],
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -3019,7 +3919,7 @@ def test_finalization_rejects_false_all_ten_scorecard_without_transition(
     """A score label cannot hide a category below the required independent 10."""
     helper = load_helper()
     state_root, workflow_id, sequence, release = build_verified_stage(
-        helper, tmp_path, triggering_score=9
+        helper, tmp_path, triggering_score=9, scorecard_criteria_overrides=failed_criteria("TR2")
     )
 
     try:
@@ -4740,6 +5640,33 @@ def test_oversized_structured_artifact_is_rejected_before_receipt_commit(
     assert sorted(path.name for path in (run / "receipts").iterdir()) == receipt_names
     assert not (run / "artifacts" / "oversized-structured").exists()
     assert list((run / "transactions").iterdir()) == []
+
+    retained = helper.retain_artifact(
+        workflow_id=started["workflow_id"],
+        expected_sequence=0,
+        artifact_id="roomy-structured",
+        artifact_type="baseline-report",
+        files={
+            f"evidence/file-{index:04d}.bin": b"x"
+            for index in range(300)
+        }
+        | {
+            "record.json": fixture_canonical_bytes(
+                valid_create_baseline_payload(
+                    helper, state_root, started["workflow_id"]
+                )
+            )
+        },
+        primary_path="record.json",
+        producer="main-agent",
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
+        limitations=[],
+        state_root=state_root,
+    )
+    assert (run / "artifacts" / "roomy-structured").is_dir()
+    assert retained["sequence"] == 1
     assert helper.load_run(
         workflow_id=started["workflow_id"], state_root=state_root
     )["stage"] == "resolved"
@@ -5134,9 +6061,10 @@ def test_invalidation_allows_zero_downstream_and_rewinds_to_replacement_stage(
         state_root=state_root,
     )
     loaded = helper.load_run(workflow_id=workflow_id, state_root=state_root)
-    assert invalidated["invalidated_artifact_ids"] == []
+    assert invalidated["invalidated_artifact_ids"] == ["brief"]
     assert invalidated["stage"] == "evaluation"
     assert loaded["artifact_index"]["candidate"]["derived_status"] == "superseded"
+    assert loaded["artifact_index"]["brief"]["derived_status"] == "invalidated"
 
 
 def test_invalidation_rejects_change_kind_artifact_type_mismatch(tmp_path: Path) -> None:
@@ -6149,10 +7077,16 @@ def test_new_runs_require_versioned_candidate_result_semantics(tmp_path: Path) -
             candidate_schema_version="skill-builder-candidate.v2",
         )
 
+    with pytest.raises(helper.RunStateError, match="semantics"):
+        build_candidate_stage(
+            helper,
+            tmp_path / "packaged",
+            candidate_schema_version="skill-builder-candidate.v4",
+        )
+
     state_root, workflow_id, _, _ = build_candidate_stage(
         helper,
         tmp_path / "current",
-        candidate_schema_version="skill-builder-candidate.v4",
         candidate_resulting_bytes=candidate_result_bytes(
             schema_version="skill-builder-owned-result.v2"
         ),
@@ -6709,7 +7643,7 @@ def test_trials_reject_multifile_package_substitution(
     ("artifact_id", "relative_path"),
     (
         ("candidate", "candidate-package/SKILL.md"),
-        ("trials", "evidence/case-1/loaded-skill/SKILL.md"),
+        ("trials", "evidence/case-1/run-0/loaded-skill/SKILL.md"),
     ),
 )
 def test_recovery_rejects_rehashed_loadable_package_substitution(
@@ -6978,8 +7912,13 @@ def test_recovery_revalidates_each_scorecard_criterion_evidence_identity(
     """Self-consistent envelope hashes cannot bypass criterion evidence on replay."""
     helper = load_helper()
     state_root, workflow_id, sequence, candidate = build_candidate_stage(
-        helper, tmp_path, retain_review_source_components=True
+        helper,
+        tmp_path,
+        selection=SCORED_SELECTION,
+        retain_review_source_components=True,
     )
+    cases = frozen_cases(SCORED_SELECTION)
+    trials_payload = trial_payload(candidate["artifact_digest"], cases=cases)
     trials = retain_json(
         helper,
         state_root=state_root,
@@ -6987,8 +7926,9 @@ def test_recovery_revalidates_each_scorecard_criterion_evidence_identity(
         sequence=sequence,
         artifact_id="trials",
         artifact_type="trial-pack",
-        payload=trial_payload(candidate["artifact_digest"]),
+        payload=trials_payload,
         input_bindings=current_bindings(helper, state_root, workflow_id),
+        frozen_trial_cases=cases,
     )
     sequence = helper.transition_run(
         workflow_id=workflow_id,
@@ -7047,6 +7987,7 @@ def test_recovery_revalidates_each_scorecard_criterion_evidence_identity(
             candidate_digest=candidate["artifact_digest"],
             evaluation_digest=evaluation_digest,
             review_digest=review["artifact_digest"],
+            trial_cases=trials_payload["cases"],
         ),
         input_bindings=current_bindings(helper, state_root, workflow_id),
     )
@@ -7569,9 +8510,15 @@ def test_current_v4_package_and_review_semantics_replay(
     resolution, _ = helper._resolution_payload(run, workflow_id)
     candidate_payload_record = helper._artifact_payload_json(run, "candidate")
 
-    assert resolution["schema_version"] == "skill-builder-resolution.v4"
-    assert resolution["candidate_record_schema"] == "skill-builder-candidate.v4"
-    assert candidate_payload_record["schema_version"] == "skill-builder-candidate.v4"
+    assert resolution["schema_version"] == "skill-builder-resolution.v6"
+    assert resolution["candidate_record_schema"] == CURRENT_CANDIDATE_SCHEMA
+    assert resolution["contract_schema"] == "skill-builder-contract.v2"
+    assert resolution["implementer_brief_schema"] == (
+        "skill-builder-implementer-brief.v1"
+    )
+    assert resolution["evaluation_pack_schema"] == "skill-builder-evaluation-pack.v2"
+    assert resolution["trial_pack_schema"] == CURRENT_TRIAL_SCHEMA
+    assert candidate_payload_record["schema_version"] == CURRENT_CANDIDATE_SCHEMA
     assert candidate["sequence"] < sequence
     assert helper.load_run(
         workflow_id=workflow_id, state_root=state_root
@@ -7769,3 +8716,1058 @@ def test_trial_validation_visits_manifest_entries_linearly(
         "stage"
     ] == "trials"
     assert visits <= 2 * entry_count
+
+
+def failed_criteria(*criterion_ids: str) -> dict[str, dict[str, bool]]:
+    return {
+        name: {criterion: criterion not in criterion_ids for criterion in criteria}
+        for name, criteria in SCORE_CRITERIA.items()
+        if set(criteria) & set(criterion_ids)
+    }
+
+
+def replace_run_evidence(
+    run_key: tuple[str, int], kind: str, payload: bytes, **fields: object
+) -> dict[str, object]:
+    """Override one run's raw evidence file, its digest, and other run fields."""
+    digest_field = next(
+        field for field, stem in TRIAL_DIGEST_FIELDS.items() if stem == kind
+    )
+    case_id, repeat_index = run_key
+    path = f"evidence/{case_id}/run-{repeat_index}/{kind}.bin"
+    return {
+        "run_overrides": {
+            run_key: {digest_field: fixture_digest(payload), **fields}
+        },
+        "edit_files": lambda files: files.update({path: payload}),
+    }
+
+
+MIXED_SELECTION = {"case-1": "candidate", "case-2": "none", "case-3": "other"}
+NO_CANDIDATE_LOAD = {"case-1": "none", "case-2": "none", "case-3": "other"}
+NONE_LOAD = {"kind": "none", "name": None, "digest": None}
+
+
+def reseal_trial_payload(payload: dict[str, object]) -> dict[str, object]:
+    runs = payload["cases"]
+    assert isinstance(runs, list)
+    payload["coverage"] = [
+        {"case_id": run["case_id"], "repeat_index": run["repeat_index"]}
+        for run in runs
+    ]
+    payload["aggregate_manifest_digest"] = fixture_digest(
+        fixture_canonical_bytes({"case_ids": [run["case_id"] for run in runs]})
+    )
+    payload["status"] = (
+        "pass" if all(run["verdict"] == "pass" for run in runs) else "fail"
+    )
+    return payload
+
+
+def retain_selection_trials(
+    helper: ModuleType,
+    tmp_path: Path,
+    *,
+    selection: dict[str, str],
+    run_overrides: dict[tuple[str, int], dict[str, object]] | None = None,
+    edit: object = None,
+    other_skill_files: dict[str, bytes] = NEIGHBOUR_SKILL_FILES,
+    edit_files: object = None,
+) -> tuple[Path, str, int]:
+    state_root, workflow_id, sequence, candidate = build_candidate_stage(
+        helper, tmp_path, selection=selection
+    )
+    cases = frozen_cases(selection)
+    payload = trial_payload(
+        candidate["artifact_digest"], cases=cases, run_overrides=run_overrides
+    )
+    if callable(edit):
+        edit(payload)
+        reseal_trial_payload(payload)
+    files = trial_files(payload, cases=cases, other_skill_files=other_skill_files)
+    if callable(edit_files):
+        edit_files(files)
+    retained = helper.retain_artifact(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        artifact_id="trials",
+        artifact_type="trial-pack",
+        files=files,
+        primary_path="record.json",
+        producer="main-agent",
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        limitations=[],
+        state_root=state_root,
+    )
+    return state_root, workflow_id, retained["sequence"]
+
+
+def complete_selection_trials(
+    helper: ModuleType, state_root: Path, workflow_id: str, sequence: int
+) -> dict[str, object]:
+    return helper.transition_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        event="complete-trials",
+        destination_stage="trials",
+        artifact_ids=["trials"],
+        state_root=state_root,
+    )
+
+
+def test_selection_cases_freeze_host_expectation_repeats_and_setup_by_role() -> None:
+    """Selection cases name the candidate install by role and always run three times."""
+    helper = load_helper()
+    valid = evaluation_payload(
+        contract_digest="1" * 64,
+        confirmation_digest="2" * 64,
+        snapshot_digest="3" * 64,
+        cases=frozen_cases({"case-1": "candidate", "case-3": "other"}),
+    )
+    helper._validate_artifact_payload("evaluation-pack", valid)
+
+    def loaded_case(pack: dict[str, object]) -> dict[str, object]:
+        return pack["partitions"]["frozen_validation"][0]  # type: ignore[index]
+
+    def selection_case(pack: dict[str, object]) -> dict[str, object]:
+        return pack["partitions"]["visible_development"][0]  # type: ignore[index]
+
+    def candidate_install(pack: dict[str, object]) -> dict[str, object]:
+        return selection_case(pack)["setup_manifest"]["installs"][0]  # type: ignore[index]
+
+    def other_case(pack: dict[str, object]) -> dict[str, object]:
+        return pack["partitions"]["hidden_release"][0]  # type: ignore[index]
+
+    mutations = {
+        "two repeats": lambda pack: selection_case(pack).update(repeats=2),
+        "boolean repeats": lambda pack: selection_case(pack).update(repeats=True),
+        "unknown host": lambda pack: selection_case(pack).update(host="ide"),
+        "unknown expectation": lambda pack: selection_case(pack).update(
+            expected_selection="maybe"
+        ),
+        "missing exposure": lambda pack: selection_case(pack).pop("exposure"),
+        "unknown exposure": lambda pack: selection_case(pack).update(
+            exposure="hidden"
+        ),
+        "loaded with selection fields": lambda pack: selection_case(pack).update(
+            exposure="loaded"
+        ),
+        "setup by bytes": lambda pack: selection_case(pack).update(
+            setup_manifest_digest="4" * 64
+        ),
+        "candidate digest": lambda pack: candidate_install(pack).update(
+            digest="5" * 64
+        ),
+        "unsafe skill root": lambda pack: selection_case(pack)[
+            "setup_manifest"
+        ].update(skill_root="../skills"),
+        "unsafe install path": lambda pack: candidate_install(pack).update(
+            path="../sample-skill"
+        ),
+        "unknown role": lambda pack: candidate_install(pack).update(role="helper"),
+        "no candidate": lambda pack: other_case(pack)["setup_manifest"][
+            "installs"
+        ].pop(0),
+        "two candidates": lambda pack: other_case(pack)["setup_manifest"][
+            "installs"
+        ].append({"role": "candidate", "path": "copy", "digest": None}),
+        "neighbour without bytes": lambda pack: other_case(pack)["setup_manifest"][
+            "installs"
+        ][1].update(digest=None),
+        "other without neighbour": lambda pack: other_case(pack)["setup_manifest"][
+            "installs"
+        ].pop(1),
+        "loaded case without exposure": lambda pack: loaded_case(pack).pop(
+            "exposure"
+        ),
+        "loaded case with selection field": lambda pack: loaded_case(pack).update(
+            repeats=3
+        ),
+        "loaded case without setup digest": lambda pack: loaded_case(pack).pop(
+            "setup_manifest_digest"
+        ),
+    }
+    for label, mutate in mutations.items():
+        pack = json.loads(json.dumps(valid))
+        mutate(pack)
+        with pytest.raises(helper.RunStateError):
+            helper._validate_artifact_payload("evaluation-pack", pack)
+            raise AssertionError(f"evaluation pack accepted {label}")
+
+    legacy = evaluation_payload(
+        contract_digest="1" * 64,
+        confirmation_digest="2" * 64,
+        snapshot_digest="3" * 64,
+        schema_version="skill-builder-evaluation-pack.v1",
+    )
+    helper._validate_artifact_payload("evaluation-pack", legacy)
+    legacy["partitions"]["visible_development"][0]["exposure"] = "loaded"  # type: ignore[index]
+    with pytest.raises(helper.RunStateError, match="schema"):
+        helper._validate_artifact_payload("evaluation-pack", legacy)
+
+
+def test_selection_trials_bind_three_matching_runs_per_case(tmp_path: Path) -> None:
+    """Candidate, none, and other expectations each pass with three matching runs."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_current_trials_stage(
+        helper, tmp_path, selection=MIXED_SELECTION
+    )
+    run = state_root / "live" / workflow_id
+    trials = helper._artifact_payload_json(run, "trials")
+
+    assert [
+        (case["case_id"], case["repeat_index"]) for case in trials["cases"]
+    ] == [(case_id, index) for case_id in CASE_PARTITIONS for index in range(3)]
+    assert trials["status"] == "pass"
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)[
+        "stage"
+    ] == "trials"
+    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
+        "stage"
+    ] == "trials"
+    assert sequence > 0
+
+
+def test_selection_trials_require_every_repeat_index(tmp_path: Path) -> None:
+    """Two runs cannot stand in for the frozen three, and a repeat cannot count twice."""
+    helper = load_helper()
+
+    def drop_last_repeat(payload: dict[str, object]) -> None:
+        payload["cases"] = [
+            case
+            for case in payload["cases"]  # type: ignore[union-attr]
+            if (case["case_id"], case["repeat_index"]) != ("case-1", 2)
+        ]
+
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "missing",
+        selection={"case-1": "candidate"},
+        edit=drop_last_repeat,
+    )
+    with pytest.raises(helper.RunStateError, match="coverage"):
+        complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+    with pytest.raises(helper.RunStateError, match="duplicated"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "duplicate",
+            selection={"case-1": "candidate"},
+            run_overrides={
+                ("case-1", 2): {"repeat_index": 1},
+            },
+            edit=lambda payload: None,
+        )
+
+    with pytest.raises(helper.RunStateError, match="repeat"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "range",
+            selection={"case-1": "candidate"},
+            run_overrides={("case-1", 2): {"repeat_index": 3}},
+            edit=lambda payload: None,
+        )
+
+    def copy_first_run(payload: dict[str, object]) -> None:
+        runs = [
+            run
+            for run in payload["cases"]  # type: ignore[union-attr]
+            if run["case_id"] == "case-1"
+        ]
+        for run in runs[1:]:
+            for field in TRIAL_DIGEST_FIELDS:
+                if field in run:
+                    run[field] = runs[0][field]
+
+    with pytest.raises(helper.RunStateError, match="share one tool-event trace"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "copied",
+            selection={"case-1": "candidate"},
+            edit=copy_first_run,
+        )
+
+
+def test_selection_run_that_misses_its_expected_selection_fails_the_case(
+    tmp_path: Path,
+) -> None:
+    """One mismatching run of three makes the case, the pack, and release fail."""
+    helper = load_helper()
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "claimed-pass",
+        selection={"case-1": "candidate"},
+        run_overrides={("case-1", 1): {"observed_load": NONE_LOAD}},
+    )
+    with pytest.raises(helper.RunStateError, match="expected selection"):
+        complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+    stray = {"SKILL.md": b"---\nname: stray-skill\n---\n# Stray\n"}
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "stray-other",
+        selection={"case-3": "other"},
+        run_overrides={
+            ("case-3", 0): {
+                "observed_load": {
+                    "kind": "other",
+                    "name": "stray-skill",
+                    "digest": fixture_loadable_skill_digest(stray),
+                }
+            }
+        },
+        other_skill_files=stray,
+        edit_files=lambda files: files.update(
+            {
+                f"evidence/case-3/run-{index}/loaded-skill/SKILL.md": (
+                    NEIGHBOUR_SKILL_FILES["SKILL.md"]
+                )
+                for index in (1, 2)
+            }
+        ),
+    )
+    with pytest.raises(helper.RunStateError, match="expected selection"):
+        complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path / "recorded-fail",
+        selection={"case-1": "candidate", "case-3": "none"},
+        trial_run_overrides={
+            ("case-1", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}
+        },
+        triggering_score=9,
+        scorecard_criteria_overrides=failed_criteria("TR2"),
+    )
+    run = state_root / "live" / workflow_id
+    assert helper._artifact_payload_json(run, "trials")["status"] == "fail"
+    with pytest.raises(helper.RunStateError, match="failing"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+
+
+def test_scorecard_scores_must_sum_their_criteria(tmp_path: Path) -> None:
+    """A score inflated above its passing criteria fails on replay."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path,
+        selection={"case-1": "candidate", "case-3": "none"},
+        scorecard_criteria_overrides=failed_criteria("TR2"),
+    )
+    run = state_root / "live" / workflow_id
+    forged = helper._artifact_payload_json(run, "scores")
+    forged["categories"][0]["score"] = 10
+    rewrite_artifact_payload_and_receipts(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        artifact_id="scores",
+        payload=forged,
+        rewrite_receipts=True,
+    )
+    with pytest.raises(helper.RunStateError, match="do not sum their passing"):
+        helper.load_run(workflow_id=workflow_id, state_root=state_root)
+
+
+def test_selection_run_claims_no_load_only_with_a_complete_trace(
+    tmp_path: Path,
+) -> None:
+    """A truncated trace cannot prove the host loaded nothing."""
+    helper = load_helper()
+    with pytest.raises(helper.RunStateError, match="complete trace"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "truncated",
+            selection={"case-2": "none"},
+            run_overrides={("case-2", 0): {"complete_trace": False}},
+        )
+    with pytest.raises(helper.RunStateError, match="names a skill"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "named",
+            selection={"case-2": "none"},
+            run_overrides={
+                ("case-2", 0): {
+                    "observed_load": {"kind": "none", "name": "x", "digest": None}
+                }
+            },
+        )
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "partial-candidate",
+        selection={"case-1": "candidate"},
+        **replace_run_evidence(
+            ("case-1", 0),
+            "tool-events",
+            selection_trace_bytes(
+                "case-1/run-0",
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "name": "Skill"}]},
+                },
+                ended=False,
+            ),
+            complete_trace=False,
+        ),
+    )
+    assert complete_selection_trials(helper, state_root, workflow_id, sequence)[
+        "stage"
+    ] == "trials"
+
+    skill_call = {
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "name": "Skill"}]},
+    }
+    rejected = {
+        "unended none": (
+            {"case-2": "none"},
+            ("case-2", 1),
+            selection_trace_bytes("case-2/run-1", ended=False),
+            {},
+            "end marker",
+        ),
+        "understated end": (
+            {"case-1": "candidate"},
+            ("case-1", 0),
+            selection_trace_bytes("case-1/run-0"),
+            {"complete_trace": False},
+            "end marker",
+        ),
+        "loading none": (
+            {"case-2": "none"},
+            ("case-2", 0),
+            selection_trace_bytes("case-2/run-0", skill_call),
+            {},
+            "load event",
+        ),
+        "unparseable": (
+            {"case-2": "none"},
+            ("case-2", 2),
+            b"case-2/run-2 trace\n",
+            {},
+            "JSON lines",
+        ),
+        "candidate without load event": (
+            {"case-1": "candidate"},
+            ("case-1", 0),
+            selection_trace_bytes("case-1/run-0"),
+            {},
+            "no load event",
+        ),
+        "other without load event": (
+            {"case-3": "other"},
+            ("case-3", 0),
+            selection_trace_bytes("case-3/run-0"),
+            {},
+            "no load event",
+        ),
+    }
+    for label, (selection, run_key, trace, fields, message) in rejected.items():
+        state_root, workflow_id, sequence = retain_selection_trials(
+            helper,
+            tmp_path / label.replace(" ", "-"),
+            selection=selection,
+            **replace_run_evidence(run_key, "tool-events", trace, **fields),
+        )
+        with pytest.raises(helper.RunStateError, match=message):
+            complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+
+def test_opencode_text_ending_traces_count_as_complete(tmp_path: Path) -> None:
+    """Real OpenCode streams end with a text event, and honest no-load runs retain."""
+    helper = load_helper()
+
+    def trace(*events: dict[str, object]) -> bytes:
+        return b"".join(fixture_canonical_bytes(event) for event in events)
+
+    start = {"type": "start"}
+    text_end = {"type": "text", "content": "nothing to load here"}
+    no_load = {"complete_trace": True, "observed_load": NONE_LOAD}
+    helper._validate_selection_trace(host="opencode", payload=trace(start, text_end), trial_run=no_load)
+
+
+@pytest.mark.parametrize(
+    ("host", "end", "load"),
+    (
+        (
+            "claude-code",
+            {"type": "result"},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Skill"}]},
+            },
+        ),
+        (
+            "codex",
+            {"type": "turn.failed"},
+            {
+                "type": "item.started",
+                "item": {
+                    "type": "command_execution",
+                    "command": "cat work/.agents/skills/sample-skill/SKILL.md",
+                },
+            },
+        ),
+        (
+            "opencode",
+            {"type": "step_finish"},
+            {"type": "tool_use", "part": {"tool": "skill"}},
+        ),
+        ("hermes", {"type": "result"}, {"type": "tool_use", "name": "skill_view"}),
+    ),
+)
+def test_selection_trace_reads_each_host_end_marker_and_load_event(
+    host: str, end: dict[str, object], load: dict[str, object]
+) -> None:
+    """Each frozen host's raw event stream decides completeness and no-load claims."""
+    helper = load_helper()
+
+    def trace(*events: dict[str, object]) -> bytes:
+        return b"".join(fixture_canonical_bytes(event) for event in events)
+
+    start = {"type": "start"}
+    no_load = {"complete_trace": True, "observed_load": NONE_LOAD}
+    helper._validate_selection_trace(host, trace(start, end), no_load)
+    helper._validate_selection_trace(
+        host,
+        trace(start, load, end),
+        {"complete_trace": True, "observed_load": {"kind": "candidate"}},
+    )
+    with pytest.raises(helper.RunStateError, match="end marker"):
+        helper._validate_selection_trace(host, trace(start, end, start), no_load)
+    with pytest.raises(helper.RunStateError, match="load event"):
+        helper._validate_selection_trace(host, trace(start, load, end), no_load)
+
+
+def test_selection_trials_install_and_observe_only_the_accepted_candidate(
+    tmp_path: Path,
+) -> None:
+    """Installed and observed candidate identities must be the accepted package."""
+    helper = load_helper()
+    candidate_load = {
+        "kind": "candidate",
+        "name": "sample-skill",
+        "digest": fixture_loadable_skill_digest({"SKILL.md": CANDIDATE_SKILL_BYTES}),
+    }
+    rejected = {
+        "installed": (
+            {"case-2": "none"},
+            {("case-2", 0): {"installed_skill_digest": "e" * 64}},
+            "installed skill",
+        ),
+        "renamed candidate": (
+            {"case-1": "candidate"},
+            {("case-1", 0): {"observed_load": {**candidate_load, "name": "other"}}},
+            "mislabels",
+        ),
+        "candidate called other": (
+            {"case-3": "other"},
+            {("case-3", 0): {"observed_load": {**candidate_load, "kind": "other"}}},
+            "mislabels",
+        ),
+        "other named as the target": (
+            {"case-3": "other"},
+            {
+                ("case-3", 0): {
+                    "observed_load": {
+                        "kind": "other",
+                        "name": "sample-skill",
+                        "digest": fixture_loadable_skill_digest(NEIGHBOUR_SKILL_FILES),
+                    }
+                }
+            },
+            "mislabels",
+        ),
+    }
+    for label, (selection, overrides, message) in rejected.items():
+        state_root, workflow_id, sequence = retain_selection_trials(
+            helper,
+            tmp_path / label.replace(" ", "-"),
+            selection=selection,
+            run_overrides=overrides,
+            edit_files=(
+                (
+                    lambda files: files.update(
+                        {
+                            "evidence/case-3/run-0/loaded-skill/SKILL.md": (
+                                CANDIDATE_SKILL_BYTES
+                            )
+                        }
+                    )
+                )
+                if label == "candidate called other"
+                else None
+            ),
+        )
+        with pytest.raises(helper.RunStateError, match=message):
+            complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+    substituted = {"SKILL.md": b"---\nname: sample-skill\n---\n# Substituted\n"}
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "substituted",
+        selection={"case-1": "candidate"},
+        run_overrides={
+            ("case-1", 0): {
+                "observed_load": {
+                    **candidate_load,
+                    "digest": fixture_loadable_skill_digest(substituted),
+                }
+            }
+        },
+        edit_files=lambda files: files.update(
+            {"evidence/case-1/run-0/loaded-skill/SKILL.md": substituted["SKILL.md"]}
+        ),
+    )
+    with pytest.raises(helper.RunStateError, match="mislabels"):
+        complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+
+def test_selection_trials_retain_packages_only_for_runs_that_loaded_a_skill(
+    tmp_path: Path,
+) -> None:
+    """A no-load run has no package, and a loading run cannot drop its package."""
+    helper = load_helper()
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "extra",
+        selection={"case-2": "none"},
+        edit_files=lambda files: files.update(
+            {"evidence/case-2/run-0/loaded-skill/SKILL.md": CANDIDATE_SKILL_BYTES}
+        ),
+    )
+    with pytest.raises(helper.RunStateError, match="package coverage"):
+        complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+    state_root, workflow_id, sequence = retain_selection_trials(
+        helper,
+        tmp_path / "missing",
+        selection={"case-1": "candidate"},
+        edit_files=lambda files: files.pop(
+            "evidence/case-1/run-1/loaded-skill/SKILL.md"
+        ),
+    )
+    with pytest.raises(helper.RunStateError, match="package coverage"):
+        complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+
+def test_loaded_cases_keep_frozen_setup_candidate_and_exposure(
+    tmp_path: Path,
+) -> None:
+    """Loaded runs keep today's bindings, and neither exposure can be relabelled."""
+    helper = load_helper()
+    selection = {"case-1": "candidate"}
+    selection_run = {
+        "exposure": "selection",
+        "installed_skill_digest": fixture_loadable_skill_digest(
+            {"SKILL.md": CANDIDATE_SKILL_BYTES}
+        ),
+        "observed_load": NONE_LOAD,
+        "complete_trace": True,
+    }
+
+    def relabel_loaded(payload: dict[str, object]) -> None:
+        run = payload["cases"][3]  # type: ignore[index]
+        run.pop("loaded_skill_digest")
+        run.update(selection_run)
+
+    def collapse_selection(payload: dict[str, object]) -> None:
+        runs = payload["cases"]  # type: ignore[assignment]
+        first = runs[0]
+        for field in ("installed_skill_digest", "observed_load", "complete_trace"):
+            first.pop(field)
+        first.update(
+            exposure="loaded",
+            loaded_skill_digest=selection_run["installed_skill_digest"],
+        )
+        payload["cases"] = [first, *runs[3:]]
+
+    rejected = {
+        "loaded skill": (
+            {("case-2", 0): {"loaded_skill_digest": "e" * 64}},
+            None,
+            "loaded-skill",
+        ),
+        "setup": (
+            {("case-2", 0): {"before_target_manifest_digest": "e" * 64}},
+            None,
+            "binding",
+        ),
+        "loaded relabelled": ({}, relabel_loaded, "substituted"),
+        "selection relabelled": ({}, collapse_selection, "coverage"),
+    }
+    for label, (overrides, edit, message) in rejected.items():
+        state_root, workflow_id, sequence = retain_selection_trials(
+            helper,
+            tmp_path / label.replace(" ", "-"),
+            selection=selection,
+            run_overrides=overrides,
+            edit=edit,
+        )
+        with pytest.raises(helper.RunStateError, match=message):
+            complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+    with pytest.raises(helper.RunStateError, match="once"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "repeated-loaded",
+            selection=selection,
+            run_overrides={("case-2", 0): {"repeat_index": 1}},
+            edit=lambda payload: None,
+        )
+    with pytest.raises(helper.RunStateError, match="exposure"):
+        retain_selection_trials(
+            helper,
+            tmp_path / "unknown-exposure",
+            selection=selection,
+            run_overrides={("case-2", 0): {"exposure": "hidden"}},
+        )
+
+
+def test_loaded_trial_runs_keep_v1_packs_and_v2_trial_packs(tmp_path: Path) -> None:
+    """Runs that began with loaded-only semantics finalize, deliver, and replay unchanged."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, candidate = build_verified_stage(
+        helper, tmp_path / "v4", loaded_trial_v4=True
+    )
+    run = state_root / "live" / workflow_id
+    assert helper._artifact_payload_json(run, "evaluation")["schema_version"] == (
+        "skill-builder-evaluation-pack.v1"
+    )
+    assert helper._artifact_payload_json(run, "trials")["schema_version"] == (
+        "skill-builder-trial-pack.v2"
+    )
+    with pytest.raises(helper.RunStateError, match="semantics"):
+        retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="selection-pack",
+            artifact_type="evaluation-pack",
+            payload=evaluation_payload(
+                contract_digest="1" * 64,
+                confirmation_digest="2" * 64,
+                snapshot_digest="3" * 64,
+                cases=frozen_cases(MIXED_SELECTION),
+            ),
+        )
+    with pytest.raises(helper.RunStateError, match="semantics"):
+        retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="run-trials",
+            artifact_type="trial-pack",
+            payload=trial_payload(candidate["artifact_digest"]),
+        )
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    delivered = record_package_delivery(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=finalized["sequence"],
+        files={"SKILL.md": CANDIDATE_SKILL_BYTES},
+    )
+    assert delivered["stage"] == "delivered"
+    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
+        "stage"
+    ] == "delivered"
+
+    state_root, workflow_id, sequence, _ = build_candidate_stage(
+        helper, tmp_path / "current"
+    )
+    with pytest.raises(helper.RunStateError, match="semantics"):
+        retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="loaded-only-pack",
+            artifact_type="evaluation-pack",
+            payload=evaluation_payload(
+                contract_digest="1" * 64,
+                confirmation_digest="2" * 64,
+                snapshot_digest="3" * 64,
+                schema_version="skill-builder-evaluation-pack.v1",
+            ),
+        )
+
+
+def test_delivery_requires_a_trial_that_loaded_the_candidate(
+    tmp_path: Path,
+) -> None:
+    """Passing selection runs that never load the candidate cannot release it."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path / "unloaded",
+        selection=NO_CANDIDATE_LOAD,
+        triggering_score=9,
+        scorecard_criteria_overrides=failed_criteria("TR2"),
+    )
+    with pytest.raises(helper.RunStateError, match="loaded the candidate"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+    with pytest.raises(helper.RunStateError, match="finalized"):
+        record_package_delivery(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            files={"SKILL.md": CANDIDATE_SKILL_BYTES},
+        )
+
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper, tmp_path / "selected", selection=MIXED_SELECTION
+    )
+    finalized = helper.finalize_run(
+        workflow_id=workflow_id,
+        expected_sequence=sequence,
+        release_artifact_id="release",
+        state_root=state_root,
+    )
+    delivered = record_package_delivery(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=finalized["sequence"],
+        files={"SKILL.md": CANDIDATE_SKILL_BYTES},
+    )
+    assert delivered["stage"] == "delivered"
+    assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
+        "stage"
+    ] == "delivered"
+
+
+def test_selection_criteria_pass_only_on_passing_selection_trials(
+    tmp_path: Path,
+) -> None:
+    """TR2, TR3, TR6, TE3, and CP5 need passing selection cases of their direction."""
+    helper = load_helper()
+    rejected = {
+        "all loaded": ({}, None, "TR2"),
+        "candidate only": ({"case-1": "candidate"}, None, "TR3"),
+        "no candidate": ({"case-1": "none", "case-3": "other"}, None, "TR2"),
+        "failing trigger": (
+            {"case-1": "candidate", "case-3": "none"},
+            {("case-1", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}},
+            "TR2",
+        ),
+    }
+    for label, (selection, overrides, criterion) in rejected.items():
+        with pytest.raises(
+            helper.RunStateError,
+            match=f"passes {criterion} without passing selection trials",
+        ):
+            build_verified_stage(
+                helper,
+                tmp_path / label.replace(" ", "-"),
+                selection=selection,
+                trial_run_overrides=overrides,
+            )
+
+    state_root, workflow_id, _, _ = build_verified_stage(
+        helper,
+        tmp_path / "unclaimed",
+        selection={"case-1": "candidate"},
+        triggering_score=8,
+        scorecard_criteria_overrides=failed_criteria("TR3", "TR6", "TE3", "CP5"),
+    )
+    assert helper.load_run(workflow_id=workflow_id, state_root=state_root)[
+        "stage"
+    ] == "verified"
+
+
+def test_selection_runs_bind_the_frozen_setup_with_the_accepted_candidate(
+    tmp_path: Path,
+) -> None:
+    """Each run installs exactly the frozen skills with the accepted candidate."""
+    helper = load_helper()
+    selection = {"case-3": "other"}
+    frozen = frozen_cases(selection)[2]
+    setup = frozen["setup_manifest"]
+    assert isinstance(setup, dict)
+    candidate_install, neighbour_install = setup["installs"]
+    candidate_digest = fixture_loadable_skill_digest(
+        {"SKILL.md": CANDIDATE_SKILL_BYTES}
+    )
+
+    def installed(*installs: dict[str, object]) -> bytes:
+        return selection_setup_bytes(
+            {**frozen, "setup_manifest": {**setup, "installs": list(installs)}},
+            candidate_digest,
+        )
+
+    stray = {"role": "neighbour", "path": "stray-skill", "digest": "d" * 64}
+    rejected = {
+        "earlier candidate": selection_setup_bytes(frozen, "e" * 64),
+        "no candidate": installed(neighbour_install),
+        "dropped neighbour": installed(candidate_install),
+        "extra skill": installed(candidate_install, neighbour_install, stray),
+    }
+    for label, before in rejected.items():
+        state_root, workflow_id, sequence = retain_selection_trials(
+            helper,
+            tmp_path / label.replace(" ", "-"),
+            selection=selection,
+            **replace_run_evidence(("case-3", 0), "before-manifest", before),
+        )
+        with pytest.raises(helper.RunStateError, match="stale or substituted"):
+            complete_selection_trials(helper, state_root, workflow_id, sequence)
+
+
+@pytest.mark.parametrize("earlier_trials_change", ["trial", "candidate"])
+def test_rerun_trials_cannot_hide_a_failing_selection_run(
+    tmp_path: Path, earlier_trials_change: str
+) -> None:
+    """Candidate content whose selection trials failed needs a repair before release."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(
+        helper,
+        tmp_path / "rerolled",
+        superseded_trial_overrides={
+            ("case-2", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}
+        },
+        earlier_trials_change=earlier_trials_change,
+    )
+    with pytest.raises(helper.RunStateError, match="already failed"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+
+    passing = {"rerun": ({}, None)}
+    if earlier_trials_change == "candidate":
+        passing["repaired"] = (
+            {("case-2", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}},
+            CANDIDATE_SKILL_BYTES + b"\nRepaired.\n",
+        )
+    for label, (earlier_overrides, repaired_bytes) in passing.items():
+        state_root, workflow_id, sequence, _ = build_verified_stage(
+            helper,
+            tmp_path / label,
+            superseded_trial_overrides=earlier_overrides,
+            earlier_trials_change=earlier_trials_change,
+            repaired_skill_bytes=repaired_bytes,
+        )
+        finalized = helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+        assert finalized["stage"] == "finalized"
+        assert helper.recover_run(workflow_id=workflow_id, state_root=state_root)[
+            "stage"
+        ] == "finalized"
+
+
+def test_an_unsubmitted_failing_selection_pack_blocks_release(tmp_path: Path) -> None:
+    """A retained selection failure for the candidate blocks release without trials completing."""
+    helper = load_helper()
+    state_root, workflow_id, sequence, _ = build_verified_stage(helper, tmp_path)
+    cases = frozen_cases(SCORED_SELECTION)
+    failed = retain_json(
+        helper,
+        state_root=state_root,
+        workflow_id=workflow_id,
+        sequence=sequence,
+        artifact_id="trials-unsubmitted",
+        artifact_type="trial-pack",
+        payload=trial_payload(
+            helper.load_run(workflow_id=workflow_id, state_root=state_root)[
+                "artifact_index"
+            ]["candidate"]["digest"],
+            cases=cases,
+            run_overrides={("case-2", 1): {"observed_load": NONE_LOAD, "verdict": "fail"}},
+        ),
+        input_bindings=current_bindings(helper, state_root, workflow_id),
+        frozen_trial_cases=cases,
+    )
+    with pytest.raises(helper.RunStateError, match="already failed"):
+        helper.finalize_run(
+            workflow_id=workflow_id,
+            expected_sequence=failed["sequence"],
+            release_artifact_id="release",
+            state_root=state_root,
+        )
+
+
+def test_refreezing_under_one_confirmation_keeps_case_selection(
+    tmp_path: Path,
+) -> None:
+    """A re-frozen pack cannot relabel, retarget, or drop a frozen selection case."""
+    helper = load_helper()
+
+    def refreeze(path: Path, cases: list[dict[str, object]]) -> dict[str, object]:
+        state_root, workflow_id, sequence, _ = build_current_trials_stage(
+            helper, path, selection={"case-1": "candidate"}
+        )
+        sequence = helper.invalidate_run(
+            workflow_id=workflow_id,
+            expected_sequence=sequence,
+            change_kind="evaluation",
+            changed_artifact_id="evaluation",
+            reason="refreeze the evaluation pack",
+            state_root=state_root,
+        )["sequence"]
+        current = helper.load_run(workflow_id=workflow_id, state_root=state_root)
+        evaluation = retain_json(
+            helper,
+            state_root=state_root,
+            workflow_id=workflow_id,
+            sequence=sequence,
+            artifact_id="evaluation-2",
+            artifact_type="evaluation-pack",
+            payload=evaluation_payload(
+                contract_digest=current["artifact_index"]["contract"]["digest"],
+                confirmation_digest=current["artifact_index"]["confirmation"][
+                    "digest"
+                ],
+                snapshot_digest=current["target_snapshot"]["snapshot_digest"],
+                cases=cases,
+            ),
+            input_bindings=current_bindings(helper, state_root, workflow_id),
+            retain_review_source_components=True,
+        )
+        return helper.transition_run(
+            workflow_id=workflow_id,
+            expected_sequence=evaluation["sequence"],
+            event="freeze-evaluation",
+            destination_stage="evaluation",
+            artifact_ids=["evaluation-2"],
+            state_root=state_root,
+        )
+
+    rejected = {
+        "relabelled loaded": frozen_cases({}),
+        "dropped": frozen_cases({})[1:],
+        "retargeted": frozen_cases({"case-1": "none"}),
+        "loaded relabelled selection": frozen_cases(
+            {"case-1": "candidate", "case-2": "none"}
+        ),
+    }
+    for label, cases in rejected.items():
+        with pytest.raises(helper.RunStateError, match="changes a case's selection"):
+            refreeze(tmp_path / label.replace(" ", "-"), cases)
+    assert refreeze(
+        tmp_path / "kept", frozen_cases({"case-1": "candidate"})
+    )["stage"] == "evaluation"

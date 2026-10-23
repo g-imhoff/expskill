@@ -14,13 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "expskill"
 IMPLEMENT = PLUGIN / "content" / "skills" / "implement" / "SKILL.md"
 SKILL_BUILDER = PLUGIN / "content" / "skills" / "skill-builder" / "SKILL.md"
-EVALUATION_RUBRIC = (
-    PLUGIN
-    / "content"
-    / "skills"
-    / "skill-builder"
-    / "references"
-    / "evaluation-rubric.md"
+GUARDED_PATHS = (
+    Path("plugins/expskill/content/skills/implement/SKILL.md"),
+    Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
 )
 
 
@@ -36,12 +32,17 @@ class ReviewContextContractTests(unittest.TestCase):
         return temporary
 
     def test_every_review_producer_has_one_final_review_context_section(self) -> None:
-        for path in (IMPLEMENT, SKILL_BUILDER, EVALUATION_RUBRIC):
+        for path in (IMPLEMENT, SKILL_BUILDER):
             with self.subTest(path=path):
                 raw = path.read_text(encoding="utf-8")
                 self.assertEqual(raw.count("## Review context contract"), 1)
                 final_section = raw.split("## Review context contract", 1)[1]
                 self.assertNotIn("\n## ", final_section)
+        for reference in (SKILL_BUILDER.parent / "references").glob("*.md"):
+            with self.subTest(path=reference):
+                self.assertNotIn(
+                    "## Review context contract", reference.read_text(encoding="utf-8")
+                )
 
     def test_user_selected_agent_runtime_settings_are_preserved(self) -> None:
         expected = {
@@ -87,15 +88,7 @@ class ReviewContextContractTests(unittest.TestCase):
                 self.assertIn("`invalid handoff`", contents)
 
     def test_review_contract_heading_must_be_live_top_level_markdown(self) -> None:
-        guarded_paths = (
-            Path("plugins/expskill/content/skills/implement/SKILL.md"),
-            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
-            Path(
-                "plugins/expskill/content/skills/skill-builder/"
-                "references/evaluation-rubric.md"
-            ),
-        )
-        for relative_path in guarded_paths:
+        for relative_path in GUARDED_PATHS:
             for opener in ("```text\n", "~~~text\n", "<!--\n", "<script>\n"):
                 root = self.copy_repository()
                 path = root / relative_path
@@ -114,16 +107,8 @@ class ReviewContextContractTests(unittest.TestCase):
                     )
 
     def test_review_contract_heading_must_be_unique(self) -> None:
-        guarded_paths = (
-            Path("plugins/expskill/content/skills/implement/SKILL.md"),
-            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
-            Path(
-                "plugins/expskill/content/skills/skill-builder/"
-                "references/evaluation-rubric.md"
-            ),
-        )
         heading = "## Review context contract\n"
-        for relative_path in guarded_paths:
+        for relative_path in GUARDED_PATHS:
             root = self.copy_repository()
             path = root / relative_path
             contents = path.read_text(encoding="utf-8")
@@ -142,7 +127,7 @@ class ReviewContextContractTests(unittest.TestCase):
 
     def test_review_contract_sections_must_stay_identical(self) -> None:
         self.assertEqual(validate_repository(ROOT, include_opencode=False), ())
-        for path in (IMPLEMENT, SKILL_BUILDER, EVALUATION_RUBRIC):
+        for path in (IMPLEMENT, SKILL_BUILDER):
             root = self.copy_repository()
             drifted = root / path.relative_to(ROOT)
             drifted.write_text(
@@ -176,21 +161,13 @@ class ReviewContextContractTests(unittest.TestCase):
                 )
 
     def test_review_contract_heading_requires_an_exact_column_zero_line(self) -> None:
-        guarded_paths = (
-            Path("plugins/expskill/content/skills/implement/SKILL.md"),
-            Path("plugins/expskill/content/skills/skill-builder/SKILL.md"),
-            Path(
-                "plugins/expskill/content/skills/skill-builder/"
-                "references/evaluation-rubric.md"
-            ),
-        )
         replacements = (
             "\\## Review context contract\n",
             "    ## Review context contract\n",
             "> ## Review context contract\n",
             "prefix ## Review context contract\n",
         )
-        for relative_path in guarded_paths:
+        for relative_path in GUARDED_PATHS:
             for replacement in replacements:
                 root = self.copy_repository()
                 path = root / relative_path

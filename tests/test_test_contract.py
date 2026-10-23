@@ -776,8 +776,6 @@ class TestSkillContractTests(unittest.TestCase):
         for name in ("plugins", "scripts"):
             shutil.copytree(ROOT / name, temporary / name)
         shutil.copy2(ROOT / "README.md", temporary / "README.md")
-        (temporary / "docs").mkdir()
-        shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
     def _restore_home_var(self, original: str | None) -> None:

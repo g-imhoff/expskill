@@ -662,7 +662,9 @@ class InstallerTests(unittest.TestCase):
     def test_readme_launcher_downloads_before_executing_and_preserves_stdin(self):
         readme = (ROOT / "README.md").read_text()
         self.assertLessEqual(len(readme.splitlines()), 10)
-        self.assertIn("docs/guide.md", readme)
+        for target in re.findall(r"\]\(([^)\s:#]+)(?:#[^)]*)?\)", readme):
+            with self.subTest(link=target):
+                self.assertTrue((ROOT / target).exists(), target)
         launcher = re.search(r"```bash\n(.*?)\n```", readme, re.S).group(1)
         self.commands("curl", "opencode", "git", "hermes")
         (self.bin / "bash").symlink_to("/bin/bash")

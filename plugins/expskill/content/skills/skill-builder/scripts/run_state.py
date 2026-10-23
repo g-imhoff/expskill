@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,19 +38,42 @@ MANIFEST_SCHEMA = "skill-builder-raw-manifest.v1"
 LEGACY_RESOLUTION_SCHEMA = "skill-builder-resolution.v1"
 PREVIOUS_RESOLUTION_SCHEMA = "skill-builder-resolution.v2"
 HISTORICAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v3"
-RESOLUTION_SCHEMA = "skill-builder-resolution.v4"
+LOADED_TRIAL_RESOLUTION_SCHEMA = "skill-builder-resolution.v4"
+SELECTION_RESOLUTION_SCHEMA = "skill-builder-resolution.v5"
+RESOLUTION_SCHEMA = "skill-builder-resolution.v6"
 LEGACY_CANDIDATE_SCHEMA = "skill-builder-candidate.v1"
 PREVIOUS_CANDIDATE_SCHEMA = "skill-builder-candidate.v2"
 HISTORICAL_CANDIDATE_SCHEMA = "skill-builder-candidate.v3"
-CANDIDATE_SCHEMA = "skill-builder-candidate.v4"
+PACKAGED_CANDIDATE_SCHEMA = "skill-builder-candidate.v4"
+CANDIDATE_SCHEMA = "skill-builder-candidate.v5"
+LEGACY_CONTRACT_SCHEMA = "skill-builder-contract.v1"
+CONTRACT_SCHEMA = "skill-builder-contract.v2"
+BRIEF_SCHEMA = "skill-builder-implementer-brief.v1"
+CANDIDATE_CHECKER_VERSION = "skill-builder-candidate-checks.v1"
 LEGACY_TRIAL_SCHEMA = "skill-builder-trial-pack.v1"
-TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
+LOADED_TRIAL_SCHEMA = "skill-builder-trial-pack.v2"
+TRIAL_SCHEMA = "skill-builder-trial-pack.v3"
+LOADED_EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v1"
+EVALUATION_SCHEMA = "skill-builder-evaluation-pack.v2"
 LEGACY_REVIEW_SCHEMA = "skill-builder-review.v1"
 REVIEW_SCHEMA = "skill-builder-review.v2"
 LEGACY_SCORECARD_SCHEMA = "skill-builder-scorecard.v1"
 SCORECARD_SCHEMA = "skill-builder-scorecard.v2"
 LOADABLE_CONTENT_SCHEMA = "skill-builder-loadable-content.v1"
-MAX_ARTIFACT_ITEMS = 256
+EVALUATION_REPORT_SCHEMA = "skill-builder-evaluation-report.v1"
+LEGACY_CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v1"
+CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v2"
+ABANDONED_CLEANUP_AUTHORITY_SCHEMA = "skill-builder-cleanup-authority.v3"
+LEGACY_TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v1"
+TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v2"
+ABANDONED_TOMBSTONE_SCHEMA = "skill-builder-cleanup-tombstone.v3"
+LEGACY_FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v1"
+FINAL_RUN_MANIFEST_SCHEMA = "skill-builder-final-run-manifest.v2"
+CONFIRMATION_SCHEMA = "skill-builder-user-confirmation.v1"
+REUSED_CONFIRMATION_SCHEMA = "skill-builder-reused-confirmation.v1"
+KEPT_CONTRACT_SCHEMA = "skill-builder-kept-contract.v1"
+MODE_SWITCH_SCHEMA = "skill-builder-mode-switch.v1"
+MAX_ARTIFACT_ITEMS = 1024
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_CLI_JSON_BYTES = 4 * ((MAX_ARTIFACT_BYTES + 2) // 3) + 64 * 1024
@@ -82,6 +105,7 @@ _ARTIFACT_TYPES = {
     "skill-contract",
     "user-confirmation-record",
     "evaluation-pack",
+    "implementer-brief",
     "candidate-record",
     "trial-pack",
     "builder-run-conformance-ledger",
@@ -89,13 +113,152 @@ _ARTIFACT_TYPES = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
     "delivery-acceptance-record",
     "cleanup-authority-record",
     "final-run-manifest",
     "invalidation-record",
+    "mode-switch-record",
 }
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_EXISTING_TARGET_MODES = frozenset({"improve", "modify", "evaluate"})
+_MODES = frozenset({"create", *_EXISTING_TARGET_MODES})
+_SWITCH_MODES = frozenset({"improve", "modify"})
+_REUSE_MODES = frozenset({"improve", "evaluate"})
+_KEPT_CONTRACT_NAME_RE = re.compile(r"[0-9a-f]{64}\.json\Z")
+_KEPT_CONTRACT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "target_identity",
+        "skill_file_digest",
+        "contract_schema",
+        "contract",
+        "contract_digest",
+        "confirmation_schema",
+        "confirmation",
+        "confirmation_digest",
+        "confirmation_limitations",
+        "source_workflow_id",
+        "source_mode",
+        "source_stage",
+        "source_final_transition_digest",
+        "created_at",
+        "record_digest",
+    }
+)
+_CONTRACT_BINDING_FIELDS = frozenset({"schema_version", "design_digest", "evidence_bindings"})
+_EMPTY_DIFF_DIGEST = hashlib.sha256(b"").hexdigest()
+_EVALUATE_SKIPPED_GATES = frozenset({"BR3", "BR10"})
+_EVALUATE_SKIPPED_EVENTS = frozenset(
+    {
+        "complete-research",
+        "sieve-evidence",
+        "accept-design",
+        "accept-verification",
+        "finalize",
+        "record-delivery",
+    }
+)
+_SELECTION_HOSTS = frozenset({"claude-code", "codex", "opencode", "hermes"})
+_LOAD_POLICIES = frozenset({"user", "user-or-skills", "agent"})
+_RESTRICTED_TRIAL_HOSTS = frozenset({"claude-code"})
+_PACKAGED_CANDIDATE_SCHEMAS = frozenset({PACKAGED_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA})
+_CANDIDATE_CHECKER_VERSIONS = frozenset({CANDIDATE_CHECKER_VERSION})
+_SKILL_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_PACKAGE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?: [A-Za-z0-9][A-Za-z0-9_-]*)*\Z")
+_YAML_KEY_RE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_./-]*):(?: (.*))?\Z")
+_AMBIGUOUS_TEXT_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+_LOAD_CLAIM_RE = re.compile(r"can load \$", re.IGNORECASE)
+_RESTATEMENT_VERB_RE = re.compile(
+    r"(?<![\w$-])(?:loads?|uses?|used|activat(?:e|es|ed)|inactive|explicit-only)"
+    r"(?![\w-])",
+    re.IGNORECASE,
+)
+_CODEX_INTERFACE_KEYS = frozenset(
+    {
+        "display_name",
+        "short_description",
+        "icon_small",
+        "icon_large",
+        "brand_color",
+        "default_prompt",
+    }
+)
+_CODEX_BRIEF_KEYS = frozenset(
+    {"allow_implicit_invocation", "adapter_path", "short_description", "default_prompt"}
+)
+_CODEX_TEXT_LIMIT = 1024
+_CLAUDE_LISTING_LIMIT = 1536
+_CODEX_EXTERNAL_ADAPTER = "codex-adapter/openai.yaml"
+_THIS_SKILL_RE = re.compile(r"(?<![\w-])this skill(?![\w'\u2019-])", re.IGNORECASE)
+_SELECTION_KINDS = frozenset({"candidate", "none", "other"})
+_SELECTION_REPEATS = 3
+_SELECTION_END_MARKERS = {
+    "claude-code": frozenset({"result"}),
+    "codex": frozenset({"turn.completed", "turn.failed"}),
+    "opencode": frozenset({"step_finish", "text"}),
+    "hermes": frozenset({"result"}),
+}
+_SELECTION_BACKED_CRITERIA = {
+    "TR2": frozenset({"candidate"}),
+    "TR3": frozenset({"none", "other"}),
+    "TR6": frozenset({"none", "other"}),
+    "TE3": frozenset({"none", "other"}),
+    "CP5": frozenset({"none", "other"}),
+}
+_EVALUATION_CASE_FIELDS = frozenset(
+    {
+        "case_id",
+        "partition",
+        "purpose",
+        "raw_request_digest",
+        "allowed_context",
+        "setup_manifest_digest",
+        "observable_assertions",
+        "forbidden_effects",
+        "evidence_requirements",
+        "pass_fail_rule",
+    }
+)
+_SELECTION_CASE_FIELDS = (_EVALUATION_CASE_FIELDS - {"setup_manifest_digest"}) | {
+    "exposure",
+    "host",
+    "expected_selection",
+    "repeats",
+    "setup_manifest",
+}
+_TRIAL_EVIDENCE_FIELDS = frozenset(
+    {
+        "case_id",
+        "case_digest",
+        "request_digest",
+        "raw_prompt_digest",
+        "fresh_context_identity",
+        "tool_event_digest",
+        "output_digest",
+        "before_target_manifest_digest",
+        "after_target_manifest_digest",
+        "filesystem_result_digest",
+        "verdict",
+        "limitations",
+    }
+)
+_LOADED_TRIAL_RUN_FIELDS = _TRIAL_EVIDENCE_FIELDS | {
+    "repeat_index",
+    "exposure",
+    "loaded_skill_digest",
+}
+_CONTRACT_V2_FIELDS = frozenset(
+    {"load_policy", "hosts", "aliases", "ambiguity", "collaboration"}
+)
+_SELECTION_TRIAL_RUN_FIELDS = _TRIAL_EVIDENCE_FIELDS | {
+    "repeat_index",
+    "exposure",
+    "installed_skill_digest",
+    "observed_load",
+    "complete_trace",
+}
 _STAGES = (
     "resolved",
     "baseline",
@@ -111,9 +274,12 @@ _STAGES = (
     "scored",
     "verified",
     "finalized",
+    "reported",
     "delivered",
     "abandoned",
 )
+_WORK_STAGES = _STAGES[: _STAGES.index("finalized")]
+_TERMINAL_STAGES = frozenset(_STAGES[len(_WORK_STAGES) :])
 _STAGE_TRANSITIONS = {
     "capture-baseline": ("resolved", "baseline"),
     "complete-research": ("baseline", "research"),
@@ -128,6 +294,27 @@ _STAGE_TRANSITIONS = {
     "accept-scores": ("reviewed", "scored"),
     "accept-verification": ("scored", "verified"),
 }
+_MODE_STAGE_TRANSITIONS = {"evaluate": {"accept-contract": ("baseline", "contract")}}
+_EVENT_EDGES = {
+    event: {edge}
+    | {
+        transitions[event]
+        for transitions in _MODE_STAGE_TRANSITIONS.values()
+        if event in transitions
+    }
+    for event, edge in _STAGE_TRANSITIONS.items()
+}
+_REPORT_ARTIFACT_TYPES = (
+    "candidate-record",
+    "trial-pack",
+    "review-record",
+    "builder-run-conformance-ledger",
+    "target-scorecard",
+    "skill-contract",
+    "user-confirmation-record",
+    "evaluation-pack",
+    "evaluation-report",
+)
 _EVENT_ARTIFACT_TYPES = {
     "capture-baseline": ("baseline-report",),
     "complete-research": ("research-pack",),
@@ -148,24 +335,32 @@ _PAYLOAD_SCHEMA_VERSIONS = {
     "research-pack": "skill-builder-research-pack.v1",
     "evidence-sieve": "skill-builder-evidence-sieve.v1",
     "design-record": "skill-builder-design.v1",
-    "skill-contract": "skill-builder-contract.v1",
-    "user-confirmation-record": "skill-builder-user-confirmation.v1",
-    "evaluation-pack": "skill-builder-evaluation-pack.v1",
+    "skill-contract": {LEGACY_CONTRACT_SCHEMA, CONTRACT_SCHEMA},
+    "user-confirmation-record": {CONFIRMATION_SCHEMA, REUSED_CONFIRMATION_SCHEMA},
+    "evaluation-pack": {LOADED_EVALUATION_SCHEMA, EVALUATION_SCHEMA},
+    "implementer-brief": BRIEF_SCHEMA,
     "candidate-record": {
         LEGACY_CANDIDATE_SCHEMA,
         PREVIOUS_CANDIDATE_SCHEMA,
         HISTORICAL_CANDIDATE_SCHEMA,
+        PACKAGED_CANDIDATE_SCHEMA,
         CANDIDATE_SCHEMA,
     },
-    "trial-pack": {LEGACY_TRIAL_SCHEMA, TRIAL_SCHEMA},
+    "trial-pack": {LEGACY_TRIAL_SCHEMA, LOADED_TRIAL_SCHEMA, TRIAL_SCHEMA},
     "builder-run-conformance-ledger": "skill-builder-conformance.v1",
     "review-record": {LEGACY_REVIEW_SCHEMA, REVIEW_SCHEMA},
     "target-scorecard": {LEGACY_SCORECARD_SCHEMA, SCORECARD_SCHEMA},
     "verification-record": "skill-builder-verification.v1",
     "release-record": "skill-builder-release.v1",
     "delivery-acceptance-record": "skill-builder-delivery-acceptance.v1",
-    "cleanup-authority-record": "skill-builder-cleanup-authority.v1",
+    "evaluation-report": EVALUATION_REPORT_SCHEMA,
+    "cleanup-authority-record": {
+        LEGACY_CLEANUP_AUTHORITY_SCHEMA,
+        CLEANUP_AUTHORITY_SCHEMA,
+        ABANDONED_CLEANUP_AUTHORITY_SCHEMA,
+    },
     "invalidation-record": "skill-builder-invalidation.v1",
+    "mode-switch-record": MODE_SWITCH_SCHEMA,
 }
 
 _PAYLOAD_REQUIRED_FIELDS = {
@@ -254,6 +449,20 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "scoring_parameters",
         "freeze_timestamp",
         "partitions",
+    },
+    "implementer-brief": {
+        "schema_version",
+        "contract_digest",
+        "confirmation_digest",
+        "evaluation_digest",
+        "description",
+        "load_sentence",
+        "host_flags",
+        "body_rules",
+        "irreversible_prohibitions",
+        "owned_paths",
+        "resources",
+        "visible_cases",
     },
     "candidate-record": {
         "schema_version",
@@ -345,6 +554,22 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "release_evidence_manifest_digest",
         "authorized_delivery_scope",
     },
+    "evaluation-report": {
+        "schema_version",
+        "target_identity",
+        "target_snapshot_digest",
+        "candidate_digest",
+        "candidate_revision",
+        "contract_digest",
+        "confirmation_digest",
+        "evaluation_digest",
+        "review_digest",
+        "review_verdict",
+        "conformance_digest",
+        "scorecard_digest",
+        "scores",
+        "limitations",
+    },
     "delivery-acceptance-record": {
         "schema_version",
         "action",
@@ -378,7 +603,37 @@ _PAYLOAD_REQUIRED_FIELDS = {
         "reason",
         "invalidated_artifact_ids",
     },
+    "mode-switch-record": {
+        "schema_version",
+        "from_mode",
+        "to_mode",
+        "reason",
+        "user_identity",
+        "confirmed_at",
+        "confirmation_text",
+        "confirmation_event_digest",
+        "accepted",
+        "invalidated_artifact_ids",
+    },
 }
+
+
+def _switch_destination(stage: str) -> str:
+    """A mode switch keeps the baseline and research and rewinds to the sieve."""
+    if _STAGES.index(stage) >= _STAGES.index("research"):
+        return "research"
+    return stage
+
+
+def _stage_transition(event: str, mode: str) -> tuple[str, str] | None:
+    return _MODE_STAGE_TRANSITIONS.get(mode, {}).get(event, _STAGE_TRANSITIONS.get(event))
+
+
+def _require_mode_event(event: str, mode: str) -> None:
+    if mode == "evaluate" and event in _EVALUATE_SKIPPED_EVENTS:
+        raise RunStateError(f"evaluate runs skip the {event} event")
+    if mode != "evaluate" and event == "report":
+        raise RunStateError("only evaluate runs end with a report")
 
 
 def _now() -> str:
@@ -925,10 +1180,11 @@ def _locked_root(state_root: Path | None, *, create: bool) -> Any:
         "tombstones",
         "target-locks",
         "deleting",
+        "contracts",
     ):
         child = root / name
         if create or (
-            name in {"deleting", "initializing"}
+            name in {"deleting", "initializing", "contracts"}
             and not os.path.lexists(child)
         ):
             _ensure_private_directory(child)
@@ -1029,8 +1285,578 @@ def _mapping_list(value: object, label: str) -> list[dict[str, Any]]:
     return value
 
 
-def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> None:
+def _validate_load_policy(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "policy",
+        "loader_skills",
+        "loader_packages",
+    }:
+        raise RunStateError("contract load policy schema is invalid")
+    if value["policy"] not in _LOAD_POLICIES:
+        raise RunStateError("contract load policy is unsupported")
+    skills = _text_list(value["loader_skills"], "load policy loader skills")
+    packages = _text_list(value["loader_packages"], "load policy loader packages")
+    if len(set(skills)) != len(skills) or len(set(packages)) != len(packages):
+        raise RunStateError("load policy loaders contain duplicates")
+    if any(len(skill) > 64 or not _SKILL_NAME_RE.fullmatch(skill) for skill in skills):
+        raise RunStateError("load policy loader skill name is invalid")
+    if any(
+        len(package) > 64 or not _PACKAGE_NAME_RE.fullmatch(package)
+        for package in packages
+    ):
+        raise RunStateError("load policy loader package name is invalid")
+    if (value["policy"] == "user-or-skills") != bool(skills or packages):
+        raise RunStateError(
+            "only a user-or-skills load policy names loaders, and it names at least one"
+        )
+    return value
+
+
+def _validate_hosts(value: object) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(host, str) or host not in _SELECTION_HOSTS for host in value)
+        or len(set(value)) != len(value)
+    ):
+        raise RunStateError("contract hosts must be distinct supported target hosts")
+    return value
+
+
+def load_sentence(load_policy: object, name: object) -> str | None:
+    """Render the description's load sentence, or None when the agent may load."""
+    policy = _validate_load_policy(load_policy)
+    if not isinstance(name, str) or not name:
+        raise RunStateError("load sentence target name is invalid")
+    if policy["policy"] == "agent":
+        return None
+    if len(name) > 64 or not _SKILL_NAME_RE.fullmatch(name):
+        raise RunStateError("load sentence target name is invalid")
+    if policy["policy"] == "user":
+        return f"Only the user can load ${name}."
+    if name in policy["loader_skills"]:
+        raise RunStateError("a skill cannot name itself as its loader")
+    loaders = [f"${skill}" for skill in policy["loader_skills"]] + [
+        f"another {package} skill" for package in policy["loader_packages"]
+    ]
+    if len(loaders) == 1:
+        joined = loaders[0]
+    elif len(loaders) == 2:
+        joined = f"{loaders[0]} or {loaders[1]}"
+    else:
+        joined = f"{', '.join(loaders[:-1])}, or {loaders[-1]}"
+    return f"Only the user or {joined} can load ${name}."
+
+
+def _own_token(name: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![\w$-])\${re.escape(name)}(?![\w-])")
+
+
+def _check_description(description: str, sentence: str | None, name: str) -> None:
+    if sentence is None:
+        if _LOAD_CLAIM_RE.search(description):
+            raise RunStateError("description limits loading under an agent load policy")
+        return
+    prefix = description[: -len(sentence)] if description.endswith(sentence) else ""
+    if (
+        not re.search(r"[.!?] \Z", prefix)
+        or prefix != prefix.lstrip()
+        or _LOAD_CLAIM_RE.search(prefix)
+        or _own_token(name).search(prefix)
+    ):
+        raise RunStateError("description does not end with its one load sentence")
+
+
+def _codex_adapter_parts(value: object) -> list[str]:
+    """Split a Codex adapter path relative to the candidate package, failing closed."""
+    if not isinstance(value, str) or value.startswith("/") or "\\" in value:
+        raise RunStateError("Codex adapter path is unsafe")
+    parts = value.split("/")
+    climbs = 0
+    while climbs < len(parts) and parts[climbs] == "..":
+        climbs += 1
+    rest = parts[climbs:]
+    if rest[-2:] != ["agents", "openai.yaml"] or any(
+        part in {"", ".", ".."} for part in rest
+    ):
+        raise RunStateError("Codex adapter path must name an agents/openai.yaml")
+    return parts
+
+
+def _strict_text(payload: bytes, label: str) -> str:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunStateError(f"{label} is not UTF-8") from error
+    if _AMBIGUOUS_TEXT_RE.search(text):
+        raise RunStateError(f"{label} has an ambiguous encoding, control, or line break")
+    return text
+
+
+def _yaml_line(line: str, label: str) -> tuple[str, str | None]:
+    match = _YAML_KEY_RE.fullmatch(line)
+    if match is None:
+        raise RunStateError(f"{label} has an ambiguous line")
+    value = (match.group(2) or "").strip()
+    return match.group(1), value or None
+
+
+def _strict_yaml_scalar(value: str, label: str) -> str:
+    """Parse one closed single-line YAML scalar, rejecting every ambiguous form."""
+    if value[0] == '"':
+        inner = value[1:-1]
+        if len(value) < 2 or value[-1] != '"' or '"' in inner or "\\" in inner:
+            raise RunStateError(f"{label} is not a plain double-quoted string")
+        return inner
+    if value[0] == "'":
+        inner = value[1:-1]
+        if len(value) < 2 or value[-1] != "'" or "'" in inner.replace("''", ""):
+            raise RunStateError(f"{label} is not a closed single-quoted string")
+        return inner.replace("''", "'")
+    if (
+        value[0] in "-?:,[]{}#&*!|>%@`"
+        or ": " in value
+        or " #" in value
+        or value.endswith(":")
+    ):
+        raise RunStateError(f"{label} is not an unambiguous plain scalar")
+    return value
+
+
+def _strict_yaml_block(
+    lines: list[str],
+    label: str,
+    blocks: dict[str, frozenset[str] | None],
+    *,
+    other_roots: bool,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Read raw one-line scalars at the root and one level under the named blocks."""
+    roots: dict[str, str] = {}
+    nested: dict[str, dict[str, str]] = {}
+    parent: str | None = None
+    for line in lines:
+        if not line.strip() or line.lstrip(" ").startswith("#"):
+            continue
+        if "\t" in line:
+            raise RunStateError(f"{label} contains a tab")
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation == 0:
+            key, value = _yaml_line(line, label)
+            if key in roots or key in nested:
+                raise RunStateError(f"{label} repeats a key")
+            parent = None
+            if key in blocks:
+                if value is not None:
+                    raise RunStateError(f"{label} {key} must be a block mapping")
+                nested[key] = {}
+                parent = key
+            elif not other_roots or value is None:
+                raise RunStateError(f"{label} key {key} is unsupported or empty")
+            else:
+                _strict_yaml_scalar(value, f"{label} {key}")
+                roots[key] = value
+            continue
+        if parent is None or indentation != 2:
+            raise RunStateError(f"{label} has an ambiguous indented line")
+        key, value = _yaml_line(line[2:], label)
+        allowed = blocks[parent]
+        if (
+            key in nested[parent]
+            or value is None
+            or (allowed is not None and key not in allowed)
+        ):
+            raise RunStateError(f"{label} {parent} entry is ambiguous or unsupported")
+        _strict_yaml_scalar(value, f"{label} {parent} {key}")
+        nested[parent][key] = value
+    return roots, nested
+
+
+def _skill_frontmatter(payload: bytes) -> tuple[dict[str, str], dict[str, str], str]:
+    """Read root scalars and metadata from SKILL.md and return its body."""
+    label = "candidate SKILL.md frontmatter"
+    lines = _strict_text(payload, "candidate SKILL.md").split("\n")
+    if lines[0] != "---" or "---" not in lines[1:]:
+        raise RunStateError("candidate SKILL.md frontmatter is missing or unclosed")
+    end = lines.index("---", 1)
+    roots, nested = _strict_yaml_block(
+        lines[1:end], label, {"metadata": None}, other_roots=True
+    )
+    scalars = {key: _strict_yaml_scalar(raw, label) for key, raw in roots.items()}
+    metadata = {
+        key: _strict_yaml_scalar(raw, label)
+        for key, raw in nested.get("metadata", {}).items()
+    }
+    return scalars, metadata, "\n".join(lines[end + 1 :])
+
+
+def _codex_adapter(payload: bytes) -> tuple[bool | None, dict[str, str]]:
+    """Read policy.allow_implicit_invocation and interface text from agents/openai.yaml."""
+    label = "candidate agents/openai.yaml"
+    _, nested = _strict_yaml_block(
+        _strict_text(payload, label).split("\n"),
+        label,
+        {
+            "interface": _CODEX_INTERFACE_KEYS,
+            "policy": frozenset({"allow_implicit_invocation"}),
+        },
+        other_roots=False,
+    )
+    raw = nested.get("policy", {}).get("allow_implicit_invocation")
+    if raw not in {None, "true", "false"}:
+        raise RunStateError("candidate allow_implicit_invocation is not a plain YAML boolean")
+    interface = {
+        key: _strict_yaml_scalar(value, label)
+        for key, value in nested.get("interface", {}).items()
+    }
+    return (None if raw is None else raw == "true"), interface
+
+
+def restatement_sentences(body: str, name: str) -> list[str]:
+    """Return body sentences that restate who loads the skill named name."""
+    kept: list[str] = []
+    fence: str | None = None
+    for line in body.split("\n"):
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            if (
+                marker
+                and marker.group(1)[0] == fence[0]
+                and len(marker.group(1)) >= len(fence)
+                and not line.strip().lstrip(fence[0])
+            ):
+                fence = None
+            continue
+        if marker:
+            fence = marker.group(1)
+            continue
+        kept.append("" if re.match(r" {0,3}>", line) else line)
+    units: list[str] = []
+    paragraph: list[str] = []
+    for line in [*kept, ""]:
+        stripped = line.strip()
+        starts_unit = re.match(r"(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\|)", stripped)
+        if (not stripped or starts_unit) and paragraph:
+            units.append(" ".join(paragraph))
+            paragraph = []
+        if stripped.startswith("|"):
+            units.extend(cell for cell in stripped.split("|") if cell.strip())
+        elif stripped.startswith("#"):
+            units.append(stripped)
+        elif stripped:
+            paragraph.append(stripped)
+    own = _own_token(name)
+    found: list[str] = []
+    for unit in units:
+        unit = re.sub(
+            r"(`+)(?!`)(.*?)(?<!`)\1(?!`)",
+            lambda span: span.group(2)
+            if re.fullmatch(r"\$[\w-]+", span.group(2).strip())
+            else " ",
+            unit,
+        )
+        unit = re.sub(r'"[^"]*"|\u201c[^\u201d]*\u201d', " ", unit)
+        for sentence in re.split(r"(?<=[.!?])\s+", unit):
+            if (own.search(sentence) or _THIS_SKILL_RE.search(sentence)) and (
+                _RESTATEMENT_VERB_RE.search(re.sub(r"\$[\w-]+", " ", sentence))
+            ):
+                found.append(sentence.strip())
+    return found
+
+
+def _codex_flag_fits(implicit: bool | None, restricted: bool) -> bool:
+    return implicit is False if restricted else implicit is not False
+
+
+def _opencode_flag_fits(metadata: dict[str, str], restricted: bool) -> bool:
+    value = metadata.get("opencode/autoinvoke")
+    return value == "false" if restricted else value in {None, "true"}
+
+
+def check_candidate_entrypoint(
+    skill_md: bytes,
+    openai_yaml: bytes | None,
+    *,
+    name: str,
+    load_policy: dict[str, Any],
+    hosts: list[str],
+    description: str,
+    codex_interface: dict[str, Any] | None = None,
+) -> None:
+    """Check a candidate's frontmatter, host hide flags, and body at acceptance."""
+    scalars, metadata, body = _skill_frontmatter(skill_md)
+    if scalars.get("name") != name:
+        raise RunStateError("candidate SKILL.md name differs from the target name")
+    if scalars.get("description") != description:
+        raise RunStateError("candidate description differs from its implementer brief")
+    if "disable-model-invocation" in scalars:
+        raise RunStateError(
+            "candidate SKILL.md sets disable-model-invocation, which no load policy uses"
+        )
+    hosts = _validate_hosts(hosts)
+    sentence = load_sentence(load_policy, name)
+    _check_description(description, sentence, name)
+    restricted = sentence is not None
+    if (
+        restricted
+        and "claude-code" in hosts
+        and ("when_to_use" in scalars or len(description) > _CLAUDE_LISTING_LIMIT)
+    ):
+        raise RunStateError("candidate Claude Code listing can cut off its load sentence")
+    if "codex" in hosts:
+        implicit, interface = (
+            (None, {}) if openai_yaml is None else _codex_adapter(openai_yaml)
+        )
+        if not _codex_flag_fits(implicit, restricted):
+            raise RunStateError(
+                "candidate Codex allow_implicit_invocation contradicts its load policy"
+            )
+        if codex_interface is None or any(
+            interface.get(field) != codex_interface[field]
+            for field in ("short_description", "default_prompt")
+        ):
+            raise RunStateError("candidate Codex interface text differs from its implementer brief")
+    if "opencode" in hosts and not _opencode_flag_fits(metadata, restricted):
+        raise RunStateError("candidate opencode/autoinvoke contradicts its load policy")
+    if restricted and sentence in " ".join(body.split()):
+        raise RunStateError("candidate body restates its load sentence")
+    restated = restatement_sentences(body, name)
+    if restated:
+        raise RunStateError(f"candidate body restates its load policy: {restated[0]!r}")
+
+
+def _validate_selection_case(case: dict[str, Any]) -> None:
+    if (
+        case["host"] not in _SELECTION_HOSTS
+        or case["expected_selection"] not in _SELECTION_KINDS
+        or isinstance(case["repeats"], bool)
+        or case["repeats"] != _SELECTION_REPEATS
+    ):
+        raise RunStateError("selection case host, expectation, or repeats are invalid")
+    setup = case["setup_manifest"]
+    if not isinstance(setup, dict) or set(setup) != {"skill_root", "installs"}:
+        raise RunStateError("selection setup manifest schema is invalid")
+    _safe_artifact_path(setup["skill_root"])
+    installs = _mapping_list(setup["installs"], "selection setup installs")
+    paths: set[str] = set()
+    roles: list[str] = []
+    for install in installs:
+        if set(install) != {"role", "path", "digest"}:
+            raise RunStateError("selection setup install schema is invalid")
+        path = _safe_artifact_path(install["path"])
+        if path in paths:
+            raise RunStateError("selection setup installs share a path")
+        paths.add(path)
+        roles.append(install["role"])
+        if install["role"] == "candidate":
+            if install["digest"] is not None:
+                raise RunStateError(
+                    "selection setup names the candidate by role, not by bytes"
+                )
+        elif install["role"] == "neighbour":
+            _digest(install["digest"], "selection setup neighbour")
+        else:
+            raise RunStateError("selection setup install role is invalid")
+    if roles.count("candidate") != 1:
+        raise RunStateError("selection setup must install exactly one candidate")
+    if case["expected_selection"] == "other" and "neighbour" not in roles:
+        raise RunStateError("selection case expecting another skill installs none")
+
+
+def _selection_neighbour_digests(case: dict[str, Any]) -> set[str]:
+    return {
+        install["digest"]
+        for install in case["setup_manifest"]["installs"]
+        if install["role"] == "neighbour"
+    }
+
+
+def _selection_setup_bytes(case: dict[str, Any], candidate_digest: str) -> bytes:
+    """Render the frozen setup with the accepted candidate installed by role."""
+    setup = case["setup_manifest"]
+    return canonical_json_bytes(
+        {
+            "skill_root": setup["skill_root"],
+            "installs": [
+                {**install, "digest": candidate_digest}
+                if install["role"] == "candidate"
+                else install
+                for install in setup["installs"]
+            ],
+        }
+    )
+
+
+def _selection_load_event(host: str, event: dict[str, Any]) -> bool:
+    if host == "codex":
+        item = event.get("item")
+        return (
+            isinstance(item, dict)
+            and item.get("type") == "command_execution"
+            and isinstance(item.get("command"), str)
+            and "SKILL.md" in item["command"]
+        )
+    if host == "opencode":
+        part = event.get("part")
+        return (
+            event["type"] == "tool_use"
+            and isinstance(part, dict)
+            and part.get("tool") == "skill"
+        )
+    tool = "Skill" if host == "claude-code" else "skill_view"
+    pending: list[Any] = [event]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if value.get("type") == "tool_use" and value.get("name") == tool:
+                return True
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return False
+
+
+def _validate_selection_trace(
+    host: str, payload: bytes, trial_run: dict[str, Any]
+) -> None:
+    """Derive trace completeness and no-load evidence from the host's raw events."""
+    try:
+        events = [
+            json.loads(line)
+            for line in payload.decode("utf-8").splitlines()
+            if line.strip()
+        ]
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise RunStateError("selection trial tool events are not JSON lines") from error
+    if not events or any(
+        not isinstance(event, dict) or not isinstance(event.get("type"), str)
+        for event in events
+    ):
+        raise RunStateError("selection trial tool events are not JSON lines")
+    ended = events[-1]["type"] in _SELECTION_END_MARKERS[host]
+    if trial_run["complete_trace"] is not ended:
+        raise RunStateError(
+            "selection trial trace completeness contradicts the host end marker"
+        )
+    if trial_run["observed_load"]["kind"] == "none" and any(
+        _selection_load_event(host, event) for event in events
+    ):
+        raise RunStateError("selection trial that loaded nothing records a load event")
+    if trial_run["observed_load"]["kind"] in {"candidate", "other"} and not any(
+        _selection_load_event(host, event) for event in events
+    ):
+        raise RunStateError(
+            "selection trial claiming a skill load records no load event"
+        )
+
+
+def _validate_trial_run(case: dict[str, Any]) -> None:
+    repeat_index = _exact_integer(case["repeat_index"], "trial repeat index")
+    if case["exposure"] == "loaded":
+        if repeat_index != 0:
+            raise RunStateError("loaded trial case runs exactly once")
+        _digest(case["loaded_skill_digest"], "trial case loaded_skill_digest")
+        return
+    if repeat_index >= _SELECTION_REPEATS:
+        raise RunStateError("selection trial repeat index is out of range")
+    _digest(case["installed_skill_digest"], "selection trial installed skill")
+    if not isinstance(case["complete_trace"], bool):
+        raise RunStateError("selection trial trace completeness is invalid")
+    observed = case["observed_load"]
+    if not isinstance(observed, dict) or set(observed) != {"kind", "name", "digest"}:
+        raise RunStateError("selection trial observed load schema is invalid")
+    if observed["kind"] == "none":
+        if observed["name"] is not None or observed["digest"] is not None:
+            raise RunStateError("selection trial that loaded nothing names a skill")
+        if case["complete_trace"] is not True:
+            raise RunStateError(
+                "selection trial claims no load without a complete trace"
+            )
+    elif observed["kind"] in {"candidate", "other"}:
+        _text(observed["name"], "selection trial loaded skill name")
+        _digest(observed["digest"], "selection trial loaded skill")
+    else:
+        raise RunStateError("selection trial observed load kind is invalid")
+
+
+_AGENT_CONFIRMATION_IDENTITIES = (
+    "main-agent",
+    "implementer",
+    "independent-reviewer",
+    "independent-verifier",
+    "trial-agent",
+)
+_AGENT_REVIEW_IDENTITIES = ("main-agent", "implementer", "trial-agent")
+
+
+def _reject_agent_actor_identity(identity: str, role: str) -> None:
+    """An agent role never speaks for another party. Only the named party does."""
+    _reject_agent_identity(identity, role, _AGENT_CONFIRMATION_IDENTITIES)
+
+
+def _reject_agent_reviewer_identity(identity: str, role: str) -> None:
+    """The main agent never reviews or verifies its own candidate. Numbered reviewer names stay the reviewer's checklist because the helper cannot tell who typed them."""
+    _reject_agent_identity(identity, role, _AGENT_REVIEW_IDENTITIES)
+
+
+def _reject_agent_identity(identity: str, role: str, markers: tuple[str, ...]) -> None:
+    folded = identity.strip().casefold()
+    if "assum" in folded or any(
+        folded == marker or folded.startswith(marker + "-") for marker in markers
+    ):
+        raise RunStateError(f"{role} identity is an agent role, not the named party")
+
+
+def _reject_agent_confirmation_identity(identity: str) -> None:
+    """An agent role never confirms for the user. Only a host user event does."""
+    _reject_agent_actor_identity(identity, "user confirmation")
+
+
+def _reject_future_confirmation_time(confirmed_at: str) -> None:
+    """A confirmation timestamp ahead of now is agent-composed, not observed."""
+    parsed = datetime.fromisoformat(confirmed_at[:-1] + "+00:00")
+    if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise RunStateError("user confirmation timestamp is in the future")
+
+
+def _reject_instant_verification(started_at: str, ended_at: str) -> None:
+    """A verification that ran no commands finishes in milliseconds. Real command runs take longer."""
+    started = datetime.fromisoformat(started_at[:-1] + "+00:00")
+    ended = datetime.fromisoformat(ended_at[:-1] + "+00:00")
+    if (ended - started).total_seconds() < 1:
+        raise RunStateError("verification ran no commands in its recorded window")
+
+
+def _reject_file_digest_result(run: Path, candidate_id: str, resulting_digest: str) -> None:
+    """The owned-result digest describes a record, never one retained file. A file digest passes acceptance and fails only at delivery."""
+    raw = _artifact_directory(run, candidate_id) / "raw"
+    for path in sorted(raw.rglob("*")):
+        if not path.is_file() or path.name == "candidate-result.json":
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() == resulting_digest:
+            raise RunStateError(
+                "candidate resulting digest is one retained file, not the owned result"
+            )
+
+
+def _require_post_finalize_delivery_grant(delivery_scope: str, authority_event: bytes) -> None:
+    """Delivery authority is asked after finalization, so a scope missing from initialize authority must be named in the retained user grant."""
+    try:
+        grant_text = authority_event.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunStateError("delivery grant names no delivery scope") from error
+    if delivery_scope not in grant_text:
+        raise RunStateError("delivery action or destination exceeds recorded authority scope")
+
+
+def _validate_artifact_payload(
+    artifact_type: str, payload: dict[str, Any], mode: str | None = None
+) -> None:
     """Apply the normative, versioned payload schema before accepting an artifact."""
+    evaluate = mode == "evaluate"
+    if evaluate and artifact_type == "implementer-brief":
+        raise RunStateError("evaluate runs have no implementer brief")
+    if not evaluate and artifact_type == "evaluation-report":
+        raise RunStateError("only evaluate runs retain an evaluation report")
     expected_version = _PAYLOAD_SCHEMA_VERSIONS.get(artifact_type)
     expected_fields = _PAYLOAD_REQUIRED_FIELDS.get(artifact_type)
     if expected_version is None or expected_fields is None:
@@ -1042,14 +1868,39 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
     versioned_fields = set(expected_fields)
     if artifact_type == "candidate-record" and schema_version in {
         HISTORICAL_CANDIDATE_SCHEMA,
-        CANDIDATE_SCHEMA,
+        *_PACKAGED_CANDIDATE_SCHEMAS,
     }:
         versioned_fields.add("loaded_skill_digest")
+    if artifact_type == "candidate-record" and schema_version == CANDIDATE_SCHEMA:
+        versioned_fields |= {"brief_digest", "checker_version"}
+    if artifact_type == "skill-contract" and schema_version == CONTRACT_SCHEMA:
+        versioned_fields |= _CONTRACT_V2_FIELDS
+    if (
+        artifact_type == "user-confirmation-record"
+        and schema_version == REUSED_CONFIRMATION_SCHEMA
+    ):
+        versioned_fields = (
+            versioned_fields - {"user_identity", "confirmed_at", "confirmation_text"}
+        ) | {"kept_contract", "kept_contract_digest"}
+    if (
+        artifact_type == "cleanup-authority-record"
+        and schema_version == CLEANUP_AUTHORITY_SCHEMA
+    ):
+        versioned_fields = (versioned_fields - {"accepted_delivery_digest"}) | {
+            "evaluation_report_digest"
+        }
+    if (
+        artifact_type == "cleanup-authority-record"
+        and schema_version == ABANDONED_CLEANUP_AUTHORITY_SCHEMA
+    ):
+        versioned_fields = (versioned_fields - {"accepted_delivery_digest"}) | {
+            "abandon_receipt_digest"
+        }
     if set(payload) != versioned_fields or schema_version not in expected_versions:
         raise RunStateError(f"{artifact_type} payload schema is invalid")
 
     if artifact_type == "baseline-report":
-        if payload["mode"] not in {"create", "improve"}:
+        if payload["mode"] not in _MODES:
             raise RunStateError("baseline mode is invalid")
         _digest(payload["target_snapshot_digest"], "baseline target snapshot")
         if payload["mode"] == "create":
@@ -1062,7 +1913,9 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             _digest(proof["absence_evidence_digest"], "absence evidence")
             _digest(proof["overlap_map_digest"], "overlap map")
         elif payload["absent_target_proof"] is not None:
-            raise RunStateError("improve baseline must not claim absent-target proof")
+            raise RunStateError(
+                f"{payload['mode']} baseline must not claim absent-target proof"
+            )
         _text_list(payload["host_conventions"], "baseline host conventions")
         _text_list(payload["preserved_regressions"], "baseline regressions")
         _digest_list(payload["raw_evidence_digests"], "baseline raw evidence")
@@ -1095,8 +1948,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 raise RunStateError("research lane identities must be unique")
             lane_ids.add(lane_id)
             _text(lane["question"], "research lane question")
-            if lane["model"] != "GPT-6-Luna" or lane["reasoning"] != "max":
-                raise RunStateError("research lane model or reasoning is invalid")
+            _text(lane["model"], "research lane model")
+            _text(lane["reasoning"], "research lane reasoning")
             _text_list(lane["source_scope"], "research source scope")
             _exact_integer(lane["evidence_budget"], "research evidence budget", minimum=1)
             _text(lane["start_state"], "research lane start state")
@@ -1163,17 +2016,26 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         return
 
     if artifact_type == "skill-contract":
-        _digest(payload["design_digest"], "contract design")
+        if evaluate:
+            if payload["design_digest"] is not None:
+                raise RunStateError("an evaluate contract has no design to bind")
+        else:
+            _digest(payload["design_digest"], "contract design")
         _text(payload["purpose"], "contract purpose")
         _text(payload["success_signal"], "contract success signal")
-        for field in _PAYLOAD_REQUIRED_FIELDS[artifact_type] - {
+        for field in versioned_fields - {
             "schema_version",
             "design_digest",
             "purpose",
             "success_signal",
             "evidence_bindings",
+            "load_policy",
+            "hosts",
         }:
             _text_list(payload[field], f"contract {field}")
+        if schema_version == CONTRACT_SCHEMA:
+            _validate_load_policy(payload["load_policy"])
+            _validate_hosts(payload["hosts"])
         bindings = _mapping_list(payload["evidence_bindings"], "contract evidence bindings")
         for binding in bindings:
             if set(binding) != {"statement", "artifact_id", "digest"}:
@@ -1184,9 +2046,21 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         return
 
     if artifact_type == "user-confirmation-record":
-        _text(payload["user_identity"], "confirmation user identity")
-        _timestamp(payload["confirmed_at"], "confirmation timestamp")
-        _text(payload["confirmation_text"], "confirmation text")
+        if schema_version == REUSED_CONFIRMATION_SCHEMA:
+            kept = _validate_kept_contract_record(payload["kept_contract"])
+            if (
+                payload["kept_contract_digest"] != kept["record_digest"]
+                or payload["confirmation_event_digest"]
+                != kept["confirmation"]["confirmation_event_digest"]
+                or payload["target_identity"] != kept["target_identity"]
+            ):
+                raise RunStateError("reused confirmation does not match its kept contract")
+        else:
+            identity = _text(payload["user_identity"], "confirmation user identity")
+            _reject_agent_confirmation_identity(identity)
+            confirmed_at = _timestamp(payload["confirmed_at"], "confirmation timestamp")
+            _reject_future_confirmation_time(confirmed_at)
+            _text(payload["confirmation_text"], "confirmation text")
         _digest(payload["confirmation_event_digest"], "confirmation event")
         _text(payload["target_identity"], "confirmation target")
         _text(payload["contract_artifact_id"], "confirmation contract artifact")
@@ -1219,18 +2093,15 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         case_ids: set[str] = set()
         for partition, cases in partitions.items():
             for case in _mapping_list(cases, f"evaluation {partition} cases"):
-                if set(case) != {
-                    "case_id",
-                    "partition",
-                    "purpose",
-                    "raw_request_digest",
-                    "allowed_context",
-                    "setup_manifest_digest",
-                    "observable_assertions",
-                    "forbidden_effects",
-                    "evidence_requirements",
-                    "pass_fail_rule",
-                }:
+                if payload["schema_version"] == LOADED_EVALUATION_SCHEMA:
+                    expected_case_fields = _EVALUATION_CASE_FIELDS
+                elif case.get("exposure") == "loaded":
+                    expected_case_fields = _EVALUATION_CASE_FIELDS | {"exposure"}
+                elif case.get("exposure") == "selection":
+                    expected_case_fields = _SELECTION_CASE_FIELDS
+                else:
+                    raise RunStateError("evaluation case exposure is invalid")
+                if set(case) != expected_case_fields:
                     raise RunStateError("evaluation case schema is invalid")
                 case_id = _text(case["case_id"], "evaluation case identity")
                 if case_id in case_ids or case["partition"] != partition:
@@ -1238,7 +2109,10 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 case_ids.add(case_id)
                 _text(case["purpose"], "evaluation case purpose")
                 _digest(case["raw_request_digest"], "evaluation raw request")
-                _digest(case["setup_manifest_digest"], "evaluation setup manifest")
+                if case.get("exposure") == "selection":
+                    _validate_selection_case(case)
+                else:
+                    _digest(case["setup_manifest_digest"], "evaluation setup manifest")
                 for field in (
                     "allowed_context",
                     "observable_assertions",
@@ -1251,8 +2125,76 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("evaluation pack has no frozen cases")
         return
 
+    if artifact_type == "implementer-brief":
+        for field in ("contract_digest", "confirmation_digest", "evaluation_digest"):
+            _digest(payload[field], f"implementer brief {field}")
+        if "\n" in _text(payload["description"], "implementer brief description"):
+            raise RunStateError("implementer brief description must be one line")
+        if payload["load_sentence"] is not None:
+            _text(payload["load_sentence"], "implementer brief load sentence")
+        flags = payload["host_flags"]
+        if not isinstance(flags, dict) or any(
+            host not in _SELECTION_HOSTS or not isinstance(value, dict)
+            for host, value in flags.items()
+        ):
+            raise RunStateError("implementer brief host flags are invalid")
+        _json_value(flags)
+        codex = flags.get("codex")
+        if codex is not None:
+            if set(codex) != _CODEX_BRIEF_KEYS or not isinstance(
+                codex["allow_implicit_invocation"], bool
+            ):
+                raise RunStateError("implementer brief Codex flags are invalid")
+            _codex_adapter_parts(codex["adapter_path"])
+            for field in ("short_description", "default_prompt"):
+                if "\n" in _text(codex[field], f"implementer brief Codex {field}"):
+                    raise RunStateError(f"implementer brief Codex {field} must be one line")
+        if not _text_list(payload["body_rules"], "implementer brief body rules"):
+            raise RunStateError("implementer brief has no body rules")
+        prohibitions = _mapping_list(
+            payload["irreversible_prohibitions"], "implementer brief prohibitions"
+        )
+        for prohibition in prohibitions:
+            if set(prohibition) != {"forbidden_action", "action", "reason", "alternative"}:
+                raise RunStateError("implementer brief prohibition schema is invalid")
+            for field, value in prohibition.items():
+                _text(value, f"implementer brief prohibition {field}")
+        if len({item["forbidden_action"] for item in prohibitions}) != len(prohibitions):
+            raise RunStateError("implementer brief repeats a prohibition")
+        owned = _text_list(payload["owned_paths"], "implementer brief owned paths")
+        if not owned or len(set(owned)) != len(owned):
+            raise RunStateError("implementer brief owned paths are empty or repeated")
+        _text_list(payload["resources"], "implementer brief resources")
+        cases = _mapping_list(payload["visible_cases"], "implementer brief visible cases")
+        for case in cases:
+            if set(case) != {"case_id", "request", "expected"}:
+                raise RunStateError("implementer brief visible case schema is invalid")
+            for field, value in case.items():
+                _text(value, f"implementer brief visible case {field}")
+        if len({case["case_id"] for case in cases}) != len(cases):
+            raise RunStateError("implementer brief repeats a visible case")
+        return
+
     if artifact_type == "candidate-record":
-        for field in ("candidate_id", "isolated_locator", "candidate_revision", "writable_role"):
+        if evaluate:
+            if (
+                schema_version != CANDIDATE_SCHEMA
+                or payload["brief_digest"] is not None
+                or payload["checker_version"] is not None
+                or payload["writable_role"] is not None
+                or payload["owned_paths"] != []
+                or payload["diff_digest"] != _EMPTY_DIFF_DIGEST
+            ):
+                raise RunStateError(
+                    "an evaluate candidate is an unchanged copy with no writer, "
+                    "brief, owned paths, or diff"
+                )
+        else:
+            if schema_version == CANDIDATE_SCHEMA:
+                _digest(payload["brief_digest"], "candidate implementer brief")
+                _text(payload["checker_version"], "candidate checker version")
+            _text(payload["writable_role"], "candidate writable_role")
+        for field in ("candidate_id", "isolated_locator", "candidate_revision"):
             _text(payload[field], f"candidate {field}")
         locator = Path(payload["isolated_locator"])
         if not locator.is_absolute() or ".." in locator.parts:
@@ -1269,7 +2211,7 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             _digest(payload[field], f"candidate {field}")
         if payload["schema_version"] in {
             HISTORICAL_CANDIDATE_SCHEMA,
-            CANDIDATE_SCHEMA,
+            *_PACKAGED_CANDIDATE_SCHEMAS,
         }:
             _digest(payload["loaded_skill_digest"], "candidate loaded skill")
             if payload["loaded_skill_digest"] == payload["resulting_digest"]:
@@ -1286,41 +2228,38 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         cases = _mapping_list(payload["cases"], "trial cases")
         if not cases:
             raise RunStateError("trial pack has no cases")
-        case_fields = {
-            "case_id",
-            "case_digest",
-            "request_digest",
-            "raw_prompt_digest",
-            "loaded_skill_digest",
-            "fresh_context_identity",
-            "tool_event_digest",
-            "output_digest",
-            "before_target_manifest_digest",
-            "after_target_manifest_digest",
-            "filesystem_result_digest",
-            "verdict",
-            "limitations",
-        }
+        runs_are_versioned = payload["schema_version"] == TRIAL_SCHEMA
         case_ids: list[str] = []
-        seen_case_ids: set[str] = set()
+        seen_case_ids: set[tuple[str, int]] = set()
         context_ids: set[str] = set()
+        selection_traces: set[tuple[str, str]] = set()
         for case in cases:
+            if not runs_are_versioned:
+                case_fields = _TRIAL_EVIDENCE_FIELDS | {"loaded_skill_digest"}
+            elif case.get("exposure") == "selection":
+                case_fields = _SELECTION_TRIAL_RUN_FIELDS
+            elif case.get("exposure") == "loaded":
+                case_fields = _LOADED_TRIAL_RUN_FIELDS
+            else:
+                raise RunStateError("trial case exposure is invalid")
             if set(case) != case_fields:
                 raise RunStateError("trial case schema is invalid")
             case_id = _text(case["case_id"], "trial case identity")
             context_id = _text(
                 case["fresh_context_identity"], "trial fresh context identity"
             )
-            if case_id in seen_case_ids or context_id in context_ids:
+            if runs_are_versioned:
+                _validate_trial_run(case)
+            run_identity = (case_id, case.get("repeat_index", 0))
+            if run_identity in seen_case_ids or context_id in context_ids:
                 raise RunStateError("trial case or fresh context identity is duplicated")
             case_ids.append(case_id)
-            seen_case_ids.add(case_id)
+            seen_case_ids.add(run_identity)
             context_ids.add(context_id)
             for field in (
                 "case_digest",
                 "request_digest",
                 "raw_prompt_digest",
-                "loaded_skill_digest",
                 "tool_event_digest",
                 "output_digest",
                 "before_target_manifest_digest",
@@ -1328,12 +2267,29 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 "filesystem_result_digest",
             ):
                 _digest(case[field], f"trial case {field}")
+            if runs_are_versioned and case["exposure"] == "selection":
+                trace = (case_id, case["tool_event_digest"])
+                if trace in selection_traces:
+                    raise RunStateError(
+                        "selection trial repeats share one tool-event trace"
+                    )
+                selection_traces.add(trace)
+            if not runs_are_versioned:
+                _digest(case["loaded_skill_digest"], "trial case loaded_skill_digest")
             if case["verdict"] not in {"pass", "fail"}:
                 raise RunStateError("trial case verdict is invalid")
             _text_list(case["limitations"], "trial case limitations")
-        for field in ("coverage", "isolation_evidence", "leakage_checks"):
+        for field in ("isolation_evidence", "leakage_checks"):
             _text_list(payload[field], f"trial {field}")
-        if payload["coverage"] != case_ids:
+        expected_coverage: list[Any] = (
+            [
+                {"case_id": case["case_id"], "repeat_index": case["repeat_index"]}
+                for case in cases
+            ]
+            if runs_are_versioned
+            else case_ids
+        )
+        if payload["coverage"] != expected_coverage:
             raise RunStateError("trial case coverage is incomplete or out of order")
         _digest(payload["aggregate_manifest_digest"], "trial aggregate manifest")
         if payload["status"] not in {"pass", "fail"}:
@@ -1351,6 +2307,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         gates = payload["gates"]
         if not isinstance(gates, dict) or not gates:
             raise RunStateError("conformance gates are incomplete")
+        if evaluate and set(gates) != _CONFORMANCE_GATES:
+            raise RunStateError("evaluate conformance must record gates BR1 to BR10")
         for gate_id, gate in gates.items():
             _text(gate_id, "conformance gate identity")
             if not isinstance(gate, dict) or set(gate) != {
@@ -1361,7 +2319,12 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 "release_blocking",
             }:
                 raise RunStateError("conformance gate schema is invalid")
-            if gate["status"] not in {"pass", "fail"} or not isinstance(gate["release_blocking"], bool):
+            statuses = (
+                {"skip"}
+                if evaluate and gate_id in _EVALUATE_SKIPPED_GATES
+                else {"pass", "fail"}
+            )
+            if gate["status"] not in statuses or not isinstance(gate["release_blocking"], bool):
                 raise RunStateError("conformance gate result is invalid")
             _digest_list(gate["evidence_digests"], "conformance gate evidence")
             _text(gate["affected_stage"], "conformance affected stage")
@@ -1369,7 +2332,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         return
 
     if artifact_type == "review-record":
-        _text(payload["reviewer_identity"], "reviewer identity")
+        reviewer = _text(payload["reviewer_identity"], "reviewer identity")
+        _reject_agent_reviewer_identity(reviewer, "reviewer")
         _digest(payload["candidate_digest"], "review candidate")
         _text(payload["candidate_revision"], "review candidate revision")
         if payload["independent"] is not True or payload["read_only"] is not True:
@@ -1394,7 +2358,8 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
                 _digest(binding["component_digest"], "review input component digest")
         _digest_list(payload["access_check_evidence"], "review access checks")
         _text(payload["contamination_check"], "review contamination check")
-        _timestamp(payload["reviewed_at"], "review timestamp")
+        reviewed_at = _timestamp(payload["reviewed_at"], "review timestamp")
+        _reject_future_confirmation_time(reviewed_at)
         if not isinstance(payload["fresh"], bool) or not isinstance(payload["valid"], bool):
             raise RunStateError("review freshness or validity is malformed")
         if payload["verdict"] not in {"ready", "not ready", None}:
@@ -1513,13 +2478,16 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         return
 
     if artifact_type == "verification-record":
-        _text(payload["verifier_identity"], "verifier identity")
+        verifier = _text(payload["verifier_identity"], "verifier identity")
+        _reject_agent_reviewer_identity(verifier, "verifier")
         _digest(payload["candidate_digest"], "verification candidate")
         _text(payload["candidate_revision"], "verification candidate revision")
         if payload["independent"] is not True or payload["read_only"] is not True:
             raise RunStateError("verification independence attestation is invalid")
         _timestamp(payload["started_at"], "verification start")
-        _timestamp(payload["ended_at"], "verification end")
+        ended_at = _timestamp(payload["ended_at"], "verification end")
+        _reject_future_confirmation_time(ended_at)
+        _reject_instant_verification(payload["started_at"], ended_at)
         _digest(payload["before_manifest_digest"], "verification before manifest")
         _digest(payload["after_manifest_digest"], "verification after manifest")
         if not isinstance(payload["fresh"], bool) or payload["status"] not in {"pass", "fail"}:
@@ -1557,6 +2525,31 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
             raise RunStateError("release delivery scope contains duplicates")
         return
 
+    if artifact_type == "evaluation-report":
+        _text(payload["target_identity"], "evaluation report target identity")
+        _text(payload["candidate_revision"], "evaluation report candidate revision")
+        for field in (
+            "target_snapshot_digest",
+            "candidate_digest",
+            "contract_digest",
+            "confirmation_digest",
+            "evaluation_digest",
+            "review_digest",
+            "conformance_digest",
+            "scorecard_digest",
+        ):
+            _digest(payload[field], f"evaluation report {field}")
+        if payload["review_verdict"] not in {"ready", "not ready"}:
+            raise RunStateError("evaluation report review verdict is invalid")
+        for score in _mapping_list(payload["scores"], "evaluation report scores"):
+            if set(score) != {"name", "score", "failing_criteria"}:
+                raise RunStateError("evaluation report score schema is invalid")
+            _text(score["name"], "evaluation report category")
+            _exact_integer(score["score"], "evaluation report score")
+            _text_list(score["failing_criteria"], "evaluation report failing criteria")
+        _text_list(payload["limitations"], "evaluation report limitations")
+        return
+
     if artifact_type == "delivery-acceptance-record":
         if payload["action"] not in {"installation", "integration"} or payload["accepted"] is not True:
             raise RunStateError("delivery acceptance result is invalid")
@@ -1581,7 +2574,16 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         _digest(payload["authority_event_digest"], "cleanup authority event")
         _text(payload["actor"], "cleanup authority actor")
         _timestamp(payload["timestamp"], "cleanup authority timestamp")
-        _digest(payload["accepted_delivery_digest"], "cleanup accepted delivery")
+        if schema_version == ABANDONED_CLEANUP_AUTHORITY_SCHEMA:
+            pass
+        elif (schema_version == CLEANUP_AUTHORITY_SCHEMA) != evaluate:
+            raise RunStateError("cleanup authority schema does not match the run's mode")
+        if schema_version == ABANDONED_CLEANUP_AUTHORITY_SCHEMA:
+            _digest(payload["abandon_receipt_digest"], "cleanup abandon receipt")
+        elif evaluate:
+            _digest(payload["evaluation_report_digest"], "cleanup evaluation report")
+        else:
+            _digest(payload["accepted_delivery_digest"], "cleanup accepted delivery")
         return
 
     if artifact_type == "invalidation-record":
@@ -1592,6 +2594,98 @@ def _validate_artifact_payload(artifact_type: str, payload: dict[str, Any]) -> N
         identifiers = _text_list(payload["invalidated_artifact_ids"], "invalidated artifacts")
         if identifiers != sorted(identifiers) or len(identifiers) != len(set(identifiers)):
             raise RunStateError("invalidated artifact identifiers are not deterministic")
+        return
+
+    if artifact_type == "mode-switch-record":
+        if {payload["from_mode"], payload["to_mode"]} != _SWITCH_MODES or (
+            mode is not None and payload["from_mode"] != mode
+        ):
+            raise RunStateError("a run switches in place only between improve and modify")
+        _text(payload["reason"], "mode switch reason")
+        _text(payload["user_identity"], "mode switch user identity")
+        _timestamp(payload["confirmed_at"], "mode switch confirmation timestamp")
+        _text(payload["confirmation_text"], "mode switch confirmation text")
+        _digest(payload["confirmation_event_digest"], "mode switch confirmation event")
+        if payload["accepted"] is not True:
+            raise RunStateError("mode switch is not confirmed by the user")
+        identifiers = _text_list(payload["invalidated_artifact_ids"], "invalidated artifacts")
+        if identifiers != sorted(identifiers) or len(identifiers) != len(set(identifiers)):
+            raise RunStateError("invalidated artifact identifiers are not deterministic")
+
+
+def _validate_kept_contract_record(record: object) -> dict[str, Any]:
+    """Check one kept-contract store record and the payloads it carries."""
+    if not isinstance(record, dict) or set(record) != _KEPT_CONTRACT_FIELDS:
+        raise RunStateError("kept contract schema is invalid")
+    if (
+        record["schema_version"] != KEPT_CONTRACT_SCHEMA
+        or record["source_mode"] not in _MODES
+        or record["source_stage"]
+        != ("reported" if record["source_mode"] == "evaluate" else "finalized")
+        or not isinstance(record["source_workflow_id"], str)
+        or not _WORKFLOW_RE.fullmatch(record["source_workflow_id"])
+        or record["record_digest"] != canonical_digest(record, "record_digest")
+    ):
+        raise RunStateError("kept contract identity or digest is invalid")
+    _text(record["target_identity"], "kept contract target")
+    _digest(record["skill_file_digest"], "kept contract skill files")
+    _digest(record["source_final_transition_digest"], "kept contract final transition")
+    _timestamp(record["created_at"], "kept contract timestamp")
+    _text_list(record["confirmation_limitations"], "kept contract confirmation limitations")
+    contract = _nonempty_mapping(record["contract"], "kept contract payload")
+    confirmation = _nonempty_mapping(record["confirmation"], "kept confirmation payload")
+    if (
+        contract.get("schema_version") != record["contract_schema"]
+        or confirmation.get("schema_version") != record["confirmation_schema"]
+        or record["contract_schema"] != CONTRACT_SCHEMA
+        or record["confirmation_schema"] != CONFIRMATION_SCHEMA
+        or record["contract_digest"] != canonical_digest(contract)
+        or record["confirmation_digest"] != canonical_digest(confirmation)
+        or confirmation.get("target_identity") != record["target_identity"]
+    ):
+        raise RunStateError("kept contract payload binding is invalid")
+    _validate_artifact_payload("skill-contract", contract, record["source_mode"])
+    _validate_artifact_payload("user-confirmation-record", confirmation)
+    return record
+
+
+def _contract_clauses(contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: value
+        for field, value in contract.items()
+        if field not in _CONTRACT_BINDING_FIELDS
+    }
+
+
+def _target_skill_file_digest(current: dict[str, Any]) -> str | None:
+    snapshot = current["target_snapshot"]
+    if snapshot["exists"] is not True:
+        return None
+    try:
+        return _loadable_skill_digest_from_target_manifest(
+            snapshot["manifest"], "target skill files"
+        )
+    except RunStateError:
+        return None
+
+
+def _check_kept_contract_fits(
+    current: dict[str, Any], contract: dict[str, Any], kept: dict[str, Any]
+) -> None:
+    """A kept contract applies only to unchanged files under the same contract schema."""
+    if current["mode"]["name"] not in _REUSE_MODES:
+        raise RunStateError(
+            "only improve and evaluate runs reuse a kept contract, and "
+            "modify confirms its changed contract with the user"
+        )
+    if kept["target_identity"] != current["target_identity"]["canonical"]:
+        raise RunStateError("kept contract belongs to another target")
+    if kept["skill_file_digest"] != _target_skill_file_digest(current):
+        raise RunStateError("kept contract was confirmed against other skill files")
+    if kept["contract_schema"] != contract["schema_version"]:
+        raise RunStateError("kept contract schema differs from the run's contract schema")
+    if _contract_clauses(kept["contract"]) != _contract_clauses(contract):
+        raise RunStateError("the run's contract differs from the kept contract")
 
 
 def _identity_records(
@@ -1702,7 +2796,9 @@ def snapshot_target(target: Path) -> dict[str, Any]:
     try:
         root_info = locator.lstat()
     except OSError as error:
-        raise RunStateError("improve mode requires an existing exact target") from error
+        raise RunStateError(
+            "improve, modify, and evaluate modes require an existing exact target"
+        ) from error
     if stat.S_ISLNK(root_info.st_mode) or not (
         stat.S_ISDIR(root_info.st_mode) or stat.S_ISREG(root_info.st_mode)
     ):
@@ -1885,7 +2981,9 @@ def _existing_snapshot(
     target: dict[str, Any], supplied_manifest: object
 ) -> dict[str, Any]:
     if not isinstance(supplied_manifest, dict):
-        raise RunStateError("improve mode requires an exact target manifest")
+        raise RunStateError(
+            "improve, modify, and evaluate modes require an exact target manifest"
+        )
     actual = snapshot_target(Path(target["locator"]))
     if supplied_manifest != actual:
         raise RunStateError("supplied target manifest does not match the exact target")
@@ -1982,6 +3080,9 @@ def _create_resolution_artifact(
         "schema_version": RESOLUTION_SCHEMA,
         "workflow_id": workflow_id,
         "candidate_record_schema": CANDIDATE_SCHEMA,
+        "contract_schema": CONTRACT_SCHEMA,
+        "implementer_brief_schema": BRIEF_SCHEMA,
+        "evaluation_pack_schema": EVALUATION_SCHEMA,
         "trial_pack_schema": TRIAL_SCHEMA,
         "review_record_schema": REVIEW_SCHEMA,
         "scorecard_schema": SCORECARD_SCHEMA,
@@ -2183,8 +3284,10 @@ def _trial_loadable_skill_digests_from_manifest(
         case_id, marker, package_path = relative.partition(package_marker)
         if not marker:
             continue
+        run_parts = case_id.split("/")
         if (
-            not _ARTIFACT_RE.fullmatch(case_id)
+            len(run_parts) > 2
+            or any(not _ARTIFACT_RE.fullmatch(part) for part in run_parts)
             or not package_path
             or package_path.startswith("/")
         ):
@@ -2238,6 +3341,9 @@ def _loadable_skill_digest_from_target_manifest(
 
 
 _VERSIONED_ARTIFACT_SCHEMAS = {
+    "skill-contract": ("contract_schema", LEGACY_CONTRACT_SCHEMA),
+    "implementer-brief": ("implementer_brief_schema", None),
+    "evaluation-pack": ("evaluation_pack_schema", LOADED_EVALUATION_SCHEMA),
     "candidate-record": ("candidate_record_schema", LEGACY_CANDIDATE_SCHEMA),
     "trial-pack": ("trial_pack_schema", LEGACY_TRIAL_SCHEMA),
     "review-record": ("review_record_schema", LEGACY_REVIEW_SCHEMA),
@@ -2254,6 +3360,9 @@ def _validate_artifact_schema_pairing(
     marker_name, default_schema = marker
     if payload["schema_version"] != resolution.get(marker_name, default_schema):
         label = {
+            "skill-contract": "contract",
+            "implementer-brief": "implementer-brief",
+            "evaluation-pack": "evaluation-pack",
             "candidate-record": "candidate",
             "trial-pack": "trial-pack",
             "review-record": "review",
@@ -2267,6 +3376,8 @@ def _validate_artifact_schema_pairing(
 def _validate_current_candidate_content(
     payload: dict[str, Any], retained_digest: str
 ) -> None:
+    if not os.path.lexists(payload["isolated_locator"]):
+        raise RunStateError("candidate isolated copy is missing")
     actual_manifest = snapshot_target(Path(payload["isolated_locator"]))
     actual_digest = _loadable_skill_digest_from_target_manifest(
         actual_manifest, "isolated candidate package"
@@ -2323,7 +3434,7 @@ def _create_artifact(
         primary_record = _decode_canonical_object(
             files[primary], f"{artifact_type} primary payload"
         )
-        _validate_artifact_payload(artifact_type, primary_record)
+        _validate_artifact_payload(artifact_type, primary_record, mode)
         if artifact_type in _VERSIONED_ARTIFACT_SCHEMAS:
             resolution, _ = _resolution_payload(run, workflow_id)
             _validate_artifact_schema_pairing(
@@ -2331,7 +3442,7 @@ def _create_artifact(
             )
         if (
             artifact_type == "candidate-record"
-            and primary_record["schema_version"] == CANDIDATE_SCHEMA
+            and primary_record["schema_version"] in _PACKAGED_CANDIDATE_SCHEMAS
         ):
             _validate_current_candidate_content(
                 primary_record,
@@ -2746,7 +3857,7 @@ def _validate_envelope(run: Path, artifact_id: str) -> tuple[dict[str, Any], dic
         or not _ARTIFACT_RE.fullmatch(artifact_id)
         or envelope.get("artifact_type") not in _ARTIFACT_TYPES
         or envelope.get("workflow_id") != run.name
-        or envelope.get("mode") not in {"create", "improve"}
+        or envelope.get("mode") not in _MODES
         or isinstance(envelope.get("created_sequence"), bool)
         or not isinstance(envelope.get("created_sequence"), int)
         or envelope["created_sequence"] < 0
@@ -2979,30 +4090,43 @@ def _load_receipt_chain(run: Path) -> list[dict[str, Any]]:
                 if source != destination or source not in _STAGES:
                     raise RunStateError("artifact retention changed the run stage")
             elif event in _STAGE_TRANSITIONS:
-                if (source, destination) != _STAGE_TRANSITIONS[event]:
+                if (source, destination) not in _EVENT_EDGES[event]:
                     raise RunStateError("receipt contains an unsupported stage transition")
             elif event == "pause":
-                if source not in _STAGES[:-3] or destination != "paused":
+                if source not in _WORK_STAGES or destination != "paused":
                     raise RunStateError("pause receipt is not valid from its source stage")
             elif event == "resume":
                 if source != "paused" or destination != prior.get("source_stage"):
                     raise RunStateError("resume receipt does not restore the paused stage")
             elif event == "invalidate":
-                if source not in _STAGES[:-3] or destination not in _STAGES:
+                if source not in _WORK_STAGES or destination not in _STAGES:
                     raise RunStateError("invalidation receipt has an invalid stage")
                 if destination != "abandoned" and _STAGES.index(destination) > _STAGES.index(source):
                     raise RunStateError("invalidation advanced rather than rewound state")
                 statuses = [item["status"] for item in relevant]
                 if statuses.count("accepted") != 1 or statuses.count("superseded") != 1:
                     raise RunStateError("invalidation receipt lacks causal artifact status")
+            elif event == "switch-mode":
+                statuses = [item["status"] for item in relevant]
+                if (
+                    source not in _WORK_STAGES
+                    or destination != _switch_destination(source)
+                    or not isinstance(receipt.get("authority_event_digest"), str)
+                    or statuses.count("accepted") != 1
+                    or "superseded" in statuses
+                ):
+                    raise RunStateError("mode-switch receipt is invalid")
             elif event == "finalize":
                 if source != "verified" or destination != "finalized":
                     raise RunStateError("finalization receipt has an invalid stage")
+            elif event == "report":
+                if source != "scored" or destination != "reported":
+                    raise RunStateError("report receipt has an invalid stage")
             elif event == "record-delivery":
                 if source != "finalized" or destination != "delivered" or not isinstance(receipt.get("authority_event_digest"), str):
                     raise RunStateError("delivery receipt has an invalid stage or authority")
             elif event == "record-cleanup-authority":
-                if source != "delivered" or destination != "delivered" or not isinstance(receipt.get("authority_event_digest"), str):
+                if source not in {"delivered", "reported", "abandoned"} or destination != source or not isinstance(receipt.get("authority_event_digest"), str):
                     raise RunStateError("cleanup-authority receipt is invalid")
             else:
                 raise RunStateError("receipt event is unsupported")
@@ -3046,7 +4170,7 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             payload.get("candidate_record_schema") == HISTORICAL_CANDIDATE_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
         )
-    else:
+    elif schema_version == LOADED_TRIAL_RESOLUTION_SCHEMA:
         expected_fields = common_fields | {
             "candidate_record_schema",
             "trial_pack_schema",
@@ -3054,10 +4178,36 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             "scorecard_schema",
         }
         version_markers_valid = (
-            payload.get("candidate_record_schema") == CANDIDATE_SCHEMA
+            payload.get("candidate_record_schema") == PACKAGED_CANDIDATE_SCHEMA
+            and payload.get("trial_pack_schema") == LOADED_TRIAL_SCHEMA
+            and payload.get("review_record_schema") == REVIEW_SCHEMA
+            and payload.get("scorecard_schema") == SCORECARD_SCHEMA
+        )
+    else:
+        current_markers = schema_version == RESOLUTION_SCHEMA
+        expected_fields = common_fields | {
+            "candidate_record_schema",
+            "evaluation_pack_schema",
+            "trial_pack_schema",
+            "review_record_schema",
+            "scorecard_schema",
+        }
+        if current_markers:
+            expected_fields |= {"contract_schema", "implementer_brief_schema"}
+        version_markers_valid = (
+            payload.get("candidate_record_schema")
+            == (CANDIDATE_SCHEMA if current_markers else PACKAGED_CANDIDATE_SCHEMA)
+            and payload.get("evaluation_pack_schema") == EVALUATION_SCHEMA
             and payload.get("trial_pack_schema") == TRIAL_SCHEMA
             and payload.get("review_record_schema") == REVIEW_SCHEMA
             and payload.get("scorecard_schema") == SCORECARD_SCHEMA
+            and (
+                not current_markers
+                or (
+                    payload.get("contract_schema") == CONTRACT_SCHEMA
+                    and payload.get("implementer_brief_schema") == BRIEF_SCHEMA
+                )
+            )
         )
     if (
         schema_version
@@ -3065,6 +4215,8 @@ def _resolution_payload(run: Path, workflow_id: str) -> tuple[dict[str, Any], di
             LEGACY_RESOLUTION_SCHEMA,
             PREVIOUS_RESOLUTION_SCHEMA,
             HISTORICAL_RESOLUTION_SCHEMA,
+            LOADED_TRIAL_RESOLUTION_SCHEMA,
+            SELECTION_RESOLUTION_SCHEMA,
             RESOLUTION_SCHEMA,
         }
         or set(payload) != expected_fields
@@ -3079,7 +4231,7 @@ def _artifact_payload_json(run: Path, artifact_id: str) -> dict[str, Any]:
     envelope, _ = _validate_envelope(run, artifact_id)
     payload_path = envelope["payload_path"]
     payload = _read_json(run.joinpath(*payload_path.split("/")))
-    _validate_artifact_payload(envelope["artifact_type"], payload)
+    _validate_artifact_payload(envelope["artifact_type"], payload, envelope["mode"])
     return payload
 
 
@@ -3121,8 +4273,16 @@ def _validate_baseline_binding(
         run, "initialize", "resolution-record", event_artifacts
     )
     snapshot = current["target_snapshot"]
+    mode = current["mode"]["name"]
     if (
-        baseline.get("mode") != current["mode"]["name"]
+        baseline.get("mode") != baseline_envelope["mode"]
+        or not (
+            baseline_envelope["mode"] == mode
+            or (
+                "mode_switch_digest" in current["mode"].get("evidence", {})
+                and {baseline_envelope["mode"], mode} == _SWITCH_MODES
+            )
+        )
         or baseline.get("target_snapshot_digest") != snapshot["snapshot_digest"]
     ):
         raise RunStateError("baseline mode or target-snapshot binding is stale")
@@ -3134,7 +4294,9 @@ def _validate_baseline_binding(
         if baseline.get("absent_target_proof") != expected_proof:
             raise RunStateError("baseline absent-target proof binding is stale")
     elif baseline.get("absent_target_proof") is not None:
-        raise RunStateError("improve baseline contains an absent-target proof")
+        raise RunStateError(
+            f"{current['mode']['name']} baseline contains an absent-target proof"
+        )
     _require_input_bindings(
         baseline_envelope,
         {resolution_id: resolution_envelope["envelope_digest"]},
@@ -3157,6 +4319,16 @@ def _artifact_raw_digests(
         entry["path"].removeprefix(prefix): entry["digest"]
         for entry in manifest["entries"]
     }
+
+
+def _candidate_skill_digest(candidate: dict[str, Any]) -> str:
+    """Name the loadable skill content that trials install for a candidate."""
+    if candidate["schema_version"] in {
+        HISTORICAL_CANDIDATE_SCHEMA,
+        *_PACKAGED_CANDIDATE_SCHEMAS,
+    }:
+        return candidate["loaded_skill_digest"]
+    return candidate["resulting_digest"]
 
 
 def _validate_trial_binding(
@@ -3214,9 +4386,16 @@ def _validate_trial_binding(
     ):
         frozen_cases.extend(evaluation["partitions"][partition])
     trial_cases = trials["cases"]
-    if [case["case_id"] for case in trial_cases] != [
-        case["case_id"] for case in frozen_cases
-    ]:
+    runs_are_versioned = trials["schema_version"] == TRIAL_SCHEMA
+    planned_cases: list[dict[str, Any]] = []
+    planned_runs: list[tuple[str, int]] = []
+    for frozen_case in frozen_cases:
+        for repeat_index in range(frozen_case.get("repeats", 1)):
+            planned_cases.append(frozen_case)
+            planned_runs.append((frozen_case["case_id"], repeat_index))
+    if [
+        (case["case_id"], case.get("repeat_index", 0)) for case in trial_cases
+    ] != planned_runs:
         raise RunStateError("trial coverage does not match the frozen evaluation cases")
 
     raw_fields = {
@@ -3228,58 +4407,104 @@ def _validate_trial_binding(
         "after_target_manifest_digest": "after-manifest",
         "filesystem_result_digest": "filesystem-result",
     }
-    expected_loaded_skill_digest = (
-        candidate["loaded_skill_digest"]
-        if candidate["schema_version"]
-        in {HISTORICAL_CANDIDATE_SCHEMA, CANDIDATE_SCHEMA}
-        else candidate["resulting_digest"]
-    )
+    expected_loaded_skill_digest = _candidate_skill_digest(candidate)
+
+    def run_key(case: dict[str, Any]) -> str:
+        if runs_are_versioned:
+            return f"{case['case_id']}/run-{case['repeat_index']}"
+        return case["case_id"]
+
+    def loaded_digest(case: dict[str, Any]) -> str | None:
+        if case.get("exposure") == "selection":
+            return case["observed_load"]["digest"]
+        return case["loaded_skill_digest"]
+
     retained_loaded_digests: dict[str, str] = {}
-    if trials["schema_version"] == TRIAL_SCHEMA:
+    if trials["schema_version"] != LEGACY_TRIAL_SCHEMA:
         retained_loaded_digests = _trial_loadable_skill_digests_from_manifest(
             run, trial_id, trial_manifest
         )
         if set(retained_loaded_digests) != {
-            case["case_id"] for case in trial_cases
+            run_key(case) for case in trial_cases if loaded_digest(case) is not None
         }:
             raise RunStateError("trial loaded-skill package coverage is incomplete")
-    for trial_case, frozen_case in zip(trial_cases, frozen_cases, strict=True):
+    target_name = current["target_identity"]["name"]
+    for trial_case, frozen_case in zip(trial_cases, planned_cases, strict=True):
         case_id = trial_case["case_id"]
         if not _ARTIFACT_RE.fullmatch(case_id):
             raise RunStateError("trial case identity is unsafe")
+        selection = frozen_case.get("exposure") == "selection"
         expected_case_digest = raw_digest(canonical_json_bytes(frozen_case))
+        expected_setup_digest = (
+            raw_digest(
+                _selection_setup_bytes(frozen_case, expected_loaded_skill_digest)
+            )
+            if selection
+            else frozen_case["setup_manifest_digest"]
+        )
         if (
             trial_case["case_digest"] != expected_case_digest
             or raw_digests.get(f"evidence/{case_id}/case.json")
             != expected_case_digest
             or trial_case["request_digest"] != frozen_case["raw_request_digest"]
-            or trial_case["before_target_manifest_digest"]
-            != frozen_case["setup_manifest_digest"]
+            or trial_case.get("exposure", "loaded")
+            != frozen_case.get("exposure", "loaded")
+            or trial_case["before_target_manifest_digest"] != expected_setup_digest
         ):
             raise RunStateError("trial case binding is stale or substituted")
-        if trial_case["loaded_skill_digest"] != expected_loaded_skill_digest:
+        if selection:
+            observed = trial_case["observed_load"]
+            if trial_case["installed_skill_digest"] != expected_loaded_skill_digest:
+                raise RunStateError(
+                    "selection trial installed skill is not the accepted candidate"
+                )
+            if (observed["digest"] == expected_loaded_skill_digest) != (
+                observed["kind"] == "candidate"
+            ) or (observed["kind"] == "candidate") != (
+                observed["name"] == target_name
+            ):
+                raise RunStateError(
+                    "selection trial observed load mislabels the candidate"
+                )
+            matches = observed["kind"] == frozen_case["expected_selection"] and (
+                observed["kind"] != "other"
+                or observed["digest"] in _selection_neighbour_digests(frozen_case)
+            )
+            if trial_case["verdict"] == "pass" and not matches:
+                raise RunStateError(
+                    "selection trial passes a load other than its expected selection"
+                )
+        elif trial_case["loaded_skill_digest"] != expected_loaded_skill_digest:
             raise RunStateError(
                 "trial loaded-skill content identity is stale or substituted"
             )
-        if trials["schema_version"] == TRIAL_SCHEMA:
+        if trials["schema_version"] == LEGACY_TRIAL_SCHEMA:
             if (
-                retained_loaded_digests.get(case_id)
+                raw_digests.get(f"evidence/{case_id}/loaded-skill.bin")
                 != trial_case["loaded_skill_digest"]
             ):
-                raise RunStateError(
-                    "trial loaded-skill content is missing or substituted"
-                )
+                raise RunStateError("trial raw evidence binding is missing or stale")
         elif (
-            raw_digests.get(f"evidence/{case_id}/loaded-skill.bin")
-            != trial_case["loaded_skill_digest"]
+            loaded_digest(trial_case) is not None
+            and retained_loaded_digests.get(run_key(trial_case))
+            != loaded_digest(trial_case)
         ):
-            raise RunStateError("trial raw evidence binding is missing or stale")
+            raise RunStateError(
+                "trial loaded-skill content is missing or substituted"
+            )
         for field, file_stem in raw_fields.items():
             if (
-                raw_digests.get(f"evidence/{case_id}/{file_stem}.bin")
+                raw_digests.get(f"evidence/{run_key(trial_case)}/{file_stem}.bin")
                 != trial_case[field]
             ):
                 raise RunStateError("trial raw evidence binding is missing or stale")
+        if selection:
+            trace_path = f"{raw_prefix}evidence/{run_key(trial_case)}/tool-events.bin"
+            _validate_selection_trace(
+                frozen_case["host"],
+                _read_bytes(run.joinpath(*trace_path.split("/")), MAX_ARTIFACT_BYTES),
+                trial_case,
+            )
     if (
         raw_digests.get("evidence/aggregate-manifest.json")
         != trials["aggregate_manifest_digest"]
@@ -3442,17 +4667,21 @@ def _validate_contract_binding(
 ) -> None:
     contract_envelope, _ = _validate_envelope(run, contract_id)
     contract = _artifact_payload_json(run, contract_id)
-    design_id, design_envelope = _event_artifact(
-        run, "accept-design", "design-record", event_artifacts
+    source_id, source_envelope = (
+        _event_artifact(run, "capture-baseline", "baseline-report", event_artifacts)
+        if current["mode"]["name"] == "evaluate"
+        else _event_artifact(run, "accept-design", "design-record", event_artifacts)
     )
     resolution_id, resolution_envelope = _event_artifact(
         run, "initialize", "resolution-record", event_artifacts
     )
-    if contract["design_digest"] != design_envelope["envelope_digest"]:
+    if current["mode"]["name"] != "evaluate" and (
+        contract["design_digest"] != source_envelope["envelope_digest"]
+    ):
         raise RunStateError("skill contract design binding is stale")
     required = {
         resolution_id: resolution_envelope["envelope_digest"],
-        design_id: design_envelope["envelope_digest"],
+        source_id: source_envelope["envelope_digest"],
     }
     for binding in contract["evidence_bindings"]:
         record = current["artifact_index"].get(binding["artifact_id"])
@@ -3780,13 +5009,21 @@ def _validate_score_bindings(
     if scorecard["schema_version"] == LEGACY_SCORECARD_SCHEMA:
         return
 
+    for category in scorecard["categories"]:
+        if category["score"] != sum(
+            result["passed"] for result in category["criteria"].values()
+        ):
+            raise RunStateError(
+                "scorecard category scores do not sum their passing criteria"
+            )
+
     frozen_parameter_ids = sorted(evaluation["scoring_parameters"])
     if not frozen_parameter_ids:
         raise RunStateError("scorecard lacks frozen scoring-parameter evidence")
     for parameter_id in frozen_parameter_ids:
         _text(parameter_id, "evaluation scoring parameter identity")
-    cases_by_id = {case["case_id"]: case for case in trials["cases"]}
-    frozen_case_ids = sorted(cases_by_id)
+    trial_runs = trials["cases"]
+    frozen_case_ids = sorted({case["case_id"] for case in trial_runs})
     if not frozen_case_ids:
         raise RunStateError("scorecard lacks frozen case evidence")
     review_finding_ids: dict[str, list[str]] = {}
@@ -3795,15 +5032,61 @@ def _validate_score_bindings(
         for criterion_id in finding["affected_target_criteria"]:
             review_finding_ids.setdefault(criterion_id, []).append(finding_id)
 
+    selection_cases = {
+        case["case_id"]: case
+        for cases in evaluation["partitions"].values()
+        for case in cases
+        if case.get("exposure") == "selection"
+    }
+    contract_id, _ = _event_artifact(
+        run, "accept-contract", "skill-contract", event_artifacts
+    )
+    contract = _artifact_payload_json(run, contract_id)
+    trial_hosts: frozenset[str] | None = None
+    if contract["schema_version"] == CONTRACT_SCHEMA:
+        trial_hosts = frozenset(contract["hosts"])
+        if contract["load_policy"]["policy"] != "agent":
+            trial_hosts &= (
+                _RESTRICTED_TRIAL_HOSTS | {"hermes"}
+                if contract["load_policy"]["policy"] == "user-or-skills"
+                else _RESTRICTED_TRIAL_HOSTS
+            )
     raw_claims: list[str] = []
     for category in scorecard["categories"]:
         for criterion_id, result in category["criteria"].items():
-            selected_cases = [cases_by_id[case_id] for case_id in frozen_case_ids]
+            backing_kinds = _SELECTION_BACKED_CRITERIA.get(criterion_id)
+            if (
+                trials["schema_version"] == TRIAL_SCHEMA
+                and backing_kinds is not None
+                and result["passed"] is True
+            ):
+                backing_runs = [
+                    case
+                    for case in trial_runs
+                    if case["case_id"] in selection_cases
+                    and selection_cases[case["case_id"]]["expected_selection"]
+                    in backing_kinds
+                ]
+                covered = {
+                    selection_cases[case["case_id"]]["host"] for case in backing_runs
+                }
+                # A v1 contract names no hosts, so any one host's runs back the row.
+                missing = sorted(
+                    trial_hosts - covered
+                    if trial_hosts is not None
+                    else set() if covered else {"any host"}
+                )
+                if missing or any(case["verdict"] != "pass" for case in backing_runs):
+                    where = f" on {', '.join(missing)}" if missing else ""
+                    raise RunStateError(
+                        f"scorecard passes {criterion_id} without passing selection "
+                        f"trials{where}"
+                    )
             expected_raw_digests = sorted(
-                {case["output_digest"] for case in selected_cases}
+                {case["output_digest"] for case in trial_runs}
             )
             expected_trial_receipts = sorted(
-                raw_digest(canonical_json_bytes(case)) for case in selected_cases
+                raw_digest(canonical_json_bytes(case)) for case in trial_runs
             )
             expected_finding_ids = sorted(set(review_finding_ids.get(criterion_id, [])))
             if (
@@ -3914,6 +5197,19 @@ def _validate_confirmation_binding(
         or not _DIGEST_RE.fullmatch(authority_event_digest)
     ):
         raise RunStateError("user confirmation binding is missing or mismatched")
+    contract = _artifact_payload_json(run, contract_id)
+    if confirmation["schema_version"] == REUSED_CONFIRMATION_SCHEMA:
+        kept = confirmation["kept_contract"]
+        _check_kept_contract_fits(current, contract, kept)
+        if confirmation_envelope["limitations"] != kept["confirmation_limitations"]:
+            raise RunStateError("reused confirmation limitations differ from the kept contract")
+    if (
+        contract["schema_version"] == CONTRACT_SCHEMA
+        and contract["load_policy"]["policy"] != "agent"
+        and "hermes" in contract["hosts"]
+        and not any("hermes" in item.casefold() for item in confirmation_envelope["limitations"])
+    ):
+        raise RunStateError("user confirmation does not record the Hermes load-policy limitation")
     _require_input_bindings(
         confirmation_envelope,
         {
@@ -3951,7 +5247,7 @@ def _validate_evaluation_binding(
             if receipt["event"] == "confirm-contract"
         )
     )
-    _validate_confirmation_binding(
+    confirmation, _ = _validate_confirmation_binding(
         run,
         current,
         confirmation_id,
@@ -3983,6 +5279,69 @@ def _validate_evaluation_binding(
         },
         "evaluation pack",
     )
+    contract = _artifact_payload_json(run, contract_id)
+    if contract["schema_version"] == CONTRACT_SCHEMA and any(
+        case.get("exposure") == "selection" and case["host"] not in contract["hosts"]
+        for cases in evaluation["partitions"].values()
+        for case in cases
+    ):
+        raise RunStateError("selection case host is not a contract host")
+    refrozen = {
+        case["case_id"]: case
+        for cases in evaluation["partitions"].values()
+        for case in cases
+    }
+    clauses = _contract_clauses(_artifact_payload_json(run, contract_id))
+    reused = confirmation["schema_version"] == REUSED_CONFIRMATION_SCHEMA
+    by_digest = {
+        (record["type"], record["digest"]): record["artifact_id"]
+        for record in current["artifact_index"].values()
+    }
+    for record in current["artifact_index"].values():
+        if (
+            record["type"] != "evaluation-pack"
+            or record["derived_status"] == "accepted"
+        ):
+            continue
+        earlier = _artifact_payload_json(run, record["artifact_id"])
+        earlier_confirmation_id = by_digest.get(
+            ("user-confirmation-record", earlier["confirmation_digest"])
+        )
+        earlier_contract_id = by_digest.get(
+            ("skill-contract", earlier["contract_digest"])
+        )
+        if earlier_confirmation_id is None or earlier_contract_id is None:
+            continue
+        same_event = (
+            _artifact_payload_json(run, earlier_confirmation_id)[
+                "confirmation_event_digest"
+            ]
+            == confirmation["confirmation_event_digest"]
+        )
+        if not same_event and not (
+            reused
+            and _contract_clauses(_artifact_payload_json(run, earlier_contract_id))
+            == clauses
+        ):
+            continue
+        for cases in earlier["partitions"].values():
+            for case in cases:
+                kept = refrozen.get(case["case_id"])
+                selection = case.get("exposure") == "selection"
+                if (kept is None and selection) or (
+                    kept is not None
+                    and any(
+                        kept.get(field) != case.get(field)
+                        for field in (
+                            ("exposure", "host", "expected_selection")
+                            if selection
+                            else ("exposure",)
+                        )
+                    )
+                ):
+                    raise RunStateError(
+                        "refreezing under the same confirmation changes a case's selection"
+                    )
     return evaluation, evaluation_envelope
 
 
@@ -4014,7 +5373,7 @@ def _validate_candidate_entry(
         raise RunStateError(
             "candidate schema does not match the run's versioned semantics"
         )
-    if candidate["schema_version"] == CANDIDATE_SCHEMA:
+    if candidate["schema_version"] in _PACKAGED_CANDIDATE_SCHEMAS:
         retained_loaded_digest = _loadable_skill_digest_from_artifact(
             run,
             candidate_id,
@@ -4062,6 +5421,25 @@ def _validate_candidate_entry(
         != current["target_snapshot"]["snapshot_digest"]
     ):
         raise RunStateError("candidate entry binding is missing or mismatched")
+    candidate_locator = Path(candidate["isolated_locator"])
+    target_locator = Path(current["target_identity"]["locator"])
+    if candidate_locator.is_relative_to(
+        target_locator
+    ) or target_locator.is_relative_to(candidate_locator):
+        raise RunStateError("candidate isolated copy overlaps the target")
+    if current["mode"]["name"] == "evaluate" and candidate[
+        "loaded_skill_digest"
+    ] != _loadable_skill_digest_from_target_manifest(
+        current["target_snapshot"]["manifest"], "evaluated target"
+    ):
+        raise RunStateError(
+            "an evaluate candidate must be an unchanged copy of the target"
+        )
+    if (
+        candidate["schema_version"] in _PACKAGED_CANDIDATE_SCHEMAS
+        and current["mode"]["name"] != "evaluate"
+    ):
+        _reject_file_digest_result(run, candidate_id, candidate["resulting_digest"])
     _require_input_bindings(
         candidate_envelope,
         {
@@ -4072,6 +5450,294 @@ def _validate_candidate_entry(
         },
         "candidate entry",
     )
+    if candidate["schema_version"] == CANDIDATE_SCHEMA and current["mode"]["name"] != "evaluate":
+        _validate_brief_binding(
+            run,
+            current,
+            candidate,
+            candidate_envelope,
+            {
+                "contract_digest": (contract_id, contract_envelope),
+                "confirmation_digest": (confirmation_id, confirmation_envelope),
+                "evaluation_digest": (evaluation_id, evaluation_envelope),
+            },
+        )
+
+
+def _bound_brief_id(current: dict[str, Any], candidate_envelope: dict[str, Any]) -> str:
+    briefs = [
+        binding
+        for binding in candidate_envelope["input_bindings"]
+        if (current["artifact_index"].get(binding["artifact_id"]) or {}).get("type")
+        == "implementer-brief"
+    ]
+    if len(briefs) != 1:
+        raise RunStateError("candidate must bind exactly one implementer brief")
+    return briefs[0]["artifact_id"]
+
+
+def _validate_brief_binding(
+    run: Path,
+    current: dict[str, Any],
+    candidate: dict[str, Any],
+    candidate_envelope: dict[str, Any],
+    bound: dict[str, tuple[str, dict[str, Any]]],
+) -> None:
+    """Bind a current candidate to one accepted brief derived from its contract."""
+    brief_id = _bound_brief_id(current, candidate_envelope)
+    record = current["artifact_index"][brief_id]
+    if (
+        record["derived_status"] != "accepted"
+        or record["digest"] != candidate["brief_digest"]
+    ):
+        raise RunStateError("candidate implementer brief binding is stale")
+    if candidate["checker_version"] not in _CANDIDATE_CHECKER_VERSIONS:
+        raise RunStateError("candidate checker version is unknown")
+    brief_envelope, _ = _validate_envelope(run, brief_id)
+    brief = _artifact_payload_json(run, brief_id)
+    _require_input_bindings(
+        brief_envelope,
+        {artifact_id: envelope["envelope_digest"] for artifact_id, envelope in bound.values()},
+        "implementer brief",
+    )
+    if any(
+        brief[field] != bound[field][1]["envelope_digest"]
+        for field in ("contract_digest", "confirmation_digest", "evaluation_digest")
+    ):
+        raise RunStateError("implementer brief contract, confirmation, or pack binding is stale")
+    contract = _artifact_payload_json(run, bound["contract_digest"][0])
+    evaluation = _artifact_payload_json(run, bound["evaluation_digest"][0])
+    if any(
+        item["forbidden_action"] not in contract["forbidden_actions"]
+        for item in brief["irreversible_prohibitions"]
+    ):
+        raise RunStateError("implementer brief prohibits an action the contract does not forbid")
+    visible = {
+        case["case_id"]: case
+        for case in evaluation["partitions"]["visible_development"]
+        if case.get("exposure", "loaded") == "loaded"
+    }
+    for case in brief["visible_cases"]:
+        frozen = visible.get(case["case_id"])
+        if (
+            frozen is None
+            or raw_digest(case["request"].encode("utf-8")) != frozen["raw_request_digest"]
+            or case["expected"]
+            not in {*frozen["observable_assertions"], frozen["pass_fail_rule"]}
+        ):
+            raise RunStateError(
+                "implementer brief shows a case outside the visible loaded cases "
+                "or their frozen expectations"
+            )
+    if brief["owned_paths"] != candidate["owned_paths"]:
+        raise RunStateError("candidate owned paths differ from its implementer brief")
+
+
+def _holds_phrase(text: str, phrase: str) -> bool:
+    normalized = " ".join(text.casefold().split())
+    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) is not None
+
+
+def _check_brief_policy(brief: dict[str, Any], contract: dict[str, Any], name: str) -> None:
+    """Check a brief against its load policy and withheld lists at candidate acceptance."""
+    sentence = load_sentence(contract["load_policy"], name)
+    if brief["load_sentence"] != sentence:
+        raise RunStateError("implementer brief load sentence differs from the load policy")
+    restricted = sentence is not None
+    flags = brief["host_flags"]
+    if set(flags) != set(contract["hosts"]) or any(
+        value["allow_implicit_invocation"] is restricted
+        if host == "codex"
+        else value != ({"opencode/autoinvoke": "false"} if host == "opencode" and restricted else {})
+        for host, value in flags.items()
+    ):
+        raise RunStateError("implementer brief host flags differ from the load policy")
+    codex = flags.get("codex")
+    if codex is not None and (
+        not codex["default_prompt"].startswith(f"Use ${name} to ")
+        or not codex["default_prompt"].endswith(".")
+        or _LOAD_CLAIM_RE.search(codex["short_description"])
+        or _own_token(name).search(codex["short_description"])
+        or max(len(codex["default_prompt"]), len(codex["short_description"]))
+        > _CODEX_TEXT_LIMIT
+    ):
+        raise RunStateError("implementer brief Codex adapter text breaks the adapter rules")
+    def fold(items: list[str]) -> list[str]:
+        return [" ".join(item.casefold().split()) for item in items]
+
+    withheld = fold([*contract["non_triggers"], *contract["non_goals"]])
+    forbidden = fold(contract["forbidden_actions"])
+    exposed: list[tuple[str, str | None]] = [
+        (text, None)
+        for text in (
+            brief["description"],
+            *brief["body_rules"],
+            *brief["resources"],
+            *(case["expected"] for case in brief["visible_cases"]),
+        )
+    ]
+    for item in brief["irreversible_prohibitions"]:
+        own = fold([item["forbidden_action"]])[0]
+        exposed.append((item["action"], own))
+        exposed.extend((item[field], None) for field in ("reason", "alternative"))
+    for text, own in exposed:
+        if any(_holds_phrase(text, phrase) for phrase in withheld) or any(
+            _holds_phrase(text, phrase) for phrase in forbidden if phrase != own
+        ):
+            raise RunStateError(
+                "implementer brief carries a withheld non-trigger, non-goal, or forbidden action"
+            )
+
+
+def _check_accepted_contract(run: Path, current: dict[str, Any], contract_id: str) -> None:
+    """Render the load sentence once, when a contract is accepted."""
+    contract = _artifact_payload_json(run, contract_id)
+    if contract["schema_version"] == CONTRACT_SCHEMA:
+        load_sentence(contract["load_policy"], current["target_identity"]["name"])
+
+
+def _check_accepted_candidate(run: Path, current: dict[str, Any], candidate_id: str) -> None:
+    """Run the policy and entrypoint checks once, when a current candidate is accepted."""
+    candidate = _artifact_payload_json(run, candidate_id)
+    if current["mode"]["name"] == "evaluate":
+        if (
+            snapshot_target(Path(candidate["isolated_locator"]))["entries"]
+            != current["target_snapshot"]["manifest"]["entries"]
+        ):
+            raise RunStateError(
+                "an evaluate candidate must be an unchanged copy of the target"
+            )
+        return
+    if candidate["schema_version"] != CANDIDATE_SCHEMA:
+        return
+    if candidate["checker_version"] != CANDIDATE_CHECKER_VERSION:
+        raise RunStateError("candidate record names a checker other than the current one")
+    candidate_envelope, manifest = _validate_envelope(run, candidate_id)
+    brief = _artifact_payload_json(run, _bound_brief_id(current, candidate_envelope))
+    contract_id, _ = _event_artifact(run, "accept-contract", "skill-contract")
+    contract = _artifact_payload_json(run, contract_id)
+    name = current["target_identity"]["name"]
+    _check_brief_policy(brief, contract, name)
+    prefix = f"artifacts/{candidate_id}/raw/"
+    retained = {
+        entry["path"].removeprefix(prefix): entry["path"]
+        for entry in manifest["entries"]
+        if entry["path"].startswith(prefix)
+    }
+
+    def retained_file(relative: str) -> bytes | None:
+        path = retained.get(relative)
+        if path is None:
+            return None
+        return _read_bytes(run.joinpath(*path.split("/")), MAX_ARTIFACT_BYTES)
+
+    skill_md = retained_file("candidate-package/SKILL.md")
+    if skill_md is None:
+        raise RunStateError("candidate package lacks SKILL.md")
+    codex = brief["host_flags"].get("codex")
+    openai_yaml: bytes | None = None
+    if codex is not None:
+        parts = _codex_adapter_parts(codex["adapter_path"])
+        if parts[0] != "..":
+            openai_yaml = retained_file("candidate-package/" + "/".join(parts))
+        else:
+            openai_yaml = retained_file(_CODEX_EXTERNAL_ADAPTER)
+            source = Path(
+                os.path.normpath(Path(candidate["isolated_locator"]).joinpath(*parts))
+            )
+            actual = (
+                snapshot_target(source)["entries"]
+                if os.path.lexists(source)
+                else None
+            )
+            if (openai_yaml is None) != (actual is None) or (
+                actual is not None
+                and (
+                    len(actual) != 1
+                    or actual[0]["path"] != "."
+                    or actual[0]["digest"] != raw_digest(openai_yaml)
+                )
+            ):
+                raise RunStateError(
+                    "candidate retained Codex adapter differs from its isolated copy"
+                )
+    check_candidate_entrypoint(
+        skill_md,
+        openai_yaml,
+        name=name,
+        load_policy=contract["load_policy"],
+        hosts=contract["hosts"],
+        description=brief["description"],
+        codex_interface=codex,
+    )
+
+
+def _check_accepted_evaluation_scores(
+    run: Path, current: dict[str, Any], scorecard_id: str
+) -> None:
+    """Run the static load-sentence and host-flag check once, when evaluate scores are accepted."""
+    contract_id, _ = _event_artifact(run, "accept-contract", "skill-contract")
+    contract = _artifact_payload_json(run, contract_id)
+    candidate_id, _ = _event_artifact(run, "accept-candidate", "candidate-record")
+    _, manifest = _validate_envelope(run, candidate_id)
+    prefix = f"artifacts/{candidate_id}/raw/"
+    retained = {
+        entry["path"].removeprefix(prefix): entry["path"]
+        for entry in manifest["entries"]
+        if entry["path"].startswith(prefix)
+    }
+
+    def retained_file(*relatives: str) -> bytes | None:
+        path = next((retained[item] for item in relatives if item in retained), None)
+        if path is None:
+            return None
+        return _read_bytes(run.joinpath(*path.split("/")), MAX_ARTIFACT_BYTES)
+
+    name = current["target_identity"]["name"]
+    hosts = contract["hosts"]
+    sentence = load_sentence(contract["load_policy"], name)
+    restricted = sentence is not None
+    sentence_fits = flags_fit = True
+    metadata: dict[str, str] | None = None
+    try:
+        scalars, metadata, _ = _skill_frontmatter(
+            retained_file("candidate-package/SKILL.md") or b""
+        )
+        description = scalars.get("description", "")
+        _check_description(description, sentence, name)
+        sentence_fits = not (
+            restricted
+            and "claude-code" in hosts
+            and ("when_to_use" in scalars or len(description) > _CLAUDE_LISTING_LIMIT)
+        )
+    except RunStateError:
+        sentence_fits = False
+    if "opencode" in hosts:
+        flags_fit = metadata is not None and _opencode_flag_fits(metadata, restricted)
+    if "codex" in hosts:
+        openai_yaml = retained_file(
+            "candidate-package/agents/openai.yaml", _CODEX_EXTERNAL_ADAPTER
+        )
+        try:
+            implicit = None if openai_yaml is None else _codex_adapter(openai_yaml)[0]
+            flags_fit = flags_fit and _codex_flag_fits(implicit, restricted)
+        except RunStateError:
+            flags_fit = False
+    blocked = set() if flags_fit else set(_SELECTION_BACKED_CRITERIA)
+    if not (sentence_fits and flags_fit):
+        blocked.add("TR4")
+    scorecard = _artifact_payload_json(run, scorecard_id)
+    passed = sorted(
+        criterion_id
+        for category in scorecard["categories"]
+        for criterion_id, result in category["criteria"].items()
+        if result["passed"] is True and criterion_id in blocked
+    )
+    if passed:
+        raise RunStateError(
+            f"scorecard passes {passed[0]} although the evaluated load sentence or "
+            "host flags contradict the load policy"
+        )
 
 
 def _artifact_id_of_type(
@@ -4217,6 +5883,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         raise RunStateError("receipt target snapshot binding mismatch")
     artifact_status: dict[str, dict[str, Any]] = {}
     event_artifacts: dict[str, dict[str, Any]] = {}
+    mode_record = resolution["mode"]
     for receipt in chain:
         prior_artifact_status = dict(artifact_status)
         validated_bindings: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -4234,7 +5901,10 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 envelope["workflow_id"] != workflow_id
                 or envelope["target_identity"]
                 != resolution["target_identity"]["canonical"]
-                or envelope["mode"] != resolution["mode"]["name"]
+                or (
+                    artifact_id not in prior_artifact_status
+                    and envelope["mode"] != mode_record["name"]
+                )
             ):
                 raise RunStateError("artifact workflow, target, or mode identity mismatch")
             if item["envelope_digest"] != envelope["envelope_digest"]:
@@ -4252,6 +5922,14 @@ def _derive_index(run: Path) -> dict[str, Any]:
                         raise RunStateError("artifact dependency is missing or stale")
             validated_bindings.append((item, envelope))
         event = receipt["event"]
+        mode = mode_record["name"]
+        if event in _STAGE_TRANSITIONS or event in {"finalize", "report", "record-delivery"}:
+            _require_mode_event(event, mode)
+        if event in _STAGE_TRANSITIONS and (
+            receipt["source_stage"],
+            receipt["destination_stage"],
+        ) != _stage_transition(event, mode):
+            raise RunStateError("receipt stage transition does not fit the run's mode")
         accepted_types = sorted(
             envelope["artifact_type"]
             for item, envelope in validated_bindings
@@ -4295,16 +5973,24 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 expected_final_types
             ):
                 raise RunStateError("finalization receipt evidence binding is incomplete")
+        elif event == "report":
+            if accepted_types != sorted(_REPORT_ARTIFACT_TYPES) or len(
+                validated_bindings
+            ) != len(_REPORT_ARTIFACT_TYPES):
+                raise RunStateError("report receipt evidence binding is incomplete")
         elif event == "initialize":
             if accepted_types != ["resolution-record"] or len(validated_bindings) != 1:
                 raise RunStateError("genesis artifact binding is invalid")
+        elif event == "switch-mode":
+            if accepted_types != ["mode-switch-record"]:
+                raise RunStateError("mode-switch receipt artifact binding is invalid")
         elif event != "invalidate":
             raise RunStateError("receipt event semantics are unsupported")
         replay_current = {
             "workflow_id": workflow_id,
             "stage": receipt["source_stage"],
             "target_identity": resolution["target_identity"],
-            "mode": resolution["mode"],
+            "mode": mode_record,
             "authority": resolution["authority"],
             "target_snapshot": snapshot,
             "artifact_index": prior_artifact_status,
@@ -4314,6 +6000,13 @@ def _derive_index(run: Path) -> dict[str, Any]:
             for item, _ in validated_bindings
             if item["status"] == "accepted"
         ]
+        if event == "confirm-contract" and any(
+            artifact_id in prior_artifact_status
+            and _artifact_payload_json(run, artifact_id)["schema_version"]
+            == REUSED_CONFIRMATION_SCHEMA
+            for artifact_id in accepted_ids
+        ):
+            raise RunStateError("a reused confirmation enters only through reuse-contract")
         if event in _STAGE_TRANSITIONS:
             _validate_transition_semantics(
                 run,
@@ -4323,6 +6016,8 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 receipt["authority_event_digest"],
                 event_artifacts,
             )
+        elif event == "switch-mode":
+            _validate_switch_binding(run, replay_current, receipt, validated_bindings)
         elif event == "finalize":
             release_id = _artifact_id_of_type(run, accepted_ids, "release-record")
             if set(_validate_final_evidence(
@@ -4332,6 +6027,12 @@ def _derive_index(run: Path) -> dict[str, Any]:
                 event_artifacts,
             )) != set(accepted_ids):
                 raise RunStateError("finalization receipt semantic binding is invalid")
+        elif event == "report":
+            report_id = _artifact_id_of_type(run, accepted_ids, "evaluation-report")
+            if set(
+                _validate_report_evidence(run, replay_current, report_id, event_artifacts)
+            ) != set(accepted_ids):
+                raise RunStateError("report receipt semantic binding is invalid")
         elif event == "record-delivery":
             _validate_delivery_record_binding(
                 run,
@@ -4378,6 +6079,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
                             event_binding.pop(key)
         if event == "initialize" or event in _STAGE_TRANSITIONS or event in {
             "finalize",
+            "report",
             "record-delivery",
             "record-cleanup-authority",
         }:
@@ -4389,14 +6091,24 @@ def _derive_index(run: Path) -> dict[str, Any]:
             event_artifacts[event]["authority_event_digest"] = receipt[
                 "authority_event_digest"
             ]
+        if event == "switch-mode":
+            switch_id = accepted_ids[0]
+            mode_record = {
+                "name": _artifact_payload_json(run, switch_id)["to_mode"],
+                "evidence": {
+                    **mode_record.get("evidence", {}),
+                    "mode_switch_digest": artifact_status[switch_id]["digest"],
+                },
+            }
     for artifact_id, record in artifact_status.items():
         if (
-            record["type"] != "candidate-record"
+            chain[-1]["destination_stage"] in _TERMINAL_STAGES
+            or record["type"] != "candidate-record"
             or record["derived_status"] != "accepted"
         ):
             continue
         candidate = _artifact_payload_json(run, artifact_id)
-        if candidate["schema_version"] != CANDIDATE_SCHEMA:
+        if candidate["schema_version"] not in _PACKAGED_CANDIDATE_SCHEMAS:
             continue
         _, candidate_manifest = _validate_envelope(run, artifact_id)
         _validate_current_candidate_content(
@@ -4422,7 +6134,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         raise RunStateError("artifact namespace contains an orphan or missing artifact")
     head = chain[-1]
     stage = head["destination_stage"]
-    active_lock = resolution["active_target_lock"] if stage not in {"finalized", "delivered", "abandoned"} else None
+    active_lock = resolution["active_target_lock"] if stage not in _TERMINAL_STAGES else None
     stored_queue = resolution["queue"]
     if (
         not isinstance(stored_queue, dict)
@@ -4449,7 +6161,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
     canonical_target = resolution["target_identity"]["canonical"]
     if stage == "paused":
         queue["states"][canonical_target] = "paused"
-    elif stage in {"finalized", "delivered", "abandoned"}:
+    elif stage in _TERMINAL_STAGES:
         queue["states"][canonical_target] = stage
     else:
         queue["states"][canonical_target] = "active"
@@ -4461,7 +6173,7 @@ def _derive_index(run: Path) -> dict[str, Any]:
         "stage": stage,
         "host_identity": resolution["host_identity"],
         "target_identity": resolution["target_identity"],
-        "mode": resolution["mode"],
+        "mode": mode_record,
         "authority": resolution["authority"],
         "git_identity": resolution["git_identity"],
         "target_snapshot": snapshot,
@@ -4497,15 +6209,104 @@ def _target_lock_name(canonical_target: str) -> str:
     return f"{raw_digest(canonical_target.encode('utf-8'))}.json"
 
 
+def _kept_contract_directory(root: Path) -> Path:
+    """Validate the kept-contract store: private regular records named by target digest."""
+    directory = root / "contracts"
+    _validate_private_directory(directory, "kept-contract store")
+    _normalize_interrupted_publications(directory)
+    for entry in directory.iterdir():
+        if (
+            not stat.S_ISREG(entry.lstat().st_mode)
+            or not _KEPT_CONTRACT_NAME_RE.fullmatch(entry.name)
+        ):
+            raise RunStateError("kept-contract store contains an unexpected entry")
+        _validate_regular(entry, "kept contract")
+    return directory
+
+
+def _read_kept_contract(root: Path, canonical_target: str) -> dict[str, Any] | None:
+    path = _kept_contract_directory(root) / _target_lock_name(canonical_target)
+    if not os.path.lexists(path):
+        return None
+    record = _validate_kept_contract_record(_read_json(path))
+    if record["target_identity"] != canonical_target:
+        raise RunStateError("kept contract belongs to another target")
+    return record
+
+
+def _keep_contract(
+    root: Path,
+    run: Path,
+    current: dict[str, Any],
+    final_receipt: dict[str, Any],
+    skill_file_digest: str,
+) -> str | None:
+    """Replace the target's kept contract with the one this finished run confirmed."""
+    _, contract_envelope, contract = _current_event_artifact(
+        run, current, "accept-contract", "skill-contract"
+    )
+    if contract["schema_version"] != CONTRACT_SCHEMA:
+        return None
+    _, confirmation_envelope, confirmation = _current_event_artifact(
+        run, current, "confirm-contract", "user-confirmation-record"
+    )
+    limitations = list(confirmation_envelope["limitations"])
+    if confirmation["schema_version"] == REUSED_CONFIRMATION_SCHEMA:
+        limitations = list(confirmation["kept_contract"]["confirmation_limitations"])
+        confirmation = confirmation["kept_contract"]["confirmation"]
+    record: dict[str, Any] = {
+        "schema_version": KEPT_CONTRACT_SCHEMA,
+        "target_identity": current["target_identity"]["canonical"],
+        "skill_file_digest": skill_file_digest,
+        "contract_schema": contract["schema_version"],
+        "contract": contract,
+        "contract_digest": contract_envelope["payload_digest"],
+        "confirmation_schema": confirmation["schema_version"],
+        "confirmation": confirmation,
+        "confirmation_digest": canonical_digest(confirmation),
+        "confirmation_limitations": limitations,
+        "source_workflow_id": current["workflow_id"],
+        "source_mode": current["mode"]["name"],
+        "source_stage": final_receipt["destination_stage"],
+        "source_final_transition_digest": final_receipt["receipt_digest"],
+        "created_at": _now(),
+    }
+    record["record_digest"] = canonical_digest(record, "record_digest")
+    _validate_kept_contract_record(record)
+    path = _kept_contract_directory(root) / _target_lock_name(record["target_identity"])
+    _atomic_json(path, record)
+    return record["record_digest"]
+
+
+def _keep_finished_contract(
+    root: Path,
+    run: Path,
+    current: dict[str, Any],
+    final_receipt: dict[str, Any],
+    skill_file_digest: str | None,
+) -> dict[str, Any]:
+    """Keep the contract after the final receipt, leaving the finished run intact on failure."""
+    if skill_file_digest is None:
+        return {"kept_contract_digest": None, "kept_contract_error": None}
+    try:
+        digest = _keep_contract(root, run, current, final_receipt, skill_file_digest)
+    except (RunStateError, OSError) as error:
+        return {"kept_contract_digest": None, "kept_contract_error": str(error)}
+    return {"kept_contract_digest": digest, "kept_contract_error": None}
+
+
 def _owned_result_digest(
     index: dict[str, Any], manifest: dict[str, Any], owned_paths: list[str]
 ) -> str:
     if not owned_paths or len(owned_paths) != len(set(owned_paths)):
         raise RunStateError("candidate owned paths are empty or duplicated")
     entries = manifest["entries"]
+    mode = index["mode"]["name"]
+    if mode not in _MODES:
+        raise RunStateError("delivery mode is invalid")
     baseline_manifest = (
         index["target_snapshot"]["manifest"]
-        if index["mode"]["name"] == "improve"
+        if mode in _EXISTING_TARGET_MODES
         else None
     )
     baseline_entries = (
@@ -4559,9 +6360,9 @@ def _owned_result_digest(
             )
     selected.sort(key=lambda entry: entry["path"])
     all_paths = {entry["path"] for entry in entries}
-    if index["mode"]["name"] == "create" and selected_paths != all_paths:
+    if mode == "create" and selected_paths != all_paths:
         raise RunStateError("create delivery contains content outside candidate ownership")
-    if index["mode"]["name"] == "improve":
+    if mode in _EXISTING_TARGET_MODES:
         unowned_paths = {
             path
             for path in set(baseline_entries) | set(current_entries)
@@ -4608,14 +6409,14 @@ def _validate_delivery_destination(
         in {
             PREVIOUS_CANDIDATE_SCHEMA,
             HISTORICAL_CANDIDATE_SCHEMA,
-            CANDIDATE_SCHEMA,
+            *_PACKAGED_CANDIDATE_SCHEMAS,
         }
         and candidate.get("resulting_digest")
         != _owned_result_digest(index, manifest, candidate.get("owned_paths"))
     ):
         raise RunStateError("delivery content does not match the finalized candidate result")
     if (
-        candidate.get("schema_version") == CANDIDATE_SCHEMA
+        candidate.get("schema_version") in _PACKAGED_CANDIDATE_SCHEMAS
         and candidate.get("loaded_skill_digest")
         != _loadable_skill_digest_from_target_manifest(
             manifest, "delivery destination"
@@ -4632,7 +6433,7 @@ def _validate_target_unchanged(
     *,
     allow_missing_active_lock: bool = False,
 ) -> None:
-    if index["stage"] == "abandoned":
+    if index["stage"] in {"abandoned", "reported"}:
         return
     snapshot = index["target_snapshot"]
     locator = Path(index["target_identity"]["locator"])
@@ -4660,29 +6461,38 @@ def _validate_target_unchanged(
     detected_git = _detect_git_identity(locator)
     if detected_git != index["git_identity"]:
         raise RunStateError("Git identity changed after initialization")
+    _validate_active_target_lock(
+        index, root, allow_missing=allow_missing_active_lock
+    )
+
+
+def _validate_active_target_lock(
+    index: dict[str, Any], root: Path, *, allow_missing: bool = False
+) -> None:
     active_lock = index["active_target_lock"]
-    if active_lock is not None:
-        lock_path = (
-            root
-            / "target-locks"
-            / _target_lock_name(index["target_identity"]["canonical"])
-        )
-        if allow_missing_active_lock and not os.path.lexists(lock_path):
-            return
-        lock = _read_json(lock_path)
-        expected = {
-            "schema_version": "skill-builder-target-lock.v1",
-            **active_lock,
-            "workflow_id": index["workflow_id"],
-        }
-        if lock != expected:
-            raise RunStateError("active-target lock binding mismatch")
+    if active_lock is None:
+        return
+    lock_path = (
+        root
+        / "target-locks"
+        / _target_lock_name(index["target_identity"]["canonical"])
+    )
+    if allow_missing and not os.path.lexists(lock_path):
+        return
+    lock = _read_json(lock_path)
+    expected = {
+        "schema_version": "skill-builder-target-lock.v1",
+        **active_lock,
+        "workflow_id": index["workflow_id"],
+    }
+    if lock != expected:
+        raise RunStateError("active-target lock binding mismatch")
 
 
 def _restore_missing_active_target_lock(
     root: Path, index: dict[str, Any]
 ) -> None:
-    if index["stage"] in {"finalized", "delivered", "abandoned"}:
+    if index["stage"] in _TERMINAL_STAGES:
         return
     active_lock = index["active_target_lock"]
     if not isinstance(active_lock, dict):
@@ -4885,8 +6695,8 @@ def initialize_run(
     _queue_states: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     host, target, granted = _identity_records(host_identity, target_identity, authority)
-    if mode not in {"create", "improve"}:
-        raise RunStateError("mode must be create or improve")
+    if not isinstance(mode, str) or mode not in _MODES:
+        raise RunStateError("mode must be create, improve, modify, or evaluate")
     if mode == "create":
         snapshot = _absent_snapshot(target, absence_evidence, overlap_map)
     else:
@@ -4933,8 +6743,7 @@ def initialize_run(
         or queue_states.get(target["canonical"]) != "active"
         or list(queue_states.values()).count("active") != 1
         or any(
-            value
-            not in {"pending", "active", "paused", "finalized", "delivered", "abandoned"}
+            value not in {"pending", "active", "paused", *_TERMINAL_STAGES}
             for value in queue_states.values()
         )
     ):
@@ -4970,11 +6779,7 @@ def initialize_run(
             current = _derive_index(existing_run)
             if _read_json(existing_run / "current.json") != current:
                 raise RunStateError("existing live run has a stale derived index")
-            unfinished = current["stage"] not in {
-                "finalized",
-                "delivered",
-                "abandoned",
-            }
+            unfinished = current["stage"] not in _TERMINAL_STAGES
             queue_overlap = set(canonical_queue) & set(current["queue"]["order"])
             if unfinished and queue_overlap:
                 raise RunStateError(
@@ -5115,7 +6920,7 @@ def activate_next_target(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] not in {"finalized", "delivered", "abandoned"}:
+        if current["stage"] not in _TERMINAL_STAGES:
             raise RunStateError("unfinished queued work blocks target activation")
         resolution, _ = _resolution_payload(run, workflow_id)
         durable_queue = resolution["queue"]
@@ -5194,7 +6999,7 @@ def discover_run(
             if _discard_uncommitted_initialization(root, entry):
                 continue
             run = _run_directory(root, entry.name)
-            derived = _recover_validated_run(root, run)
+            derived = _recover_validated_run(root, run, check_target=False)
             if (
                 derived["host_identity"] == host
                 and derived["target_identity"] == target
@@ -5203,7 +7008,7 @@ def discover_run(
         active_matches = [
             match
             for match in matches
-            if match["stage"] not in {"finalized", "delivered", "abandoned"}
+            if match["stage"] not in _TERMINAL_STAGES
         ]
         selected_matches = active_matches if active_matches else matches
         if len(selected_matches) != 1:
@@ -5213,6 +7018,7 @@ def discover_run(
                 else "canonical discovery is ambiguous"
             )
         match = selected_matches[0]
+        _validate_target_unchanged(match, root)
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "discover",
@@ -5246,7 +7052,7 @@ def retain_artifact(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] in {"paused", "finalized", "delivered", "abandoned"}:
+        if current["stage"] == "paused" or current["stage"] in _TERMINAL_STAGES:
             raise RunStateError("terminal run artifacts are immutable")
         _validate_target_unchanged(current, root)
         for binding in input_bindings:
@@ -5258,6 +7064,15 @@ def retain_artifact(
         artifact = _artifact_directory(run, artifact_id)
         if os.path.lexists(artifact):
             raise RunStateError("immutable artifact already exists")
+        if artifact_type == "mode-switch-record" or (
+            artifact_type == "user-confirmation-record"
+            and isinstance(files, dict)
+            and isinstance(files.get(primary_path), bytes)
+            and REUSED_CONFIRMATION_SCHEMA.encode("utf-8") in files[primary_path]
+        ):
+            raise RunStateError(
+                "switch-mode and reuse-contract record their own artifacts"
+            )
         derived, created, receipt = _append_transaction(
             run=run,
             current=current,
@@ -5314,6 +7129,9 @@ def transition_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event(event, current["mode"]["name"])
+        expected_transition = _stage_transition(event, current["mode"]["name"])
+        assert expected_transition is not None
         if current["stage"] != expected_transition[0]:
             raise RunStateError("event is not allowed from the current stage")
         _validate_target_unchanged(current, root)
@@ -5335,8 +7153,11 @@ def transition_run(
             raise RunStateError(
                 "transition requires exact singular artifact type cardinality"
             )
-        for artifact_id in artifact_ids:
-            _artifact_payload_json(run, artifact_id)
+        payloads = [_artifact_payload_json(run, artifact_id) for artifact_id in artifact_ids]
+        if event == "confirm-contract" and any(
+            payload["schema_version"] == REUSED_CONFIRMATION_SCHEMA for payload in payloads
+        ):
+            raise RunStateError("a reused confirmation enters only through reuse-contract")
         _validate_transition_semantics(
             run,
             current,
@@ -5344,6 +7165,24 @@ def transition_run(
             artifact_ids,
             authority_event_digest,
         )
+        if event == "accept-contract":
+            _check_accepted_contract(
+                run,
+                current,
+                _artifact_id_of_type(run, artifact_ids, "skill-contract"),
+            )
+        if event == "accept-candidate":
+            _check_accepted_candidate(
+                run,
+                current,
+                _artifact_id_of_type(run, artifact_ids, "candidate-record"),
+            )
+        if event == "accept-scores" and current["mode"]["name"] == "evaluate":
+            _check_accepted_evaluation_scores(
+                run,
+                current,
+                _artifact_id_of_type(run, artifact_ids, "target-scorecard"),
+            )
         derived, _, _ = _append_transaction(
             run=run,
             current=current,
@@ -5363,11 +7202,13 @@ def transition_run(
         }
 
 
-def _recover_validated_run(root: Path, run: Path) -> dict[str, Any]:
+def _recover_validated_run(
+    root: Path, run: Path, *, check_target: bool = True
+) -> dict[str, Any]:
     """Reconcile one normalized live run while the root lock is held."""
     committed_journals = _reconcile_append_transactions(run)
     derived = _derive_index(run)
-    if derived["stage"] in {"finalized", "delivered", "abandoned"}:
+    if derived["stage"] in _TERMINAL_STAGES:
         resolution, _ = _resolution_payload(run, run.name)
         _release_owned_target_lock(
             root,
@@ -5376,9 +7217,12 @@ def _recover_validated_run(root: Path, run: Path) -> dict[str, Any]:
             allow_missing=True,
             allow_other_owner=True,
         )
-    _validate_target_unchanged(
-        derived, root, allow_missing_active_lock=True
-    )
+    if check_target:
+        _validate_target_unchanged(
+            derived, root, allow_missing_active_lock=True
+        )
+    else:
+        _validate_active_target_lock(derived, root, allow_missing=True)
     _restore_missing_active_target_lock(root, derived)
     _atomic_json(run / "current.json", derived)
     _remove_committed_append_journals(committed_journals)
@@ -5441,7 +7285,7 @@ def _lifecycle_transition(
             raise RevisionConflict("receipt sequence conflict")
         chain = _load_receipt_chain(run)
         if operation == "pause":
-            if current["stage"] not in _STAGES[:-3]:
+            if current["stage"] not in _WORK_STAGES:
                 raise RunStateError("run cannot be paused from its current stage")
             destination = "paused"
         elif operation == "resume":
@@ -5499,6 +7343,7 @@ _AFTER_BASELINE = {
     "skill-contract",
     "user-confirmation-record",
     "evaluation-pack",
+    "implementer-brief",
     "candidate-record",
     "trial-pack",
     "review-record",
@@ -5506,10 +7351,12 @@ _AFTER_BASELINE = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
 }
 _AFTER_CONTRACT = {
     "user-confirmation-record",
     "evaluation-pack",
+    "implementer-brief",
     "candidate-record",
     "trial-pack",
     "review-record",
@@ -5517,6 +7364,7 @@ _AFTER_CONTRACT = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
 }
 _AFTER_CANDIDATE = {
     "trial-pack",
@@ -5525,8 +7373,14 @@ _AFTER_CANDIDATE = {
     "target-scorecard",
     "verification-record",
     "release-record",
+    "evaluation-report",
 }
 _INVALIDATION_RULES = {
+    "abandon": {
+        "changed_types": {"resolution-record"},
+        "destination": "abandoned",
+        "invalidates": {"baseline-report", *_AFTER_BASELINE},
+    },
     "host-target": {
         "changed_types": {"resolution-record"},
         "destination": "abandoned",
@@ -5580,22 +7434,22 @@ _INVALIDATION_RULES = {
     "evaluation": {
         "changed_types": {"evaluation-pack"},
         "destination": "confirmed",
-        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+        "invalidates": {"implementer-brief", "candidate-record", *_AFTER_CANDIDATE},
     },
     "target-parameters": {
         "changed_types": {"evaluation-pack"},
         "destination": "confirmed",
-        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+        "invalidates": {"implementer-brief", "candidate-record", *_AFTER_CANDIDATE},
     },
     "rubric": {
         "changed_types": {"evaluation-pack"},
         "destination": "confirmed",
-        "invalidates": {"candidate-record", *_AFTER_CANDIDATE},
+        "invalidates": {"implementer-brief", "candidate-record", *_AFTER_CANDIDATE},
     },
     "candidate": {
         "changed_types": {"candidate-record"},
         "destination": "evaluation",
-        "invalidates": _AFTER_CANDIDATE,
+        "invalidates": _AFTER_CANDIDATE | {"implementer-brief"},
     },
     "trial": {
         "changed_types": {"trial-pack"},
@@ -5610,6 +7464,7 @@ _INVALIDATION_RULES = {
             "target-scorecard",
             "verification-record",
             "release-record",
+            "evaluation-report",
         },
     },
     "verification-input": {
@@ -5633,6 +7488,15 @@ _INVALIDATION_RULES = {
         "invalidates": set(),
     },
 }
+
+_MODE_INVALIDATION_DESTINATIONS = {"evaluate": {"contract": "baseline"}}
+
+
+def _invalidation_destination(change_kind: str, mode: str) -> str:
+    return _MODE_INVALIDATION_DESTINATIONS.get(mode, {}).get(
+        change_kind, _INVALIDATION_RULES[change_kind]["destination"]
+    )
+
 
 _CURRENT_EVENT_BY_ARTIFACT_TYPE = {
     "resolution-record": "initialize",
@@ -5734,7 +7598,8 @@ def _validate_invalidation_binding(
         or changed_envelope["artifact_type"] not in rule["changed_types"]
         or invalidation["changed_artifact_id"] != changed_item["artifact_id"]
         or invalidation["changed_artifact_digest"] != changed_item["envelope_digest"]
-        or receipt["destination_stage"] != rule["destination"]
+        or receipt["destination_stage"]
+        != _invalidation_destination(invalidation["change_kind"], current["mode"]["name"])
         or invalidation_envelope["created_sequence"] != receipt["sequence"]
     ):
         raise RunStateError("invalidation change, artifact, or destination is mismatched")
@@ -5800,9 +7665,9 @@ def invalidate_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] not in _STAGES[:-3]:
+        if current["stage"] not in _WORK_STAGES:
             raise RunStateError("terminal or paused runs cannot be invalidated")
-        destination = rule["destination"]
+        destination = _invalidation_destination(change_kind, current["mode"]["name"])
         invalidated_types = rule["invalidates"]
         if destination != "abandoned" and _STAGES.index(destination) > _STAGES.index(current["stage"]):
             raise RunStateError("material change does not apply at the current stage")
@@ -5817,7 +7682,7 @@ def invalidate_run(
             changed_artifact_id,
             changed["type"],
         )
-        if change_kind != "target-snapshot":
+        if change_kind not in {"target-snapshot", "abandon"}:
             _validate_target_unchanged(current, root)
         invalidated_records = [
             record
@@ -5893,6 +7758,284 @@ def invalidate_run(
         }
 
 
+_SWITCH_INVALIDATES = _AFTER_BASELINE - {"research-pack"}
+
+
+def _switch_invalidated_ids(current: dict[str, Any]) -> list[str]:
+    return sorted(
+        record["artifact_id"]
+        for record in current["artifact_index"].values()
+        if record["type"] in _SWITCH_INVALIDATES and record["derived_status"] == "accepted"
+    )
+
+
+def _validate_switch_binding(
+    run: Path,
+    current: dict[str, Any],
+    receipt: dict[str, Any],
+    validated_bindings: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> None:
+    """Bind one in-place improve/modify switch to its user confirmation and rewind."""
+    accepted = [
+        (item, envelope)
+        for item, envelope in validated_bindings
+        if item["status"] == "accepted"
+    ]
+    switch_item, switch_envelope = accepted[0]
+    switch = _artifact_payload_json(run, switch_item["artifact_id"])
+    resolution_envelope, _ = _validate_envelope(run, "resolution")
+    expected = _switch_invalidated_ids(current)
+    invalidated = sorted(
+        item["artifact_id"]
+        for item, _ in validated_bindings
+        if item["status"] == "invalidated"
+    )
+    if (
+        switch_envelope["created_sequence"] != receipt["sequence"]
+        or switch["from_mode"] != current["mode"]["name"]
+        or switch["confirmation_event_digest"] != receipt["authority_event_digest"]
+        or invalidated != expected
+        or switch["invalidated_artifact_ids"] != expected
+        or switch_envelope["input_bindings"]
+        != [{"artifact_id": "resolution", "digest": resolution_envelope["envelope_digest"]}]
+        or any(
+            current["artifact_index"][item["artifact_id"]]["digest"]
+            != item["envelope_digest"]
+            for item, _ in validated_bindings
+            if item["status"] == "invalidated"
+        )
+    ):
+        raise RunStateError("mode switch confirmation, rewind, or invalidation is mismatched")
+
+
+def switch_mode_run(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    mode: str,
+    reason: str,
+    confirmation: dict[str, Any],
+    authority_event_digest: str,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Switch an improve or modify run in place on the user's confirmed answer."""
+    if isinstance(expected_sequence, bool) or not isinstance(expected_sequence, int) or expected_sequence < 0:
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    if not isinstance(confirmation, dict) or set(confirmation) != {
+        "user_identity",
+        "confirmed_at",
+        "confirmation_text",
+    }:
+        raise RunStateError(
+            "a mode switch needs the user's confirmation: "
+            "user_identity, confirmed_at, and confirmation_text"
+        )
+    if not isinstance(authority_event_digest, str) or not _DIGEST_RE.fullmatch(
+        authority_event_digest
+    ):
+        raise RunStateError("a mode switch needs the user's confirmation event digest")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 4096:
+        raise RunStateError("mode switch reason must be nonempty bounded text")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        if current["stage"] not in _WORK_STAGES:
+            raise RunStateError("only an active run switches mode")
+        from_mode = current["mode"]["name"]
+        if not isinstance(mode, str) or {from_mode, mode} != _SWITCH_MODES:
+            raise RunStateError("a run switches in place only between improve and modify")
+        _validate_target_unchanged(current, root)
+        invalidated = _switch_invalidated_ids(current)
+        switch_id = f"mode-switch-{expected_sequence + 1:08d}"
+        if os.path.lexists(_artifact_directory(run, switch_id)):
+            raise RunStateError("immutable artifact already exists")
+        payload = {
+            "schema_version": MODE_SWITCH_SCHEMA,
+            "from_mode": from_mode,
+            "to_mode": mode,
+            "reason": reason,
+            **confirmation,
+            "confirmation_event_digest": authority_event_digest,
+            "accepted": True,
+            "invalidated_artifact_ids": invalidated,
+        }
+        _validate_artifact_payload("mode-switch-record", payload, from_mode)
+        resolution = current["artifact_index"]["resolution"]
+        derived, created, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="switch-mode",
+            destination_stage=_switch_destination(current["stage"]),
+            authority_event_digest=authority_event_digest,
+            existing_bindings=[
+                {
+                    "artifact_id": artifact_id,
+                    "envelope_digest": current["artifact_index"][artifact_id]["digest"],
+                    "status": "invalidated",
+                }
+                for artifact_id in invalidated
+            ],
+            artifact_requests=[
+                {
+                    "artifact_id": switch_id,
+                    "artifact_type": "mode-switch-record",
+                    "files": {"record.json": canonical_json_bytes(payload)},
+                    "primary_path": "record.json",
+                    "producer": "main-agent",
+                    "input_bindings": [
+                        {"artifact_id": "resolution", "digest": resolution["digest"]}
+                    ],
+                    "limitations": [],
+                }
+            ],
+        )
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "switch-mode",
+            "workflow_id": workflow_id,
+            "sequence": derived["head_sequence"],
+            "stage": derived["stage"],
+            "receipt_digest": derived["head_transition_digest"],
+            "mode": derived["mode"]["name"],
+            "switch_artifact_id": switch_id,
+            "switch_artifact_digest": created[switch_id]["envelope_digest"],
+            "invalidated_artifact_ids": invalidated,
+        }
+
+
+def read_kept_contract(
+    *, workflow_id: str, state_root: Path | None = None
+) -> dict[str, Any]:
+    """Show the run's target's kept contract and whether this run may reuse it."""
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        record = _read_kept_contract(root, current["target_identity"]["canonical"])
+        resolution, _ = _resolution_payload(run, workflow_id)
+        skill_file_digest = _target_skill_file_digest(current)
+        matches = (
+            record is not None
+            and record["skill_file_digest"] == skill_file_digest
+            and record["contract_schema"]
+            == resolution.get("contract_schema", LEGACY_CONTRACT_SCHEMA)
+        )
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "kept-contract",
+            "workflow_id": workflow_id,
+            "mode": current["mode"]["name"],
+            "target_skill_file_digest": skill_file_digest,
+            "kept_contract": record,
+            "kept_contract_digest": None if record is None else record["record_digest"],
+            "matches_target": matches,
+            "reusable": matches and current["mode"]["name"] in _REUSE_MODES,
+        }
+
+
+def reuse_kept_contract(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    kept_contract_digest: str,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Confirm the accepted contract with the target's kept confirmation."""
+    if isinstance(expected_sequence, bool) or not isinstance(expected_sequence, int) or expected_sequence < 0:
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    _digest(kept_contract_digest, "kept contract record")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        if current["mode"]["name"] not in _REUSE_MODES:
+            raise RunStateError(
+                "only improve and evaluate runs reuse a kept contract, and "
+                "modify confirms its changed contract with the user"
+            )
+        if current["stage"] != "contract":
+            raise RunStateError("a kept contract confirms only an accepted contract")
+        _validate_target_unchanged(current, root)
+        canonical = current["target_identity"]["canonical"]
+        kept = _read_kept_contract(root, canonical)
+        if kept is None:
+            raise RunStateError("the target has no kept contract")
+        if kept["record_digest"] != kept_contract_digest:
+            raise RunStateError("the kept contract changed since it was read")
+        contract_id, contract_envelope, contract = _current_event_artifact(
+            run, current, "accept-contract", "skill-contract"
+        )
+        _check_kept_contract_fits(current, contract, kept)
+        if (
+            contract["load_policy"]["policy"] != "agent"
+            and "hermes" in contract["hosts"]
+            and not any(
+                "hermes" in item.casefold() for item in kept["confirmation_limitations"]
+            )
+        ):
+            raise RunStateError(
+                "the kept confirmation does not record the Hermes load-policy limitation"
+            )
+        confirmation_id = f"kept-confirmation-{expected_sequence + 1:08d}"
+        if os.path.lexists(_artifact_directory(run, confirmation_id)):
+            raise RunStateError("immutable artifact already exists")
+        payload = {
+            "schema_version": REUSED_CONFIRMATION_SCHEMA,
+            "kept_contract": kept,
+            "kept_contract_digest": kept["record_digest"],
+            "confirmation_event_digest": kept["confirmation"]["confirmation_event_digest"],
+            "target_identity": canonical,
+            "contract_artifact_id": contract_id,
+            "contract_digest": contract_envelope["envelope_digest"],
+            "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
+            "accepted": True,
+        }
+        _validate_artifact_payload("user-confirmation-record", payload, current["mode"]["name"])
+        resolution = current["artifact_index"]["resolution"]
+        derived, created, _ = _append_transaction(
+            run=run,
+            current=current,
+            event="confirm-contract",
+            destination_stage="confirmed",
+            authority_event_digest=payload["confirmation_event_digest"],
+            existing_bindings=[],
+            artifact_requests=[
+                {
+                    "artifact_id": confirmation_id,
+                    "artifact_type": "user-confirmation-record",
+                    "files": {"record.json": canonical_json_bytes(payload)},
+                    "primary_path": "record.json",
+                    "producer": "main-agent",
+                    "input_bindings": [
+                        {"artifact_id": "resolution", "digest": resolution["digest"]},
+                        {"artifact_id": contract_id, "digest": contract_envelope["envelope_digest"]},
+                    ],
+                    "limitations": list(kept["confirmation_limitations"]),
+                }
+            ],
+        )
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "reuse-contract",
+            "workflow_id": workflow_id,
+            "sequence": derived["head_sequence"],
+            "stage": derived["stage"],
+            "receipt_digest": derived["head_transition_digest"],
+            "confirmation_artifact_id": confirmation_id,
+            "confirmation_artifact_digest": created[confirmation_id]["envelope_digest"],
+            "kept_contract_digest": kept["record_digest"],
+            "kept_contract_source": kept["source_workflow_id"],
+        }
+
+
 _SCORE_CATEGORIES = (
     "triggering",
     "scope discipline",
@@ -5939,6 +8082,25 @@ def _current_event_artifact(
     return artifact_id, envelope, _artifact_payload_json(run, artifact_id)
 
 
+def _reject_failed_selection_runs(
+    run: Path, current: dict[str, Any], candidate: dict[str, Any], trials_id: str
+) -> None:
+    """Keep a rerun from hiding another retained pack's selection failure for this candidate content."""
+    skill_digest = _candidate_skill_digest(candidate)
+    for record in current["artifact_index"].values():
+        if record["type"] != "trial-pack" or record["artifact_id"] == trials_id:
+            continue
+        if any(
+            case.get("exposure") == "selection"
+            and case["verdict"] == "fail"
+            and case["installed_skill_digest"] == skill_digest
+            for case in _artifact_payload_json(run, record["artifact_id"])["cases"]
+        ):
+            raise RunStateError(
+                "selection trials already failed for this candidate, and a rerun cannot replace them"
+            )
+
+
 def _validate_final_evidence(
     run: Path,
     current: dict[str, Any],
@@ -5965,6 +8127,13 @@ def _validate_final_evidence(
         or trials.get("status") != "pass"
     ):
         raise RunStateError("trial evidence is stale or failing")
+    if not any(
+        case.get("exposure") != "selection"
+        or case["observed_load"]["kind"] == "candidate"
+        for case in trials["cases"]
+    ):
+        raise RunStateError("delivery requires a trial that loaded the candidate")
+    _reject_failed_selection_runs(run, current, candidate, trials_id)
     review_id, review_envelope, review = _current_event_artifact(
         run, current, "accept-review", "review-record", event_artifacts
     )
@@ -6181,10 +8350,14 @@ def _validate_delivery_record_binding(
         or delivery["finalized_revision"] != candidate["candidate_revision"]
         or delivery["candidate_digest"] != candidate_envelope["envelope_digest"]
         or delivery["release_digest"] != release_envelope["envelope_digest"]
-        or delivery_scope not in current["authority"]["delivery_effects"]
         or delivery_scope not in release["authorized_delivery_scope"]
     ):
         raise RunStateError("delivery authority, revision, or release binding is invalid")
+    if delivery_scope not in current["authority"]["delivery_effects"]:
+        grant_path = (
+            _artifact_directory(run, delivery_id) / "raw" / "authority-event.bin"
+        )
+        _require_post_finalize_delivery_grant(delivery_scope, grant_path.read_bytes())
     retained_evidence = sorted(
         digest
         for path, digest in raw_digests.items()
@@ -6192,7 +8365,8 @@ def _validate_delivery_record_binding(
     )
     if retained_evidence != sorted(delivery["acceptance_evidence"]):
         raise RunStateError("delivery acceptance evidence lacks retained raw bytes")
-    _validate_delivery_destination(current, delivery, candidate)
+    if delivery["destination_identity"] != current["target_identity"]["canonical"]:
+        raise RunStateError("delivery destination is not the canonical target")
     _require_input_bindings(
         delivery_envelope,
         {
@@ -6212,12 +8386,28 @@ def _validate_cleanup_authority_binding(
 ) -> None:
     authority_envelope, raw_digests = _artifact_raw_digests(run, authority_id)
     cleanup_authority = _artifact_payload_json(run, authority_id)
-    delivery_id, delivery_envelope, delivery = _current_event_artifact(
-        run,
-        current,
-        "record-delivery",
-        "delivery-acceptance-record",
-        event_artifacts,
+    if current["stage"] == "abandoned":
+        abandon_digest = next(
+            (
+                entry["receipt_digest"]
+                for entry in reversed(_load_receipt_chain(run))
+                if entry.get("destination_stage") == "abandoned"
+                and entry.get("event") != "record-cleanup-authority"
+            ),
+            None,
+        )
+        if (
+            cleanup_authority["workflow_id"] != current["workflow_id"]
+            or cleanup_authority["target_identity"]
+            != current["target_identity"]["canonical"]
+            or cleanup_authority["authority_event_digest"] != authority_event_digest
+            or raw_digests.get("authority-event.bin") != authority_event_digest
+            or cleanup_authority.get("abandon_receipt_digest") != abandon_digest
+        ):
+            raise RunStateError("cleanup authority or abandon binding is invalid")
+        return
+    finished_id, finished_envelope, finished_field = _cleanup_basis(
+        run, current, event_artifacts
     )
     if (
         cleanup_authority["workflow_id"] != current["workflow_id"]
@@ -6225,16 +8415,35 @@ def _validate_cleanup_authority_binding(
         != current["target_identity"]["canonical"]
         or cleanup_authority["authority_event_digest"] != authority_event_digest
         or raw_digests.get("authority-event.bin") != authority_event_digest
-        or cleanup_authority["accepted_delivery_digest"]
-        != delivery_envelope["envelope_digest"]
-        or delivery["accepted"] is not True
+        or cleanup_authority[finished_field] != finished_envelope["envelope_digest"]
     ):
         raise RunStateError("cleanup authority or accepted-delivery binding is invalid")
     _require_input_bindings(
         authority_envelope,
-        {delivery_id: delivery_envelope["envelope_digest"]},
+        {finished_id: finished_envelope["envelope_digest"]},
         "cleanup authority",
     )
+
+
+def _cleanup_basis(
+    run: Path,
+    current: dict[str, Any],
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any], str]:
+    """Name the record a finished run's cleanup binds: its report or accepted delivery."""
+    if current["stage"] == "reported":
+        report_id, report_envelope, _ = _current_event_artifact(
+            run, current, "report", "evaluation-report", event_artifacts
+        )
+        return report_id, report_envelope, "evaluation_report_digest"
+    if current["stage"] != "delivered":
+        raise RunStateError("cleanup requires accepted delivery or a reported evaluation")
+    delivery_id, delivery_envelope, delivery = _current_event_artifact(
+        run, current, "record-delivery", "delivery-acceptance-record", event_artifacts
+    )
+    if delivery["accepted"] is not True:
+        raise RunStateError("cleanup authority or accepted-delivery binding is invalid")
+    return delivery_id, delivery_envelope, "accepted_delivery_digest"
 
 
 def finalize_run(
@@ -6253,10 +8462,12 @@ def finalize_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event("finalize", current["mode"]["name"])
         if current["stage"] != "verified":
             raise RunStateError("finalization requires the verified stage")
         _validate_target_unchanged(current, root)
         artifact_ids = _validate_final_evidence(run, current, release_artifact_id)
+        _kept_contract_directory(root)
         bindings = [
             {
                 "artifact_id": artifact_id,
@@ -6265,7 +8476,7 @@ def finalize_run(
             }
             for artifact_id in artifact_ids
         ]
-        derived, _, _ = _append_transaction(
+        derived, _, receipt = _append_transaction(
             run=run,
             current=current,
             event="finalize",
@@ -6277,6 +8488,12 @@ def finalize_run(
         _release_owned_target_lock(
             root, current, current["active_target_lock"]
         )
+        candidate = _current_event_artifact(
+            run, derived, "accept-candidate", "candidate-record"
+        )[2]
+        kept = _keep_finished_contract(
+            root, run, derived, receipt, candidate.get("loaded_skill_digest")
+        )
         return {
             "schema_version": "skill-builder-operation.v1",
             "operation": "finalize",
@@ -6286,6 +8503,165 @@ def finalize_run(
             "receipt_digest": derived["head_transition_digest"],
             "release_artifact_id": release_artifact_id,
             "release_artifact_digest": current["artifact_index"][release_artifact_id]["digest"],
+            **kept,
+        }
+
+
+def _validate_report_evidence(
+    run: Path,
+    current: dict[str, Any],
+    report_artifact_id: str,
+    event_artifacts: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Bind one evaluation report to the current scored evidence of an evaluate run."""
+    _require_mode_event("report", current["mode"]["name"])
+    bound: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {
+        artifact_type: _current_event_artifact(
+            run, current, event, artifact_type, event_artifacts
+        )
+        for event, artifact_type in (
+            ("accept-candidate", "candidate-record"),
+            ("complete-trials", "trial-pack"),
+            ("accept-review", "review-record"),
+            ("accept-scores", "builder-run-conformance-ledger"),
+            ("accept-scores", "target-scorecard"),
+            ("accept-contract", "skill-contract"),
+            ("confirm-contract", "user-confirmation-record"),
+            ("freeze-evaluation", "evaluation-pack"),
+        )
+    }
+    _validate_score_bindings(
+        run,
+        current,
+        bound["builder-run-conformance-ledger"][0],
+        bound["target-scorecard"][0],
+        event_artifacts,
+    )
+
+    def digest(artifact_type: str) -> str:
+        return bound[artifact_type][1]["envelope_digest"]
+
+    candidate = bound["candidate-record"][2]
+    _reject_failed_selection_runs(run, current, candidate, bound["trial-pack"][0])
+    review = bound["review-record"][2]
+    scorecard = bound["target-scorecard"][2]
+    if (
+        bound["trial-pack"][2]["candidate_digest"] != digest("candidate-record")
+        or review["candidate_digest"] != digest("candidate-record")
+        or scorecard["schema_version"] != SCORECARD_SCHEMA
+        or [category["name"] for category in scorecard["categories"]]
+        != list(_SCORE_CATEGORIES)
+        or any(
+            set(category["criteria"]) != _SCORE_CRITERIA[category["name"]]
+            or category["score"]
+            != sum(result["passed"] for result in category["criteria"].values())
+            for category in scorecard["categories"]
+        )
+    ):
+        raise RunStateError("evaluation scores do not sum the ten criteria per category")
+    record = current["artifact_index"].get(report_artifact_id)
+    if (
+        record is None
+        or record["type"] != "evaluation-report"
+        or record["derived_status"] != "accepted"
+    ):
+        raise RunStateError("current evaluation report is missing")
+    report_envelope, _ = _validate_envelope(run, report_artifact_id)
+    report = _artifact_payload_json(run, report_artifact_id)
+    expected = {
+        "target_identity": current["target_identity"]["canonical"],
+        "target_snapshot_digest": current["target_snapshot"]["snapshot_digest"],
+        "candidate_digest": digest("candidate-record"),
+        "candidate_revision": candidate["candidate_revision"],
+        "contract_digest": digest("skill-contract"),
+        "confirmation_digest": digest("user-confirmation-record"),
+        "evaluation_digest": digest("evaluation-pack"),
+        "review_digest": digest("review-record"),
+        "review_verdict": review["verdict"],
+        "conformance_digest": digest("builder-run-conformance-ledger"),
+        "scorecard_digest": digest("target-scorecard"),
+        "scores": [
+            {
+                "name": category["name"],
+                "score": category["score"],
+                "failing_criteria": sorted(
+                    criterion_id
+                    for criterion_id, result in category["criteria"].items()
+                    if not result["passed"]
+                ),
+            }
+            for category in scorecard["categories"]
+        ],
+    }
+    if any(report[key] != value for key, value in expected.items()):
+        raise RunStateError("evaluation report has a stale or substituted binding")
+    _require_input_bindings(
+        report_envelope,
+        {
+            bound[artifact_type][0]: digest(artifact_type)
+            for artifact_type in (
+                "candidate-record",
+                "review-record",
+                "builder-run-conformance-ledger",
+                "target-scorecard",
+            )
+        },
+        "evaluation report",
+    )
+    return [artifact_id for artifact_id, _, _ in bound.values()] + [report_artifact_id]
+
+
+def report_run(
+    *,
+    workflow_id: str,
+    expected_sequence: int,
+    report_artifact_id: str,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    if isinstance(expected_sequence, bool) or not isinstance(expected_sequence, int) or expected_sequence < 0:
+        raise RunStateError("expected sequence must be a nonnegative integer")
+    with _locked_root(state_root, create=False) as root:
+        run = _run_directory(root, workflow_id)
+        current = _derive_index(run)
+        if _read_json(run / "current.json") != current:
+            raise RunStateError("derived current index is stale or corrupt")
+        if current["head_sequence"] != expected_sequence:
+            raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event("report", current["mode"]["name"])
+        if current["stage"] != "scored":
+            raise RunStateError("a report requires the scored stage")
+        _validate_target_unchanged(current, root)
+        artifact_ids = _validate_report_evidence(run, current, report_artifact_id)
+        skill_file_digest = _target_skill_file_digest(current)
+        _kept_contract_directory(root)
+        derived, _, receipt = _append_transaction(
+            run=run,
+            current=current,
+            event="report",
+            destination_stage="reported",
+            authority_event_digest=None,
+            existing_bindings=[
+                {
+                    "artifact_id": artifact_id,
+                    "envelope_digest": current["artifact_index"][artifact_id]["digest"],
+                    "status": "accepted",
+                }
+                for artifact_id in artifact_ids
+            ],
+            artifact_requests=[],
+        )
+        _release_owned_target_lock(root, current, current["active_target_lock"])
+        kept = _keep_finished_contract(root, run, derived, receipt, skill_file_digest)
+        return {
+            "schema_version": "skill-builder-operation.v1",
+            "operation": "report",
+            "workflow_id": workflow_id,
+            "sequence": derived["head_sequence"],
+            "stage": derived["stage"],
+            "receipt_digest": derived["head_transition_digest"],
+            "report_artifact_id": report_artifact_id,
+            "report_artifact_digest": current["artifact_index"][report_artifact_id]["digest"],
+            **kept,
         }
 
 
@@ -6345,6 +8721,7 @@ def record_delivery(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
+        _require_mode_event("record-delivery", current["mode"]["name"])
         if current["stage"] != "finalized":
             raise RunStateError("delivery may be recorded only for a finalized run")
         candidate_id, candidate_envelope, candidate = _current_event_artifact(
@@ -6357,11 +8734,10 @@ def record_delivery(
             run, current, "finalize", "release-record"
         )
         delivery_scope = f"{delivery['action']}:{delivery['destination_identity']}"
-        if (
-            delivery_scope not in current["authority"]["delivery_effects"]
-            or delivery_scope not in release["authorized_delivery_scope"]
-        ):
+        if delivery_scope not in release["authorized_delivery_scope"]:
             raise RunStateError("delivery action or destination exceeds recorded authority scope")
+        if delivery_scope not in current["authority"]["delivery_effects"]:
+            _require_post_finalize_delivery_grant(delivery_scope, authority_event)
         artifact_id = f"delivery-{expected_sequence + 1:08d}"
         payload = {
             "schema_version": "skill-builder-delivery-acceptance.v1",
@@ -6443,14 +8819,27 @@ def record_cleanup_authority(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] != "delivered":
-            raise RunStateError("cleanup authority requires accepted delivery")
-        delivery_id, delivery_envelope, _ = _current_event_artifact(
-            run, current, "record-delivery", "delivery-acceptance-record"
-        )
+        if current["stage"] not in {"delivered", "reported", "abandoned"}:
+            raise RunStateError(
+                "cleanup authority requires accepted delivery, a reported evaluation, or an abandoned run"
+            )
+        if current["stage"] == "abandoned":
+            finished_id, finished_envelope, finished_field = (
+                None,
+                {"envelope_digest": current["head_transition_digest"]},
+                "abandon_receipt_digest",
+            )
+        else:
+            finished_id, finished_envelope, finished_field = _cleanup_basis(run, current)
         artifact_id = f"cleanup-authority-{expected_sequence + 1:08d}"
         payload = {
-            "schema_version": "skill-builder-cleanup-authority.v1",
+            "schema_version": (
+                ABANDONED_CLEANUP_AUTHORITY_SCHEMA
+                if current["stage"] == "abandoned"
+                else CLEANUP_AUTHORITY_SCHEMA
+                if current["stage"] == "reported"
+                else LEGACY_CLEANUP_AUTHORITY_SCHEMA
+            ),
             "workflow_id": workflow_id,
             "target_identity": current["target_identity"]["canonical"],
             "action": "cleanup",
@@ -6458,13 +8847,13 @@ def record_cleanup_authority(
             "authority_event_digest": authority_event_digest,
             "actor": actor,
             "timestamp": _now(),
-            "accepted_delivery_digest": delivery_envelope["envelope_digest"],
+            finished_field: finished_envelope["envelope_digest"],
         }
         derived, created, _ = _append_transaction(
             run=run,
             current=current,
             event="record-cleanup-authority",
-            destination_stage="delivered",
+            destination_stage=current["stage"],
             authority_event_digest=authority_event_digest,
             existing_bindings=[],
             artifact_requests=[
@@ -6477,12 +8866,16 @@ def record_cleanup_authority(
                     },
                     "primary_path": "record.json",
                     "producer": actor,
-                    "input_bindings": [
-                        {
-                            "artifact_id": delivery_id,
-                            "digest": delivery_envelope["envelope_digest"],
-                        }
-                    ],
+                    "input_bindings": (
+                        []
+                        if finished_id is None
+                        else [
+                            {
+                                "artifact_id": finished_id,
+                                "digest": finished_envelope["envelope_digest"],
+                            }
+                        ]
+                    ),
                     "limitations": [],
                 }
             ],
@@ -6500,25 +8893,30 @@ def record_cleanup_authority(
         }
 
 
-_TOMBSTONE_FIELDS = {
+_TOMBSTONE_COMMON_FIELDS = {
     "schema_version",
     "workflow_id",
     "target_identity",
     "run_directory_identity",
     "final_transition_receipt_digest",
     "final_run_manifest_digest",
-    "accepted_delivery_record_digest",
     "cleanup_authority_event_digest",
     "created_at",
     "tombstone_digest",
+}
+_TOMBSTONE_BASIS_FIELDS = {
+    LEGACY_TOMBSTONE_SCHEMA: "accepted_delivery_record_digest",
+    TOMBSTONE_SCHEMA: "evaluation_report_digest",
+    ABANDONED_TOMBSTONE_SCHEMA: "abandon_receipt_digest",
 }
 
 
 def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
     tombstone = _read_json(path)
+    basis_field = _TOMBSTONE_BASIS_FIELDS.get(tombstone.get("schema_version"))
     if (
-        set(tombstone) != _TOMBSTONE_FIELDS
-        or tombstone.get("schema_version") != "skill-builder-cleanup-tombstone.v1"
+        basis_field is None
+        or set(tombstone) != _TOMBSTONE_COMMON_FIELDS | {basis_field}
         or tombstone.get("workflow_id") != workflow_id
         or tombstone.get("tombstone_digest")
         != canonical_digest(tombstone, "tombstone_digest")
@@ -6527,7 +8925,7 @@ def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
     for field in (
         "final_transition_receipt_digest",
         "final_run_manifest_digest",
-        "accepted_delivery_record_digest",
+        basis_field,
         "cleanup_authority_event_digest",
         "tombstone_digest",
     ):
@@ -6545,16 +8943,35 @@ def _validate_tombstone(path: Path, workflow_id: str) -> dict[str, Any]:
 
 def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
     chain = _load_receipt_chain(run)
-    finalization_receipt = next(
-        (receipt for receipt in reversed(chain) if receipt["event"] == "finalize"),
+    reported = current["stage"] == "reported"
+    abandoned = current["stage"] == "abandoned"
+    closing_event = "report" if reported else "finalize"
+    closing_receipt = next(
+        (receipt for receipt in reversed(chain) if receipt["event"] == closing_event),
         None,
     )
-    if finalization_receipt is None:
-        raise RunStateError("final run manifest lacks a finalization receipt")
-    _, release_envelope = _event_artifact(run, "finalize", "release-record")
-    _, delivery_envelope = _event_artifact(
-        run, "record-delivery", "delivery-acceptance-record"
-    )
+    if closing_receipt is None and not abandoned:
+        raise RunStateError(f"final run manifest lacks a {closing_event} receipt")
+    if abandoned:
+        bindings = {
+            "abandon_receipt_digest": current["head_transition_digest"],
+        }
+    elif reported:
+        _, report_envelope = _event_artifact(run, "report", "evaluation-report")
+        bindings = {
+            "report_receipt_digest": closing_receipt["receipt_digest"],
+            "evaluation_report_digest": report_envelope["envelope_digest"],
+        }
+    else:
+        _, release_envelope = _event_artifact(run, "finalize", "release-record")
+        _, delivery_envelope = _event_artifact(
+            run, "record-delivery", "delivery-acceptance-record"
+        )
+        bindings = {
+            "finalization_receipt_digest": closing_receipt["receipt_digest"],
+            "release_record_digest": release_envelope["envelope_digest"],
+            "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
+        }
     entries: list[dict[str, Any]] = []
     for path in sorted(run.rglob("*")):
         relative = path.relative_to(run).as_posix()
@@ -6575,12 +8992,12 @@ def _final_run_manifest(run: Path, current: dict[str, Any]) -> dict[str, Any]:
             }
         )
     manifest: dict[str, Any] = {
-        "schema_version": "skill-builder-final-run-manifest.v1",
+        "schema_version": FINAL_RUN_MANIFEST_SCHEMA
+        if reported or abandoned
+        else LEGACY_FINAL_RUN_MANIFEST_SCHEMA,
         "workflow_id": current["workflow_id"],
         "target_identity": current["target_identity"]["canonical"],
-        "finalization_receipt_digest": finalization_receipt["receipt_digest"],
-        "release_record_digest": release_envelope["envelope_digest"],
-        "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
+        **bindings,
         "head_transition_digest": current["head_transition_digest"],
         "entries": entries,
         "observed_item_count": len(entries),
@@ -6798,15 +9215,24 @@ def cleanup_run(
                 raise RunStateError("cleanup retry current index is stale or corrupt")
             if current["head_sequence"] != expected_sequence:
                 raise RevisionConflict("cleanup retry receipt sequence conflict")
-            if current["stage"] != "delivered":
-                raise RunStateError("cleanup retry requires accepted delivery")
-            _validate_target_unchanged(current, root)
-            _, delivery_envelope, delivery = _current_event_artifact(
-                run_candidate,
-                current,
-                "record-delivery",
-                "delivery-acceptance-record",
-            )
+            if current["stage"] not in {"delivered", "reported", "abandoned"}:
+                raise RunStateError(
+                    "cleanup retry requires accepted delivery, a reported evaluation, or an abandoned run"
+                )
+            if current["stage"] != "abandoned":
+                _validate_target_unchanged(current, root)
+            if current["stage"] == "abandoned":
+                finished_digest = current["head_transition_digest"]
+            else:
+                _, finished_envelope, _ = _cleanup_basis(run_candidate, current)
+                finished_digest = finished_envelope["envelope_digest"]
+            basis_field = _TOMBSTONE_BASIS_FIELDS[
+                ABANDONED_TOMBSTONE_SCHEMA
+                if tombstone.get("schema_version") == ABANDONED_TOMBSTONE_SCHEMA
+                else TOMBSTONE_SCHEMA
+                if current["stage"] == "reported"
+                else LEGACY_TOMBSTONE_SCHEMA
+            ]
             _, _, cleanup_authority = _current_event_artifact(
                 run_candidate,
                 current,
@@ -6818,7 +9244,6 @@ def cleanup_run(
             if (
                 not os.path.lexists(final_manifest_path)
                 or _read_json(final_manifest_path) != final_manifest
-                or delivery.get("accepted") is not True
                 or cleanup_authority.get("authorized") is not True
                 or tombstone["target_identity"]
                 != current["target_identity"]["canonical"]
@@ -6826,8 +9251,7 @@ def cleanup_run(
                 != current["head_transition_digest"]
                 or tombstone["final_run_manifest_digest"]
                 != final_manifest["manifest_digest"]
-                or tombstone["accepted_delivery_record_digest"]
-                != delivery_envelope["envelope_digest"]
+                or tombstone.get(basis_field) != finished_digest
                 or tombstone["cleanup_authority_event_digest"]
                 != cleanup_authority["authority_event_digest"]
             ):
@@ -6856,12 +9280,30 @@ def cleanup_run(
             raise RunStateError("derived current index is stale or corrupt")
         if current["head_sequence"] != expected_sequence:
             raise RevisionConflict("receipt sequence conflict")
-        if current["stage"] != "delivered":
-            raise RunStateError("cleanup requires accepted delivery")
-        _validate_target_unchanged(current, root)
-        delivery_id, delivery_envelope, delivery = _current_event_artifact(
-            run, current, "record-delivery", "delivery-acceptance-record"
-        )
+        if current["stage"] not in {"delivered", "reported", "abandoned"}:
+            raise RunStateError(
+                "cleanup requires accepted delivery, a reported evaluation, or an abandoned run"
+            )
+        abandoned = current["stage"] == "abandoned"
+        if not abandoned:
+            _validate_target_unchanged(current, root)
+        if abandoned:
+            finished_id, finished_digest, finished_field = (
+                None,
+                next(
+                    entry["receipt_digest"]
+                    for entry in reversed(_load_receipt_chain(run))
+                    if entry.get("destination_stage") == "abandoned"
+                    and entry.get("event") != "record-cleanup-authority"
+                ),
+                "abandon_receipt_digest",
+            )
+        else:
+            finished_id, finished_envelope, finished_field = _cleanup_basis(
+                run, current
+            )
+            finished_digest = finished_envelope["envelope_digest"]
+        reported = current["stage"] == "reported"
         authority_id, _, cleanup_authority = _current_event_artifact(
             run, current, "record-cleanup-authority", "cleanup-authority-record"
         )
@@ -6871,10 +9313,8 @@ def cleanup_run(
             if receipt["event"] == "record-cleanup-authority"
         )
         if (
-            delivery.get("accepted") is not True
-            or cleanup_authority.get("authorized") is not True
-            or cleanup_authority.get("accepted_delivery_digest")
-            != delivery_envelope["envelope_digest"]
+            cleanup_authority.get("authorized") is not True
+            or cleanup_authority.get(finished_field) != finished_digest
             or cleanup_authority.get("authority_event_digest")
             != authority_receipt["authority_event_digest"]
         ):
@@ -6887,8 +9327,15 @@ def cleanup_run(
         else:
             _exclusive_json(final_manifest_path, final_manifest)
         run_info = run.lstat()
+        tombstone_schema = (
+            ABANDONED_TOMBSTONE_SCHEMA
+            if abandoned
+            else TOMBSTONE_SCHEMA
+            if reported
+            else LEGACY_TOMBSTONE_SCHEMA
+        )
         tombstone: dict[str, Any] = {
-            "schema_version": "skill-builder-cleanup-tombstone.v1",
+            "schema_version": tombstone_schema,
             "workflow_id": workflow_id,
             "target_identity": current["target_identity"]["canonical"],
             "run_directory_identity": {
@@ -6898,7 +9345,7 @@ def cleanup_run(
             },
             "final_transition_receipt_digest": current["head_transition_digest"],
             "final_run_manifest_digest": final_manifest["manifest_digest"],
-            "accepted_delivery_record_digest": delivery_envelope["envelope_digest"],
+            _TOMBSTONE_BASIS_FIELDS[tombstone_schema]: finished_digest,
             "cleanup_authority_event_digest": cleanup_authority[
                 "authority_event_digest"
             ],
@@ -6934,7 +9381,7 @@ def cleanup_run(
             "stage": "cleaned",
             "receipt_digest": current["head_transition_digest"],
             "tombstone_digest": tombstone["tombstone_digest"],
-            "delivery_artifact_id": delivery_id,
+            ("report_artifact_id" if reported else "delivery_artifact_id"): finished_id,
             "authority_artifact_id": authority_id,
         }
 
@@ -6965,18 +9412,37 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "request schemas (one strict JSON object on stdin):\n"
-            "  initialize request: host_identity, target_identity, mode, authority, "
-            "and mode evidence, with an optional queue\n"
+            "  initialize request: host_identity, target_identity, mode (create, "
+            "improve, modify, or evaluate), authority, and mode evidence (create "
+            "needs absence_evidence and overlap_map, the others need "
+            "target_manifest), with an optional queue\n"
             "  retain request: workflow_id, expected_sequence, artifact_id, "
             "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
             "  transition request: workflow_id, expected_sequence, event, "
             "destination_stage, artifact_ids, and optional authority_event_digest\n"
+            "  finalize request: workflow_id, expected_sequence, release_artifact_id\n"
+            "  report request: workflow_id, expected_sequence, report_artifact_id "
+            "(evaluate runs only)\n"
             "  deliver request: workflow_id, expected_sequence, delivery, "
             "authority_event_digest, authority_event_base64, evidence_files_base64\n"
             "  cleanup-authority request: workflow_id, expected_sequence, "
             "authority_event_digest, authority_event_base64, actor\n"
             "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
-            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence"
+            "  activate-next request: workflow_id, expected_sequence, mode, and mode evidence\n"
+            "  load-sentence request: load_policy and the target name\n"
+            "  kept-contract request: workflow_id\n"
+            "  reuse-contract request: workflow_id, expected_sequence, and "
+            "kept_contract_digest (improve or evaluate runs at the contract stage)\n"
+            "  switch-mode request: workflow_id, expected_sequence, mode (improve or "
+            "modify), reason, confirmation (user_identity, confirmed_at, "
+            "confirmation_text), and authority_event_digest\n"
+            "  invalidate request: workflow_id, expected_sequence, change_kind, "
+            "changed_artifact_id, reason (abandon ends a run going nowhere and "
+            "releases its lock. Other kinds rewind to an earlier stage)\n"
+            "  artifact payload schemas live in references/artifact-contracts.md. "
+            "stage names are resolved, baseline, research, sieve, design, contract, "
+            "confirmed, evaluation, candidate, trials, reviewed, scored, verified, "
+            "finalized, reported, delivered, abandoned"
         ),
     )
     parser.add_argument(
@@ -6993,10 +9459,15 @@ def main(argv: list[str] | None = None) -> int:
             "resume",
             "recover",
             "finalize",
+            "report",
             "deliver",
             "cleanup-authority",
             "cleanup",
             "activate-next",
+            "load-sentence",
+            "kept-contract",
+            "reuse-contract",
+            "switch-mode",
         ),
     )
     parser.add_argument(
@@ -7051,6 +9522,8 @@ def main(argv: list[str] | None = None) -> int:
             result = recover_run(state_root=state_root, **payload)
         elif args.command == "finalize":
             result = finalize_run(state_root=state_root, **payload)
+        elif args.command == "report":
+            result = report_run(state_root=state_root, **payload)
         elif args.command == "deliver":
             encoded_authority = payload.pop("authority_event_base64", None)
             encoded_evidence = payload.pop("evidence_files_base64", None)
@@ -7101,6 +9574,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "activate-next":
             result = activate_next_target(state_root=state_root, **payload)
+        elif args.command == "kept-contract":
+            result = read_kept_contract(state_root=state_root, **payload)
+        elif args.command == "reuse-contract":
+            result = reuse_kept_contract(state_root=state_root, **payload)
+        elif args.command == "switch-mode":
+            result = switch_mode_run(state_root=state_root, **payload)
+        elif args.command == "load-sentence":
+            if set(payload) != {"load_policy", "name"}:
+                raise RunStateError("load-sentence requires load_policy and name")
+            result = {
+                "load_sentence": load_sentence(payload["load_policy"], payload["name"])
+            }
         else:
             result = cleanup_run(
                 state_root=state_root,

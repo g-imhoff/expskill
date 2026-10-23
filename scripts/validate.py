@@ -204,9 +204,17 @@ PUBLIC_SKILL_TOKENS = {
 }
 PUBLIC_SKILL_COUNT_TEXT = "sixteen independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
+SKILL_BUILDER_STAGE_FILES = (
+    "references/create.md",
+    "references/improve.md",
+    "references/modify.md",
+    "references/evaluate.md",
+    "references/shared-stages.md",
+)
 SKILL_BUILDER_REQUIRED_REFERENCES = (
     "references/artifact-contracts.md",
     "references/evaluation-rubric.md",
+    *SKILL_BUILDER_STAGE_FILES,
 )
 SETUP_SKILLS_REQUIRED_RESOURCES = (
     "references/record-format.md",
@@ -217,11 +225,6 @@ DEEP_RESEARCH_REQUIRED_RESOURCES = (
 )
 SKILL_BUILDER_FORBIDDEN_TOKENS = tuple(
     sorted(PUBLIC_SKILL_TOKENS - {SKILL_BUILDER_TOKEN})
-)
-SKILL_BUILDER_GUIDE_LINES = (
-    "- `$skill-builder` creates or improves one exact agent skill through evidence-gated "
-    "research, trials, review, and verification.",
-    "Use $skill-builder to create or improve one exact agent skill with retained evidence.",
 )
 SKILL_BUILDER_NAME_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])skill(?:-|[ \t]+)builder(?![A-Za-z0-9])",
@@ -682,7 +685,6 @@ EXPECTED_AGENTS = {
 REVIEW_HANDOFF_PATHS = (
     "content/skills/implement/SKILL.md",
     "content/skills/skill-builder/SKILL.md",
-    "content/skills/skill-builder/references/evaluation-rubric.md",
 )
 REVIEW_HANDOFF_HEADING = "## Review context contract\n"
 REVIEW_JUDGE_AGENTS = ("review", "spec")
@@ -926,24 +928,6 @@ def _contains_exact_skill_token(contents: str, token: str) -> bool:
         rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])",
         contents,
     ) is not None
-
-
-def _markdown_level_two_section(contents: str, heading: str) -> str | None:
-    lines = contents.splitlines()
-    marker = f"## {heading}"
-    starts = [index for index, line in enumerate(lines) if line == marker]
-    if len(starts) != 1:
-        return None
-    start = starts[0]
-    end = next(
-        (
-            index
-            for index in range(start + 1, len(lines))
-            if lines[index].startswith("## ")
-        ),
-        len(lines),
-    )
-    return "\n".join(lines[start:end]).rstrip()
 
 
 def _lexical_package_entries(plugin_root: Path) -> list[tuple[Path, os.stat_result]]:
@@ -1520,37 +1504,34 @@ def _validate_skills(skills_root: Path, errors: list[str]) -> None:
 
 
 def _validate_skill_builder_separation(skills_root: Path, errors: list[str]) -> None:
-    builder_path = skills_root / "skill-builder" / "SKILL.md"
-    if builder_path.is_file() and not builder_path.is_symlink():
+    builder_root = skills_root / "skill-builder"
+    for relative in ("SKILL.md", *SKILL_BUILDER_STAGE_FILES):
+        path = builder_root / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        label = "skill-builder" if relative == "SKILL.md" else f"skill-builder {relative}"
         try:
-            builder = builder_path.read_text(encoding="utf-8")
-        except OSError as error:
-            errors.append(f"skill-builder contract could not be read: {error}")
-        else:
-            boundary = _markdown_level_two_section(builder, "Boundary")
-            if boundary is None:
-                errors.append("skill-builder must contain exactly one Boundary section")
-            if not _contains_exact_skill_token(builder, SKILL_BUILDER_TOKEN):
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            errors.append(f"{label} contract could not be read: {error}")
+            continue
+        if relative == "SKILL.md":
+            if not _contains_exact_skill_token(contents, SKILL_BUILDER_TOKEN):
                 errors.append("skill-builder contract must identify $skill-builder directly")
-            if any(
-                _contains_exact_skill_token(builder, token)
-                for token in SKILL_BUILDER_FORBIDDEN_TOKENS
-            ):
-                errors.append(
-                    "skill-builder contains another product skill invocation token"
-                )
-            if boundary is None:
-                outside_boundary = builder
-            else:
-                boundary_start = builder.find(boundary)
-                outside_boundary = (
-                    builder[:boundary_start]
-                    + builder[boundary_start + len(boundary) :]
-                )
-            if re.search(r"\blifecycle\b", outside_boundary, re.IGNORECASE):
-                errors.append(
-                    "skill-builder contains lifecycle wording outside the canonical boundary"
-                )
+        else:
+            if PLACEHOLDER in contents:
+                errors.append(f"{label} contains a placeholder")
+            if any(retired in contents.lower() for retired in RETIRED_SKILLS):
+                errors.append(f"{label} references a retired skill")
+            if PUBLIC_SKILL_JARGON.search(contents):
+                errors.append(f"{label} contains private policy vocabulary")
+        if any(
+            _contains_exact_skill_token(contents, token)
+            for token in SKILL_BUILDER_FORBIDDEN_TOKENS
+        ):
+            errors.append(f"{label} contains another product skill invocation token")
+        if re.search(r"\blifecycle\b", contents, re.IGNORECASE):
+            errors.append(f"{label} contains lifecycle wording")
 
     router_path = skills_root / "use-expskill" / "SKILL.md"
     if router_path.is_file() and not router_path.is_symlink():
@@ -2225,50 +2206,6 @@ def _validate_public_readme(repository_root: Path, errors: list[str]) -> None:
         else:
             if len(readme.splitlines()) > 10:
                 errors.append("README must contain at most ten physical lines")
-            if "(docs/guide.md)" not in readme:
-                errors.append("README must link to docs/guide.md")
-    _validate_public_guide(repository_root, errors)
-
-
-def _validate_public_guide(repository_root: Path, errors: list[str]) -> None:
-    guide_path = _required_nonempty_package_file(
-        repository_root,
-        "docs/guide.md",
-        "Guide",
-        errors,
-    )
-    if guide_path is None:
-        return
-    try:
-        guide = guide_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        errors.append(f"Guide could not be read: {error}")
-        return
-    normalized = " ".join(guide.lower().split())
-    if PUBLIC_SKILL_COUNT_TEXT not in normalized:
-        errors.append(
-            "Guide must describe sixteen independent skills and one optional lifecycle router"
-        )
-    if re.search(r"\b(?:seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen) independent skills\b", normalized):
-        errors.append("Guide contains stale public-skill count wording")
-    if not _contains_exact_skill_token(guide, SKILL_BUILDER_TOKEN):
-        errors.append("Guide must advertise $skill-builder")
-    guide_lines = guide.splitlines()
-    builder_mentions = tuple(
-        line for line in guide_lines if SKILL_BUILDER_NAME_PATTERN.search(line)
-    )
-    if builder_mentions != SKILL_BUILDER_GUIDE_LINES:
-        errors.append(
-            "Guide Skill Builder mentions must be exactly the public-list and "
-            "direct-invocation lines"
-        )
-    if SKILL_BUILDER_GUIDE_LINES[0] not in guide_lines:
-        errors.append(
-            "Guide must describe $skill-builder as the evidence-gated creator or improver "
-            "of one exact agent skill"
-        )
-    if SKILL_BUILDER_GUIDE_LINES[1] not in guide_lines:
-        errors.append("Guide must include a direct $skill-builder invocation example")
 
 
 def _validate_removed_repository_local_skill(
