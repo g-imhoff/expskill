@@ -2,7 +2,9 @@
 
 ## Procedure
 
-Good: "Create branch `feature/login` from `abc1234`, commit the login form plus its test, push to origin. This authorizes that branch, those files, and that push only. Reply yes to proceed." Then wait.
+❓ **Confirm C1** — Create branch `feature/login` from `abc1234`
+Commits the login form plus its test, pushes to origin. Covers that branch, those files, that push only.
+➡️ Reply `yes` to authorize, or name what changes.
 
 Bad: "Can I proceed?" No scope, no writes, no target. Nothing to bind.
 
