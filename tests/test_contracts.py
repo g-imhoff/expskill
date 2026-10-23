@@ -48,13 +48,13 @@ PUBLIC_SKILL_ROOTS = {
     "deep-research": DEEP_RESEARCH_ROOT,
 }
 EXPECTED_AGENTS = {
-    "expskill-explorer": ("gpt-6-luna", "max", "read-only"),
-    "expskill-test-engineer": ("gpt-6-luna", "max", "read-only"),
-    "expskill-planner": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-designer": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-implementer": ("gpt-6-luna", "max", "workspace-write"),
-    "expskill-review": ("gpt-6.1-sol", "xhigh", "read-only"),
-    "expskill-spec": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "explorer": ("gpt-6-luna", "max", "read-only"),
+    "test-engineer": ("gpt-6-luna", "max", "read-only"),
+    "planner": ("gpt-6-luna", "max", "workspace-write"),
+    "designer": ("gpt-6-luna", "max", "workspace-write"),
+    "implementer": ("gpt-6-luna", "max", "workspace-write"),
+    "review": ("gpt-6.1-sol", "xhigh", "read-only"),
+    "spec": ("gpt-6.1-sol", "xhigh", "read-only"),
 }
 EXPECTED_SKILLS = {
     "use-expskill",
@@ -948,9 +948,9 @@ class ContractTests(unittest.TestCase):
 
     def test_missing_profile_is_rejected(self) -> None:
         root = self.copy_repository()
-        (root / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md").unlink()
+        (root / "plugins" / "expskill" / "content" / "agents" / "review.md").unlink()
         errors = validate_repository(root, include_opencode=False)
-        self.assertTrue(any("expskill-review" in error and "missing" in error for error in errors))
+        self.assertTrue(any("review" in error and "missing" in error for error in errors))
 
     def test_unexpected_profile_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -975,7 +975,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = root / "plugins" / "expskill" / "codex" / "agents.json"
         metadata = json.loads(path.read_text(encoding="utf-8"))
-        metadata["agents"]["expskill-explorer"]["model"] = "gpt-6-not-allowed"
+        metadata["agents"]["explorer"]["model"] = "gpt-6-not-allowed"
         path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("explorer" in error.lower() and "model" in error.lower() for error in errors))
@@ -984,10 +984,10 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         path = root / "plugins" / "expskill" / "codex" / "agents.json"
         metadata = json.loads(path.read_text(encoding="utf-8"))
-        metadata["agents"]["expskill-review"]["sandbox_mode"] = "workspace-write"
+        metadata["agents"]["review"]["sandbox_mode"] = "workspace-write"
         path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
-        self.assertTrue(any("expskill-review" in error and "read-only" in error for error in errors))
+        self.assertTrue(any("review" in error and "read-only" in error for error in errors))
 
     def test_invalid_manifest_path_is_rejected(self) -> None:
         root = self.copy_repository()
@@ -1000,17 +1000,17 @@ class ContractTests(unittest.TestCase):
 
     def test_placeholder_text_is_rejected(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / "content" / "agents" / "expskill-spec.md"
+        path = root / "plugins" / "expskill" / "content" / "agents" / "spec.md"
         path.write_text(path.read_text(encoding="utf-8") + "\n# [TODO: remove this]\n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
         self.assertTrue(any("placeholder" in error.lower() or "todo" in error.lower() for error in errors))
 
     def test_empty_agent_body_is_rejected(self) -> None:
         root = self.copy_repository()
-        path = root / "plugins" / "expskill" / "content" / "agents" / "expskill-spec.md"
+        path = root / "plugins" / "expskill" / "content" / "agents" / "spec.md"
         path.write_text("\n \n", encoding="utf-8")
         errors = validate_repository(root, include_opencode=False)
-        self.assertIn("agent body 'expskill-spec' is empty", errors)
+        self.assertIn("agent body 'spec' is empty", errors)
 
     def test_claude_renderer_dropping_canonical_agent_fields_is_rejected(self) -> None:
         canonical = json.loads(
@@ -1053,7 +1053,7 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         agents_path = root / "plugins" / "expskill" / "content" / "agents.json"
         payload = json.loads(agents_path.read_text(encoding="utf-8"))
-        payload["agents"]["expskill-spec"]["description"] = 'Reviews "quoted" spec evidence.'
+        payload["agents"]["spec"]["description"] = 'Reviews "quoted" spec evidence.'
         agents_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
@@ -1102,12 +1102,12 @@ class ContractTests(unittest.TestCase):
         root = self.copy_repository()
         adapter = root / "plugins" / "expskill" / "codex" / "agents.json"
         metadata = json.loads(adapter.read_text(encoding="utf-8"))
-        metadata["agents"]["expskill-review"]["sandbox_mode"] = "workspace-write"
+        metadata["agents"]["review"]["sandbox_mode"] = "workspace-write"
         adapter.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-        (root / "plugins" / "expskill" / "content" / "agents" / "expskill-explorer.md").unlink()
+        (root / "plugins" / "expskill" / "content" / "agents" / "explorer.md").unlink()
         errors = validate_repository(root, include_opencode=False)
         self.assertGreaterEqual(len(errors), 2)
-        self.assertTrue(any("expskill-review" in error for error in errors))
+        self.assertTrue(any("review" in error for error in errors))
         self.assertTrue(any("explorer" in error for error in errors))
 
     def test_public_skill_frontmatter_matches_each_directory(self) -> None:
@@ -1183,7 +1183,7 @@ class ContractTests(unittest.TestCase):
         """The Implement body names its three worker agents and omits retired tooling."""
 
         body = (PHASE_ROOTS["implement"] / "SKILL.md").read_text(encoding="utf-8").lower()
-        for agent in ("expskill-implementer", "expskill-review", "expskill-spec"):
+        for agent in ("implementer", "review", "spec"):
             with self.subTest(agent=agent):
                 self.assertIn(f"`{agent}`", body)
         self.assertNotIn("implement_state.py", body)

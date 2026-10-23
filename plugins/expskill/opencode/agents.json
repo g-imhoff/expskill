@@ -1,7 +1,7 @@
 {
   "_comment": "OpenCode technical overlay for the canonical agent layer. To switch provider, change default_model_profile and rebuild with scripts/build_opencode_package.py.",
   "agents": {
-    "expskill-explorer": {
+    "explorer": {
       "permission": {
         "edit": "deny",
         "bash": {
@@ -34,7 +34,7 @@
         "external_directory": "deny"
       }
     },
-    "expskill-planner": {
+    "planner": {
       "permission": {
         "edit": "deny",
         "bash": {
@@ -50,7 +50,7 @@
         "external_directory": "ask"
       }
     },
-    "expskill-designer": {
+    "designer": {
       "permission": {
         "edit": "allow",
         "bash": {
@@ -66,7 +66,7 @@
         "external_directory": "ask"
       }
     },
-    "expskill-implementer": {
+    "implementer": {
       "permission": {
         "edit": "allow",
         "bash": {
@@ -82,7 +82,7 @@
         "external_directory": "ask"
       }
     },
-    "expskill-test-engineer": {
+    "test-engineer": {
       "permission": {
         "edit": "deny",
         "bash": {
@@ -115,7 +115,7 @@
         "external_directory": "deny"
       }
     },
-    "expskill-review": {
+    "review": {
       "permission": {
         "edit": "deny",
         "bash": {
@@ -149,7 +149,7 @@
       },
       "temperature": 0.1
     },
-    "expskill-spec": {
+    "spec": {
       "permission": {
         "edit": "deny",
         "bash": {

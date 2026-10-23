@@ -62,14 +62,12 @@ def _repository_hash(repo: Path) -> str:
 def _state_home(state_home: Path | None = None) -> Path:
     if state_home is not None:
         return Path(state_home).expanduser().resolve()
-    configured = os.environ.get("XDG_STATE_HOME")
-    return Path(configured or (Path.home() / ".local" / "state")).expanduser().resolve()
+    return Path.home().expanduser().resolve() / ".expskill"
 
 
 def _owned_path(repo: Path, run_id: str, task: str, state_home: Path) -> Path:
     return (
         _state_home(state_home)
-        / "expskill"
         / "worktrees"
         / _repository_hash(repo)
         / run_id

@@ -24,25 +24,25 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 CLAUDE_ROOT = PLUGIN_ROOT / "claude"
 AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-designer",
-    "expskill-implementer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "planner",
+    "designer",
+    "implementer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 # Codex luna roles run on the haiku family; Codex sol roles run on opus.
 # Read-only OpenCode permission maps collapse to the read tool set, while the
 # workspace-write maps add Edit and Write.
 FACETS = {
-    "expskill-designer": ("haiku", CLAUDE_WRITE_TOOLS),
-    "expskill-explorer": ("haiku", CLAUDE_READ_TOOLS),
-    "expskill-implementer": ("haiku", CLAUDE_WRITE_TOOLS),
-    "expskill-planner": ("haiku", CLAUDE_READ_TOOLS),
-    "expskill-review": ("opus", CLAUDE_READ_TOOLS),
-    "expskill-spec": ("opus", CLAUDE_READ_TOOLS),
-    "expskill-test-engineer": ("haiku", CLAUDE_READ_TOOLS),
+    "designer": ("haiku", CLAUDE_WRITE_TOOLS),
+    "explorer": ("haiku", CLAUDE_READ_TOOLS),
+    "implementer": ("haiku", CLAUDE_WRITE_TOOLS),
+    "planner": ("haiku", CLAUDE_READ_TOOLS),
+    "review": ("opus", CLAUDE_READ_TOOLS),
+    "spec": ("opus", CLAUDE_READ_TOOLS),
+    "test-engineer": ("haiku", CLAUDE_READ_TOOLS),
 }
 
 
@@ -305,7 +305,7 @@ class ClaudeContractTests(unittest.TestCase):
         root = self.copy_repository()
         overlay = root / "plugins" / "expskill" / "content" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
-        del spec["agents"]["expskill-review"]["closing"]
+        del spec["agents"]["review"]["closing"]
         overlay.write_text(json.dumps(spec), encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("closing" in error for error in errors), errors)
@@ -314,7 +314,7 @@ class ClaudeContractTests(unittest.TestCase):
         root = self.copy_repository()
         overlay = root / "plugins" / "expskill" / "claude" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
-        spec["agents"]["expskill-review"]["model"] = "haiku"
+        spec["agents"]["review"]["model"] = "haiku"
         overlay.write_text(json.dumps(spec), encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("claude agent" in error for error in errors), errors)

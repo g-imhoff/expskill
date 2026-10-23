@@ -34,13 +34,13 @@ const REQUIRED_COMMANDS = [
   "use-expskill",
 ];
 const REQUIRED_AGENTS = [
-  "expskill-designer",
-  "expskill-explorer",
-  "expskill-implementer",
-  "expskill-planner",
-  "expskill-review",
-  "expskill-spec",
-  "expskill-test-engineer",
+  "designer",
+  "explorer",
+  "implementer",
+  "planner",
+  "review",
+  "spec",
+  "test-engineer",
 ];
 
 const CATALOG_KEYS = ["agents", "commands", "schema_version"];
@@ -645,8 +645,12 @@ function v2RequestedAgent(args) {
   return null;
 }
 
+const EXPSKILL_AGENT_NAMES = new Set(REQUIRED_AGENTS);
+const LEGACY_AGENT_PREFIX = "expskill-";
 function v2IsExpSkillAgent(value) {
-  return typeof value === "string" && value.startsWith("expskill-") && value.length > "expskill-".length;
+  if (typeof value !== "string" || value.length === 0) return false;
+  if (EXPSKILL_AGENT_NAMES.has(value)) return true;
+  return value.startsWith(LEGACY_AGENT_PREFIX) && value.length > LEGACY_AGENT_PREFIX.length;
 }
 
 const ExpSkillSetup = async (ctx) => {

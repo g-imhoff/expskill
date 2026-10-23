@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -458,7 +459,7 @@ def _valid_bundle() -> dict[str, object]:
             {
                 "artifact_id": "failure-log",
                 "kind": "log",
-                "path": ".test-evidence/run-20260902-001/failure.log",
+                "path": "artifacts/failure.log",
                 "sha256": "c" * 64,
             }
         ],
@@ -753,7 +754,7 @@ def _assert_terminal_evidence_transaction(contents: str) -> None:
     transaction = _markdown_section(contents, "## Terminal evidence transaction")
     _input_authoring_contract(transaction)
     handoff_command = """python3 .agents/skills/test/scripts/record_final_action.py handoff \\
-  --root .test-evidence/<run-id> \\
+  --root <home>/.expskill/skills/test/runs/<repo-hash>/<run-id> \\
   -- <literal-product-command-and-arguments>"""
     if transaction.count(handoff_command) != 1:
         raise AssertionError("Terminal evidence transaction command drift")
@@ -779,19 +780,31 @@ class TestSkillContractTests(unittest.TestCase):
         shutil.copy2(ROOT / "docs" / "guide.md", temporary / "docs" / "guide.md")
         return temporary
 
+    def _restore_home_var(self, original: str | None) -> None:
+        if original is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original
+
     def valid_finalizer_inputs(
         self,
     ) -> tuple[Path, dict[str, object], dict[str, object], dict[str, object]]:
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
+        home = Path(temporary_directory.name) / "home"
+        home.mkdir()
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        self.addCleanup(self._restore_home_var, original_home)
         repository = Path(temporary_directory.name).resolve()
-        run_root = repository / ".test-evidence" / "run-001"
+        digest = hashlib.sha256(str(repository).encode("utf-8")).hexdigest()
+        run_root = home / ".expskill" / "skills" / "test" / "runs" / digest / "run-001"
         (run_root / "artifacts").mkdir(parents=True)
         run_root.chmod(0o700)
         (run_root / "artifacts" / "consumer.log").write_text(
             "consumer observation\n", encoding="utf-8"
         )
-        finalizer_fixtures.write_charter(run_root)
+        finalizer_fixtures.write_charter(run_root, repository)
         finalizer_fixtures.write_ledger(run_root)
         finalizer_fixtures.write_draft(run_root)
         return (
@@ -2064,7 +2077,7 @@ class TestSkillContractTests(unittest.TestCase):
                 "run_id": ["charter.run_id", "root.basename", "ledger.run_id"],
                 "canonical_root": [
                     "root",
-                    "charter.repository/.test-evidence/charter.run_id",
+                    "home-state-run-root-for-charter-repository-hash-plus-charter.run_id",
                 ],
                 "scope": [
                     "charter.scope.accepted_behavior",
@@ -2837,7 +2850,7 @@ class TestSkillContractTests(unittest.TestCase):
                 )
         for span in (
             "`.agents/skills/test/**`",
-            "`.test-evidence/<run-id>/`",
+            "../../rules/evidence-report.md",
             "`git rev-parse HEAD`",
             "`git show --no-ext-diff --no-renames --format=fuller --stat --patch HEAD`",
             '`{"schema_version":"test-draft-final-delta.v2","resolutions":[]}`',

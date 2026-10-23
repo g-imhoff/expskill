@@ -26,13 +26,13 @@ CATALOG_SCHEMA_VERSION = "opencode-runtime.v1"
 OPENCODE_DESCRIPTION_MAX_LENGTH = 160
 AGENT_FRONTMATTER_FIELDS = ("description", "mode", "model", "reasoningEffort")
 EXPECTED_AGENT_NAMES = (
-    "expskill-designer",
-    "expskill-explorer",
-    "expskill-implementer",
-    "expskill-planner",
-    "expskill-review",
-    "expskill-spec",
-    "expskill-test-engineer",
+    "designer",
+    "explorer",
+    "implementer",
+    "planner",
+    "review",
+    "spec",
+    "test-engineer",
 )
 
 
@@ -288,7 +288,7 @@ def _canonical_agent_names(canonical_root: Path) -> tuple[str, ...]:
     for path in sorted(agents_root.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
             raise RenderError(f"canonical agent profile entry must not be a symlink: {path}")
-        if path.is_file() and path.name.startswith("expskill-") and path.suffix == ".md":
+        if path.is_file() and path.suffix == ".md":
             names.append(path.stem)
     observed = set(names)
     expected = set(EXPECTED_AGENT_NAMES)

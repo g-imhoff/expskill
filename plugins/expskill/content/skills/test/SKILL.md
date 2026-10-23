@@ -34,7 +34,7 @@ Direct Test-owned repository writes are limited to:
 - proven integration or end-to-end test code,
 - proven test fixtures,
 - proven test harnesses and test configuration, and
-- one canonical private, uncommitted, worktree-bound `.test-evidence/**` root.
+- Allocate one canonical private home-state run root at `~/.expskill/skills/test/runs/<repo-hash>/<run-id>` per `../../rules/evidence-report.md`.
 
 Existing project naming may locate test-owned assets, and product source stays product source whatever its name.
 
@@ -61,11 +61,9 @@ Keep every product and application source byte-for-byte identical and terminate 
 
 ## Ground and exempt
 
-Ground the run before deciding its scope or outcome. Bind the canonical repository, current branch, exact head,
-accepted change boundary, relevant source and callers, state and effects, interfaces and consumers, dependencies,
-project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence.
+Ground the run before deciding its scope or outcome. Bind run identity per `../../rules/evidence-report.md`, including the canonical repository, current branch, exact head, accepted change boundary, relevant source and callers, state and effects, interfaces and consumers, dependencies, project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence.
 
-Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. It creates exactly one private run root and reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. The bootstrap runs `git branch --show-current`, and its reported branch is the only branch source. It must print the complete sorted first-party inventory before file contents and print the contents of every bounded first-party text file when the repository fits the bootstrap output. Use its returned root path byte-for-byte. Every immediate `.test-evidence` child must come from one successful bootstrap, and only the shipped helpers set the sealed parent's mode.
+Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. Allocate one run folder per run per `../../rules/evidence-report.md`. It reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. The bootstrap runs `git branch --show-current`, and its reported branch is the only branch source. It must print the complete sorted first-party inventory before file contents and print the contents of every bounded first-party text file when the repository fits the bootstrap output. Use its returned root path byte-for-byte. Every run folder under the repo hash folder must come from one successful bootstrap, and only the shipped helpers set the sealed parent's mode.
 Exclude from printed contents only the already-loaded `.agents/skills/test/**` support package, and classify product files by evidence rather than by directory name. If the bounded contents are skipped, follow direct first-party client, caller, command, and harness references, and select files through them rather than by feature-name matches alone. Take commands and paths from repository evidence, and execute only a literal command discovered there.
 Make the head call exactly `git rev-parse HEAD` and the change call exactly `git show --no-ext-diff --no-renames --format=fuller --stat --patch HEAD`, each as the entire tool call.
 
@@ -74,11 +72,11 @@ from revision and reachability evidence. Reserve at most one discovered read-onl
 as the terminal recorder action, it attests surface identity only. If exemption is
 not proven, load the complete quality catalog as the fourth and final grounding call.
 
-The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
+Keep evidence private with strict permissions per `../../rules/evidence-report.md`. The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
 
 Discover repository-local facts autonomously. Ask only for an unavailable credential, consequential authority, destructive effect, or genuinely subjective oracle that accepted behavior and product evidence cannot answer.
 
-After grounding, Test alone decides `EXEMPT`. Exact-revision evidence must prove the change
+After grounding, Test alone decides `EXEMPT`. Require exact-revision evidence per `../../rules/pin-scope.md` to prove the change
 cannot affect runtime behavior, interfaces, configuration, dependencies, schemas, data,
 security, packaging, deployment, generated artifacts, test validity, or a user or client
 journey. Comments, formatting, or non-runtime metadata are candidates needing proof.
@@ -127,7 +125,7 @@ or equivalent public surface.
 Declare a compact charter containing the exact target and head, accepted and
 negative behavior, active rules, environment and data, permitted effects,
 checks and journeys, exploratory mission, oracle, evidence, teardown, and stop
-conditions. Use an isolated, resettable, non-production environment and only the minimum synthetic data.
+conditions. Bind the charter to exact head and environment per `../../rules/evidence-report.md`. Use an isolated, resettable, non-production environment and only the minimum synthetic data.
 
 ## Execute and explore
 
@@ -158,11 +156,11 @@ A proven test-system defect becomes resolved when its permitted repair passes co
 Ledger status records whether `actual` satisfies that entry's declared `expected` predicate, whatever the raw process exit code or embedded product `status` field reports. For a predeclared diagnostic reproduction of a permitted test-system repair, ledger status is `pass` when the exact expected pre-repair defect is observed, even when the raw command exits nonzero or reports a product-level failure. Record the later repair confirmation as a separate passing action. Keep the declared `expected` unchanged after execution: an unplanned failure or unexplained contradiction stays `fail`.
 
 Add a durable automated test only when the behavior is stable and valuable and
-every active quality rule permits it. Commit it as one logical test-side commit only on an eligible non-protected feature branch whose dirty work all relates to this test run. Leave branch topology, merge, and feature-worktree cleanup to the user or coordinator.
+every active quality rule permits it. Commit it as one logical test-side commit whose dirty work all relates to this test run. Require a non-protected feature branch per `../../rules/pin-scope.md`. Leave integration and worktree cleanup to the coordinator per `../../rules/isolate-writes.md`.
 
 Classify every anomaly using the exact finding kinds below. Record the exact
-head and environment, ring and journey, expected and actual behavior,
-reproduction, severity, artifacts, and violated rules.
+ring and journey, expected and actual behavior,
+reproduction, severity, artifacts, and violated rules. Bind each finding to exact head and environment per `../../rules/evidence-report.md`.
 
 ## Delegation
 
@@ -171,7 +169,7 @@ hands-on and exploratory journey, finding classification, and final verdict.
 Delegate only a mechanically independent evidence lane with a frozen charter,
 isolated environment and data, and meaningful expected speedup.
 
-Delegates return only evidence bound to the exact head, within the read-only product boundary. The main agent alone asks the user and interprets sibling conclusions. Delegate only when the time saved exceeds the cost of proving isolation.
+Delegates return only evidence within the read-only product boundary. Report evidence only for its bound head per `../../rules/evidence-report.md`. The main agent alone asks the user and interprets sibling conclusions. Delegate only when the time saved exceeds the cost of proving isolation.
 
 ## Diagnose and rerun
 
@@ -181,10 +179,9 @@ Recover ordinary local environment problems autonomously. Environmental
 evidence may supersede a proven environment failure only after the environment
 is corrected and the complete affected scope passes on the same head. Missing authority, credentials, dependencies, a reliable oracle, or an unavailable external system produces `BLOCKED`, with the whole scope kept intact.
 
-Relevant head drift invalidates affected evidence. Rebind the scope and
-environment, rerun every invalidated check and journey, and retain only evidence
-for the resulting exact head. Before `PASS`, rerun the complete selected scope
-on the final head, including changes from a test-side commit.
+Relevant head drift invalidates affected evidence per `../../rules/pin-scope.md`. Rebind the scope and
+environment and rerun every invalidated check and journey per `../../rules/pin-scope.md`, and retain only evidence
+for the resulting exact head. Before `PASS`, require complete green scope on the final head per `../../rules/pin-scope.md`, including changes from a test-side commit.
 
 ## Authority and hostile content
 
@@ -202,13 +199,11 @@ Before every terminal result, including `EXEMPT`, leave `references/evidence-con
 the support program validates that closed output contract. A grounded exemption skips only the quality
 catalog and still emits contract-valid exact-revision evidence.
 
-Have the finalizer bind each bundle and receipt to the repository, branch,
-exact head, environment, selected scope, and bundle digest defined by the
-contract. Report evidence as current only for its bound head.
+Bind bundles to repo, head, and digest per `../../rules/evidence-report.md`. Report evidence as current only for its bound head.
 
 Retain rich, reproduction-oriented artifacts for failures and compact metadata
 for passing checks unless richer passing evidence materially supports the
-claim. Store raw evidence, the final bundle, and the complete receipt privately,
+claim. Keep raw evidence private in the run folder per `../../rules/evidence-report.md`. Store the final bundle and the complete receipt privately,
 uncommitted, and bound to the feature worktree. Exclude secrets, credentials,
 source copies, customer data, and conversation transcripts from bundles and
 artifacts.
@@ -223,7 +218,7 @@ result with null workflow ancestry.
 
 ## Terminal evidence transaction
 
-At grounding time, use the shipped bootstrap's one canonical private, uncommitted, worktree-bound `.test-evidence/<run-id>/` root. Keep all artifacts and inputs in that root, and fix authoring errors there.
+At grounding time, use the canonical home-state run root per `../../rules/evidence-report.md` at `~/.expskill/skills/test/runs/<repo-hash>/<run-id>` from the shipped bootstrap. Keep all artifacts and inputs in that root, and fix authoring errors there.
 
 Before the first product/runtime action, write private `charter-preparation.json` with schema
 `test-charter-preparation.v1` and only conceptual charter fields, then invoke `freeze_charter.py` once. It derives the
@@ -231,7 +226,7 @@ canonical repository, branch, exact HEAD, and run ID and exclusively creates `ch
 `ledger.json`. Only the helper writes `charter.json` and the initial `ledger.json`, and identity fields come only from the helpers. If freezing fails, correct only the preparation before product execution.
 
 ```bash
-python3 .agents/skills/test/scripts/freeze_charter.py --root .test-evidence/<run-id>
+python3 .agents/skills/test/scripts/freeze_charter.py --root <home>/.expskill/skills/test/runs/<repo-hash>/<run-id>
 ```
 
 Before execution, honor the contract's `deadline_reserve_seconds`, checkpoints, and 780-second usable budget. Enter candidate preparation on schedule, recheck that reserve before handoff, and use no-write/no-cache probe modes within the planned budget, leaving evidence time intact.
@@ -248,7 +243,7 @@ Author from this complete contract, leaving the helper source unread.
   "execution_budget": {"pre_charter_tool_actions_max": 4, "semantic_actions_max": 8, "ordinary_actions_max": 7, "final_actions": 1},
   "capture_repair": {"trigger": "required returned output is empty, missing, truncated, or unparseable", "safe_replay": "next command repeats the exact literal argv once with no intervening action", "parallel_replay": "after already-started siblings return, the next tool action is one repair-only parallel batch with one literal replay per unusable sibling", "file_change_gate": "immediately before every file-change action, scan every required raw tool result, any unusable result makes its exact replay the sole legal next action, ahead of the write", "empty_zero_exit": "exit code zero with zero returned bytes is unusable, fill artifacts and ledger actuals only from returned bytes", "precedence": "capture repair precedes commentary, file changes, revision checks, and head-drift handling", "accounting": "physical replay of the same semantic action, no new ledger entry or semantic-action slot", "failure": "unsafe replay or a second unusable observation forces BLOCKED"},
   "grounding_commands": {"bootstrap": ["python3", ".agents/skills/test/scripts/bootstrap_run.py"], "head": ["git", "rev-parse", "HEAD"], "change": ["git", "show", "--no-ext-diff", "--no-renames", "--format=fuller", "--stat", "--patch", "HEAD"]},
-  "run_bootstrap": {"script": "scripts/bootstrap_run.py", "derived_fields": ["repository", "branch", "run_id", "root", "started_at", "cutoff_at"], "inventory": "complete sorted first-party paths plus bounded text contents", "root_allocation": "exactly one private worktree-bound root per invocation", "parent_seal": "0500 between allocations, only bootstrap may temporarily unseal it"},
+  "run_bootstrap": {"script": "scripts/bootstrap_run.py", "derived_fields": ["repository", "branch", "run_id", "root", "started_at", "cutoff_at"], "inventory": "complete sorted first-party paths plus bounded text contents", "root_allocation": "exactly one private home-state run root per invocation", "parent_seal": "0500 between allocations, only bootstrap may temporarily unseal it"},
   "charter_freezer": {"script": "scripts/freeze_charter.py", "input": "charter-preparation.json", "input_schema": "test-charter-preparation.v1", "caller_fields": ["schema_version", "workflow_id", "accepted_behavior", "scope", "material_oracles", "exemption_grounding_artifact_ids"], "derived_fields": ["repository", "branch", "head", "run_id"], "outputs": ["charter.json", "ledger.json"]},
   "ledger_appender": {"script": "scripts/append_ledger.py", "input": "ledger-batch.json", "input_schema": "test-ledger-batch.v1", "caller_entry_fields": ["action_id", "role", "ring", "action", "path", "expected", "actual", "status", "oracle_ids", "artifact_ids"], "derived_fields": ["entries[].head"], "output": "ledger.json", "failure": "ledger remains byte-for-byte unchanged and batch remains correctable"},
   "final_action_recorder": {"spec_file": "final-action.json", "schema_version": "test-final-action.v2", "handoff_mode": "compose-record-finalize with one root argument", "closed_fields": ["schema_version", "observation_path", "metadata_path", "expected_exit_code", "output_predicate", "integrity_paths", "cleanup_absent_paths"], "derived_fields": ["expected_head", "expected_branch"], "output_predicate": {"closed_fields": ["mode", "value"], "modes": ["exact-text", "sha256"]}, "constraints": {"expected_exit_code": "decimal string 0..255", "integrity_paths": "one or more confined repository-relative paths expected clean before execution, exclude intentionally repaired Test-owned assets", "cleanup_absent_paths": "confined narrow test-runtime paths proven absent before execution", "outputs": "distinct absent confined run-root paths"}, "preflight_integrity": "reject dirty integrity paths before product execution", "mismatch_components": ["output_predicate", "teardown", "integrity"], "cleanup_release": "successful terminal publication releases the parent for worktree cleanup"},
@@ -259,7 +254,7 @@ Author from this complete contract, leaving the helper source unread.
   "authoring_invariants": {"scope_behavior": "charter.scope.accepted_behavior must byte-equal charter.accepted_behavior before the first product action", "draft_environment": "draft.environment must be a non-empty JSON object mapping names to values", "reserved_artifacts": "reserved_artifact_ids are finalizer-generated, so draft.artifacts uses only other ids", "preparation": "v3 draft_candidate is one complete marker-free conditional candidate with rule_applicability omitted", "compact_rules": "author grouped assessments for every active rule exactly once, the composer expands inactive rules in catalog order", "delta": "v3 uses test-draft-final-delta.v2 with an exactly empty resolutions array", "conditional_entry": "the final ledger entry and draft values are non-authoritative until the exact predeclared proof predicate matches", "candidate_batch": "write the conditional final ledger batch, preparation, empty delta, and final-action specification in one file-change action", "atomic_ledger_batch": "append_ledger validates complete headless entries before publication, rejection preserves ledger bytes and only the batch is corrected", "observation_capture": "before artifact or ledger-batch authoring, required outcome bytes come only from returned direct-command output, one immediate exact capture repair is mandatory when safe, including for blocker proof, and unavailable output is recovered only by exact replay", "action_status_semantics": "ledger status records whether actual satisfies the entry's declared expected predicate, whatever the exit code or embedded product status reports, only a predeclared diagnostic reproduction may pass on an expected nonzero or product-level failure", "diagnostic_completion": "before terminal preparation, every required diagnostic observation exists as a separate direct command outside the recorder, and stateful diagnostic commands are final-action-ineligible", "late_probes": "after the last ordinary selected action, leave time, status, integrity, and artifact-listing probes to the recorder", "checkpoint": "one handoff invocation composes, records, and finalizes with one authenticated root", "handoff_artifact_binding": "before product execution, the recorder requires each declared observation and metadata output path exactly once in draft.artifacts", "immediate_local_recovery": "a predeclared unavailable-status probe and literal recovery are two reserved ordinary actions, the exact unavailable outcome makes recovery the next tool call with nothing between", "blocked_rule_encoding": "unavailable prerequisite uses blocked action and environment-blocker finding, unexercised modality rules are inactive, unsatisfied means a proven defect", "preflight_correction": "before final product execution, correct mechanically invalid preparation, delta, final-action specification, or conditional batch in the same root, charter and published entries stay frozen", "benign_normalization": "the recorder hardens owned evidence directories, creates private output parents, treats always as implicit, and ignores check path source anchors", "exempt_execution": "after three grounding calls, skip the catalog and every behavior command, at most one non-behavioral description action is allowed for terminal recording", "branch_budget": "before charter freeze, every permitted execution branch including conditional diagnostic actions fits seven ordinary entries, remove redundant probes before product execution", "canary_independence": "when repository evidence exposes a distinct literal canary action, select and run it as its own action, separate from the changed-behavior action", "exploration_independence": "when repository evidence exposes a distinct literal exploration action, select and run it, an advertised explore or exploration command is that action, and only it counts as exploration", "direct_result_gate": "before the first observation or ledger file write, every ordinary ledger candidate maps one-to-one to a completed direct command tool result with exact argv and returned bytes, and only that result fills it", "machine_identity": "bootstrap allocates root/time/branch, freezer, appender, and recorder derive identity from Git and the frozen charter, identity fields come only from these helpers", "root_lineage": "every immediate evidence child is the exact root returned by one successful bootstrap, only the shipped helpers set the sealed parent's mode", "direct_argv": "ordinary product tool-call command strings are exact discovered argv with no shell prefix, suffix, pipeline, redirection, tee, or capture wrapper"},
   "nonempty_strings": {"scalars": ["charter.run_id", "charter.repository", "charter.branch", "charter.head", "charter.accepted_behavior", "charter.scope.accepted_behavior", "charter.material_oracles[].oracle_id", "charter.material_oracles[].behavior", "charter.material_oracles[].consumer_surface", "ledger.run_id", "ledger.entries[].action_id", "ledger.entries[].head", "ledger.entries[].action", "ledger.entries[].expected", "ledger.entries[].actual", "draft.rule_applicability[].rule_id", "draft.exploration.mission", "draft.exploration.evidence_budget", "draft.exploration.stop_condition", "draft.findings[].journey", "draft.findings[].expected", "draft.findings[].actual", "draft.artifacts[].artifact_id", "draft.artifacts[].path", "draft.started_at", "draft.summary"], "nullable_scalars_when_present": ["charter.workflow_id"], "items": ["charter.scope.inner_ring[]", "charter.scope.adjacent_ring[]", "charter.scope.broader_ring[]", "charter.material_oracles[].required_action_ids[]", "charter.exemption_grounding_artifact_ids[]", "ledger.entries[].path[]", "ledger.entries[].oracle_ids[]", "ledger.entries[].artifact_ids[]", "draft.rule_applicability[].evidence[]", "draft.exploration.actions[]", "draft.exploration.observations[]", "draft.exploration.teardown[]", "draft.findings[].reproduction[]", "draft.findings[].violated_rule_ids[]", "draft.findings[].artifacts[]", "draft.teardown.actions[]", "draft.teardown.artifact_ids[]", "draft.test_side_commits[]", "draft.limitations[]"]},
   "cardinality": {"min_one": ["charter.scope.inner_ring", "charter.material_oracles[].required_action_ids", "ledger.entries[].artifact_ids", "draft.rule_applicability[].evidence", "draft.findings[].reproduction", "draft.environment"], "must_be_empty": ["draft_final_delta.resolutions"], "non_exempt_min_one": ["charter.material_oracles"], "exempt_min_one": ["charter.exemption_grounding_artifact_ids"], "unique_items": ["charter.scope.inner_ring", "charter.scope.adjacent_ring", "charter.scope.broader_ring", "charter.material_oracles[].required_action_ids", "charter.exemption_grounding_artifact_ids", "ledger.entries[].oracle_ids", "ledger.entries[].artifact_ids", "draft.findings[].violated_rule_ids", "draft.findings[].artifacts", "draft.teardown.artifact_ids", "draft.test_side_commits"], "unique_ids": ["charter.material_oracles[].oracle_id", "ledger.entries[].action_id", "draft.rule_applicability[].rule_id", "draft.artifacts[].artifact_id"]},
-  "bindings": {"run_id": ["charter.run_id", "root.basename", "ledger.run_id"], "canonical_root": ["root", "charter.repository/.test-evidence/charter.run_id"], "scope": ["charter.scope.accepted_behavior", "charter.accepted_behavior"], "head": ["ledger.entries[].head", "charter.head"], "charter_binding": ["charter and ledger are frozen same-root inputs", "finalizer derives SHA-256(RFC8785 complete charter)"], "entry_oracle": ["ledger.entries[].oracle_ids[]", "charter.material_oracles[].oracle_id"], "entry_artifact": ["ledger.entries[].artifact_ids[]", "draft.artifacts[].artifact_id"], "exemption_artifact": ["charter.exemption_grounding_artifact_ids[]", "draft.artifacts[].artifact_id"], "finding_artifact": ["draft.findings[].artifacts[]", "draft.artifacts[].artifact_id"], "teardown_artifact": ["draft.teardown.artifact_ids[]", "draft.artifacts[].artifact_id"], "finding_rule": ["draft.findings[].violated_rule_ids[]", "draft.rule_applicability[].rule_id"]},
+  "bindings": {"run_id": ["charter.run_id", "root.basename", "ledger.run_id"], "canonical_root": ["root", "home-state-run-root-for-charter-repository-hash-plus-charter.run_id"], "scope": ["charter.scope.accepted_behavior", "charter.accepted_behavior"], "head": ["ledger.entries[].head", "charter.head"], "charter_binding": ["charter and ledger are frozen same-root inputs", "finalizer derives SHA-256(RFC8785 complete charter)"], "entry_oracle": ["ledger.entries[].oracle_ids[]", "charter.material_oracles[].oracle_id"], "entry_artifact": ["ledger.entries[].artifact_ids[]", "draft.artifacts[].artifact_id"], "exemption_artifact": ["charter.exemption_grounding_artifact_ids[]", "draft.artifacts[].artifact_id"], "finding_artifact": ["draft.findings[].artifacts[]", "draft.artifacts[].artifact_id"], "teardown_artifact": ["draft.teardown.artifact_ids[]", "draft.artifacts[].artifact_id"], "finding_rule": ["draft.findings[].violated_rule_ids[]", "draft.rule_applicability[].rule_id"]},
   "required_actions": {"missing": {"unknown_reference_error": false, "PASS": "forbidden", "FAIL": "requires_other_retained_defect", "BLOCKED": "supports_when_no_defect_is_proven"}, "present": {"ledger_entry": "required", "oracle_back_binding": "required", "retained_artifacts": "one_or_more_declared_artifact_ids"}},
   "formats": {"charter.run_id": "[A-Za-z0-9][A-Za-z0-9._-]*", "charter.head": "[0-9a-f]{40,64}", "ledger.entries[].head": "[0-9a-f]{40,64} and equals charter.head", "draft.test_side_commits[]": "[0-9a-f]{40,64}", "draft.started_at": "real UTC RFC3339 instant ending Z", "charter.workflow_id": "null or non-empty string", "charter.repository": "absolute path"},
   "paths": {"root": {"absolute": true, "owner": "current user", "mode": "0700 or stricter", "symlinks": "forbidden", "identity": "stable for invocation"}, "finalizer_inputs": {"charter": "charter.json", "ledger": "ledger.json", "draft": "draft.json"}, "composition_inputs": {"charter_binding": "charter.json (implicit read-only)", "ledger_preflight": "ledger.json (implicit read-only)", "preparation": "draft-preparation.json", "delta": "draft-final-delta.json", "output": "draft.json"}, "artifact": {"location": "non-empty relative path beneath root", "compose_type": "lexically valid confined path, future final-action bytes may be absent", "finalize_type": "existing non-symlink regular file", "forbidden_prefixes": ["terminal/", ".terminal-"], "forbidden_exact": ["draft-preparation.json", "draft-final-delta.json"]}},
@@ -271,7 +266,7 @@ Author from this complete contract, leaving the helper source unread.
   "exempt_shape": {"charter.material_oracles": "empty", "ledger.entries": "empty", "draft.rule_applicability": "empty", "draft.findings": "empty", "charter.exemption_grounding_artifact_ids": "one_or_more_retained_artifact_references", "draft.teardown.status": "pass_or_not-required"},
   "minimum_result_support": {"PASS": "one or more material oracles, every required action is present, back-bound, retained, and passing, every entry passes, no finding, unsatisfied or unknown rule, contradiction, or failed teardown", "FAIL": "a present required action fails, one oracle has pass+fail evidence, an active unsatisfied rule has its matching finding, or a non-environment finding exists, a missing required action is permitted only alongside that other retained defect evidence", "BLOCKED": "a required action is blocked or missing, or an environment-blocker finding exists, and no defect is proven", "EXEMPT": "exact exempt_shape"},
   "semantic_guarantees": ["closed_objects", "canonical_root", "run_binding", "scope_binding", "head_binding", "derived_charter_binding", "nonempty_cardinality", "reference_integrity", "artifact_path_confinement", "reserved_artifact_ids", "catalog_order", "terminal_unknown_forbidden", "exempt_shape", "result_support"],
-  "composition": {"input_files": {"preparation": "draft-preparation.json", "delta": "draft-final-delta.json", "output": "draft.json"}, "direct_candidate": {"preparation_schema": "test-draft-preparation.v3", "candidate": "complete marker-free draft_candidate with rule_applicability omitted", "delta_schema": "test-draft-final-delta.v2", "delta_resolutions": "exactly empty", "authority": "conditional until the exact recorder predicate matches"}, "compact_rule_expansion": {"rule_disposition": ["evaluate", "exempt"], "active_rule_conditions": "known catalog applies_when values, always is accepted as an implicit no-op", "rule_assessment_groups": "every active rule exactly once with one outcome and retained ledger action IDs", "inactive_rules": "mechanically emitted in catalog order", "evidence": "ledger:<action-id>"}, "root_binding": "absolute charter.repository/.test-evidence/charter.run_id authenticated from frozen charter.json", "publication": {"staging": "private 0600 O_EXCL regular file beneath authenticated root", "publish": "atomic no-replace rename to draft.json", "existing_output": "reject", "failure_cleanup": {"canonical_output": "absent after atomic quarantine", "pathname_deletion": "forbidden after ownership continuity is lost", "ambiguous_owned_inode": "retain as private 0600 .draft-cleanup-* orphan", "report": "cleanup-failed", "later_removal": "explicit single-writer quiescent-root cleanup only"}}, "semantic_boundary": "validate supplied closed schema, bindings, references, and result support without inference, evidence derivation, future artifact-byte requirements, digesting, or terminal publication", "timing": {"compose": "inside handoff before final product/runtime action", "candidate_authority": "conditional until exact predeclared proof predicate matches", "successor": "same handoff finalizes immediately after a match", "mismatch": "leave the candidate unfinalized and start a new truthful run root"}},
+  "composition": {"input_files": {"preparation": "draft-preparation.json", "delta": "draft-final-delta.json", "output": "draft.json"}, "direct_candidate": {"preparation_schema": "test-draft-preparation.v3", "candidate": "complete marker-free draft_candidate with rule_applicability omitted", "delta_schema": "test-draft-final-delta.v2", "delta_resolutions": "exactly empty", "authority": "conditional until the exact recorder predicate matches"}, "compact_rule_expansion": {"rule_disposition": ["evaluate", "exempt"], "active_rule_conditions": "known catalog applies_when values, always is accepted as an implicit no-op", "rule_assessment_groups": "every active rule exactly once with one outcome and retained ledger action IDs", "inactive_rules": "mechanically emitted in catalog order", "evidence": "ledger:<action-id>"}, "root_binding": "absolute `~/.expskill/skills/test/runs/<repo-hash>/<run-id>` run root for the charter repository hash plus charter.run_id, authenticated from frozen charter.json", "publication": {"staging": "private 0600 O_EXCL regular file beneath authenticated root", "publish": "atomic no-replace rename to draft.json", "existing_output": "reject", "failure_cleanup": {"canonical_output": "absent after atomic quarantine", "pathname_deletion": "forbidden after ownership continuity is lost", "ambiguous_owned_inode": "retain as private 0600 .draft-cleanup-* orphan", "report": "cleanup-failed", "later_removal": "explicit single-writer quiescent-root cleanup only"}}, "semantic_boundary": "validate supplied closed schema, bindings, references, and result support without inference, evidence derivation, future artifact-byte requirements, digesting, or terminal publication", "timing": {"compose": "inside handoff before final product/runtime action", "candidate_authority": "conditional until exact predeclared proof predicate matches", "successor": "same handoff finalizes immediately after a match", "mismatch": "leave the candidate unfinalized and start a new truthful run root"}},
   "response_handoff": {"summary": "copy payload summary byte-for-byte", "terminal_state": "payload result", "probe_evidence": ["exact bundle_digest", "exact bundle_path", "exact receipt_path"], "after_finalizer": "no tool or commentary before response"},
   "terminal_publication": {"staging": "private 0700 directory beneath authenticated root", "publish": "atomic no-replace rename to terminal", "existing_output": "reject", "failure_cleanup": {"authority": "atomically quarantine the owned staging or canonical terminal name when possible", "pathname_deletion": "forbidden after ownership continuity is lost", "ambiguous_owned_inode": "retain as private 0700 .terminal-cleanup-* orphan", "report": "cleanup-failed", "later_removal": "explicit single-writer quiescent-root cleanup only"}}
 }
@@ -282,7 +277,7 @@ Draft the conceptual charter preparation in memory. Changing `charter.json` afte
 Immediately after each sequential action or parallel batch completes, append all attributable entries by writing their artifacts and complete entries to private `ledger-batch.json`, then invoke:
 
 ```bash
-python3 .agents/skills/test/scripts/append_ledger.py --root .test-evidence/<run-id>
+python3 .agents/skills/test/scripts/append_ledger.py --root <home>/.expskill/skills/test/runs/<repo-hash>/<run-id>
 ```
 
 Each candidate entry carries the contract's `ledger_appender` caller fields, omit `head`. Keep each entry as published. Use `test-action-ledger.v2`, which has no `charter_digest`.
@@ -326,7 +321,7 @@ frozen predicate. It selects no action, scope, oracle, finding, or result.
 
 ```bash
 python3 .agents/skills/test/scripts/record_final_action.py handoff \
-  --root .test-evidence/<run-id> \
+  --root <home>/.expskill/skills/test/runs/<repo-hash>/<run-id> \
   -- <literal-product-command-and-arguments>
 ```
 
@@ -387,11 +382,11 @@ Direct `$test` stops with the finding, names no other product skill, and leaves 
   or unsatisfied active rule remains.
 - `BLOCKED`: required evidence is unavailable because an environment,
   dependency, credential, authority, or reliable oracle cannot be obtained.
-- `EXEMPT`: exact-revision evidence proves the change is behaviorally
+- `EXEMPT`: prove exemption with exact-revision evidence per `../../rules/pin-scope.md` for a change that is behaviorally
   negligible under the strict exemption boundary.
 
 Report the exercised behavior, product path, expected and observed outcome,
 limitations, artifacts, and receipt-bound identity.
 Write the authored summary in revision-neutral terms, leaving HEAD and branch to the receipt.
-If response evidence names the exact revision, copy `payload.receipt.head` byte-for-byte.
+If response evidence names the exact revision, copy `payload.receipt.head` byte-for-byte per `../../rules/pin-scope.md`.
 Limit conformance claims to what the selected scope proves.

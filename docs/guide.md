@@ -61,10 +61,10 @@ only from the agents directory. Copy them from the built marketplace package:
 
 ```bash
 mkdir -p ~/.codex/agents
-rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
-  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
-  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
-  ~/.codex/agents/expskill-test-engineer.toml
+rm -f ~/.codex/agents/designer.toml ~/.codex/agents/explorer.toml \
+  ~/.codex/agents/implementer.toml ~/.codex/agents/planner.toml \
+  ~/.codex/agents/review.toml ~/.codex/agents/spec.toml \
+  ~/.codex/agents/test-engineer.toml
 cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
 ```
 
@@ -78,15 +78,14 @@ profiles are rediscovered. To remove:
 ```bash
 codex plugin remove expskill@expskill
 codex plugin marketplace remove expskill
-rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
-  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
-  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
-  ~/.codex/agents/expskill-test-engineer.toml
+rm -f ~/.codex/agents/designer.toml ~/.codex/agents/explorer.toml \
+  ~/.codex/agents/implementer.toml ~/.codex/agents/planner.toml \
+  ~/.codex/agents/review.toml ~/.codex/agents/spec.toml \
+  ~/.codex/agents/test-engineer.toml
 rm -rf "$codex_marketplace"
 ```
 
-The `~/.codex/agents` directory itself is left in place; only the
-`expskill-*.toml` copies are removed.
+The `~/.codex/agents` directory itself is left in place; only the seven installed profile copies are removed.
 
 To update, rebuild and reinstall (the CLI has no per-plugin upgrade; the
 `marketplace upgrade` command only refreshes Git marketplaces, and this one
@@ -99,10 +98,10 @@ codex plugin remove expskill@expskill
 codex plugin marketplace remove expskill
 codex plugin marketplace add "$codex_marketplace"
 codex plugin add expskill@expskill
-rm -f ~/.codex/agents/expskill-designer.toml ~/.codex/agents/expskill-explorer.toml \
-  ~/.codex/agents/expskill-implementer.toml ~/.codex/agents/expskill-planner.toml \
-  ~/.codex/agents/expskill-review.toml ~/.codex/agents/expskill-spec.toml \
-  ~/.codex/agents/expskill-test-engineer.toml
+rm -f ~/.codex/agents/designer.toml ~/.codex/agents/explorer.toml \
+  ~/.codex/agents/implementer.toml ~/.codex/agents/planner.toml \
+  ~/.codex/agents/review.toml ~/.codex/agents/spec.toml \
+  ~/.codex/agents/test-engineer.toml
 cp "$codex_marketplace/plugins/expskill/agents/"*.toml ~/.codex/agents/
 rm -rf "$codex_marketplace"
 ```
@@ -145,12 +144,13 @@ file changes, update the v2 copy and the sentinel test in
 State left by the retired installer (`$XDG_STATE_HOME/expskill` receipts and
 journals, `codex-marketplace` and recovery packages) is inert without it;
 remove those directories by hand if they exist. The retired Codex agent
-symlinks are not inert either: besides the seven current profiles, the
-installer may have left `expskill-critical-reviewer.toml`,
+profiles (the five `expskill-critical-reviewer.toml`,
 `expskill-implementer-high.toml`, `expskill-reviewer.toml`,
-`expskill-verifier.toml`, and `expskill-verifier-low.toml` in
-`~/.codex/agents` pointing at removed state — delete those five as well.
-The retired opencode links are not inert: entries the installer created
+`expskill-verifier.toml`, `expskill-verifier-low.toml` plus the seven
+pre-rename `expskill-designer.toml`, `expskill-explorer.toml`,
+`expskill-implementer.toml`, `expskill-planner.toml`, `expskill-review.toml`,
+`expskill-spec.toml`, `expskill-test-engineer.toml`) are moved
+automatically into `agent-backups` on upgrade. The retired opencode links are not inert: entries the installer created
 under `$OPENCODE_CONFIG_DIR` (`skills/`, `commands/`, `agents/`, `plugins/`)
 and the state-home `expskill/opencode-artifact` directory keep pointing at
 removed state, so delete those expskill entries and the artifact directory
@@ -344,8 +344,8 @@ Correct checks its own repairs. When a repair needs a consequential choice,
 it explains a sound limited fix and its limitations, or offers Brainstorm.
 
 Review runs through the invoking agent and leaves Implement's internal reviewer
-alone. Reports live in the installed Review skill's `tmp/reports/` directory,
-outside every repository. Filenames include the date and time through seconds.
+alone. Reports live under `~/.expskill/skills/review/runs/<repo-hash>/<run-id>/` with one run folder
+per run, outside every repository. Filenames include the date and time through seconds.
 The user deletes reports manually. Review does not apply corrections or start
 another skill.
 

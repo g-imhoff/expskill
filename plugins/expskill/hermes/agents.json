@@ -4,31 +4,31 @@
   "model_policy": "active-hermes-provider",
   "runtime_paragraph": "You run as a Hermes agent with a fresh context for exactly one assignment. You see no sibling agent outputs. Your prompt carries the only handoff you may trust. Report questions only to your caller.",
   "agents": {
-    "expskill-designer": {
+    "designer": {
       "role": "designer",
       "sandbox": "workspace-write"
     },
-    "expskill-explorer": {
+    "explorer": {
       "role": "explorer",
       "sandbox": "read-only"
     },
-    "expskill-implementer": {
+    "implementer": {
       "role": "implementer",
       "sandbox": "workspace-write"
     },
-    "expskill-planner": {
+    "planner": {
       "role": "planner",
       "sandbox": "workspace-write"
     },
-    "expskill-review": {
+    "review": {
       "role": "review",
       "sandbox": "read-only"
     },
-    "expskill-spec": {
+    "spec": {
       "role": "spec",
       "sandbox": "read-only"
     },
-    "expskill-test-engineer": {
+    "test-engineer": {
       "role": "test-engineer",
       "sandbox": "read-only"
     }

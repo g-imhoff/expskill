@@ -606,7 +606,7 @@ def _cli():
     try:
         payload=json.loads(raw); 
         if not isinstance(payload,dict): raise ValueError()
-        home=Path(sys.argv[3]) if len(sys.argv)==4 else Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state"))) / "expskill"
+        home=Path(sys.argv[3]) if len(sys.argv)==4 else Path.home().expanduser().resolve() / ".expskill"
         if len(sys.argv)==4: payload.pop("state_home",None)
         if command=="preflight":
             result=preflight_plan_join(state_home=home,**payload)

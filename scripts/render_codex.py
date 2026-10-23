@@ -18,13 +18,13 @@ sys.dont_write_bytecode = True
 
 
 EXPECTED_AGENT_NAMES = (
-    "expskill-designer",
-    "expskill-explorer",
-    "expskill-implementer",
-    "expskill-planner",
-    "expskill-review",
-    "expskill-spec",
-    "expskill-test-engineer",
+    "designer",
+    "explorer",
+    "implementer",
+    "planner",
+    "review",
+    "spec",
+    "test-engineer",
 )
 
 

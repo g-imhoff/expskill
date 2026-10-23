@@ -34,7 +34,7 @@ class WorktreeTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         self.repo = self.root / "product"
         self.repo.mkdir()
-        self.state_home = self.root / "state"
+        self.state_home = self.root / ".expskill"
         self._git("init", "-b", "main")
         self._git("config", "user.name", "ExpSkill Tests")
         self._git("config", "user.email", "expskill-tests@example.invalid")
@@ -62,7 +62,7 @@ class WorktreeTests(unittest.TestCase):
     def _expected_path(self, run_id: str, task: str) -> Path:
         canonical_repo = Path(self._git("rev-parse", "--show-toplevel")).resolve()
         repository_hash = hashlib.sha256(str(canonical_repo).encode("utf-8")).hexdigest()
-        return self.state_home / "expskill" / "worktrees" / repository_hash / run_id / task
+        return self.state_home / "worktrees" / repository_hash / run_id / task
 
     def _create(self, run_id: str = "run-1", task: str = "task-one") -> object:
         return self._helper().create_worktree(self.repo, "HEAD", run_id, task, self.state_home)
@@ -83,7 +83,7 @@ class WorktreeTests(unittest.TestCase):
                 "--integrated-ref",
                 "main",
             ],
-            env={**os.environ, "XDG_STATE_HOME": str(self.state_home)},
+            env={**os.environ, "HOME": str(self.root)},
             text=True,
             capture_output=True,
             check=False,
@@ -192,7 +192,7 @@ class WorktreeTests(unittest.TestCase):
     def test_state_hash_symlink_redirection_is_refused_without_git_state_changes(self) -> None:
         canonical_repo = Path(self._git("rev-parse", "--show-toplevel")).resolve()
         repository_hash = hashlib.sha256(str(canonical_repo).encode("utf-8")).hexdigest()
-        worktree_root = self.state_home / "expskill" / "worktrees"
+        worktree_root = self.state_home / "worktrees"
         worktree_root.mkdir(parents=True)
         (worktree_root / repository_hash).symlink_to(self.repo, target_is_directory=True)
         target = self._expected_path("run-1", "task-one")
@@ -226,9 +226,9 @@ class WorktreeTests(unittest.TestCase):
             for relative in ("README.md", ".gitignore", "feature.txt")
         }
         before_registration = self._git("worktree", "list", "--porcelain")
-        original_state_home = os.environ.get("XDG_STATE_HOME")
-        os.environ["XDG_STATE_HOME"] = str(self.state_home)
-        self.addCleanup(self._restore_state_home, original_state_home)
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        self.addCleanup(self._restore_state_home, original_home)
         with self.assertRaises(Exception) as context:
             self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
         message = str(context.exception)
@@ -257,9 +257,9 @@ class WorktreeTests(unittest.TestCase):
         self.addCleanup(self._restore_directory_mode, ignored_directory)
         before_registration = self._git("worktree", "list", "--porcelain")
         git_metadata = (record.path / ".git").read_bytes()
-        original_state_home = os.environ.get("XDG_STATE_HOME")
-        os.environ["XDG_STATE_HOME"] = str(self.state_home)
-        self.addCleanup(self._restore_state_home, original_state_home)
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        self.addCleanup(self._restore_state_home, original_home)
         with self.assertRaises(Exception) as context:
             self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
         message = str(context.exception)
@@ -273,8 +273,8 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn(record.branch, self._git("branch", "--format=%(refname:short)"))
 
     def test_non_directory_state_component_returns_worktree_error_and_cli_status(self) -> None:
-        component = self.state_home / "expskill"
-        component.parent.mkdir(parents=True)
+        component = self.state_home / "worktrees"
+        component.parent.mkdir(parents=True, exist_ok=True)
         component.write_bytes(b"not a directory\n")
         target = self._expected_path("run-1", "task-one")
         helper = self._helper()
@@ -298,7 +298,7 @@ class WorktreeTests(unittest.TestCase):
                 "--task",
                 "task-one",
             ],
-            env={**os.environ, "XDG_STATE_HOME": str(self.state_home)},
+            env={**os.environ, "HOME": str(self.root)},
             text=True,
             capture_output=True,
             check=False,
@@ -377,9 +377,9 @@ class WorktreeTests(unittest.TestCase):
         self._git("commit", "-m", "task commit", cwd=record.path)
         task_tip = self._git("rev-parse", "HEAD", cwd=record.path)
         self._git("branch", "integrated", task_tip)
-        original_state_home = os.environ.get("XDG_STATE_HOME")
-        os.environ["XDG_STATE_HOME"] = str(self.state_home)
-        self.addCleanup(self._restore_state_home, original_state_home)
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        self.addCleanup(self._restore_state_home, original_home)
         with self.assertRaises(Exception) as context:
             self._helper().finish_worktree(self.repo, record.path, record.branch, "integrated")
         message = str(context.exception)
@@ -489,9 +489,9 @@ class WorktreeTests(unittest.TestCase):
         outside = self.root / "outside-worktree"
         branch = "expskill/run-1/task-one"
         self._git("worktree", "add", "-b", branch, str(outside), "HEAD")
-        original_state_home = os.environ.get("XDG_STATE_HOME")
-        os.environ["XDG_STATE_HOME"] = str(self.state_home)
-        self.addCleanup(self._restore_state_home, original_state_home)
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        self.addCleanup(self._restore_state_home, original_home)
         with self.assertRaises(Exception) as context:
             helper.finish_worktree(self.repo, outside, branch, "main")
         message = str(context.exception)
@@ -521,9 +521,9 @@ class WorktreeTests(unittest.TestCase):
         self._git("add", "feature.txt", cwd=record.path)
         self._git("commit", "-m", "integrated task", cwd=record.path)
         self._git("merge", "--no-ff", record.branch, "-m", "integrate task")
-        original_state_home = os.environ.get("XDG_STATE_HOME")
-        os.environ["XDG_STATE_HOME"] = str(self.state_home)
-        self.addCleanup(self._restore_state_home, original_state_home)
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        self.addCleanup(self._restore_state_home, original_home)
         self._helper().finish_worktree(self.repo, record.path, record.branch, "main")
         self.assertFalse(record.path.exists())
         branches = self._git("branch", "--format=%(refname:short)").splitlines()
@@ -533,9 +533,9 @@ class WorktreeTests(unittest.TestCase):
 
     def _restore_state_home(self, original: str | None) -> None:
         if original is None:
-            os.environ.pop("XDG_STATE_HOME", None)
+            os.environ.pop("HOME", None)
         else:
-            os.environ["XDG_STATE_HOME"] = original
+            os.environ["HOME"] = original
 
     def _restore_directory_mode(self, directory: Path) -> None:
         if directory.exists():
@@ -548,9 +548,9 @@ class WorktreeTests(unittest.TestCase):
         self._git("add", "feature.txt", "ignored-sentinel", cwd=record.path)
         self._git("commit", "-m", "integrated task", cwd=record.path)
         self._git("merge", "--no-ff", record.branch, "-m", "integrate task")
-        original_state_home = os.environ.get("XDG_STATE_HOME")
-        os.environ["XDG_STATE_HOME"] = str(self.state_home)
-        self.addCleanup(self._restore_state_home, original_state_home)
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.root)
+        self.addCleanup(self._restore_state_home, original_home)
         return record
 
 

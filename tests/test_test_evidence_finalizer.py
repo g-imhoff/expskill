@@ -78,13 +78,15 @@ def _rule_applicability() -> list[dict[str, object]]:
     ]
 
 
-def write_charter(run_root: Path, *, exempt: bool = False) -> Path:
+def write_charter(
+    run_root: Path, repository: Path, *, exempt: bool = False
+) -> Path:
     behavior = "A consumer observes the accepted response."
     charter: dict[str, object] = {
         "schema_version": "test-charter.v1",
         "run_id": run_root.name,
         "workflow_id": None,
-        "repository": str(run_root.parents[1].resolve()),
+        "repository": str(Path(repository).resolve()),
         "branch": "feature/test-finalizer",
         "head": HEAD,
         "accepted_behavior": behavior,
@@ -211,7 +213,7 @@ def invoke_finalizer(
             "--draft",
             str(run_root / "draft.json"),
         ],
-        cwd=run_root.parents[1],
+        cwd=run_root,
         capture_output=True,
         text=True,
         check=False,
@@ -238,7 +240,7 @@ def invoke_draft_composer(
             "--delta",
             str(delta or run_root / "draft-final-delta.json"),
         ],
-        cwd=run_root.parents[1],
+        cwd=run_root,
         capture_output=True,
         text=True,
         check=False,
@@ -420,14 +422,34 @@ def _load_finalizer_module():
 
 
 class TestEvidenceFinalizer(unittest.TestCase):
+    def _ensure_home(self) -> Path:
+        home = getattr(self, "_test_home", None)
+        if home is None:
+            temporary_home = tempfile.TemporaryDirectory(prefix="test-home-")
+            self.addCleanup(temporary_home.cleanup)
+            home = Path(temporary_home.name)
+            self._test_home = home
+            original_home = os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            self.addCleanup(self._restore_home_var, original_home)
+        return home
+
+    def _restore_home_var(self, original: str | None) -> None:
+        if original is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original
+
     def _prepare_run(self, repository: Path, result: str = "PASS") -> Path:
-        run_root = repository / ".test-evidence" / "run-001"
+        home = self._ensure_home()
+        digest = hashlib.sha256(str(Path(repository).resolve()).encode("utf-8")).hexdigest()
+        run_root = home / ".expskill" / "skills" / "test" / "runs" / digest / "run-001"
         (run_root / "artifacts").mkdir(parents=True)
         run_root.chmod(0o700)
         (run_root / "artifacts" / "consumer.log").write_text(
             "consumer observation\n", encoding="utf-8"
         )
-        write_charter(run_root, exempt=result == "EXEMPT")
+        write_charter(run_root, repository, exempt=result == "EXEMPT")
         statuses: tuple[str, ...]
         if result == "EXEMPT":
             statuses = ()
@@ -650,9 +672,13 @@ class TestEvidenceFinalizer(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
-            real_evidence = repository / "real-evidence"
-            real_evidence.mkdir()
-            (repository / ".test-evidence").symlink_to(real_evidence, target_is_directory=True)
+            home = self._ensure_home()
+            digest = hashlib.sha256(str(repository.resolve()).encode("utf-8")).hexdigest()
+            base = home / ".expskill" / "skills" / "test" / "runs" / digest
+            real_base = home / "real-runs-base"
+            real_base.mkdir(parents=True)
+            base.parent.mkdir(parents=True, exist_ok=True)
+            base.symlink_to(real_base, target_is_directory=True)
             run_root = self._prepare_run(repository)
             self._assert_failure(run_root, code="symlinked-path")
 

@@ -393,11 +393,8 @@ def _identity_key(context: _RepoContext) -> str:
 
 
 def default_state_home() -> Path:
-    """Return the helper-owned private state root for fresh sessions."""
-    configured = os.environ.get("XDG_STATE_HOME")
-    if configured:
-        return Path(configured) / "expskill"
-    return Path.home() / ".local" / "state" / "expskill"
+    """Return the helper-owned private strict-home state root."""
+    return Path.home().expanduser().resolve() / ".expskill"
 
 
 def _absolute_state_path(path: Path | None) -> Path:

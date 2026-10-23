@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib.util
 import io
@@ -91,8 +92,14 @@ print('consumer-result=pass')
         self.head = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.repository, text=True
         ).strip()
-        evidence = self.repository / ".test-evidence"
-        evidence.mkdir(mode=0o700)
+        self.home = Path(temporary.name) / "home"
+        self.home.mkdir()
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.home)
+        self.addCleanup(self._restore_home, original_home)
+        digest = hashlib.sha256(str(self.repository.resolve()).encode("utf-8")).hexdigest()
+        evidence = self.home / ".expskill" / "skills" / "test" / "runs" / digest
+        evidence.mkdir(mode=0o700, parents=True)
         self.addCleanup(self.unseal_evidence_for_cleanup)
         self.run_root = evidence / "run-1"
         self.run_root.mkdir(mode=0o700)
@@ -127,8 +134,15 @@ print('consumer-result=pass')
         )
         (self.run_root / "charter.json").chmod(0o600)
 
+    def _restore_home(self, original: str | None) -> None:
+        if original is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original
+
     def unseal_evidence_for_cleanup(self) -> None:
-        evidence = self.repository / ".test-evidence"
+        digest = hashlib.sha256(str(self.repository.resolve()).encode("utf-8")).hexdigest()
+        evidence = self.home / ".expskill" / "skills" / "test" / "runs" / digest
         if evidence.is_dir():
             evidence.chmod(0o700)
 
@@ -305,8 +319,8 @@ print('consumer-result=pass')
         self.write_spec()
         action = self.repository / "tamper_evidence.py"
         action.write_text(
-            """from pathlib import Path
-Path('.test-evidence/run-1/charter.json').write_text('{}\\n', encoding='utf-8')
+            f"""from pathlib import Path
+Path({str(self.run_root / "charter.json")!r}).write_text('{{}}\\n', encoding='utf-8')
 print('consumer-result=pass')
 """,
             encoding="utf-8",
@@ -339,7 +353,7 @@ print('consumer-result=pass')
         action.write_text(
             f"""from pathlib import Path
 import shutil
-parent = Path('.test-evidence/run-1/outputs')
+parent = Path({str(self.run_root / "outputs")!r})
 shutil.rmtree(parent)
 parent.symlink_to({str(outside)!r}, target_is_directory=True)
 print('consumer-result=pass')
