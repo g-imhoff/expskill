@@ -5638,6 +5638,33 @@ def test_oversized_structured_artifact_is_rejected_before_receipt_commit(
     assert sorted(path.name for path in (run / "receipts").iterdir()) == receipt_names
     assert not (run / "artifacts" / "oversized-structured").exists()
     assert list((run / "transactions").iterdir()) == []
+
+    retained = helper.retain_artifact(
+        workflow_id=started["workflow_id"],
+        expected_sequence=0,
+        artifact_id="roomy-structured",
+        artifact_type="baseline-report",
+        files={
+            f"evidence/file-{index:04d}.bin": b"x"
+            for index in range(300)
+        }
+        | {
+            "record.json": fixture_canonical_bytes(
+                valid_create_baseline_payload(
+                    helper, state_root, started["workflow_id"]
+                )
+            )
+        },
+        primary_path="record.json",
+        producer="main-agent",
+        input_bindings=current_bindings(
+            helper, state_root, started["workflow_id"]
+        ),
+        limitations=[],
+        state_root=state_root,
+    )
+    assert (run / "artifacts" / "roomy-structured").is_dir()
+    assert retained["sequence"] == 1
     assert helper.load_run(
         workflow_id=started["workflow_id"], state_root=state_root
     )["stage"] == "resolved"
