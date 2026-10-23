@@ -8,12 +8,4 @@ Commits the login form plus its test, pushes to origin. Covers that branch, thos
 
 Bad: "Can I proceed?" No scope, no writes, no target. Nothing to bind.
 
-A material change to the proposal voids the confirmation; ask again.
-
-## Boundary
-
-Confirm each effect on its own proposal; one confirmation covers exactly what was presented. Stop on a denied confirmation and await a new proposal. Leave merging to the user; the skill merges only with user authority for that exact revision.
-
-## Evidence
-
-Report the proposal digest presented, the user answer received, the bound target identity, invalidations on change, and the ready derivation with current confirmations.
+A material change to the proposal voids the confirmation; ask again. One confirmation covers exactly what was presented; a denied confirmation stops the work until a new proposal. Merging stays with the user unless authorized for that exact revision.

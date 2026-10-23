@@ -10,11 +10,3 @@
 6. For read-only work, finish on the original evidence with disclosed old and new identities when the user says to proceed without rebind. State exactly what could not be reviewed and why when original content is gone.
 7. For mutating work, proceed only after explicit user direction. Rebind scope and environment to the new head when the user confirms, rerun every check invalidated by the move, and require a full green scope on the final head before PASS. Retain prior evidence as history bound to its head.
 8. Require a non-protected workflow or feature branch for any write, commit, or test side commit. Read-only work is exempt.
-
-## Boundary
-
-Pin exact commit IDs, not branch names alone. Finish mutating work on the final head with a full green scope. Tie every coverage claim to the head its evidence ran on. For missing source content, disclose what is missing and why; for a missing reviewer reply, fail closed; for a missing runtime prerequisite, report BLOCKED.
-
-## Evidence
-
-Report the original pin, the current identities, drift assessment with relevance and conflict verdict, user direction received, and the final head all verdicts bind to. Point at exact pins reviewed.
