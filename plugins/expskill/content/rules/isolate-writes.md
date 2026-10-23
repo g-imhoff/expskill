@@ -7,4 +7,3 @@
 3. Workers stay within the pinned scope and change only their assigned issue or node.
 4. Integrate one lane at a time in dependency order. Revalidate the target head before each integration. Preserve conflicts for resolution and stop integration at conflicts.
 5. The coordinator or router deletes a worktree and its local task branch only after its exact commit is on the target, integrated checks pass, and the lane is clean. Keep dirty, failing, unmerged, unknown, or still needed lanes intact.
-6. For roast loops, give each fixer its own worktree and merge fixers at the end of one loop, one checkout per fixer.
