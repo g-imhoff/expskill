@@ -7,7 +7,7 @@ description: Score a change with adversarial category reviewers and report each 
 
 ## Pin the scope
 
-Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. If scope drifts, keep the original pin and disclose both identities. Disclose any mix of revisions.
+Pin the diff and uncommitted work per `../../rules/pin-scope.md`. Handle drift per `../../rules/pin-scope.md`. Rebind only on explicit direction and disclose mixed revisions per `../../rules/pin-scope.md`.
 
 ## Derive categories from the diff
 
@@ -26,3 +26,7 @@ Fail closed. A missing reply, invalid JSON, or a reply missing any field counts 
 ## Report
 
 Write a short report with categories and weights, scores in a table, top issues with evidence, and the final pass or fail reason. Pass means 9 or higher in every category. Keep it under 300 lines and point at the exact pin reviewed.
+
+## Report storage
+
+Save passes to home-state run folders, one fresh folder per head, per `../../rules/evidence-report.md`. Keep the chat report as the primary verdict and point at the saved file path.

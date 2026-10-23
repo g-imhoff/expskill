@@ -32,15 +32,15 @@ class ImplementContractTests(unittest.TestCase):
         self.assertNotIn("implement_state.py", self.body)
 
     def test_skill_names_the_fresh_worker_and_judge_profiles(self) -> None:
-        for name in ("expskill-implementer", "expskill-review", "expskill-spec"):
+        for name in ("implementer", "review", "spec"):
             with self.subTest(profile=name):
                 self.assertIn(name, self.body)
 
     def test_three_runtime_profiles_keep_their_sandbox_boundaries(self) -> None:
         expected = {
-            "expskill-implementer": "workspace-write",
-            "expskill-review": "read-only",
-            "expskill-spec": "read-only",
+            "implementer": "workspace-write",
+            "review": "read-only",
+            "spec": "read-only",
         }
         rendered = render_agents(ROOT)
         for name, sandbox in expected.items():

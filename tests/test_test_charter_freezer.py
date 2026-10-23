@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -61,10 +63,22 @@ class CharterFreezerTests(unittest.TestCase):
         self.head = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.repository, text=True
         ).strip()
-        evidence = self.repository / ".test-evidence"
-        evidence.mkdir(mode=0o700)
+        self.home = Path(temporary.name) / "home"
+        self.home.mkdir()
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.home)
+        self.addCleanup(self._restore_home, original_home)
+        digest = hashlib.sha256(str(self.repository.resolve()).encode("utf-8")).hexdigest()
+        evidence = self.home / ".expskill" / "skills" / "test" / "runs" / digest
+        evidence.mkdir(mode=0o700, parents=True)
         self.run_root = evidence / "run-1"
         self.run_root.mkdir(mode=0o700)
+
+    def _restore_home(self, original: str | None) -> None:
+        if original is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original
 
     def preparation(self) -> dict[str, object]:
         behavior = "The public changed journey returns its accepted outcome."

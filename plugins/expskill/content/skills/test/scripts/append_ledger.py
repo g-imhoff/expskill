@@ -11,6 +11,7 @@ byte-for-byte as values and can never be edited through this interface.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -127,13 +128,28 @@ def _harden_owned_directory(path: Path, label: str) -> None:
         os.close(descriptor)
 
 
+def _repository_hash(repository: Path) -> str:
+    return hashlib.sha256(str(repository).encode("utf-8")).hexdigest()
+
+
+def _home_runs_base(repository: Path) -> Path:
+    return (
+        Path.home().expanduser().resolve()
+        / ".expskill"
+        / "skills"
+        / "test"
+        / "runs"
+        / _repository_hash(repository)
+    )
+
+
 def _run_root(repository: Path, supplied: str) -> Path:
     raw = Path(supplied)
     root = Path(os.path.abspath(repository / raw if not raw.is_absolute() else raw))
-    evidence = repository / ".test-evidence"
+    evidence = _home_runs_base(repository)
     if root.parent != evidence or RUN_ID_RE.fullmatch(root.name) is None:
-        _error("invalid-run-root", "root must be <repository>/.test-evidence/<run-id>")
-    _harden_owned_directory(evidence, ".test-evidence")
+        _error("invalid-run-root", "root must be <home>/.expskill/skills/test/runs/<repo-hash>/<run-id>")
+    _harden_owned_directory(evidence, "runs home")
     _harden_owned_directory(root, "run root")
     return root
 

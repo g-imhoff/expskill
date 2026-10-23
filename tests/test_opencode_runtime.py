@@ -106,7 +106,7 @@ import(%s).then(async (module) => {
     sessionID: 'repository-fallback',
     callID: 'implementer',
   };
-  const fallbackArgs = { subagent_type: 'expskill-implementer' };
+  const fallbackArgs = { subagent_type: 'implementer' };
   await repositoryHooks['tool.execute.before'](fallbackInput, { args: fallbackArgs });
   await repositoryHooks['tool.execute.after']({ ...fallbackInput, args: fallbackArgs }, {});
   assert('repository-fallback-policy-enforces-valid-agent', true);
@@ -159,11 +159,11 @@ import(%s).then(async (module) => {
   );
   assert('allows-unrelated-host-agents', true);
 
-  const plannerArgs = { subagent_type: 'expskill-planner' };
+  const plannerArgs = { subagent_type: 'planner' };
   await before({ tool: 'task', sessionID: 'real-shape', callID: 'call-1' }, { args: plannerArgs });
   await after({ tool: 'task', sessionID: 'real-shape', callID: 'call-1', args: plannerArgs }, {});
   assert('allows-output-args-agent', true);
-  for (const [index, agent] of ['expskill-explorer', 'expskill-test-engineer'].entries()) {
+  for (const [index, agent] of ['explorer', 'test-engineer'].entries()) {
     const input = { tool: 'task', sessionID: 'unbound-profile', callID: `profile-${index}` };
     await before(input, { args: { subagent_type: agent } });
     await after({ ...input, args: { subagent_type: agent } }, {});
@@ -190,7 +190,7 @@ import(%s).then(async (module) => {
   } catch { blocked = true; }
   assert('hook-blocks-configured-call-limit', blocked);
 
-  const implementerArgs = { subagent_type: 'expskill-implementer' };
+  const implementerArgs = { subagent_type: 'implementer' };
   for (let index = 0; index < 30; index++) {
     const input = { tool: 'task', sessionID: 'implement-call-limit', callID: `implement-${index}` };
     await before(input, { args: implementerArgs });
@@ -279,7 +279,7 @@ import(%s).then(async (module) => {
       'tool.execute.before' in packedHooks && 'tool.execute.after' in packedHooks,
     );
     const packedInput = { tool: 'task', sessionID: 'packed-policy', callID: 'implementer' };
-    const packedArgs = { subagent_type: 'expskill-implementer' };
+    const packedArgs = { subagent_type: 'implementer' };
     await packedHooks['tool.execute.before'](packedInput, { args: packedArgs });
     await packedHooks['tool.execute.after']({ ...packedInput, args: packedArgs }, {});
     assert('packed-policy-enforces-valid-agent', true);
@@ -296,7 +296,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'missing' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -316,7 +316,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'malformed' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -333,7 +333,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'shape' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -352,7 +352,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'missing-route' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -372,7 +372,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'renamed-route' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -391,7 +391,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'missing-parallel-route' },
-        { args: { subagent_type: 'expskill-planner' } },
+        { args: { subagent_type: 'planner' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -400,9 +400,9 @@ import(%s).then(async (module) => {
     );
     const invalidAssignment = JSON.parse(JSON.stringify(policy));
     invalidAssignment.routes.implement.standard.allowed_profiles = [
-      'expskill-planner',
-      'expskill-review',
-      'expskill-spec',
+      'planner',
+      'review',
+      'spec',
     ];
     await fs.writeFile(
       path.join(assets, 'execution-policy.json'),
@@ -414,7 +414,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'invalid-assignment' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -433,7 +433,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'unsupported' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -456,7 +456,7 @@ import(%s).then(async (module) => {
       try {
         await loadHooks['tool.execute.before'](
           { tool: 'task', sessionID: 'load-error', callID: label },
-          { args: { subagent_type: 'expskill-implementer' } },
+          { args: { subagent_type: 'implementer' } },
         );
       } catch (error) { loadError = error; }
       assert(
@@ -476,7 +476,7 @@ import(%s).then(async (module) => {
     try {
       await loadHooks['tool.execute.before'](
         { tool: 'task', sessionID: 'load-error', callID: 'selected' },
-        { args: { subagent_type: 'expskill-implementer' } },
+        { args: { subagent_type: 'implementer' } },
       );
     } catch (error) { loadError = error; }
     assert(
@@ -632,7 +632,7 @@ import(%s).then(async (module) => {
   const context = { context: [] };
   await hooks['experimental.session.compacting']({ sessionID: 'root-compact' }, context);
   assert('composed-compacting-effect', context.context.length === 2);
-  const policyArgs = { subagent_type: 'expskill-implementer' };
+  const policyArgs = { subagent_type: 'implementer' };
   await hooks['tool.execute.before'](
     { tool: 'task', sessionID: 'root-policy', callID: 'valid' },
     { args: policyArgs },
@@ -1152,13 +1152,13 @@ class OpencodeRuntimeTests(unittest.TestCase):
         result = run_node_case(self.artifact() / "index.js", NATIVE_AGENT_OPTIONS_CASE)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for name in (
-            "expskill-designer",
-            "expskill-explorer",
-            "expskill-implementer",
-            "expskill-planner",
-            "expskill-review",
-            "expskill-spec",
-            "expskill-test-engineer",
+            "designer",
+            "explorer",
+            "implementer",
+            "planner",
+            "review",
+            "spec",
+            "test-engineer",
         ):
             for suffix in (
                 "options-plain-object",

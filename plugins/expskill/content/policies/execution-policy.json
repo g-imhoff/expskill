@@ -1,56 +1,56 @@
 {
   "policy_version": "execution-budget-policy.v1",
   "profiles": {
-    "expskill-explorer": {
-      "agent_type": "expskill-explorer",
+    "explorer": {
+      "agent_type": "explorer",
       "role": "explorer",
       "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "expskill-test-engineer": {
-      "agent_type": "expskill-test-engineer",
+    "test-engineer": {
+      "agent_type": "test-engineer",
       "role": "test-engineer",
       "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "expskill-implementer": {
-      "agent_type": "expskill-implementer",
+    "implementer": {
+      "agent_type": "implementer",
       "role": "implementer",
       "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
     },
-    "expskill-planner": {
-      "agent_type": "expskill-planner",
+    "planner": {
+      "agent_type": "planner",
       "role": "planner",
       "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
     },
-    "expskill-designer": {
-      "agent_type": "expskill-designer",
+    "designer": {
+      "agent_type": "designer",
       "role": "designer",
       "model": "gpt-6-luna",
       "effort": "max",
       "sandbox_mode": "workspace-write",
       "escalation": null
     },
-    "expskill-review": {
-      "agent_type": "expskill-review",
+    "review": {
+      "agent_type": "review",
       "role": "review",
       "model": "gpt-6.1-sol",
       "effort": "xhigh",
       "sandbox_mode": "read-only",
       "escalation": null
     },
-    "expskill-spec": {
-      "agent_type": "expskill-spec",
+    "spec": {
+      "agent_type": "spec",
       "role": "spec",
       "model": "gpt-6.1-sol",
       "effort": "xhigh",
@@ -62,19 +62,19 @@
     "use-expskill": {
       "parallel-plan-design": {
         "allowed_profiles": [
-          "expskill-planner",
-          "expskill-designer"
+          "planner",
+          "designer"
         ],
         "selected": [
           {
             "role": "planner",
-            "profile": "expskill-planner",
-            "agent_type": "expskill-planner"
+            "profile": "planner",
+            "agent_type": "planner"
           },
           {
             "role": "designer",
-            "profile": "expskill-designer",
-            "agent_type": "expskill-designer"
+            "profile": "designer",
+            "agent_type": "designer"
           }
         ],
         "max_agent_calls": 2,
@@ -87,25 +87,25 @@
     "implement": {
       "standard": {
         "allowed_profiles": [
-          "expskill-implementer",
-          "expskill-review",
-          "expskill-spec"
+          "implementer",
+          "review",
+          "spec"
         ],
         "selected": [
           {
             "role": "implementer",
-            "profile": "expskill-implementer",
-            "agent_type": "expskill-implementer"
+            "profile": "implementer",
+            "agent_type": "implementer"
           },
           {
             "role": "review",
-            "profile": "expskill-review",
-            "agent_type": "expskill-review"
+            "profile": "review",
+            "agent_type": "review"
           },
           {
             "role": "spec",
-            "profile": "expskill-spec",
-            "agent_type": "expskill-spec"
+            "profile": "spec",
+            "agent_type": "spec"
           }
         ],
         "max_agent_calls": 30,

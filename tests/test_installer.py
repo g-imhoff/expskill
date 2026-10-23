@@ -122,7 +122,7 @@ class InstallerTests(unittest.TestCase):
         self.package = self.root / "installed plugin"
         (self.package / "agents").mkdir(parents=True)
         for role in ROLES:
-            (self.package / "agents" / f"expskill-{role}.toml").write_text(f"# {role}\n")
+            (self.package / "agents" / f"{role}.toml").write_text(f"# {role}\n")
         self.log = self.root / "calls.jsonl"
         self.env = {**os.environ, "HOME": str(self.home), "PATH": str(self.bin),
                     "CALL_LOG": str(self.log), "PACKAGE": str(self.package),
@@ -325,13 +325,13 @@ class InstallerTests(unittest.TestCase):
         custom_home = self.root / "custom codex"
         agents = custom_home / "agents"
         agents.mkdir(parents=True)
-        edited = agents / "expskill-designer.toml"
+        edited = agents / "designer.toml"
         edited.write_text("local customization\n")
         external = self.root / "external.toml"
         external.write_text("external untouched\n")
-        linked = agents / "expskill-explorer.toml"
+        linked = agents / "explorer.toml"
         linked.symlink_to(external)
-        dangling = agents / "expskill-review.toml"
+        dangling = agents / "review.toml"
         dangling.symlink_to(self.root / "missing.toml")
         (agents / "unrelated.toml").write_text("unrelated\n")
         result = self.run_installer("Codex\n", CODEX_HOME=str(custom_home))
@@ -343,7 +343,7 @@ class InstallerTests(unittest.TestCase):
             ["codex", "plugin", "add", "expskill@expskill", "--json"],
         ])
         for role in ROLES:
-            destination = agents / f"expskill-{role}.toml"
+            destination = agents / f"{role}.toml"
             self.assertFalse(destination.is_symlink())
             self.assertEqual(destination.read_text(), f"# {role}\n")
         backups = list((custom_home / "agent-backups").glob("expskill-backup-*"))
@@ -357,6 +357,24 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.home / ".codex").exists())
         self.assertIn("/hooks", result.stdout)
         self.assertIn("new Codex session", result.stdout)
+
+    def test_codex_removes_retired_expskill_profiles_into_backup(self):
+        self.codex_commands()
+        custom_home = self.root / "custom codex legacy"
+        agents = custom_home / "agents"
+        agents.mkdir(parents=True)
+        stales = ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml", "expskill-designer.toml", "expskill-explorer.toml", "expskill-implementer.toml", "expskill-planner.toml", "expskill-review.toml", "expskill-spec.toml", "expskill-test-engineer.toml")
+        for stale in stales:
+            (agents / stale).write_text("stale\n")
+        result = self.run_installer("Codex\n", CODEX_HOME=str(custom_home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for stale in stales:
+            self.assertFalse((agents / stale).exists(), stale)
+        backups = list((custom_home / "agent-backups").glob("expskill-backup-*"))
+        self.assertTrue(backups, "retired profiles must be backed up")
+        moved = [p.name for b in backups for p in b.iterdir()]
+        for stale in stales:
+            self.assertIn(stale, moved, stale)
 
     def test_codex_default_home_and_identical_profiles_need_no_backup(self):
         self.codex_commands()
@@ -373,8 +391,8 @@ class InstallerTests(unittest.TestCase):
         first = self.run_installer("all\n")
         self.assertEqual(first.returncode, 0, first.stderr)
         agents = self.home / ".codex" / "agents"
-        (agents / "expskill-designer.toml").write_text("local customization\n")
-        (self.package / "agents" / "expskill-designer.toml").write_text("new release\n")
+        (agents / "designer.toml").write_text("local customization\n")
+        (self.package / "agents" / "designer.toml").write_text("new release\n")
         self.log.unlink()
         next_sha = "b2" * 20
         updated = self.run_installer("all\n", DIST_SHA=next_sha)
@@ -402,10 +420,10 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.state()["claude-marketplace"], REMOTE + "#claude-dist")
         self.assertTrue(self.state()["claude-marketplace-updated"])
         self.assertEqual(self.state()["claude-updated"], "expskill@expskill")
-        self.assertEqual((agents / "expskill-designer.toml").read_text(), "new release\n")
+        self.assertEqual((agents / "designer.toml").read_text(), "new release\n")
         backups = list((agents.parent / "agent-backups").glob("expskill-backup-*"))
         self.assertEqual(len(backups), 1)
-        self.assertEqual((backups[0] / "expskill-designer.toml").read_text(), "local customization\n")
+        self.assertEqual((backups[0] / "designer.toml").read_text(), "local customization\n")
         self.assertEqual(len(list(agents.rglob("*.toml"))), 7)
 
     def test_codex_migrates_legacy_backups_without_losing_contents(self):
@@ -414,15 +432,15 @@ class InstallerTests(unittest.TestCase):
         agents = custom_home / "agents"
         legacy = agents / "expskill-backup-previous"
         legacy.mkdir(parents=True)
-        profile = legacy / "expskill-designer.toml"
+        profile = legacy / "designer.toml"
         profile.write_text("saved customization\n")
         (legacy / "unrelated.txt").write_text("saved user data\n")
         external = self.root / "external.toml"
         external.write_text("external untouched\n")
-        (legacy / "expskill-explorer.toml").symlink_to(external)
+        (legacy / "explorer.toml").symlink_to(external)
         for role in ROLES:
-            (agents / f"expskill-{role}.toml").write_bytes(
-                (self.package / "agents" / f"expskill-{role}.toml").read_bytes()
+            (agents / f"{role}.toml").write_bytes(
+                (self.package / "agents" / f"{role}.toml").read_bytes()
             )
         unrelated = agents / "other-roles"
         unrelated.mkdir()
@@ -434,7 +452,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(len(migrated), 1)
         self.assertEqual((migrated[0] / profile.name).read_text(), "saved customization\n")
         self.assertEqual((migrated[0] / "unrelated.txt").read_text(), "saved user data\n")
-        self.assertTrue((migrated[0] / "expskill-explorer.toml").is_symlink())
+        self.assertTrue((migrated[0] / "explorer.toml").is_symlink())
         self.assertEqual(external.read_text(), "external untouched\n")
         self.assertEqual((unrelated / "custom.toml").read_text(), "custom role\n")
         self.assertEqual(len(list(agents.rglob("*.toml"))), 8)
@@ -447,7 +465,7 @@ class InstallerTests(unittest.TestCase):
         custom_home = self.root / "custom codex"
         agents = custom_home / "agents"
         agents.mkdir(parents=True)
-        profile = agents / "expskill-designer.toml"
+        profile = agents / "designer.toml"
         profile.write_text("local customization\n")
         external = self.root / "external backups"
         external.mkdir()
@@ -537,7 +555,7 @@ class InstallerTests(unittest.TestCase):
         first = self.run_installer("1\n")
         self.assertEqual(first.returncode, 0, first.stderr)
         agents = self.home / ".codex" / "agents"
-        edited = agents / "expskill-designer.toml"
+        edited = agents / "designer.toml"
         edited.write_text("local customization\n")
         self.log.unlink()
         failed = self.run_installer("1 2\n", FAIL_STEP="marketplace")
@@ -613,16 +631,16 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(response=response):
                 self.assert_failed(self.run_installer("1\n", CODEX_RESULT=response), "profiles")
                 self.assertFalse((self.home / ".codex").exists())
-        (self.package / "agents" / "expskill-spec.toml").unlink()
+        (self.package / "agents" / "spec.toml").unlink()
         self.assert_failed(self.run_installer("1\n"), "profiles")
         self.assertFalse((self.home / ".codex").exists())
 
     def test_destination_directory_is_rejected_without_changing_profiles(self):
         self.codex_commands()
         agents = self.home / ".codex" / "agents"
-        (agents / "expskill-review.toml").mkdir(parents=True)
+        (agents / "review.toml").mkdir(parents=True)
         self.assert_failed(self.run_installer("1\n"), "profiles")
-        self.assertEqual([path.name for path in agents.iterdir()], ["expskill-review.toml"])
+        self.assertEqual([path.name for path in agents.iterdir()], ["review.toml"])
 
     def test_symlinked_agents_directory_is_not_written_through(self):
         self.codex_commands()
@@ -635,9 +653,9 @@ class InstallerTests(unittest.TestCase):
 
     def test_symlinked_packaged_profile_is_rejected_before_copying(self):
         self.codex_commands()
-        profile = self.package / "agents" / "expskill-review.toml"
+        profile = self.package / "agents" / "review.toml"
         profile.unlink()
-        profile.symlink_to(self.package / "agents" / "expskill-spec.toml")
+        profile.symlink_to(self.package / "agents" / "spec.toml")
         self.assert_failed(self.run_installer("1\n"), "profiles")
         self.assertFalse((self.home / ".codex").exists())
 

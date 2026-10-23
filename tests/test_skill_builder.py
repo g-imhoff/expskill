@@ -5663,10 +5663,10 @@ def finalization_trace_after_aba(
 
 def cleanup_trace(
     run_directory: str,
-    xdg_state_home: str | None = None,
+    home_dir: str | None = None,
     workflow_id: str = "a" * 32,
 ) -> list[dict[str, Any]]:
-    state_home = xdg_state_home or str(BUILDER_FIXTURES / "private-state")
+    state_home = home_dir or str(BUILDER_FIXTURES / "private-home")
     retained_authority = validated_user_authority_control(BUILDER_FIXTURES)
     if retained_authority is None:
         raise ValueError("cleanup lacked retained user authority control")
@@ -5722,7 +5722,7 @@ def cleanup_trace(
         {
             "event": "run_state_manifest_validated",
             "valid": True,
-            "xdg_state_home": state_home,
+            "home_dir": state_home,
             "run_directory": run_directory,
             "manifest_digest": "manifest-1",
             "final_transition_digest": "transition-1",
@@ -5735,7 +5735,7 @@ def cleanup_trace(
             "tombstone_digest": "tombstone-1",
             "tombstone_path": str(
                 Path(state_home)
-                / "expskill"
+                / ".expskill"
                 / "skill-builder"
                 / "tombstones"
                 / f"{workflow_id}.json"
@@ -5761,7 +5761,7 @@ def cleanup_trace(
 def authorized_integrated_cleanup_trace(
     run_directory: str,
     workflow_id: str = "b" * 32,
-    xdg_state_home: str | None = None,
+    home_dir: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build a finalized control with an authorized delivery and cleanup tail."""
 
@@ -5800,7 +5800,7 @@ def authorized_integrated_cleanup_trace(
     )
     cleanup = cleanup_trace(
         run_directory,
-        xdg_state_home=xdg_state_home,
+        home_dir=home_dir,
         workflow_id=workflow_id,
     )
     cleanup_authority_digest: str | None = None
@@ -7763,7 +7763,7 @@ def evaluate_trace(
                 )
             )
             state_home = (
-                run_state_manifest.get("xdg_state_home")
+                run_state_manifest.get("home_dir")
                 if run_state_manifest is not None
                 else None
             )
@@ -7772,7 +7772,7 @@ def evaluate_trace(
                 if run_state_manifest is not None
                 else None
             )
-            trusted_state_home = fixture_root / "private-state"
+            trusted_state_home = fixture_root / "private-home"
             workflow_identity = event.get("workflow_id")
             workflow_identity_valid = (
                 isinstance(workflow_identity, str)
@@ -7780,7 +7780,7 @@ def evaluate_trace(
             )
             expected_directory = (
                 trusted_state_home
-                / "expskill"
+                / ".expskill"
                 / "skill-builder"
                 / "runs"
                 / workflow_identity
@@ -7862,7 +7862,7 @@ def evaluate_trace(
             )
             expected_tombstone_path = (
                 trusted_state_home
-                / "expskill"
+                / ".expskill"
                 / "skill-builder"
                 / "tombstones"
                 / f"{workflow_identity}.json"
@@ -11617,8 +11617,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11947,8 +11947,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -11987,8 +11987,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -12349,8 +12349,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13602,14 +13602,14 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("FINALIZE_WITH_MATERIAL_FINDINGS", masked_codes)
         self.assertNotIn("DUPLICATE_MATERIAL_FINDING_ID", masked_codes)
 
-    def test_cleanup_ownership_is_derived_from_validated_xdg_manifest(self) -> None:
+    def test_cleanup_ownership_is_derived_from_validated_home_manifest(self) -> None:
         """Regression: matching cleanup labels cannot disguise a production path."""
 
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -13618,13 +13618,13 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         def integrated_codes(
             run_directory: str,
             *,
-            xdg_state_home: str | None = None,
+            home_dir: str | None = None,
             drop_manifest: bool = False,
         ) -> set[str]:
             trace, trusted_authority = authorized_integrated_cleanup_trace(
                 run_directory,
                 workflow_id,
-                xdg_state_home,
+                home_dir,
             )
             if drop_manifest:
                 trace = [
@@ -13650,8 +13650,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", production_codes)
 
         spoofed_codes = integrated_codes(
-            "/srv/skills/expskill/skill-builder/runs/workflow-1",
-            xdg_state_home="/srv/skills",
+            "/srv/home/.expskill/skill-builder/runs/workflow-1",
+            home_dir="/srv/home",
         )
         self.assertIn("INVALID_CLEANUP_OWNERSHIP", spoofed_codes)
 
@@ -14067,8 +14067,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id
@@ -14138,8 +14138,8 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         workflow_id = "b" * 32
         owned_path = str(
             BUILDER_FIXTURES
-            / "private-state"
-            / "expskill"
+            / "private-home"
+            / ".expskill"
             / "skill-builder"
             / "runs"
             / workflow_id

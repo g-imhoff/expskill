@@ -18,7 +18,7 @@ Read the selected mode file once stage 1 records the mode, read [shared stages](
 
 ## Durable run state
 
-Resolve the package's `scripts/run_state.py` relative to the loaded skill and make every run-state change through the interface its runtime help shows. Treat missing, stale, inconsistent, or unauditable state, or a rejected transition, as a failed gate at the current stage. Open the artifact contracts' binding, invalidation, recovery, and tombstone sections whenever a transition fails.
+Resolve the package's `scripts/run_state.py` relative to the loaded skill and make every run-state change through the interface its runtime help shows. Root retained state per `../../rules/evidence-report.md`. Pin the finalized revision and baselines per `../../rules/pin-scope.md`. Treat missing, stale, inconsistent, or unauditable state, or a rejected transition, as a failed gate at the current stage. Open the artifact contracts' binding, invalidation, recovery, and tombstone sections whenever a transition fails.
 
 ## Ordered workflow
 
@@ -39,14 +39,14 @@ Write each contract field where the artifact contracts' placement table puts it.
 ## Roles, tools, and permissions
 
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, authority checks, scope changes, external delivery, and cleanup.
-- Research agents use web access read-only and return only evidence cards.
-- Exactly one implementer writes, and only inside the isolated candidate. The implementer works in its own session and the main agent never writes candidate bytes. Trial agents write only inside disposable targets.
+- Research agents use web access read-only and return only evidence cards. Fan out narrow discovery per `../../rules/bounded-fanout.md`.
+- Exactly one implementer writes, and only inside the isolated candidate. The implementer works in its own session and the main agent never writes candidate bytes. Trial agents write only inside disposable targets. Give one owner per lane and confine trial writes per `../../rules/isolate-writes.md`.
 - Reviewers and verifiers stay independent and read-only to tracked source.
 - The user alone confirms product intent.
 
 ## Changed goals
 
-A changed target identity, mode, behavior, success, scope, delivery intent, or other material decision invalidates its dependent artifacts through the helper, as the artifact contracts' invalidation table lists, and returns the run to the earliest affected stage. Keep unrelated valid evidence while its bindings match.
+A changed target identity, mode, behavior, success, scope, delivery intent, or other material decision invalidates its dependent artifacts through the helper, as the artifact contracts' invalidation table lists, and returns the run to the earliest affected stage. Invalidate on material change per `../../rules/explicit-confirmation.md`. Keep unrelated valid evidence while its bindings match.
 
 When an improve request changes the contract, or a modify request keeps it, ask the user one question. On their yes, switch the mode through the helper and read the new mode file.
 
@@ -62,4 +62,4 @@ The review handoff is a locator of at most 300 physical lines, counting inherite
 
 Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. Reference separately an accepted specification file that existed before dispatch. Reviewers reject a review-time summary, copy, or relabelled package as a specification.
 
-Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context by existing path, command, or optional digest alone. The judges inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a request for a larger package with this locator handoff.
+Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest alone, leaving them uncopied. Judges inspect the pinned revision per `../../rules/pin-scope.md` with repository tools and run any focused checks needed to verify the claims. Answer a larger convenience package request with this locator handoff.

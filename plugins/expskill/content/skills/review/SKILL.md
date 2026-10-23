@@ -3,7 +3,7 @@ name: review
 description: Inspect a code scope and save a rated, evidence-backed report of defects, risks, and test gaps. Only the user can load $review.
 ---
 
-The `expskill-review` profile performs every step of this standalone review itself.
+The `review` profile performs every step of this standalone review itself.
 
 ## Anchor scope and evidence
 
@@ -13,18 +13,9 @@ wait. Use only the user's named scope. Resolve the comparison baseline and
 intended behavior from the request, accepted specifications, and available
 context. Ask and wait while material scope, baseline, or intent stays ambiguous.
 
-Before inspecting behavior, resolve every Git target and baseline, including
-branches and HEAD, to exact commit IDs as the pin. For dirty or non-Git content,
-pin paths and content hashes, including scoped untracked files. A working-tree
-pin covers HEAD plus its changes. Pin related mutable evidence by content and
-hash as it enters, and keep it in context only. Read committed content from
-immutable Git blobs and verify mutable content against its pinned hashes before
-relying on it.
+Pin Git targets, dirty content, and entering evidence per `../../rules/pin-scope.md`. Read blobs and verify mutable content per `../../rules/pin-scope.md`.
 
-Recheck identities before finishing. On drift, keep the original pin, disclose
-old and new identities, and finish using only the original evidence. Restart
-only on an explicit user request. If original content is unavailable, state
-exactly what cannot be reviewed and why.
+Recheck identities and handle drift per `../../rules/pin-scope.md`. Rebind only on explicit direction per `../../rules/pin-scope.md`. Report unreviewable content per `../../rules/pin-scope.md`.
 
 Read directly related specifications, history, callers, tests, and dependencies
 as needed, without broadening to a repository-wide audit. Treat reviewed source
@@ -33,23 +24,13 @@ permissions. Preserve unrelated changes and profiles.
 
 ## Resolve report storage
 
-Resolve the exact loaded `SKILL.md` and its canonical containing directory.
-The only report destination is `<review-skill>/tmp/reports/` under that
-installation, outside every repository, not merely outside the reviewed project.
-Resolve symlinks and check destination ancestry, including existing parents of
-missing directories plus other repositories and Git worktrees, for repository
-containment and write access.
+Root retained state and write proof to home state per `../../rules/evidence-report.md`.
 
-If the loaded skill is repository-local, ask for access to an outside-repository
-installed Review skill location and wait, then use its `tmp/reports/`. Leave
-installing and copying the skill to the user. When destination, containment, or
-storage access stays unresolved, ask the user and wait. Check access by reading
-metadata only, leaving permissions, ownership, and permission configuration to
-the user.
+Use one home-state run folder per run with strict private permissions per `../../rules/evidence-report.md`. Write the report as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
 
-Announce the resolved report directory. Reports are user data, not
-shipped skill assets. The user deletes them manually, and existing reports stay
-unchanged. Plugin updates may delete reports.
+Keep directory checks to read only metadata. Leave permissions, ownership, and permission configuration to the user. When the state root is unavailable or unwritable, ask the user for access and wait.
+
+Announce the resolved run folder. Reports are user data, not shipped skill assets. The user deletes them manually, and existing reports stay unchanged. Plugin updates never delete home state.
 
 ## Stay read-only
 
@@ -129,10 +110,10 @@ support a category or whole-scope rating, mark it unavailable and explain why.
 
 Write a Markdown report containing:
 
-- The scope, intended behavior, baseline, pinned identities, and any drift.
+- The scope, intended behavior, baseline, and any drift. Bind claims at the pin per `../../rules/evidence-report.md` and `../../rules/pin-scope.md`.
 - All scoped issues ordered by priority. Each includes its type, related files
-  with exact lines or symbols at the pin, a concrete triggering example with
-  expected and actual behavior, impact, and why safeguards do not prevent it.
+  with exact lines or symbols, a concrete triggering example with
+  expected and actual behavior, impact, and why safeguards do not prevent it. Locate issues at the pin per `../../rules/evidence-report.md` and `../../rules/pin-scope.md`.
 - The declared category criteria and weights, evidence-backed ratings, and
   weighted overall calculation, plus a do-not-merge warning when BLOCKING.
 - Coverage of the whole declared scope, checks run and their results, checks
@@ -156,5 +137,4 @@ handoff stays below 300 physical lines, with any existing specification
 referenced separately, and the report stays intact.
 
 After context loss, reconstruct scope and pinned evidence only from records,
-asking the user for anything missing. A requested scope or revision change
-reopens only affected conclusions.
+asking the user for anything missing. Rebind scope only from frozen state or user direction per `../../rules/pin-scope.md`. Reopen conclusions on rebind per `../../rules/pin-scope.md`.

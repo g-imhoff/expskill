@@ -3,7 +3,7 @@
   "schema_version": "claude-agents.v1",
   "runtime_paragraph": "You run as a Claude Code subagent with a fresh context for exactly one assignment. You see no sibling agent outputs. Your prompt carries the only handoff you may trust. Report questions only to your caller.",
   "agents": {
-    "expskill-designer": {
+    "designer": {
       "model": "haiku",
       "tools": [
         "Read",
@@ -14,7 +14,7 @@
         "Bash"
       ]
     },
-    "expskill-explorer": {
+    "explorer": {
       "model": "haiku",
       "tools": [
         "Read",
@@ -23,7 +23,7 @@
         "Bash"
       ]
     },
-    "expskill-implementer": {
+    "implementer": {
       "model": "haiku",
       "tools": [
         "Read",
@@ -34,7 +34,7 @@
         "Bash"
       ]
     },
-    "expskill-planner": {
+    "planner": {
       "model": "haiku",
       "tools": [
         "Read",
@@ -43,7 +43,7 @@
         "Bash"
       ]
     },
-    "expskill-review": {
+    "review": {
       "model": "opus",
       "tools": [
         "Read",
@@ -52,7 +52,7 @@
         "Bash"
       ]
     },
-    "expskill-spec": {
+    "spec": {
       "model": "opus",
       "tools": [
         "Read",
@@ -61,7 +61,7 @@
         "Bash"
       ]
     },
-    "expskill-test-engineer": {
+    "test-engineer": {
       "model": "haiku",
       "tools": [
         "Read",

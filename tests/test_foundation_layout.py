@@ -157,7 +157,7 @@ class FoundationLayoutTests(unittest.TestCase):
         self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
         self.assertTrue((plugin_root / "opencode").is_dir())
         self.assertEqual(len([path for path in (plugin_root / "content" / "skills").iterdir() if path.is_dir()]), 17)
-        self.assertEqual(len(list((plugin_root / "content" / "agents").glob("expskill-*.md"))), 7)
+        self.assertEqual({path.name for path in (plugin_root / "content" / "agents").glob("*.md")}, {"designer.md", "explorer.md", "implementer.md", "planner.md", "review.md", "spec.md", "test-engineer.md"})
         tracked = subprocess.run(
             ["git", "ls-files", "--", "packages/codex", "packages/opencode", "packages/expskill"],
             cwd=ROOT,
@@ -247,13 +247,13 @@ class FoundationLayoutTests(unittest.TestCase):
             shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(".testbin"))
             skill = source / "plugins" / "expskill" / "content" / "skills" / "unslop" / "SKILL.md"
             skill.write_text(skill.read_text(encoding="utf-8").replace("\ndescription: ", "\ndescription: Changed skill marker. ", 1), encoding="utf-8")
-            profile = source / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
+            profile = source / "plugins" / "expskill" / "content" / "agents" / "review.md"
             profile.write_text(profile.read_text(encoding="utf-8") + "\nChanged agent marker\n", encoding="utf-8")
             changed = temporary_root / "changed"
             build_opencode_package(source, changed)
             self.assertIn("Changed skill marker", (changed / "commands" / "unslop.md").read_text(encoding="utf-8"))
             self.assertIn("Changed skill marker", (changed / "catalog.json").read_text(encoding="utf-8"))
-            self.assertIn("Changed agent marker", (changed / "agents" / "expskill-review.md").read_text(encoding="utf-8"))
+            self.assertIn("Changed agent marker", (changed / "agents" / "review.md").read_text(encoding="utf-8"))
             self.assertIn("Changed agent marker", (changed / "catalog.json").read_text(encoding="utf-8"))
 
     def test_builder_rejects_symlink_inputs(self) -> None:
@@ -428,7 +428,7 @@ class FoundationLayoutTests(unittest.TestCase):
             shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns(".testbin"))
             overlay = copied / "plugins" / "expskill" / "content" / "agents.json"
             spec = json.loads(overlay.read_text(encoding="utf-8"))
-            spec["agents"]["expskill-review"].pop("closing")
+            spec["agents"]["review"].pop("closing")
             overlay.write_text(json.dumps(spec), encoding="utf-8")
             errors = validate_repository(copied)
             self.assertTrue(any("closing" in error for error in errors), errors)
@@ -479,13 +479,13 @@ class FoundationLayoutTests(unittest.TestCase):
             spec = json.loads(spec_path.read_text(encoding="utf-8"))
 
             missing = json.loads(json.dumps(spec))
-            missing["agents"].pop("expskill-spec")
+            missing["agents"].pop("spec")
             spec_path.write_text(json.dumps(missing), encoding="utf-8")
             with self.assertRaises(RenderError):
                 render_agents(root)
 
             extra = json.loads(json.dumps(spec))
-            extra["agents"]["expskill-extra"] = extra["agents"]["expskill-spec"]
+            extra["agents"]["expskill-extra"] = extra["agents"]["spec"]
             spec_path.write_text(json.dumps(extra), encoding="utf-8")
             with self.assertRaises(RenderError):
                 render_agents(root)
@@ -527,7 +527,7 @@ class FoundationLayoutTests(unittest.TestCase):
             temporary_root = Path(temporary)
             root = temporary_root / "root"
             shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns(".testbin"))
-            profile = root / "plugins" / "expskill" / "content" / "agents" / "expskill-review.md"
+            profile = root / "plugins" / "expskill" / "content" / "agents" / "review.md"
             profile.write_text(
                 profile.read_text(encoding="utf-8") + "\nMutation marker: review prompt.\n",
                 encoding="utf-8",
@@ -546,7 +546,7 @@ class FoundationLayoutTests(unittest.TestCase):
                 encoding="utf-8",
             )
             catalog = render_catalog(root)
-            self.assertIn("Mutation marker: review prompt.", catalog["agents"]["expskill-review"]["prompt"])
+            self.assertIn("Mutation marker: review prompt.", catalog["agents"]["review"]["prompt"])
             self.assertEqual(
                 catalog["commands"]["plan"]["description"],
                 "Mutation marker: plan command description.",

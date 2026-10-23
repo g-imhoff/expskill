@@ -1913,7 +1913,7 @@ if (
   throw new Error("installed package has an invalid native plugin default");
 }
 const policyHooks = await plugin.ExecutionPolicyPlugin({});
-const args = { subagent_type: "expskill-implementer" };
+const args = { subagent_type: "implementer" };
 for (let index = 0; index < 30; index++) {
   const input = { tool: "task", sessionID: "packed-policy", callID: `call-${index}` };
   await policyHooks["tool.execute.before"](input, { args });

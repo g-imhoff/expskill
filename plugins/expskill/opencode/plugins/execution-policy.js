@@ -4,7 +4,15 @@ import { fileURLToPath } from "node:url";
 
 const TASK_TOOLS = new Set(["task", "subagent"]);
 const POLICY_VERSION = "execution-budget-policy.v1";
-const EXP_AGENT_PREFIX = "expskill-";
+const KNOWN_AGENTS = new Set([
+  "designer",
+  "explorer",
+  "implementer",
+  "planner",
+  "review",
+  "spec",
+  "test-engineer",
+]);
 const PROFILE_FIELDS = new Set([
   "agent_type",
   "role",
@@ -26,11 +34,11 @@ const SELECTED_FIELDS = new Set(["role", "profile", "agent_type"]);
 const REQUIRED_ROUTE_PROFILES = new Map([
   [
     "use-expskill.parallel-plan-design",
-    new Set(["expskill-planner", "expskill-designer"]),
+    new Set(["planner", "designer"]),
   ],
   [
     "implement.standard",
-    new Set(["expskill-implementer", "expskill-review", "expskill-spec"]),
+    new Set(["implementer", "review", "spec"]),
   ],
 ]);
 
@@ -38,8 +46,11 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const LEGACY_AGENT_PREFIX = "expskill-";
 function isExpSkillAgent(value) {
-  return typeof value === "string" && value.startsWith(EXP_AGENT_PREFIX) && value.length > EXP_AGENT_PREFIX.length;
+  if (typeof value !== "string" || value.length === 0) return false;
+  if (KNOWN_AGENTS.has(value)) return true;
+  return value.startsWith(LEGACY_AGENT_PREFIX) && value.length > LEGACY_AGENT_PREFIX.length;
 }
 
 function exactKeys(value, expected, label) {
@@ -72,7 +83,7 @@ function validateProfiles(policy) {
   const known = new Map();
   for (const [name, profile] of Object.entries(profiles)) {
     if (!isExpSkillAgent(name)) {
-      throw new Error(`execution-policy profile name is not an expskill-* agent: ${name}`);
+      throw new Error(`execution-policy profile name is not a known agent: ${name}`);
     }
     if (!isRecord(profile)) {
       throw new Error(`execution-policy profile ${name} must be an object`);

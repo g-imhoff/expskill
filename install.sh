@@ -111,7 +111,7 @@ try:
     target = Path(sys.argv[2]) / "agents"
     backup_root = target.parent / "agent-backups"
     roles = ("designer", "explorer", "implementer", "planner", "review", "spec", "test-engineer")
-    names = ["expskill-" + role + ".toml" for role in roles]
+    names = [role + ".toml" for role in roles]
     if target.is_symlink():
         raise ValueError("agents directory is a symlink: " + str(target))
     if backup_root.is_symlink() or (backup_root.exists() and not backup_root.is_dir()):
@@ -123,6 +123,13 @@ try:
         if destination.exists() and not destination.is_symlink() and not destination.is_file():
             raise ValueError("profile destination is not a regular file: " + str(destination))
     target.mkdir(parents=True, exist_ok=True)
+    for stale in ("expskill-critical-reviewer.toml", "expskill-implementer-high.toml", "expskill-reviewer.toml", "expskill-verifier.toml", "expskill-verifier-low.toml", "expskill-designer.toml", "expskill-explorer.toml", "expskill-implementer.toml", "expskill-planner.toml", "expskill-review.toml", "expskill-spec.toml", "expskill-test-engineer.toml"):
+        stale_path = target / stale
+        if os.path.lexists(str(stale_path)):
+            backup_root.mkdir(parents=True, exist_ok=True)
+            archive = Path(tempfile.mkdtemp(prefix="expskill-backup-", dir=str(backup_root)))
+            os.replace(str(stale_path), str(archive / stale))
+            print("Retired profile moved to " + str(archive / stale), flush=True)
     for legacy in sorted(target.glob("expskill-backup-*")):
         if legacy.is_symlink() or not legacy.is_dir():
             continue
@@ -151,7 +158,7 @@ except (OSError, ValueError) as error:
     print("Could not install Codex agent profiles: " + str(error), file=sys.stderr)
     sys.exit(1)
 PY
-            fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path or package error above, then copy its seven agents/expskill-*.toml profiles into your Codex agents directory (preserving existing files).'
+            fail 'Codex plugin is installed, but agent profiles are incomplete. Resolve the path or package error above, then copy its seven agents/*.toml profiles into your Codex agents directory (preserving existing files).'
         printf 'ExpSkill installed or updated successfully for Codex. Review and trust the plugin hook in /hooks, then start a new Codex session.\n'
         ;;
     OpenCode)

@@ -19,13 +19,13 @@ from scripts.validate import _parse_frontmatter, _parse_overlay_frontmatter, val
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 AGENTS = (
-    "expskill-explorer",
-    "expskill-planner",
-    "expskill-designer",
-    "expskill-implementer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "planner",
+    "designer",
+    "implementer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 
 
@@ -143,7 +143,7 @@ class OpencodeContractTests(unittest.TestCase):
                 self.assertEqual(scalars["description"], catalog["agents"][name]["description"])
                 self.assertIn("task: deny", contents)
                 self.assertIn("question: deny", contents)
-                if name in ("expskill-implementer", "expskill-designer"):
+                if name in ("implementer", "designer"):
                     self.assertIn("edit: allow", contents)
                     self.assertIn('git push *": deny', contents)
                 else:
@@ -203,7 +203,7 @@ class OpencodeContractTests(unittest.TestCase):
         root = self.copy_repository()
         overlay = root / "plugins" / "expskill" / "content" / "agents.json"
         spec = json.loads(overlay.read_text(encoding="utf-8"))
-        del spec["agents"]["expskill-review"]["closing"]
+        del spec["agents"]["review"]["closing"]
         overlay.write_text(json.dumps(spec), encoding="utf-8")
         errors = validate_repository(root)
         self.assertTrue(any("closing" in error for error in errors), errors)

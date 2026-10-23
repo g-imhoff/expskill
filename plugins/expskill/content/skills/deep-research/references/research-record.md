@@ -57,8 +57,8 @@ EOF
 
 `limits` accepts `max_phases`, `max_assignments`, and `max_sources` (positive
 integers) and `other` (free text, for example a requested pause point). Omit
-`--root` for the private default under `$XDG_STATE_HOME` (or
-`~/.local/state`). The helper refuses roots inside a repository.
+`--root` for the private default `~/.expskill/skills/deep-research/runs/<run-id>`
+(one run folder per run, repo-hash omitted when research has no repo). The helper refuses roots inside a repository.
 
 ## Ops
 

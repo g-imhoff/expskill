@@ -28,6 +28,21 @@ from typing import NoReturn
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 HEAD_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def _repository_hash(repository: Path) -> str:
+    return hashlib.sha256(str(repository).encode("utf-8")).hexdigest()
+
+
+def _home_runs_base(repository: Path) -> Path:
+    return (
+        Path.home().expanduser().resolve()
+        / ".expskill"
+        / "skills"
+        / "test"
+        / "runs"
+        / _repository_hash(repository)
+    )
 STARTED_AT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z\Z")
 CHARTER_SCHEMA_VERSION = "test-charter.v1"
 LEDGER_SCHEMA_VERSION = "test-action-ledger.v1"
@@ -883,7 +898,9 @@ def validate_inputs(
         if not repository_path.is_absolute():
             _add(issues, "invalid-repository", "charter.repository", "repository must be absolute")
         else:
-            expected_root = _absolute_without_resolution(repository_path / ".test-evidence" / (run_id or root.name))
+            expected_root = _absolute_without_resolution(
+                _home_runs_base(repository_path) / (run_id or root.name)
+            )
             if expected_root != root:
                 _add(issues, "invalid-root", "charter.repository", "root is not the repository's canonical evidence path")
 
@@ -2830,7 +2847,7 @@ def _load_composition_charter_binding(
             "composition charter repository must be absolute",
         )
     expected_root = _absolute_without_resolution(
-        repository_path / ".test-evidence" / run_id
+        _home_runs_base(repository_path) / run_id
     )
     if expected_root != root:
         raise FinalizerError(

@@ -17,10 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "expskill"
 OPENCODE_ROOT = PLUGIN_ROOT / "opencode"
 READ_ONLY_AGENTS = (
-    "expskill-explorer",
-    "expskill-test-engineer",
-    "expskill-review",
-    "expskill-spec",
+    "explorer",
+    "test-engineer",
+    "review",
+    "spec",
 )
 
 # These are deliberately shell-command forms rather than a second permission

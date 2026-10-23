@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -26,6 +28,8 @@ class TestRunBootstrapTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / "home"
+        self.home.mkdir()
         self.repository = Path(temporary.name) / "repository"
         self.repository.mkdir()
         self.addCleanup(self.unseal_evidence_for_cleanup)
@@ -60,8 +64,12 @@ class TestRunBootstrapTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
+    def home_base(self) -> Path:
+        digest = hashlib.sha256(str(self.repository.resolve()).encode("utf-8")).hexdigest()
+        return self.home / ".expskill" / "skills" / "test" / "runs" / digest
+
     def unseal_evidence_for_cleanup(self) -> None:
-        evidence = self.repository / ".test-evidence"
+        evidence = self.home_base()
         if evidence.is_dir():
             evidence.chmod(0o700)
 
@@ -69,6 +77,7 @@ class TestRunBootstrapTests(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(BOOTSTRAP)],
             cwd=self.repository if cwd is None else cwd,
+            env={**os.environ, "HOME": str(self.home)},
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -101,7 +110,7 @@ class TestRunBootstrapTests(unittest.TestCase):
             payload["cutoff_at"], r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z"
         )
         root = Path(payload["root"])
-        self.assertEqual(root, self.repository / ".test-evidence" / payload["run_id"])
+        self.assertEqual(root, self.home_base() / payload["run_id"])
         self.assertTrue(root.is_dir())
         self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(root.parent.stat().st_mode), 0o500)
@@ -144,7 +153,7 @@ class TestRunBootstrapTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertNotEqual(self.payload(first)["root"], self.payload(second)["root"])
-        evidence = self.repository / ".test-evidence"
+        evidence = self.home_base()
         self.assertEqual(len([path for path in evidence.iterdir() if path.is_dir()]), 2)
 
     def test_rejects_invocation_outside_the_repository_root(self) -> None:
@@ -155,7 +164,7 @@ class TestRunBootstrapTests(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("wrong-working-directory", completed.stderr)
-        self.assertFalse((self.repository / ".test-evidence").exists())
+        self.assertFalse((self.home / ".expskill").exists())
 
     def test_rejects_detached_head_before_allocating_a_run_root(self) -> None:
         subprocess.run(
@@ -170,7 +179,7 @@ class TestRunBootstrapTests(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("unnamed-branch", completed.stderr)
-        self.assertFalse((self.repository / ".test-evidence").exists())
+        self.assertFalse((self.home / ".expskill").exists())
 
 
 if __name__ == "__main__":

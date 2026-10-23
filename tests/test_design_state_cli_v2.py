@@ -47,22 +47,26 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         self.assertEqual(set(value), keys, label)
         return value
 
-    def _state_snapshot(self, xdg: Path) -> dict[str, bytes]:
-        if not xdg.exists():
+    def _state_snapshot(self, root: Path) -> dict[str, bytes]:
+        if not root.exists():
             return {}
-        return {path.relative_to(xdg).as_posix(): path.read_bytes() for path in xdg.rglob("*") if path.is_file()}
+        return {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
     def _repo_snapshot(self, repo: Path) -> str:
         return subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain=v1", "--untracked-files=all"], text=True)
 
     def _run(self, command: str, payload: object | None, env: dict[str, str], *flags: str, raw: str | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        result = subprocess.run(
             [sys.executable, str(CLI), command, *flags],
             input=raw if raw is not None else (None if payload is None else json.dumps(payload)),
             text=True,
             capture_output=True,
             env=env,
         )
+        decoy = env.get("XDG_STATE_HOME")
+        if decoy:
+            self.assertFalse(Path(decoy).exists(), f"XDG decoy must stay untouched: {decoy}")
+        return result
 
     def _payload(self, repo: Path, head: str) -> dict:
         return {
@@ -116,8 +120,9 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             fixture_repo, _ = _repo(Path(temporary) / "fixture")
             env = os.environ.copy()
-            env["XDG_STATE_HOME"] = str(Path(temporary) / "xdg")
-            before_state = self._state_snapshot(Path(env["XDG_STATE_HOME"]))
+            env["HOME"] = str(Path(temporary) / "home")
+            env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
+            before_state = self._state_snapshot(Path(env["HOME"]) / ".expskill")
             before_repo = self._repo_snapshot(fixture_repo)
             result = self._run("--help", None, env)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -133,30 +138,32 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
                 with self.subTest(command=command, flags=flags):
                     rejected = self._run(command, payload, env, *flags, raw=raw)
                     self.assertNotEqual(rejected.returncode, 0)
-                    self.assertEqual(self._state_snapshot(Path(env["XDG_STATE_HOME"])), before_state)
+                    self.assertEqual(self._state_snapshot(Path(env["HOME"]) / ".expskill"), before_state)
                     self.assertEqual(self._repo_snapshot(fixture_repo), before_repo)
 
-    def test_cli_initialize_uses_normal_xdg_root_and_strict_json_input_output(self) -> None:
-        """Regression: state must be discoverable under XDG_STATE_HOME and reject unknown JSON fields."""
+    def test_cli_initialize_uses_normal_home_root_and_strict_json_input_output(self) -> None:
+        """Regression: state must be discoverable under ~/.expskill and reject unknown JSON fields."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, head = _repo(root)
             env = os.environ.copy()
-            xdg = root / "xdg"
-            env["XDG_STATE_HOME"] = str(xdg)
+            home = root / "home"
+            env["HOME"] = str(home)
+            env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
+            state_root = home / ".expskill"
             payload = self._payload(repo, head)
             result = self._run("initialize", payload, env)
             self.assertEqual(result.returncode, 0, result.stderr)
             receipt = self._receipt(result, "initialize")
             self.assertRegex(receipt["workflow_id"], r"^[0-9a-f]{32}$")
-            self.assertTrue((xdg / "expskill" / "design").is_dir())
+            self.assertTrue((state_root / "design").is_dir())
             unknown = dict(payload)
             unknown["unexpected"] = True
-            before_state = self._state_snapshot(xdg)
+            before_state = self._state_snapshot(state_root)
             before_repo = self._repo_snapshot(repo)
             rejected = self._run("initialize", unknown, env)
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertEqual(self._state_snapshot(xdg), before_state)
+            self.assertEqual(self._state_snapshot(state_root), before_state)
             self.assertEqual(self._repo_snapshot(repo), before_repo)
 
     def test_cli_initialize_discover_load_apply_pause_resume_are_successful_strict_receipts(self) -> None:
@@ -165,7 +172,8 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             root = Path(temporary)
             repo, head = _repo(root)
             env = os.environ.copy()
-            env["XDG_STATE_HOME"] = str(root / "xdg")
+            env["HOME"] = str(root / "home")
+            env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             receipt = self._initialize(env, repo, head)
             workflow = receipt["workflow_id"]
             discovered = self._run("discover", {"repository": str(repo), "branch": "feature/design"}, env)
@@ -189,7 +197,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, head = _repo(root)
-            env = os.environ.copy(); env["XDG_STATE_HOME"] = str(root / "xdg")
+            env = os.environ.copy(); env["HOME"] = str(root / "home"); env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             receipt = self._initialize(env, repo, head)
             rejected = self._run("discard", {"workflow_id": receipt["workflow_id"], "expected_revision": receipt["revision"], "confirmed": False}, env)
             self.assertNotEqual(rejected.returncode, 0)
@@ -202,20 +210,20 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, head = _repo(root)
-            env = os.environ.copy(); env["XDG_STATE_HOME"] = str(root / "xdg")
+            env = os.environ.copy(); env["HOME"] = str(root / "home"); env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             receipt = self._initialize(env, repo, head)
             workflow = receipt["workflow_id"]
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": receipt["revision"], "updates": {"scope": {"components": ["CheckoutForm"]}}}, env)
             self.assertEqual(applied.returncode, 0, applied.stderr)
             applied_receipt = self._receipt(applied, "apply")
-            current = Path(env["XDG_STATE_HOME"]) / "expskill" / "design" / workflow
+            current = Path(env["HOME"]) / ".expskill" / "design" / workflow
             current.write_text("{torn", encoding="utf-8")
             recovered = self._run("recover", {"workflow_id": workflow}, env)
             self.assertEqual(recovered.returncode, 0, recovered.stderr)
             self._receipt(recovered, "recover")
 
             delivery_repo, delivery_head = _repo(root / "delivery-repo")
-            delivery_env = os.environ.copy(); delivery_env["XDG_STATE_HOME"] = str(root / "delivery-xdg")
+            delivery_env = os.environ.copy(); delivery_env["HOME"] = str(root / "delivery-home"); delivery_env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
             delivery_receipt = self._initialize(delivery_env, delivery_repo, delivery_head)
             workflow = delivery_receipt["workflow_id"]
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": delivery_receipt["revision"], "updates": self._records()}, delivery_env)
