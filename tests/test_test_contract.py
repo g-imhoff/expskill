@@ -2850,7 +2850,7 @@ class TestSkillContractTests(unittest.TestCase):
                 )
         for span in (
             "`.agents/skills/test/**`",
-            "home dot expskill",
+            "../../rules/evidence-report.md",
             "`git rev-parse HEAD`",
             "`git show --no-ext-diff --no-renames --format=fuller --stat --patch HEAD`",
             '`{"schema_version":"test-draft-final-delta.v2","resolutions":[]}`',

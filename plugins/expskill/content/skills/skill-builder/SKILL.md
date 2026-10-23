@@ -8,7 +8,7 @@ description: Create, improve, redesign, or evaluate an agent skill. Only the use
 
 Stay inactive for ordinary development, product planning, application design, documentation that is not an agent skill, installation-only work, and lifecycle routing. Run independently of product lifecycle phases and ambient authoring skills, invoking neither.
 
-Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence.
+Success exists only when one exact revision has a confirmed contract, frozen evaluation evidence, isolated trial evidence, builder-run conformance, independent review, ten independently satisfied target category scores, verification, and retained release evidence. Pin the finalized revision and baselines per `../../rules/pin-scope.md`.
 
 Read [artifact contracts](references/artifact-contracts.md) completely at run start and again before resuming persisted work. Read [evaluation rubric](references/evaluation-rubric.md) completely before freezing the evaluation pack and before every review or scoring pass.
 
@@ -16,7 +16,7 @@ Read [artifact contracts](references/artifact-contracts.md) completely at run st
 
 Resolve the package's `scripts/run_state.py` relative to the loaded skill and use only the interface its runtime help exposes for run creation, validation, stage transitions, downstream invalidation, recovery, finalization, and authorized cleanup. Change state only through the helper.
 
-The helper owns private home state at ~/.expskill outside target repositories and requires immutable hash-chained transition receipts, strict manifests, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat current-state files as replaceable derived indexes and missing, stale, inconsistent, or unauditable state as a failed gate. Before every transition the helper validates the receipt chain, immutable artifacts, derived state, input bindings, target snapshot, and allowed transition. Success appends one canonical receipt linked to the prior digest. Failure appends nothing, keeps the current stage, and blocks downstream work. Open the artifact contracts' binding, invalidation, recovery, and tombstone sections whenever a transition fails.
+Root retained state per `../../rules/evidence-report.md`. The helper owns private home state at ~/.expskill outside target repositories and requires immutable hash-chained transition receipts, strict manifests, digests, bounded raw artifacts, exact target identity, optional Git identity, revisions, stages, queue state, and one active-target lock. Treat current-state files as replaceable derived indexes and missing, stale, inconsistent, or unauditable state as a failed gate. Before every transition the helper validates the receipt chain, immutable artifacts, derived state, input bindings, target snapshot, and allowed transition. Success appends one canonical receipt linked to the prior digest. Failure appends nothing, keeps the current stage, and blocks downstream work. Open the artifact contracts' binding, invalidation, recovery, and tombstone sections whenever a transition fails.
 
 ## Ordered workflow
 
@@ -46,17 +46,17 @@ An absent exact target means create, with an absent-target baseline and overlap 
 
 ### 2. Capture the mode-specific baseline
 
-For create mode, prove the exact target is absent, retain the overlap map, record host conventions, and identify preserved neighbour regressions. For improve mode, snapshot the exact target and record current behavior, observed failures, strengths, context cost, tool and permission behavior, and preserved regressions. Bind the baseline to the target snapshot and run revision. A target change invalidates the baseline and every dependent artifact. Payload schemas live in the artifact contracts reference.
+For create mode, prove the exact target is absent, retain the overlap map, record host conventions, and identify preserved neighbour regressions. For improve mode, snapshot the exact target and record current behavior, observed failures, strengths, context cost, tool and permission behavior, and preserved regressions. Bind the baseline to the target snapshot and run revision. Pin the finalized revision and baselines per `../../rules/pin-scope.md`. A target change invalidates the baseline and every dependent artifact. Invalidate on target change per `../../rules/pin-scope.md`. Payload schemas live in the artifact contracts reference.
 
 ### 3. Run three blind research lanes
 
-Launch exactly three bounded, blind, independent web research lanes. Assign GPT-6-Luna at max reasoning to each lane:
+Launch exactly three bounded, blind, independent web research lanes. Fan out narrow discovery per `../../rules/bounded-fanout.md`. Assign GPT-6-Luna at max reasoning to each lane:
 
 1. Domain techniques for the target's job.
 2. Agent-skill design, instruction, interaction, and tooling practices.
 3. Evaluation methods, adversarial cases, and failure modes.
 
-Bound each lane's question, source scope, and evidence budget before launch. Researchers return evidence cards from direct primary or authoritative sources with applicability and limitations. Candidate direction, hidden cases, desired scores, and sibling output stay outside every lane. A lane that cannot run or lacks direct evidence stops the run before design convergence. Lane and card schemas live in the artifact contracts reference.
+Bound each lane's question, source scope, and evidence budget before launch. Bound lanes before launch per `../../rules/bounded-fanout.md`. Researchers return evidence cards from direct primary or authoritative sources with applicability and limitations. Candidate direction, hidden cases, desired scores, and sibling output stay outside every lane. A lane that cannot run or lacks direct evidence stops the run before design convergence. Lane and card schemas live in the artifact contracts reference.
 
 ### 4. Sieve every evidence card
 
@@ -68,23 +68,23 @@ Collaborate with the user on materially different, coherent designs covering tri
 
 ### 6. Produce one concrete skill contract
 
-Write one contract with purpose, success signal, triggers, non-triggers, inputs and preconditions, ordered behavior and decision rules, allowed and forbidden actions, tools, permissions and authority, delegation boundaries, outputs and consumers, failures and blocked behavior, changed-goal behavior, stopping conditions, required resources, and explicit non-goals. Resolve every conflict with host rules and preserved regressions. Bind the contract to the baseline, retained evidence, design record, and target snapshot.
+Write one contract with purpose, success signal, triggers, non-triggers, inputs and preconditions, ordered behavior and decision rules, allowed and forbidden actions, tools, permissions and authority, delegation boundaries, outputs and consumers, failures and blocked behavior, changed-goal behavior, stopping conditions, required resources, and explicit non-goals. Resolve every conflict with host rules and preserved regressions. Bind the contract to the baseline, retained evidence, design record, and target snapshot. Bind the contract and pack per `../../rules/pin-scope.md`.
 
 ### 7. Obtain user confirmation
 
-Present the current contract and wait for explicit user confirmation. Record the confirmation against the exact contract digest and target identity. The agent may propose readiness, but only an explicit, unforced user answer to the exact contract digest confirms it. The run waits through silence, urgency, seniority, prior broad approval, or instructions to skip questions. A material contract change invalidates confirmation and all downstream artifacts. Return to this stage after correcting the contract.
+Present the current contract. Confirm the exact contract per `../../rules/explicit-confirmation.md`. Record the confirmation against the exact contract digest and target identity. Bind confirmation to the digest per `../../rules/explicit-confirmation.md`. The agent may propose readiness, but only an explicit, unforced user answer to the exact contract digest confirms it. Accept only explicit digest answers per `../../rules/explicit-confirmation.md`. The run waits through silence, urgency, seniority, prior broad approval, or instructions to skip questions. A material contract change invalidates confirmation and all downstream artifacts. Invalidate on material change per `../../rules/explicit-confirmation.md`. Return to this stage after correcting the contract.
 
 ### 8. Freeze acceptance before candidate work
 
-Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Bind the pack to the confirmed contract digest and unchanged target snapshot. Keep hidden expectations and oracles away from implementers and trial agents. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Reject candidate entry unless the helper confirms the contract digest, its confirmation record, the frozen pack digest, and an unchanged target snapshot.
+Create visible development, frozen validation, and hidden release cases covering positive, negative, near-neighbour, ambiguous, adversarial, recovery, permission, output, and multi-turn behavior as applicable. Bind the pack to the confirmed contract digest and unchanged target snapshot. Bind the contract and pack per `../../rules/pin-scope.md`. Keep hidden expectations and oracles away from implementers and trial agents. Prove new capability cases expose the baseline gap and preserved regressions stay valid. Reject candidate entry unless the helper confirms the contract digest, its confirmation record, the frozen pack digest, and an unchanged target snapshot.
 
 ### 9. Build one isolated candidate
 
-Create one isolated candidate in a disposable copy or isolated worktree. Edit only the isolated candidate to test a change. Preserve unrelated work. Give exactly one implementer write access to the candidate with only its accepted brief, owned paths, visible cases, and necessary target artifacts. Keep production targets, sibling skills, hidden cases, unretained research conclusions, and delivery surfaces outside that write authority. Record revision, digest, diff, and checks.
+Create one isolated candidate in a disposable copy or isolated worktree. Create the lane worktree per `../../rules/isolate-writes.md`. Edit only the isolated candidate to test a change. Preserve unrelated work. Give exactly one implementer write access to the candidate with only its accepted brief, owned paths, visible cases, and necessary target artifacts. Stay in the owned lane with one owner per `../../rules/isolate-writes.md`. Keep production targets, sibling skills, hidden cases, unretained research conclusions, and delivery surfaces outside that write authority. Record revision, digest, diff, and checks.
 
 ### 10. Run fresh-context trials
 
-Run current-mode trials in disposable targets with a fresh agent context for every case. Capture raw prompts, outputs, tool events, before and after target manifests, and trial receipts bound to candidate, loaded skill, request, context identity, target snapshot, filesystem result, and verdict. Trial agents receive only the candidate skill, realistic request, visible case material, and necessary target artifacts. Leakage, wrong-skill loading, unauthorized writes, missing trace evidence, and false success fail the trial.
+Run current-mode trials in disposable targets with a fresh agent context for every case. Isolate trial targets per `../../rules/isolate-writes.md`. Capture raw prompts, outputs, tool events, before and after target manifests, and trial receipts bound to candidate, loaded skill, request, context identity, target snapshot, filesystem result, and verdict. Trial agents receive only the candidate skill, realistic request, visible case material, and necessary target artifacts. Leakage, wrong-skill loading, unauthorized writes, missing trace evidence, and false success fail the trial.
 
 ### 11. Obtain independent review before scoring
 
@@ -102,31 +102,27 @@ Repair the lowest score first, breaking ties by greater safety or correctness im
 
 After all ten target categories reach 10 with every builder-run gate passing, run a final independent target review against the same exact revision and validate it before use. An invalid final review blocks advancement and leaves scores unchanged. A valid `not ready` review or valid High or Medium finding lowers mapped categories below 10 and returns them to repair.
 
-After a valid `ready` final review, run independent verification against that exact revision, recording exact commands or operations, exit status, relevant output, target manifests, and revision. Any candidate change invalidates both final gates and returns affected categories to repair. Finalize through the helper only when every gate passes, every category is 10, the final review is valid and `ready`, verification passes, every binding matches, and release evidence is retained. The finalization terminal stage retains the contract, confirmation, evaluation pack, candidate identity, conformance ledger, scorecard, review, verification, limitations, and release record.
+After a valid `ready` final review, run independent verification against that exact revision, recording exact commands or operations, exit status, relevant output, target manifests, and revision. Any candidate change invalidates both final gates and returns affected categories to repair. Invalidate on material change per `../../rules/explicit-confirmation.md`. Finalize through the helper only when every gate passes, every category is 10, the final review is valid and `ready`, verification passes, every binding matches, and release evidence is retained. The finalization terminal stage retains the contract, confirmation, evaluation pack, candidate identity, conformance ledger, scorecard, review, verification, limitations, and release record.
 
-Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect, recording any accepted installation or integration against the exact finalized revision. Cleanup is a separate terminal transition needing explicit user authority plus a recorded accepted installation or integration. It writes and validates a helper-owned parent-level tombstone bound to run identity, final transition digest, final run-manifest digest, and accepted delivery or installation record digest, then deletes only the helper-owned run directory. The release, manifest, and tombstone schemas live in the artifact contracts reference.
+Commit, install, push, publish, or otherwise deliver only with explicit user authority for that effect, recording any accepted installation or integration against the exact finalized revision. Deliver and clean up only on explicit authority per `../../rules/explicit-confirmation.md`. Cleanup is a separate terminal transition needing explicit user authority plus a recorded accepted installation or integration. It writes and validates a helper-owned parent-level tombstone bound to run identity, final transition digest, final run-manifest digest, and accepted delivery or installation record digest, then deletes only the helper-owned run directory. The release, manifest, and tombstone schemas live in the artifact contracts reference.
 
 ## Roles, tools, and permissions
 
 - The main agent owns identity resolution, user collaboration, evidence synthesis, hidden-case custody, state transitions, and authority checks.
-- Exactly three research agents use web access read-only and return only evidence.
-- One candidate implementer writes only inside the isolated candidate. Trial agents write only inside disposable targets.
+- Exactly three research agents use web access read-only and return only evidence. Fan out narrow discovery per `../../rules/bounded-fanout.md`.
+- One candidate implementer writes only inside the isolated candidate. Trial agents write only inside disposable targets. Give one owner per lane and confine trial writes per `../../rules/isolate-writes.md`.
 - Reviewers and verifiers stay independent and read-only to tracked source.
 - The user alone confirms product intent. Scope changes, hidden material, external delivery, and cleanup stay with the main agent.
 
 ## Changed goals and gate failures
 
-A changed target identity, behavior, success, scope, delivery intent, or other material decision invalidates every dependent artifact through the helper and returns to the earliest affected stage. Preserve unrelated valid evidence only while its bindings match.
+A changed target identity, behavior, success, scope, delivery intent, or other material decision invalidates every dependent artifact through the helper and returns to the earliest affected stage. Invalidate on material change per `../../rules/explicit-confirmation.md`. Preserve unrelated valid evidence only while its bindings match.
 
 Stop at the current gate while identity, authority, evidence, confirmation, isolation, state integrity, target stability, review readiness, scoring, or verification stays unresolved. Report the failed gate, retained evidence, invalidated artifacts, and the next decision or proof needed.
 
 ## Status and output contract
 
 During work, report exact target, mode, active stage, queue position, latest valid evidence, invalidated evidence, next gate, and user-owned decisions. At finalization, report exact revision, builder-run conformance, ten target category scores, review validity and verdict, verification evidence, retained limitations, release-record locator, and authorized delivery result. A status report only describes the run. A validated hash-chained helper receipt alone advances it. The cleaned terminal state additionally needs its valid durable tombstone and deletion of only the helper-owned run directory.
-
-## Shared rules
-
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
 
 ## Review context contract
 
@@ -138,4 +134,4 @@ The aggregate authored review handoff includes inherited or forked conversation 
 
 Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. A real accepted specification file is referenced separately when it exists. The exception covers only a specification file that existed before review dispatch. A review-time summary, copy, or relabelled package falls outside it.
 
-Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. The judges self-inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a larger convenience package request with this locator handoff.
+Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. Judges inspect the pinned revision per `../../rules/pin-scope.md`. Answer a larger convenience package request with this locator handoff.

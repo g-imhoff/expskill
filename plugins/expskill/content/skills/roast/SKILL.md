@@ -7,7 +7,7 @@ description: Score a change with adversarial category reviewers and report each 
 
 ## Pin the scope
 
-Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers use this pin. On drift, stop, assess relevance and conflict, notify the user with old and new identities, and wait for direction. Never silently rebind. Disclose any mix of revisions.
+Pin the diff and uncommitted work per `../../rules/pin-scope.md`. Handle drift per `../../rules/pin-scope.md`. Rebind only on explicit direction and disclose mixed revisions per `../../rules/pin-scope.md`.
 
 ## Derive categories from the diff
 
@@ -29,8 +29,4 @@ Write a short report with categories and weights, scores in a table, top issues 
 
 ## Report storage
 
-Save each roast pass under home state at `~/.expskill/skills/roast/runs/<repo-hash>/<run-id>/` with one run folder per run, strict private permissions, and exclusive create. Keep the chat report as the primary verdict and point at the saved file path. Create a fresh run folder for each new head.
-
-## Shared rules
-
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
+Save passes to home-state run folders, one fresh folder per head, per `../../rules/evidence-report.md`. Keep the chat report as the primary verdict and point at the saved file path.

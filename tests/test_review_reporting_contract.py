@@ -11,8 +11,9 @@ class ReviewReportingContractTests(unittest.TestCase):
         cls.raw = SKILL.read_text()
 
     def test_report_storage_directory_is_named(self):
-        self.assertIn('dot expskill', self.raw)
-        self.assertIn('skills', self.raw)
+        self.assertIn('../../rules/evidence-report.md', self.raw)
+        self.assertIn('home-state run folder', self.raw)
+        self.assertIn('review-YYYY-MM-DD', self.raw)
         self.assertNotIn('tmp/reports', self.raw)
 
     def test_review_names_its_reviewer_profile(self):

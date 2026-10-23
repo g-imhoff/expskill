@@ -7,7 +7,7 @@ description: Run $roast, fix each top issue, and repeat until every category sco
 
 ## Pin the scope
 
-Record the exact diff as fixed commit IDs, not moving ref names. For uncommitted work record paths and content hashes. Reviewers and fixers use this pin. If scope drifts, keep the original pin and disclose both identities. Disclose any mix of revisions.
+Pin the diff and uncommitted work per `../../rules/pin-scope.md`. Reviewers and fixers use this pin. Handle drift per `../../rules/pin-scope.md` and disclose mixed revisions per `../../rules/pin-scope.md`.
 
 ## Run $roast for each review pass
 
@@ -15,15 +15,15 @@ Load [the `$roast` skill](../roast/SKILL.md) and follow its pin, derive, review,
 
 ## Fix each top issue
 
-Spawn one fixer per non empty top issue. Fixers stay within the pinned scope and change only their assigned issue.
+Spawn one fixer per non empty top issue. Confine fixers to one lane per `../../rules/isolate-writes.md`.
 
-Give each fixer its own worktree using `../../scripts/worktrees.py` and integrate one at a time. Fixes never share a checkout. See `../../rules/isolate-writes.md`.
+Give each fixer its own worktree using `../../scripts/worktrees.py` and integrate one at a time with separate checkouts per `../../rules/isolate-writes.md`.
 
 Fixers rerun affected checks and report what ran and what passed. A fixer that cannot land its issue stops with the reason. That issue stays open and keeps its failing score.
 
 ## Gate the loop
 
-After fixes land, run `$roast` again on the new pin. Overall is the sum of score times weight divided by 100. The gate passes when every category scores 9 or higher.
+After fixes land, re-pin and run `$roast` again on the new head per `../../rules/pin-scope.md`. Overall is the sum of score times weight divided by 100. The gate passes when every category scores 9 or higher.
 
 Run at most three review cycles, including the first pass. If the third pass has a category below 9, stop and hand the change to a person with the failing categories, top issues, and score history. Scores stay at their evidenced values.
 
@@ -32,7 +32,3 @@ A score may rise only when the issue was fixed or disproved with evidence. A ris
 ## Report
 
 Write a short report with categories and weights, every cycle score in a table, fixes with verification, and the final pass or fail reason. Keep it under 300 lines and point at the exact pins reviewed.
-
-## Shared rules
-
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

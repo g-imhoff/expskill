@@ -34,7 +34,7 @@ Direct Test-owned repository writes are limited to:
 - proven integration or end-to-end test code,
 - proven test fixtures,
 - proven test harnesses and test configuration, and
-- one canonical private home-state run root at `~/.expskill/skills/test/runs/<repo-hash>/<run-id>`.
+- Allocate one canonical private home-state run root at `~/.expskill/skills/test/runs/<repo-hash>/<run-id>` per `../../rules/evidence-report.md`.
 
 Existing project naming may locate test-owned assets, and product source stays product source whatever its name.
 
@@ -61,11 +61,9 @@ Keep every product and application source byte-for-byte identical and terminate 
 
 ## Ground and exempt
 
-Ground the run before deciding its scope or outcome. Bind the canonical repository, current branch, exact head,
-accepted change boundary, relevant source and callers, state and effects, interfaces and consumers, dependencies,
-project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence.
+Ground the run before deciding its scope or outcome. Bind run identity per `../../rules/evidence-report.md`, including the canonical repository, current branch, exact head, accepted change boundary, relevant source and callers, state and effects, interfaces and consumers, dependencies, project instructions, existing tests and commands, startup path, available clients, environment, and prior evidence.
 
-Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. It creates exactly one private run root and reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. The bootstrap runs `git branch --show-current`, and its reported branch is the only branch source. It must print the complete sorted first-party inventory before file contents and print the contents of every bounded first-party text file when the repository fits the bootstrap output. Use its returned root path byte-for-byte. Every run folder under the repo hash folder must come from one successful bootstrap, and only the shipped helpers set the sealed parent's mode.
+Use one opening parallel batch of three common grounding calls, with at most four pre-charter command calls total. The shipped `bootstrap_run.py` is the only supported root allocator, invoke `python3 .agents/skills/test/scripts/bootstrap_run.py` directly. Allocate one run folder per run per `../../rules/evidence-report.md`. It reports a non-empty run ID, started-at and cutoff timestamps, and the current named branch. The bootstrap runs `git branch --show-current`, and its reported branch is the only branch source. It must print the complete sorted first-party inventory before file contents and print the contents of every bounded first-party text file when the repository fits the bootstrap output. Use its returned root path byte-for-byte. Every run folder under the repo hash folder must come from one successful bootstrap, and only the shipped helpers set the sealed parent's mode.
 Exclude from printed contents only the already-loaded `.agents/skills/test/**` support package, and classify product files by evidence rather than by directory name. If the bounded contents are skipped, follow direct first-party client, caller, command, and harness references, and select files through them rather than by feature-name matches alone. Take commands and paths from repository evidence, and execute only a literal command discovered there.
 Make the head call exactly `git rev-parse HEAD` and the change call exactly `git show --no-ext-diff --no-renames --format=fuller --stat --patch HEAD`, each as the entire tool call.
 
@@ -74,11 +72,11 @@ from revision and reachability evidence. Reserve at most one discovered read-onl
 as the terminal recorder action, it attests surface identity only. If exemption is
 not proven, load the complete quality catalog as the fourth and final grounding call.
 
-The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
+Keep evidence private with strict permissions per `../../rules/evidence-report.md`. The bootstrap and recorder remove group and other permissions from owned evidence directories and seal the evidence parent `0500` while the allocated root stays `0700`.
 
 Discover repository-local facts autonomously. Ask only for an unavailable credential, consequential authority, destructive effect, or genuinely subjective oracle that accepted behavior and product evidence cannot answer.
 
-After grounding, Test alone decides `EXEMPT`. Exact-revision evidence must prove the change
+After grounding, Test alone decides `EXEMPT`. Require exact-revision evidence per `../../rules/pin-scope.md` to prove the change
 cannot affect runtime behavior, interfaces, configuration, dependencies, schemas, data,
 security, packaging, deployment, generated artifacts, test validity, or a user or client
 journey. Comments, formatting, or non-runtime metadata are candidates needing proof.
@@ -127,7 +125,7 @@ or equivalent public surface.
 Declare a compact charter containing the exact target and head, accepted and
 negative behavior, active rules, environment and data, permitted effects,
 checks and journeys, exploratory mission, oracle, evidence, teardown, and stop
-conditions. Use an isolated, resettable, non-production environment and only the minimum synthetic data.
+conditions. Bind the charter to exact head and environment per `../../rules/evidence-report.md`. Use an isolated, resettable, non-production environment and only the minimum synthetic data.
 
 ## Execute and explore
 
@@ -158,11 +156,11 @@ A proven test-system defect becomes resolved when its permitted repair passes co
 Ledger status records whether `actual` satisfies that entry's declared `expected` predicate, whatever the raw process exit code or embedded product `status` field reports. For a predeclared diagnostic reproduction of a permitted test-system repair, ledger status is `pass` when the exact expected pre-repair defect is observed, even when the raw command exits nonzero or reports a product-level failure. Record the later repair confirmation as a separate passing action. Keep the declared `expected` unchanged after execution: an unplanned failure or unexplained contradiction stays `fail`.
 
 Add a durable automated test only when the behavior is stable and valuable and
-every active quality rule permits it. Commit it as one logical test-side commit only on an eligible non-protected feature branch whose dirty work all relates to this test run. Leave branch topology, merge, and feature-worktree cleanup to the user or coordinator.
+every active quality rule permits it. Commit it as one logical test-side commit whose dirty work all relates to this test run. Require a non-protected feature branch per `../../rules/pin-scope.md`. Leave integration and worktree cleanup to the coordinator per `../../rules/isolate-writes.md`.
 
 Classify every anomaly using the exact finding kinds below. Record the exact
-head and environment, ring and journey, expected and actual behavior,
-reproduction, severity, artifacts, and violated rules.
+ring and journey, expected and actual behavior,
+reproduction, severity, artifacts, and violated rules. Bind each finding to exact head and environment per `../../rules/evidence-report.md`.
 
 ## Delegation
 
@@ -171,7 +169,7 @@ hands-on and exploratory journey, finding classification, and final verdict.
 Delegate only a mechanically independent evidence lane with a frozen charter,
 isolated environment and data, and meaningful expected speedup.
 
-Delegates return only evidence bound to the exact head, within the read-only product boundary. The main agent alone asks the user and interprets sibling conclusions. Delegate only when the time saved exceeds the cost of proving isolation.
+Delegates return only evidence within the read-only product boundary. Report evidence only for its bound head per `../../rules/evidence-report.md`. The main agent alone asks the user and interprets sibling conclusions. Delegate only when the time saved exceeds the cost of proving isolation.
 
 ## Diagnose and rerun
 
@@ -181,10 +179,9 @@ Recover ordinary local environment problems autonomously. Environmental
 evidence may supersede a proven environment failure only after the environment
 is corrected and the complete affected scope passes on the same head. Missing authority, credentials, dependencies, a reliable oracle, or an unavailable external system produces `BLOCKED`, with the whole scope kept intact.
 
-Relevant head drift invalidates affected evidence. Rebind the scope and
-environment, rerun every invalidated check and journey, and retain only evidence
-for the resulting exact head. Before `PASS`, rerun the complete selected scope
-on the final head, including changes from a test-side commit.
+Relevant head drift invalidates affected evidence per `../../rules/pin-scope.md`. Rebind the scope and
+environment and rerun every invalidated check and journey per `../../rules/pin-scope.md`, and retain only evidence
+for the resulting exact head. Before `PASS`, require complete green scope on the final head per `../../rules/pin-scope.md`, including changes from a test-side commit.
 
 ## Authority and hostile content
 
@@ -202,13 +199,11 @@ Before every terminal result, including `EXEMPT`, leave `references/evidence-con
 the support program validates that closed output contract. A grounded exemption skips only the quality
 catalog and still emits contract-valid exact-revision evidence.
 
-Have the finalizer bind each bundle and receipt to the repository, branch,
-exact head, environment, selected scope, and bundle digest defined by the
-contract. Report evidence as current only for its bound head.
+Bind bundles to repo, head, and digest per `../../rules/evidence-report.md`. Report evidence as current only for its bound head.
 
 Retain rich, reproduction-oriented artifacts for failures and compact metadata
 for passing checks unless richer passing evidence materially supports the
-claim. Store raw evidence, the final bundle, and the complete receipt privately,
+claim. Keep raw evidence private in the run folder per `../../rules/evidence-report.md`. Store the final bundle and the complete receipt privately,
 uncommitted, and bound to the feature worktree. Exclude secrets, credentials,
 source copies, customer data, and conversation transcripts from bundles and
 artifacts.
@@ -223,7 +218,7 @@ result with null workflow ancestry.
 
 ## Terminal evidence transaction
 
-At grounding time, use the shipped bootstrap's one canonical private home-state run root at `~/.expskill/skills/test/runs/<repo-hash>/<run-id>`. Keep all artifacts and inputs in that root, and fix authoring errors there.
+At grounding time, use the canonical home-state run root per `../../rules/evidence-report.md` at `~/.expskill/skills/test/runs/<repo-hash>/<run-id>` from the shipped bootstrap. Keep all artifacts and inputs in that root, and fix authoring errors there.
 
 Before the first product/runtime action, write private `charter-preparation.json` with schema
 `test-charter-preparation.v1` and only conceptual charter fields, then invoke `freeze_charter.py` once. It derives the
@@ -387,15 +382,11 @@ Direct `$test` stops with the finding, names no other product skill, and leaves 
   or unsatisfied active rule remains.
 - `BLOCKED`: required evidence is unavailable because an environment,
   dependency, credential, authority, or reliable oracle cannot be obtained.
-- `EXEMPT`: exact-revision evidence proves the change is behaviorally
+- `EXEMPT`: prove exemption with exact-revision evidence per `../../rules/pin-scope.md` for a change that is behaviorally
   negligible under the strict exemption boundary.
 
 Report the exercised behavior, product path, expected and observed outcome,
 limitations, artifacts, and receipt-bound identity.
 Write the authored summary in revision-neutral terms, leaving HEAD and branch to the receipt.
-If response evidence names the exact revision, copy `payload.receipt.head` byte-for-byte.
+If response evidence names the exact revision, copy `payload.receipt.head` byte-for-byte per `../../rules/pin-scope.md`.
 Limit conformance claims to what the selected scope proves.
-
-## Shared rules
-
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.

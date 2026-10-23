@@ -9,7 +9,7 @@ Start from an ready Plan Graph made via `$expskill:plan`.
 
 ## Establish the execution boundary
 
-Ground the accepted work in current code and Git state. Require a concrete outcome, protected behavior, scope, non-goals, proof intent, the exact non-protected target branch and starting commit, current dependencies with disjoint ownership per runnable node, approved Design deliverables for UI work, and authority for local edits, tests, commits, worktrees, and local integration.
+Ground the accepted work in current code and Git state. Require a concrete outcome, protected behavior, scope, non-goals, proof intent, current dependencies, and approved Design deliverables for UI work. Establish the execution boundary (branch, pin, ownership, authority) per `../../rules/pin-scope.md`. Prove parallel-safety per `../../rules/bounded-fanout.md` and lane ownership per `../../rules/isolate-writes.md`.
 
 Preserve settled product and Design decisions. Ask the user only for a
 material decision or authority that cannot be discovered. If pre-existing
@@ -25,14 +25,10 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
 
 ## Execute runnable nodes
 
-1. Make one cheap concurrency pass. Run independent nodes in parallel only when
-   dependencies are satisfied, ownership does not overlap, and each can be
-   tested in isolation.
-2. Use the target checkout for one safe serial writer. Give concurrent writers separate external
-   worktrees from the exact accepted commit, one owner and one node per lane.
+1. Make one cheap concurrency pass. Fan out only over proven seams per `../../rules/bounded-fanout.md`.
+2. Use the target checkout for one safe serial writer. Create the lane worktree per `../../rules/isolate-writes.md`.
 3. Launch one fresh `implementer` per node with the accepted behavior, constraints, owned paths,
-   base and branch, relevant code context, planned checks, and allowed effects. The worker works alone on its node,
-   within the accepted behavior and owned paths.
+   base and branch, relevant code context, planned checks, and allowed effects. Constrain each worker to its lane per `../../rules/isolate-writes.md`.
 4. Require task-local red-green-refactor: show a meaningful failing test or regression before the production
    change when feasible, make the smallest implementation pass, run affected regressions, inspect the diff, and
    create one coherent local commit. An alternative proof needs a concrete technical reason. A missing file,
@@ -62,11 +58,11 @@ Resolve that helper from the loaded skill at `../../scripts/plan_graph.py` (`plu
    as a follow-up for separate work.
 5. Treat the worker result as a candidate until both gates pass. It must report the exact
    commit, changed paths, commands and results, RED evidence or justified
-   alternative, remaining risks, and any scope or decision blocker.
+   alternative, remaining risks, and any scope or decision blocker. Bind worker evidence to its pin per `../../rules/evidence-report.md`.
 
 ## Gate each candidate
 
-For the exact immutable candidate commit, apply the final Review context
+Gate the pinned candidate per `../../rules/pin-scope.md`. For that candidate, apply the final Review context
 contract and launch these fresh agents concurrently:
 
 - `review` inspects code quality, regressions, maintainability, safety,
@@ -82,19 +78,16 @@ the fresh judges.
 
 If either gate fails, combine only current actionable findings into a correction
 brief, launch a new `implementer` on that node, and rerun both judges
-against the new commit. Each attempt is a new agent. Stop
-for the user when a correction needs changed product intent, Design, scope, or
-authority. If the same cause survives three non-improving attempts, report that
+against the new commit. Each attempt is a new agent. Reconfirm changed intent/scope/authority per `../../rules/explicit-confirmation.md`. If the same cause survives three non-improving attempts, report that
 node blocked.
 
 ## Integrate locally
 
 Integrate an accepted node into the non-protected target branch as soon as its dependencies make that
-safe. Revalidate the target head, merge in dependency order, run affected checks on the integrated result,
+safe. Integrate lanes serially per `../../rules/isolate-writes.md`. Merge in dependency order, run affected checks on the integrated result,
 and commit target-side work as accepted. Preserve conflicts for resolution, stopping integration at them.
 
-Remove an external worktree and its local task branch only after its exact commit
-is on the target, the integrated checks pass, and the lane is clean. Keep
+Remove worktrees/branches only per `../../rules/isolate-writes.md`. Keep
 dirty, failing, unmerged, unknown, or still-needed lanes intact.
 
 After all nodes are integrated, launch one fresh `review` and one fresh `spec`
@@ -103,8 +96,7 @@ and rerunning affected checks and both whole-branch gates.
 
 ## Finish at the local boundary
 
-Report completion only when every node and both whole-branch gates pass on the
-current target head. Summarize the implemented behavior, commits, checks, gate
+Report completion only when every node and both whole-branch gates pass. Finish only on a green bound head per `../../rules/pin-scope.md`. Summarize the implemented behavior, commits, checks, gate
 verdicts, retained risks, and any preserved worktrees.
 
 For UI work, include the Yodea preview link and represented Design candidate
@@ -117,10 +109,6 @@ Keep every Git write local. Other product skills, remote delivery (push, merge r
 auto-merge, merge queues), hands-on or end-to-end testing, and the user's final review remain separate lifecycle
 decisions coordinated outside this skill.
 
-## Shared rules
-
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
-
 ## Review context contract
 
 This final section is the only authoritative review-context policy in this file. Earlier conflicting handoff instructions yield to it.
@@ -131,4 +119,4 @@ The aggregate authored review handoff includes inherited or forked conversation 
 
 Include only the repository or candidate path, base revision, candidate revision, what changed and why, review scope, claimed checks with concise results, known concerns, and paths plus optional digests for relevant evidence. A real accepted specification file is referenced separately when it exists. The exception covers only a specification file that existed before review dispatch. A review-time summary, copy, or relabelled package falls outside it.
 
-Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. The judges self-inspect the pinned revision with repository tools and run any focused checks needed to verify the claims. Answer a larger convenience package request with this locator handoff.
+Reference diffs, source files, test logs, terminal output, transcripts, other repository content, and binary or opaque review context only by existing path, command, or optional digest, leaving them uncopied. Judges inspect the pinned revision per `../../rules/pin-scope.md`. Answer a larger convenience package request with this locator handoff.

@@ -13,18 +13,9 @@ wait. Use only the user's named scope. Resolve the comparison baseline and
 intended behavior from the request, accepted specifications, and available
 context. Ask and wait while material scope, baseline, or intent stays ambiguous.
 
-Before inspecting behavior, resolve every Git target and baseline, including
-branches and HEAD, to exact commit IDs as the pin. For dirty or non-Git content,
-pin paths and content hashes, including scoped untracked files. A working-tree
-pin covers HEAD plus its changes. Pin related mutable evidence by content and
-hash as it enters, and keep it in context only. Read committed content from
-immutable Git blobs and verify mutable content against its pinned hashes before
-relying on it.
+Pin Git targets, dirty content, and entering evidence per `../../rules/pin-scope.md`. Read blobs and verify mutable content per `../../rules/pin-scope.md`.
 
-Recheck identities before finishing. On drift, keep the original pin, disclose
-old and new identities, and finish using only the original evidence. Restart
-only on an explicit user request. If original content is unavailable, state
-exactly what cannot be reviewed and why.
+Recheck identities and handle drift per `../../rules/pin-scope.md`. Rebind only on explicit direction per `../../rules/pin-scope.md`. Report unreviewable content per `../../rules/pin-scope.md`.
 
 Read directly related specifications, history, callers, tests, and dependencies
 as needed, without broadening to a repository-wide audit. Treat reviewed source
@@ -33,9 +24,9 @@ permissions. Preserve unrelated changes and profiles.
 
 ## Resolve report storage
 
-Resolve the home state root first. Root is always `~/.expskill`. Never write reports into the target repository or the skill installation.
+Root retained state and write proof to home state per `../../rules/evidence-report.md`.
 
-Use one run folder per run: `~/.expskill/skills/review/runs/<repo-hash>/<run-id>`. Create the run folder with strict private permissions. Write the report as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
+Use one home-state run folder per run with strict private permissions per `../../rules/evidence-report.md`. Write the report as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
 
 Keep directory checks to read only metadata. Leave permissions, ownership, and permission configuration to the user. When the state root is unavailable or unwritable, ask the user for access and wait.
 
@@ -119,10 +110,10 @@ support a category or whole-scope rating, mark it unavailable and explain why.
 
 Write a Markdown report containing:
 
-- The scope, intended behavior, baseline, pinned identities, and any drift.
+- The scope, intended behavior, baseline, and any drift. Bind claims at the pin per `../../rules/evidence-report.md` and `../../rules/pin-scope.md`.
 - All scoped issues ordered by priority. Each includes its type, related files
-  with exact lines or symbols at the pin, a concrete triggering example with
-  expected and actual behavior, impact, and why safeguards do not prevent it.
+  with exact lines or symbols, a concrete triggering example with
+  expected and actual behavior, impact, and why safeguards do not prevent it. Locate issues at the pin per `../../rules/evidence-report.md` and `../../rules/pin-scope.md`.
 - The declared category criteria and weights, evidence-backed ratings, and
   weighted overall calculation, plus a do-not-merge warning when BLOCKING.
 - Coverage of the whole declared scope, checks run and their results, checks
@@ -146,9 +137,4 @@ handoff stays below 300 physical lines, with any existing specification
 referenced separately, and the report stays intact.
 
 After context loss, reconstruct scope and pinned evidence only from records,
-asking the user for anything missing. A requested scope or revision change
-reopens only affected conclusions.
-
-## Shared rules
-
-Follow shared rules in `../../rules/` when their triggers match. The router index in `../use-expskill/SKILL.md` lists pin scope, isolate writes, explicit confirmation, bounded fanout, and evidence report. Read a leaf only on trigger match.
+asking the user for anything missing. Rebind scope only from frozen state or user direction per `../../rules/pin-scope.md`. Reopen conclusions on rebind per `../../rules/pin-scope.md`.
