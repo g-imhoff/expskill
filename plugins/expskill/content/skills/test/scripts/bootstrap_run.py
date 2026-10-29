@@ -9,6 +9,7 @@ snapshot for the opening grounding call.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -23,7 +24,9 @@ from typing import NoReturn
 
 USABLE_BUDGET_SECONDS = 780
 MAX_TEXT_FILES = 256
-MAX_TEXT_BYTES = 2_000_000
+MAX_TEXT_BYTES = 1_000_000
+MAX_FILE_BYTES = 128_000
+TRUNCATION_NOTE = "\n...[truncated here: {omitted} more bytes not shown]"
 SKILL_PREFIX = ".agents/skills/test/"
 
 
@@ -210,8 +213,8 @@ def _inventory(repository: Path) -> list[str]:
     return sorted(set(safe))
 
 
-def _text_snapshot(repository: Path, paths: list[str]) -> list[tuple[str, str | None]]:
-    records: list[tuple[str, str | None]] = []
+def _text_snapshot(repository: Path, paths: list[str]) -> list[tuple[str, str | None, int]]:
+    records: list[tuple[str, str | None, int]] = []
     text_count = 0
     text_bytes = 0
     for raw_path in paths:
@@ -221,24 +224,31 @@ def _text_snapshot(repository: Path, paths: list[str]) -> list[tuple[str, str | 
         try:
             metadata = path.lstat()
         except OSError:
-            records.append((raw_path, None))
+            records.append((raw_path, None, 0))
             continue
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            records.append((raw_path, None))
+            records.append((raw_path, None, 0))
             continue
         try:
             raw = path.read_bytes()
             if b"\0" in raw:
                 raise UnicodeDecodeError("utf-8", raw, 0, 1, "NUL byte")
-            contents = raw.decode("utf-8")
+            omitted = max(0, len(raw) - MAX_FILE_BYTES)
+            prefix = raw[:MAX_FILE_BYTES] if omitted else raw
+            while True:
+                try:
+                    contents = prefix.decode("utf-8")
+                    break
+                except UnicodeDecodeError:
+                    prefix = prefix[:-1]
         except (OSError, UnicodeDecodeError):
-            records.append((raw_path, None))
+            records.append((raw_path, None, 0))
             continue
         text_count += 1
-        text_bytes += len(raw)
+        text_bytes += len(prefix)
         if text_count > MAX_TEXT_FILES or text_bytes > MAX_TEXT_BYTES:
             return []
-        records.append((raw_path, contents))
+        records.append((raw_path, contents, omitted))
     return records
 
 
@@ -273,18 +283,25 @@ def _run() -> None:
     if not records and any(not path.startswith(SKILL_PREFIX) for path in paths):
         print("FIRST_PARTY_CONTENTS_SKIPPED=repository exceeds bounded bootstrap")
         return
-    for path, contents in records:
+    for path, contents, omitted in records:
         if contents is None:
             print(f"FIRST_PARTY_NON_TEXT_OR_SPECIAL={path}")
             continue
         print(f"FIRST_PARTY_FILE_BEGIN={path}")
         sys.stdout.write(contents)
-        if contents and not contents.endswith("\n"):
+        if omitted:
+            sys.stdout.write(TRUNCATION_NOTE.format(omitted=omitted))
+            print()
+        elif contents and not contents.endswith("\n"):
             print()
         print(f"FIRST_PARTY_FILE_END={path}")
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    argparse.ArgumentParser(
+        prog="bootstrap_run.py",
+        description=__doc__,
+    ).parse_args(argv)
     try:
         _run()
         return 0

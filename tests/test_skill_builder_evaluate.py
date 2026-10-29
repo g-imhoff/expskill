@@ -997,7 +997,7 @@ def test_new_run_on_the_same_target_starts_after_reported(tmp_path: Path) -> Non
     )
     for mode in ("evaluate", "improve"):
         started = initialize(helper, tmp_path, mode)
-        assert started["stage"] == "resolved"
+        assert helper.load_run(workflow_id=started["workflow_id"], state_root=state_root)["stage"] == "resolved"
         abandoned = helper.invalidate_run(
             workflow_id=started["workflow_id"],
             expected_sequence=0,

@@ -413,20 +413,10 @@ class TransactionLayerTests(unittest.TestCase):
             self.helper.main(["initialize", "--repo", str(self.repo), "--branch", BRANCH,
                               "--state-home", str(self.state_home), "--json", payload])
         envelope = json.loads(output.getvalue())
-        self.assertEqual(set(envelope), {"schema_version", "operation", "repository", "branch",
-            "workflow_id", "previous_revision", "current_revision", "before_state", "after_state",
-            "derived_state", "before_graph_digest", "after_graph_digest", "head_commit",
-            "baseline_commit"})
-        self.assertEqual(envelope["operation"], "initialize")
-        self.assertEqual(envelope["repository"], str(self.repo.resolve()))
-        self.assertEqual(envelope["previous_revision"], 0)
-        self.assertEqual(envelope["before_state"], "absent")
+        self.assertEqual(set(envelope), {"workflow_id", "revision", "state", "head_commit"})
         graph = self.helper.load_workflow(self.repo, BRANCH, self.state_home)
-        digest = hashlib.sha256((json.dumps(graph, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
-        self.assertEqual(envelope["after_graph_digest"], digest)
-        self.assertIsNone(envelope["before_graph_digest"])
-        self.assertEqual(envelope["baseline_commit"], self._git("rev-parse", "HEAD"))
-        self.assertEqual(envelope["head_commit"], envelope["baseline_commit"])
+        self.assertEqual(envelope["state"], graph["lifecycle"]["derived_state"])
+        self.assertEqual(envelope["head_commit"], self._git("rev-parse", "HEAD"))
 
     def test_cli_subprocess_receipts_bind_repository_baseline_and_created_branch(self) -> None:
         initialize_home = self.root / "cli-subprocess"
@@ -438,10 +428,8 @@ class TransactionLayerTests(unittest.TestCase):
         )
         self.assertEqual(process.returncode, 0, process.stderr)
         receipt = json.loads(process.stdout)
-        self.assertEqual(receipt["repository"], str(self.repo.resolve()))
-        self.assertEqual(receipt["branch"], BRANCH)
-        self.assertEqual(receipt["baseline_commit"], self._git("rev-parse", "HEAD"))
-        self.assertEqual(receipt["head_commit"], receipt["baseline_commit"])
+        self.assertEqual(set(receipt), {"workflow_id", "revision", "state", "head_commit"})
+        self.assertEqual(receipt["head_commit"], self._git("rev-parse", "HEAD"))
 
         baseline = self._git("rev-parse", "HEAD")
         self._git("switch", "--detach", baseline)
@@ -452,11 +440,8 @@ class TransactionLayerTests(unittest.TestCase):
         )
         self.assertEqual(branch_process.returncode, 0, branch_process.stderr)
         branch_receipt = json.loads(branch_process.stdout)
-        self.assertEqual(set(branch_receipt), {"schema_version", "operation", "repository",
-                                               "branch", "baseline_commit", "head_commit"})
-        self.assertEqual(branch_receipt["repository"], str(self.repo.resolve()))
+        self.assertEqual(set(branch_receipt), {"branch", "baseline_commit"})
         self.assertEqual(branch_receipt["baseline_commit"], baseline)
-        self.assertEqual(branch_receipt["head_commit"], baseline)
 
     def test_cli_rejects_duplicate_or_oversized_json_without_state_write(self) -> None:
         import io

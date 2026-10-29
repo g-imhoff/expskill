@@ -6884,12 +6884,8 @@ def initialize_run(
                 raise rollback_error
             raise
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "initialize",
             "workflow_id": workflow_id,
             "sequence": 0,
-            "stage": "resolved",
-            "receipt_digest": genesis["receipt_digest"],
             "target_snapshot_digest": snapshot["snapshot_digest"],
         }
 
@@ -6956,8 +6952,6 @@ def activate_next_target(
         state_root=state_root,
         _queue_states=queue_states,
     )
-    activated["operation"] = "activate-next"
-    activated["previous_workflow_id"] = workflow_id
     return activated
 
 
@@ -7020,13 +7014,9 @@ def discover_run(
         match = selected_matches[0]
         _validate_target_unchanged(match, root)
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "discover",
             "workflow_id": match["workflow_id"],
             "sequence": match["head_sequence"],
             "stage": match["stage"],
-            "receipt_digest": match["head_transition_digest"],
-            "target_snapshot_digest": match["target_snapshot"]["snapshot_digest"],
         }
 
 
@@ -7038,7 +7028,7 @@ def retain_artifact(
     artifact_type: str,
     files: dict[str, bytes],
     primary_path: str,
-    producer: str,
+    producer: str = "main-agent",
     input_bindings: list[dict[str, str]],
     limitations: list[str],
     state_root: Path | None = None,
@@ -7094,13 +7084,9 @@ def retain_artifact(
         )
         envelope = created[artifact_id]
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "retain-artifact",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
-            "receipt_digest": derived["head_transition_digest"],
-            "artifact_id": artifact_id,
             "artifact_digest": envelope["envelope_digest"],
         }
 
@@ -7110,15 +7096,20 @@ def transition_run(
     workflow_id: str,
     expected_sequence: int,
     event: str,
-    destination_stage: str,
-    artifact_ids: list[str],
+    destination_stage: str | None = None,
+    artifact_ids: list[str] | None = None,
     authority_event_digest: str | None = None,
     state_root: Path | None = None,
 ) -> dict[str, Any]:
-    expected_transition = _STAGE_TRANSITIONS.get(event)
-    if expected_transition is None or expected_transition[1] != destination_stage:
+    if destination_stage is not None:
+        expected_transition = _STAGE_TRANSITIONS.get(event)
+        if expected_transition is None or expected_transition[1] != destination_stage:
+            raise RunStateError("unsupported stage transition")
+    elif event not in _STAGE_TRANSITIONS:
         raise RunStateError("unsupported stage transition")
-    if not isinstance(artifact_ids, list) or not artifact_ids or len(artifact_ids) != len(set(artifact_ids)):
+    if artifact_ids is not None and (
+        not isinstance(artifact_ids, list) or not artifact_ids or len(artifact_ids) != len(set(artifact_ids))
+    ):
         raise RunStateError("stage transition requires unique artifact identifiers")
     if authority_event_digest is not None and not _DIGEST_RE.fullmatch(authority_event_digest):
         raise RunStateError("authority-event digest is invalid")
@@ -7132,9 +7123,26 @@ def transition_run(
         _require_mode_event(event, current["mode"]["name"])
         expected_transition = _stage_transition(event, current["mode"]["name"])
         assert expected_transition is not None
+        if destination_stage is None:
+            destination_stage = expected_transition[1]
+        elif destination_stage != expected_transition[1]:
+            raise RunStateError("unsupported stage transition")
         if current["stage"] != expected_transition[0]:
             raise RunStateError("event is not allowed from the current stage")
         _validate_target_unchanged(current, root)
+        if artifact_ids is None:
+            wanted = sorted(_EVENT_ARTIFACT_TYPES[event])
+            candidates = sorted(
+                artifact_id
+                for artifact_id, record in current["artifact_index"].items()
+                if record["derived_status"] == "accepted" and record["type"] in wanted
+            )
+            candidate_types = sorted(current["artifact_index"][artifact_id]["type"] for artifact_id in candidates)
+            if not candidates or candidate_types != wanted:
+                raise RunStateError(
+                    "stage transition needs explicit artifact_ids: no unambiguous accepted set"
+                )
+            artifact_ids = candidates
         bindings: list[dict[str, str]] = []
         observed_types: list[str] = []
         for artifact_id in artifact_ids:
@@ -7193,12 +7201,9 @@ def transition_run(
             artifact_requests=[],
         )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": event,
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
-            "receipt_digest": derived["head_transition_digest"],
         }
 
 
@@ -7246,24 +7251,18 @@ def recover_run(
             if os.path.lexists(deleting):
                 raise RunStateError("cleanup is incomplete and must be retried")
             return {
-                "schema_version": "skill-builder-operation.v1",
-                "operation": "recover",
                 "workflow_id": workflow_id,
                 "sequence": None,
                 "stage": "cleaned",
-                "receipt_digest": tombstone["final_transition_receipt_digest"],
                 "tombstone_digest": tombstone["tombstone_digest"],
             }
         _normalize_interrupted_publications(candidate)
         run = _run_directory(root, workflow_id)
         derived = _recover_validated_run(root, run)
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "recover",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
-            "receipt_digest": derived["head_transition_digest"],
         }
 
 
@@ -7305,12 +7304,8 @@ def _lifecycle_transition(
             artifact_requests=[],
         )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": operation,
-            "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
-            "receipt_digest": derived["head_transition_digest"],
         }
 
 
@@ -7746,8 +7741,6 @@ def invalidate_run(
                 root, current, current["active_target_lock"]
             )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "invalidate",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
@@ -7812,7 +7805,7 @@ def switch_mode_run(
     *,
     workflow_id: str,
     expected_sequence: int,
-    mode: str,
+    mode: str | None = None,
     reason: str,
     confirmation: dict[str, Any],
     authority_event_digest: str,
@@ -7846,6 +7839,11 @@ def switch_mode_run(
         if current["stage"] not in _WORK_STAGES:
             raise RunStateError("only an active run switches mode")
         from_mode = current["mode"]["name"]
+        if mode is None:
+            flipped = _SWITCH_MODES - {from_mode}
+            if len(flipped) != 1:
+                raise RunStateError("a run switches in place only between improve and modify")
+            mode = next(iter(flipped))
         if not isinstance(mode, str) or {from_mode, mode} != _SWITCH_MODES:
             raise RunStateError("a run switches in place only between improve and modify")
         _validate_target_unchanged(current, root)
@@ -7894,12 +7892,9 @@ def switch_mode_run(
             ],
         )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "switch-mode",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
-            "receipt_digest": derived["head_transition_digest"],
             "mode": derived["mode"]["name"],
             "switch_artifact_id": switch_id,
             "switch_artifact_digest": created[switch_id]["envelope_digest"],
@@ -7926,11 +7921,8 @@ def read_kept_contract(
             == resolution.get("contract_schema", LEGACY_CONTRACT_SCHEMA)
         )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "kept-contract",
             "workflow_id": workflow_id,
             "mode": current["mode"]["name"],
-            "target_skill_file_digest": skill_file_digest,
             "kept_contract": record,
             "kept_contract_digest": None if record is None else record["record_digest"],
             "matches_target": matches,
@@ -8023,16 +8015,11 @@ def reuse_kept_contract(
             ],
         )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "reuse-contract",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
-            "receipt_digest": derived["head_transition_digest"],
             "confirmation_artifact_id": confirmation_id,
             "confirmation_artifact_digest": created[confirmation_id]["envelope_digest"],
-            "kept_contract_digest": kept["record_digest"],
-            "kept_contract_source": kept["source_workflow_id"],
         }
 
 
@@ -8495,13 +8482,10 @@ def finalize_run(
             root, run, derived, receipt, candidate.get("loaded_skill_digest")
         )
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "finalize",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
             "receipt_digest": derived["head_transition_digest"],
-            "release_artifact_id": release_artifact_id,
             "release_artifact_digest": current["artifact_index"][release_artifact_id]["digest"],
             **kept,
         }
@@ -8653,13 +8637,10 @@ def report_run(
         _release_owned_target_lock(root, current, current["active_target_lock"])
         kept = _keep_finished_contract(root, run, derived, receipt, skill_file_digest)
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "report",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
             "receipt_digest": derived["head_transition_digest"],
-            "report_artifact_id": report_artifact_id,
             "report_artifact_digest": current["artifact_index"][report_artifact_id]["digest"],
             **kept,
         }
@@ -8670,12 +8651,12 @@ def record_delivery(
     workflow_id: str,
     expected_sequence: int,
     delivery: dict[str, Any],
-    authority_event_digest: str,
+    authority_event_digest: str | None = None,
     authority_event: bytes | None = None,
     evidence_files: dict[str, bytes] | None = None,
     state_root: Path | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(delivery, dict) or set(delivery) != {
+    _DELIVERY_FIELDS = {
         "action",
         "destination_identity",
         "finalized_revision",
@@ -8684,24 +8665,36 @@ def record_delivery(
         "user_authority_event_digest",
         "actor",
         "accepted",
-    }:
+    }
+    _DELIVERY_DERIVABLE = {"finalized_revision", "acceptance_evidence", "user_authority_event_digest"}
+    if (
+        not isinstance(delivery, dict)
+        or (set(delivery) - _DELIVERY_FIELDS)
+        or ((_DELIVERY_FIELDS - _DELIVERY_DERIVABLE) - set(delivery))
+    ):
         raise RunStateError("delivery-acceptance schema is incomplete")
+    delivery = dict(delivery)
     if delivery.get("action") not in {"installation", "integration"} or delivery.get("accepted") is not True:
         raise RunStateError("delivery is not an accepted installation or integration")
-    if delivery.get("user_authority_event_digest") != authority_event_digest or not isinstance(authority_event_digest, str) or not _DIGEST_RE.fullmatch(authority_event_digest):
-        raise RunStateError("delivery authority binding is invalid")
-    for field in ("destination_identity", "finalized_revision", "actor"):
+    if "user_authority_event_digest" in delivery or authority_event_digest is not None:
+        if delivery.get("user_authority_event_digest", authority_event_digest) != authority_event_digest or not isinstance(authority_event_digest, str) or not _DIGEST_RE.fullmatch(authority_event_digest):
+            raise RunStateError("delivery authority binding is invalid")
+    for field in ("destination_identity", "actor"):
         if not isinstance(delivery.get(field), str) or not delivery[field].strip():
             raise RunStateError("delivery identity fields must be nonempty text")
     if not isinstance(delivery.get("resulting_destination_digest"), str) or not _DIGEST_RE.fullmatch(delivery["resulting_destination_digest"]):
         raise RunStateError("delivery destination digest is invalid")
     evidence = delivery.get("acceptance_evidence")
-    if not isinstance(evidence, list) or not evidence or any(
-        not isinstance(item, str) or not _DIGEST_RE.fullmatch(item) for item in evidence
+    if "acceptance_evidence" in delivery and (
+        not isinstance(evidence, list) or not evidence or any(
+            not isinstance(item, str) or not _DIGEST_RE.fullmatch(item) for item in evidence
+        )
     ):
         raise RunStateError("delivery acceptance evidence is incomplete")
     if not isinstance(authority_event, bytes):
         raise RunStateError("delivery authority event must be retained as raw bytes")
+    if authority_event_digest is None:
+        authority_event_digest = raw_digest(authority_event)
     if raw_digest(authority_event) != authority_event_digest:
         raise RunStateError("raw delivery authority does not match its digest")
     if not isinstance(evidence_files, dict) or not evidence_files:
@@ -8712,7 +8705,11 @@ def record_delivery(
         if not isinstance(content, bytes):
             raise RunStateError("delivery evidence values must be raw bytes")
         raw_evidence_digests.append(raw_digest(content))
-    if sorted(raw_evidence_digests) != sorted(evidence):
+    if "acceptance_evidence" not in delivery:
+        delivery["acceptance_evidence"] = sorted(raw_evidence_digests)
+    if "user_authority_event_digest" not in delivery:
+        delivery["user_authority_event_digest"] = authority_event_digest
+    if sorted(raw_evidence_digests) != sorted(delivery["acceptance_evidence"]):
         raise RunStateError("raw delivery evidence does not match declared digests")
     with _locked_root(state_root, create=False) as root:
         run = _run_directory(root, workflow_id)
@@ -8728,6 +8725,10 @@ def record_delivery(
             run, current, "accept-candidate", "candidate-record"
         )
         _validate_delivery_destination(current, delivery, candidate)
+        if delivery.get("finalized_revision") is None:
+            delivery["finalized_revision"] = candidate.get("candidate_revision")
+        if not isinstance(delivery.get("finalized_revision"), str) or not delivery["finalized_revision"].strip():
+            raise RunStateError("delivery identity fields must be nonempty text")
         if delivery["finalized_revision"] != candidate.get("candidate_revision"):
             raise RunStateError("delivery revision does not match the finalized candidate")
         release_id, release_envelope, release = _current_event_artifact(
@@ -8784,8 +8785,6 @@ def record_delivery(
         )
         envelope = created[artifact_id]
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "record-delivery",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
@@ -8882,14 +8881,11 @@ def record_cleanup_authority(
         )
         envelope = created[artifact_id]
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "record-cleanup-authority",
             "workflow_id": workflow_id,
             "sequence": derived["head_sequence"],
             "stage": derived["stage"],
             "receipt_digest": derived["head_transition_digest"],
             "authority_artifact_id": artifact_id,
-            "authority_artifact_digest": envelope["envelope_digest"],
         }
 
 
@@ -9174,14 +9170,9 @@ def cleanup_run(
                 raise RunStateError("cleanup has conflicting deletion boundaries")
             if not live_exists and not deleting_exists:
                 return {
-                    "schema_version": "skill-builder-operation.v1",
-                    "operation": "cleanup",
                     "workflow_id": workflow_id,
                     "sequence": expected_sequence,
                     "stage": "cleaned",
-                    "receipt_digest": tombstone[
-                        "final_transition_receipt_digest"
-                    ],
                     "tombstone_digest": tombstone["tombstone_digest"],
                 }
             expected_identity = tombstone["run_directory_identity"]
@@ -9198,14 +9189,9 @@ def cleanup_run(
                 _remove_owned_tree(deleting_candidate)
                 _fsync_directory(root / "deleting")
                 return {
-                    "schema_version": "skill-builder-operation.v1",
-                    "operation": "cleanup",
                     "workflow_id": workflow_id,
                     "sequence": expected_sequence,
                     "stage": "cleaned",
-                    "receipt_digest": tombstone[
-                        "final_transition_receipt_digest"
-                    ],
                     "tombstone_digest": tombstone["tombstone_digest"],
                 }
             _validate_private_directory(run_candidate, "live run")
@@ -9266,12 +9252,9 @@ def cleanup_run(
             _remove_owned_tree(deleting_candidate)
             _fsync_directory(root / "deleting")
             return {
-                "schema_version": "skill-builder-operation.v1",
-                "operation": "cleanup",
                 "workflow_id": workflow_id,
                 "sequence": expected_sequence,
                 "stage": "cleaned",
-                "receipt_digest": tombstone["final_transition_receipt_digest"],
                 "tombstone_digest": tombstone["tombstone_digest"],
             }
         run = _run_directory(root, workflow_id)
@@ -9374,12 +9357,9 @@ def cleanup_run(
         _remove_owned_tree(deleting_candidate)
         _fsync_directory(root / "deleting")
         return {
-            "schema_version": "skill-builder-operation.v1",
-            "operation": "cleanup",
             "workflow_id": workflow_id,
             "sequence": expected_sequence,
             "stage": "cleaned",
-            "receipt_digest": current["head_transition_digest"],
             "tombstone_digest": tombstone["tombstone_digest"],
             ("report_artifact_id" if reported else "delivery_artifact_id"): finished_id,
             "authority_artifact_id": authority_id,
@@ -9417,14 +9397,14 @@ def main(argv: list[str] | None = None) -> int:
             "needs absence_evidence and overlap_map, the others need "
             "target_manifest), with an optional queue\n"
             "  retain request: workflow_id, expected_sequence, artifact_id, "
-            "artifact_type, files_base64, primary_path, producer, input_bindings, limitations\n"
+            "artifact_type, files_base64, primary_path, input_bindings, limitations\n"
             "  transition request: workflow_id, expected_sequence, event, "
-            "destination_stage, artifact_ids, and optional authority_event_digest\n"
+            "and optional authority_event_digest\n"
             "  finalize request: workflow_id, expected_sequence, release_artifact_id\n"
             "  report request: workflow_id, expected_sequence, report_artifact_id "
             "(evaluate runs only)\n"
             "  deliver request: workflow_id, expected_sequence, delivery, "
-            "authority_event_digest, authority_event_base64, evidence_files_base64\n"
+            "authority_event_base64, evidence_files_base64\n"
             "  cleanup-authority request: workflow_id, expected_sequence, "
             "authority_event_digest, authority_event_base64, actor\n"
             "  cleanup request: workflow_id and expected_sequence (also requires --yes)\n"
@@ -9433,8 +9413,8 @@ def main(argv: list[str] | None = None) -> int:
             "  kept-contract request: workflow_id\n"
             "  reuse-contract request: workflow_id, expected_sequence, and "
             "kept_contract_digest (improve or evaluate runs at the contract stage)\n"
-            "  switch-mode request: workflow_id, expected_sequence, mode (improve or "
-            "modify), reason, confirmation (user_identity, confirmed_at, "
+            "  switch-mode request: workflow_id, expected_sequence, reason, "
+            "confirmation (user_identity, confirmed_at, "
             "confirmation_text), and authority_event_digest\n"
             "  invalidate request: workflow_id, expected_sequence, change_kind, "
             "changed_artifact_id, reason (abandon ends a run going nowhere and "

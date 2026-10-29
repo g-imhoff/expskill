@@ -1409,7 +1409,7 @@ def test_candidate_acceptance_checks_codex_adapter_text_against_the_brief(
     (
         "/abs/agents/openai.yaml",
         "agents/../agents/openai.yaml",
-        "../../etc/passwd",
+        "{expskill_folder}/etc/passwd",
         "agents/openai.yml",
         "..\\agents\\openai.yaml",
     ),

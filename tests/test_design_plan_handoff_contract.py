@@ -53,10 +53,19 @@ def git(repo: Path, *args: str, input_text: str | None = None) -> str:
 
 
 def design_cli(state_home: Path, command: str, payload: dict) -> dict:
+    argv = [sys.executable, str(DESIGN_HELPER), command, "--state-home", str(state_home)]
+    body: str | None = None
+    if command == "preflight":
+        argv.append(payload["workflow_id"])
+        if payload.get("plan_baseline") is not None:
+            argv += ["--plan-baseline", payload["plan_baseline"]]
+        if payload.get("plan_target_branch") is not None:
+            argv += ["--plan-target-branch", payload["plan_target_branch"]]
+    else:
+        body = json.dumps(payload)
     result = subprocess.run(
-        [sys.executable, str(DESIGN_HELPER), command,
-         "--state-home", str(state_home)],
-        input=json.dumps(payload), text=True,
+        argv,
+        input=body, text=True,
         capture_output=True, check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -328,8 +337,9 @@ def test_preflight_before_and_after_delivery(tmp_path: Path) -> None:
     check = {"workflow_id": workflow_id, "plan_baseline": baseline,
              "plan_target_branch": TARGET_BRANCH}
     pending = subprocess.run(
-        [sys.executable, str(DESIGN_HELPER), "preflight", "--state-home", str(state_home)],
-        input=json.dumps(check), text=True, capture_output=True, check=False,
+        [sys.executable, str(DESIGN_HELPER), "preflight", "--state-home", str(state_home),
+         workflow_id, "--plan-baseline", baseline, "--plan-target-branch", TARGET_BRANCH],
+        input=None, text=True, capture_output=True, check=False,
     )
     assert pending.returncode == 1, pending.stderr
     result = json.loads(pending.stdout)

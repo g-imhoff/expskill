@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: Cut AI tells from any writing. Must always apply.
+description: Cut AI tells from any writing. ALWAYS load it before starting a conversation or after a compaction.
 ---
 
 # Unslop

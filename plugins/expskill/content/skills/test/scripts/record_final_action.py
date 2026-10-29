@@ -827,8 +827,6 @@ def _run(repository: Path, values: dict[str, object], command: list[str]) -> boo
                 separators=(",", ":"),
             )
         )
-        print(f"observation_path={values['observation']}")
-        print(f"metadata_path={values['metadata']}")
         return matched
     finally:
         os.close(observation_parent)
@@ -920,10 +918,6 @@ def _handoff(
             "compose-draft",
             "--root",
             root_value,
-            "--preparation",
-            str(root / "draft-preparation.json"),
-            "--delta",
-            str(root / "draft-final-delta.json"),
         ],
         repository,
     )
@@ -942,12 +936,6 @@ def _handoff(
             str(finalizer),
             "--root",
             root_value,
-            "--charter",
-            str(root / "charter.json"),
-            "--ledger",
-            str(root / "ledger.json"),
-            "--draft",
-            str(root / "draft.json"),
         ],
         repository,
     )
@@ -958,13 +946,13 @@ def _handoff(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="mode", required=True)
-    validate = subparsers.add_parser("validate")
+    subparsers = parser.add_subparsers(dest="mode", required=True, metavar="<mode>")
+    validate = subparsers.add_parser("validate", help="check the final action spec and report PASS")
     validate.add_argument("--root", required=True)
-    run = subparsers.add_parser("run")
+    run = subparsers.add_parser("run", help="run the approved final command")
     run.add_argument("--root", required=True)
     run.add_argument("command", nargs=argparse.REMAINDER)
-    handoff = subparsers.add_parser("handoff")
+    handoff = subparsers.add_parser("handoff", help="forward the validated handoff to a command")
     handoff.add_argument("--root", required=True)
     handoff.add_argument("command", nargs=argparse.REMAINDER)
     return parser

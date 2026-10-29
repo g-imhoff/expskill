@@ -29,7 +29,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         description = str(manifest.get("description", ""))
         long_description = str(manifest.get("interface", {}).get("longDescription", ""))
-        skill_wording = re.compile(r"\bsixteen independent skills and one optional lifecycle router\b", re.I)
+        skill_wording = re.compile(r"\bseventeen independent skills and one optional lifecycle router\b", re.I)
         self.assertIn("$test", long_description)
         self.assertIn("$skill-builder", long_description)
         self.assertIn("$setup-design", long_description)
@@ -38,6 +38,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
         self.assertIn("$roast", long_description)
         self.assertIn("$roast-loop", long_description)
         self.assertIn("$correct", long_description)
+        self.assertIn("$file-pr", long_description)
         self.assertIn("$autonomous-run", long_description)
         self.assertIn("$deep-research", long_description)
         self.assertRegex(description, skill_wording)
@@ -69,7 +70,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
             "unexpected-directory": ("skill 'skill-builder'", "unexpected directory", "scratch"),
             "implicit-invocation": ("skill 'skill-builder'", "implicit invocation policy drift"),
             "omitted-manifest-token": ("longdescription", "advertise $skill-builder"),
-            "stale-fifteen-skill-wording": ("plugin description", "sixteen independent skills"),
+            "stale-fifteen-skill-wording": ("plugin description", "seventeen independent skills"),
             "use-expskill-route": (
                 "skill-builder",
                 "another product skill invocation token",
@@ -166,7 +167,7 @@ class DesignPackageAdversarialTests(unittest.TestCase):
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     original = manifest["description"]
                     manifest["description"] = original.replace(
-                        "sixteen independent skills",
+                        "seventeen independent skills",
                         "fifteen independent skills",
                         1,
                     )

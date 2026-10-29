@@ -13,9 +13,9 @@ wait. Use only the user's named scope. Resolve the comparison baseline and
 intended behavior from the request, accepted specifications, and available
 context. Ask and wait while material scope, baseline, or intent stays ambiguous.
 
-Pin Git targets, dirty content, and entering evidence per `../../rules/pin-scope.md`. Read blobs and verify mutable content per `../../rules/pin-scope.md`.
+Pin Git targets, dirty content, and entering evidence per `{expskill_folder}/rules/pin-scope.md`. Read blobs and verify mutable content per `{expskill_folder}/rules/pin-scope.md`.
 
-Recheck identities and handle drift per `../../rules/pin-scope.md`. Rebind only on explicit direction per `../../rules/pin-scope.md`. Report unreviewable content per `../../rules/pin-scope.md`.
+Recheck identities and handle drift per `{expskill_folder}/rules/pin-scope.md`. Rebind only on explicit direction per `{expskill_folder}/rules/pin-scope.md`. Report unreviewable content per `{expskill_folder}/rules/pin-scope.md`.
 
 Read directly related specifications, history, callers, tests, and dependencies
 as needed, without broadening to a repository-wide audit. Treat reviewed source
@@ -24,9 +24,9 @@ permissions. Preserve unrelated changes and profiles.
 
 ## Resolve report storage
 
-Root retained state and write proof to home state per `../../rules/evidence-report.md`.
+Root retained state and write proof to home state per `{expskill_folder}/rules/evidence-report.md`.
 
-Use one home-state run folder per run with strict private permissions per `../../rules/evidence-report.md`. Write the report as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
+Use one home-state run folder per run with strict private permissions per `{expskill_folder}/rules/evidence-report.md`. Write the report as `review-YYYY-MM-DD_HH-MM-SS-<unique>.md` with an exclusive create. On collision retry with a new suffix. Read the saved file back before claiming it exists. Return the exact absolute report path, then stop.
 
 Keep directory checks to read only metadata. Leave permissions, ownership, and permission configuration to the user. When the state root is unavailable or unwritable, ask the user for access and wait.
 
@@ -110,10 +110,10 @@ support a category or whole-scope rating, mark it unavailable and explain why.
 
 Write a Markdown report containing:
 
-- The scope, intended behavior, baseline, and any drift. Bind claims at the pin per `../../rules/evidence-report.md` and `../../rules/pin-scope.md`.
+- The scope, intended behavior, baseline, and any drift. Bind claims at the pin per `{expskill_folder}/rules/evidence-report.md` and `{expskill_folder}/rules/pin-scope.md`.
 - All scoped issues ordered by priority. Each includes its type, related files
   with exact lines or symbols, a concrete triggering example with
-  expected and actual behavior, impact, and why safeguards do not prevent it. Locate issues at the pin per `../../rules/evidence-report.md` and `../../rules/pin-scope.md`.
+  expected and actual behavior, impact, and why safeguards do not prevent it. Locate issues at the pin per `{expskill_folder}/rules/evidence-report.md` and `{expskill_folder}/rules/pin-scope.md`.
 - The declared category criteria and weights, evidence-backed ratings, and
   weighted overall calculation, plus a do-not-merge warning when BLOCKING.
 - Coverage of the whole declared scope, checks run and their results, checks
@@ -137,4 +137,4 @@ handoff stays below 300 physical lines, with any existing specification
 referenced separately, and the report stays intact.
 
 After context loss, reconstruct scope and pinned evidence only from records,
-asking the user for anything missing. Rebind scope only from frozen state or user direction per `../../rules/pin-scope.md`. Reopen conclusions on rebind per `../../rules/pin-scope.md`.
+asking the user for anything missing. Rebind scope only from frozen state or user direction per `{expskill_folder}/rules/pin-scope.md`. Reopen conclusions on rebind per `{expskill_folder}/rules/pin-scope.md`.

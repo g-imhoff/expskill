@@ -20,6 +20,7 @@ const REQUIRED_COMMANDS = [
   "correct",
   "deep-research",
   "design",
+  "file-pr",
   "grill-me",
   "implement",
   "plan",

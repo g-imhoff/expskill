@@ -671,6 +671,23 @@ def _running(state: dict[str, Any]) -> dict[str, Any] | None:
     return next((phase for phase in state["phases"] if phase["status"] == "running"), None)
 
 
+def _sole_open_assignment_id(state: dict[str, Any]) -> str:
+    """Return the open assignment id when exactly one exists, else raise."""
+    running = _running(state)
+    if running is None:
+        raise RecordError("no running phase, add one with apply first")
+    open_ids = [
+        assignment["id"]
+        for assignment in state["assignments"]
+        if assignment["phase_id"] == running["id"] and assignment["status"] in ("planned", "running")
+    ]
+    if len(open_ids) == 1:
+        return open_ids[0]
+    if not open_ids:
+        raise RecordError("no planned or running assignment in the running phase, add one with apply first")
+    raise RecordError(f"assignments {', '.join(open_ids)} are open, pass --assignment explicitly")
+
+
 def _state_problems(state: Any) -> list[tuple[str, str | None, str]]:
     if not isinstance(state, dict):
         return [("state", None, "must be a JSON object")]
@@ -1333,6 +1350,11 @@ def _op_start_phase(state: dict[str, Any], op: dict[str, Any], now: str) -> tupl
 
 def _op_complete_phase(state: dict[str, Any], op: dict[str, Any], now: str) -> tuple[None, tuple[str, str]]:
     optional = {"methods", "limitations", "next_questions", "notes"}
+    if "id" not in op:
+        running = _running(state)
+        if running is None:
+            raise RecordError("complete_phase is missing 'id' and no phase is running")
+        op = {**op, "id": running["id"]}
     _require_keys(op, {"op", "id"}, optional | {"duplicates"}, "complete_phase op")
     running = _running(state)
     if running is None or running["id"] != op["id"]:
@@ -1775,12 +1797,11 @@ def _verify(run: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": not problems,
         "sequence": sequence,
-        "sha256": digest,
         "problems": problems,
         "warnings": warnings,
         "uncheckpointed_changes": state is not None and last_state is not None and state != last_state,
     }
-    return {**result, "errors": problems} if problems else result
+    return result
 
 
 def _require_researching(state: dict[str, Any], action: str) -> None:
@@ -1841,10 +1862,9 @@ def cmd_init(args: argparse.Namespace) -> dict[str, Any]:
     with _locked(run):
         _publish_file(run / "owner.json", _document(owner))
         _write_state(run, state)
-        sequence, digest = _publish_checkpoint(run, state, "init")
+        _publish_checkpoint(run, state, "init")
     return {
-        "ok": True, "run_dir": str(run), "run_id": run_id, "scope_id": "S1", "sequence": sequence,
-        "sha256": digest, "ids": ids,
+        "ok": True, "run_dir": str(run), "run_id": run_id, "scope_id": "S1", "ids": ids,
     }
 
 
@@ -1861,7 +1881,7 @@ def cmd_apply(args: argparse.Namespace) -> dict[str, Any]:
         _write_state(run, state)
     ended = [op["id"] for op in payload["ops"] if op["op"] == "complete_phase"]
     return {
-        "ok": True, "applied": len(payload["ops"]), "ids": ids, "summary": _counts(state),
+        "ok": True, "ids": ids,
         "completed_phases": [
             {key: p[key] for key in ("id", "eligible", "zero_novelty", "novelty_count", "blockers")}
             for p in state["phases"]
@@ -1888,7 +1908,8 @@ def cmd_capture(args: argparse.Namespace) -> dict[str, Any]:
     with _locked(run):
         state = _load(run)
         _require_researching(state, "capture")
-        assignment = _index(state, "assignment").get(args.assignment)
+        assignment_id = args.assignment if args.assignment is not None else _sole_open_assignment_id(state)
+        assignment = _index(state, "assignment").get(assignment_id)
         if assignment is None:
             raise RecordError(f"no assignment {args.assignment!r}, add it with apply first")
         if assignment["status"] == "complete":
@@ -1906,7 +1927,7 @@ def cmd_capture(args: argparse.Namespace) -> dict[str, Any]:
         _derive(state)
         state["updated_at"] = record["captured_at"]
         _write_state(run, state)
-    result = {key: record[key] for key in ("file", "sha256", "bytes", "truncated")}
+    result = {key: record[key] for key in ("file", "truncated")}
     return {"ok": True, "return_id": return_id, **result}
 
 
@@ -1953,7 +1974,8 @@ def cmd_worker_brief(args: argparse.Namespace) -> dict[str, Any]:
     run = _run_dir(args.run_dir)
     with _locked(run, exclusive=False):
         state = _load(run)
-    assignment = _index(state, "assignment").get(args.assignment)
+    assignment_id = args.assignment if args.assignment is not None else _sole_open_assignment_id(state)
+    assignment = _index(state, "assignment").get(assignment_id)
     if assignment is None:
         raise RecordError(f"no assignment {args.assignment!r}, add it with apply first")
     brief, branches, sources = state["brief"], _index(state, "branch"), _index(state, "source")
@@ -2025,11 +2047,9 @@ def cmd_finish(args: argparse.Namespace) -> dict[str, Any]:
                 }
         interrupted = _interrupt_running(state) if args.status in ("paused", "cancelled") else []
         state.update(status=args.status, stop_reason=reason, updated_at=_now())
-        sequence, digest = _commit(run, state, f"finish {args.status}: {reason}")
-        report = _report(run, state)
+        sequence, _ = _commit(run, state, f"finish {args.status}: {reason}")
     return {
-        "ok": True, "status": args.status, "stop_reason": reason, "interrupted": interrupted,
-        "sequence": sequence, "sha256": digest, "summary": report,
+        "ok": True, "status": args.status, "interrupted": interrupted, "sequence": sequence,
     }
 
 
@@ -2071,10 +2091,10 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
             "prior_status": prior_status,
         })
         state.update(status="researching", stop_reason=None, updated_at=now)
-        sequence, digest = _commit(run, state, f"resume: {reason}")
+        sequence, _ = _commit(run, state, f"resume: {reason}")
     return {
-        "ok": True, "status": "researching", "prior_status": prior_status, "interrupted": interrupted,
-        "closure_reset": prior_status == "saturated", "sequence": sequence, "sha256": digest,
+        "ok": True, "prior_status": prior_status, "interrupted": interrupted,
+        "closure_reset": prior_status == "saturated", "sequence": sequence,
     }
 
 
@@ -2149,7 +2169,8 @@ def _parser() -> argparse.ArgumentParser:
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("run_dir", metavar="RUN_DIR")
         if name in ("capture", "worker-brief"):
-            sub.add_argument("--assignment", required=True, metavar="ID")
+            sub.add_argument("--assignment", required=False, default=None, metavar="ID",
+                             help=argparse.SUPPRESS)
         if name == "capture":
             sub.add_argument("--file", metavar="PATH", help="read the reply from PATH instead of stdin")
             sub.add_argument("--truncated", action="store_true", help="the reply was cut off")

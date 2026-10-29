@@ -722,7 +722,7 @@ class TestEvidenceFinalizer(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         flags = set(__import__("re").findall(r"--[a-z][a-z-]*", completed.stdout))
-        self.assertEqual(flags, {"--help", "--root", "--charter", "--ledger", "--draft"})
+        self.assertEqual(flags, {"--help", "--root"})
 
     def test_compose_draft_resolves_nested_and_splice_markers_before_finalization(
         self,

@@ -3709,11 +3709,25 @@ def create_workflow_branch(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Operate a private Plan Graph from the installed plugin package"
+        description="Operate a private Plan Graph from the installed plugin package",
+        epilog=(
+            "commands:\n"
+            "  initialize: create a graph from JSON on stdin or --json.\n"
+            "  discover: find the graph for --repo plus --branch.\n"
+            "  load: read the graph.\n"
+            "  apply: apply a JSON op list.\n"
+            "  recover: restore after a torn write.\n"
+            "  state: print derived state.\n"
+            "  pause: mark paused. resume: mark active.\n"
+            "  discard: delete with --workflow-id --revision.\n"
+            "  create-branch: create the workflow branch with --baseline --yes.\n"
+            "  complete: mark terminal completion."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("command", choices=("initialize", "discover", "load", "apply", "recover", "state", "pause", "resume", "discard", "create-branch", "complete"))
-    parser.add_argument("--repo", type=Path, required=True)
-    parser.add_argument("--branch", required=True)
+    parser.add_argument("--repo", type=Path, required=False, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--branch", required=False, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--state-home", type=Path, default=None)
     parser.add_argument("--workflow-id")
     parser.add_argument("--revision", type=int)
@@ -3721,44 +3735,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline")
     parser.add_argument("--json")
     args = parser.parse_args(argv)
+    if args.repo is None or args.branch is None:
+        try:
+            cwd_repo = _repository(Path.cwd())
+        except PlanGraphError as error:
+            parser.error(f"cannot derive repository from cwd: {error}")
+        if args.repo is None:
+            args.repo = cwd_repo
+        if args.branch is None:
+            try:
+                derived = _run_git(cwd_repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+            except PlanGraphError as error:
+                parser.error(f"cannot derive branch from cwd: {error}")
+            if not derived:
+                parser.error("cannot derive branch: detached HEAD, pass --branch explicitly")
+            args.branch = derived
     context = None if args.command == "create-branch" else _repo_context(args.repo, args.branch)
 
-    def graph_digest(graph: dict[str, Any] | None) -> str | None:
-        return _canonical_digest(graph) if graph is not None else None
-
     def envelope(
-        operation: str,
         *,
         workflow_id: str,
-        previous_revision: int,
-        current_revision: int,
-        before_state: str,
-        after_state: str,
-        before_graph: dict[str, Any] | None,
-        after_graph: dict[str, Any] | None,
+        revision: int,
+        state: str,
         head_commit: str,
-        baseline_commit: str | None = None,
     ) -> dict[str, object]:
         if context is None:
             raise PlanGraphError("graph operation lacks repository context")
-        value: dict[str, object] = {
-            "schema_version": "plan-graph-cli-receipt.v1",
-            "operation": operation,
-            "repository": str(context.repository),
-            "branch": context.branch,
+        return {
             "workflow_id": workflow_id,
-            "previous_revision": previous_revision,
-            "current_revision": current_revision,
-            "before_state": before_state,
-            "after_state": after_state,
-            "derived_state": after_state,
-            "before_graph_digest": graph_digest(before_graph),
-            "after_graph_digest": graph_digest(after_graph),
+            "revision": revision,
+            "state": state,
             "head_commit": head_commit,
         }
-        if baseline_commit is not None:
-            value["baseline_commit"] = baseline_commit
-        return value
 
     def emit(value: dict[str, object]) -> int:
         print(json.dumps(value, sort_keys=True, separators=(",", ":")))
@@ -3776,11 +3784,8 @@ def main(argv: list[str] | None = None) -> int:
         receipt = initialize_workflow(args.repo, args.branch, input_json(), args.state_home)  # type: ignore[arg-type]
         graph = load_workflow(args.repo, args.branch, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=receipt.workflow_id, previous_revision=0,
-            current_revision=receipt.revision, before_state="absent",
-            after_state=graph["lifecycle"]["derived_state"], before_graph=None,
-            after_graph=graph, head_commit=context.head,
-            baseline_commit=graph["baseline"]["repository_revision"],
+            workflow_id=receipt.workflow_id, revision=receipt.revision,
+            state=graph["lifecycle"]["derived_state"], head_commit=context.head,
         ))
     if args.command == "apply":
         if not args.workflow_id or args.revision is None:
@@ -3788,83 +3793,56 @@ def main(argv: list[str] | None = None) -> int:
         updates = input_json()
         if not isinstance(updates, list):
             raise PlanGraphError("apply JSON must be a list")
-        before = load_workflow(args.repo, args.branch, args.state_home)
         receipt = apply_updates(args.repo, args.branch, args.workflow_id, args.revision, updates, args.state_home)  # type: ignore[arg-type]
         graph = load_workflow(args.repo, args.branch, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=receipt.workflow_id,
-            previous_revision=receipt.previous_revision or 0,
-            current_revision=receipt.revision,
-            before_state=before["lifecycle"]["derived_state"],
-            after_state=graph["lifecycle"]["derived_state"], before_graph=before,
-            after_graph=graph, head_commit=context.head,
+            workflow_id=receipt.workflow_id, revision=receipt.revision,
+            state=graph["lifecycle"]["derived_state"], head_commit=context.head,
         ))
     if args.command == "recover":
         if not args.workflow_id: parser.error("recover requires --workflow-id")
         receipt = recover_workflow(args.repo, args.branch, args.workflow_id, args.state_home)
         graph = load_workflow(args.repo, args.branch, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=receipt.workflow_id,
-            previous_revision=receipt.previous_revision or 0,
-            current_revision=receipt.revision, before_state="corrupt",
-            after_state=graph["lifecycle"]["derived_state"], before_graph=None,
-            after_graph=graph, head_commit=context.head,
+            workflow_id=receipt.workflow_id, revision=receipt.revision,
+            state=graph["lifecycle"]["derived_state"], head_commit=context.head,
         ))
     if args.command == "create-branch":
         if not args.baseline or not args.yes: parser.error("create-branch requires --baseline and --yes")
         result = create_workflow_branch(args.repo, args.branch, args.baseline, True)
-        created_context = _repo_context(args.repo, result.branch)
         return emit({
-            "schema_version": "plan-graph-cli-receipt.v1",
-            "operation": args.command,
-            "repository": str(created_context.repository),
             "branch": result.branch,
             "baseline_commit": result.commit,
-            "head_commit": created_context.head,
         })
     if args.command == "complete":
         if not args.workflow_id or args.revision is None: parser.error("complete requires --workflow-id and --revision")
-        before = load_workflow(args.repo, args.branch, args.state_home)
         receipt = complete_for_human_review(args.repo, args.branch, args.workflow_id, args.revision, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=receipt.workflow_id,
-            previous_revision=receipt.previous_revision or 0,
-            current_revision=receipt.revision,
-            before_state=before["lifecycle"]["derived_state"], after_state=receipt.state,
-            before_graph=before, after_graph=None,
-            head_commit=receipt.head or context.head,
+            workflow_id=receipt.workflow_id, revision=receipt.revision,
+            state=receipt.state, head_commit=receipt.head or context.head,
         ))
     if args.command == "discover":
         receipt = discover_workflow(args.repo, args.branch, args.state_home)
         graph = load_workflow(args.repo, args.branch, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=receipt.workflow_id,
-            previous_revision=receipt.revision, current_revision=receipt.revision,
-            before_state=graph["lifecycle"]["derived_state"],
-            after_state=graph["lifecycle"]["derived_state"], before_graph=graph,
-            after_graph=graph, head_commit=context.head,
+            workflow_id=receipt.workflow_id, revision=receipt.revision,
+            state=graph["lifecycle"]["derived_state"], head_commit=context.head,
         ))
     if args.command == "load":
         graph = load_workflow(args.repo, args.branch, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=graph["workflow_id"],
-            previous_revision=graph["graph_revision"], current_revision=graph["graph_revision"],
-            before_state=graph["lifecycle"]["derived_state"],
-            after_state=graph["lifecycle"]["derived_state"], before_graph=graph,
-            after_graph=graph, head_commit=context.head,
+            workflow_id=graph["workflow_id"], revision=graph["graph_revision"],
+            state=graph["lifecycle"]["derived_state"], head_commit=context.head,
         ))
     if args.command == "state":
         graph = load_workflow(args.repo, args.branch, args.state_home)
         state = derive_plan_state(graph)
         return emit(envelope(
-            args.command, workflow_id=graph["workflow_id"],
-            previous_revision=graph["graph_revision"], current_revision=graph["graph_revision"],
-            before_state=state, after_state=state, before_graph=graph,
-            after_graph=graph, head_commit=context.head,
+            workflow_id=graph["workflow_id"], revision=graph["graph_revision"],
+            state=state, head_commit=context.head,
         ))
     if not args.workflow_id or args.revision is None:
         parser.error(f"{args.command} requires --workflow-id and --revision")
-    before = load_workflow(args.repo, args.branch, args.state_home)
     if args.command == "pause":
         receipt = pause_workflow(args.repo, args.branch, args.workflow_id, args.revision, args.state_home)
     elif args.command == "resume":
@@ -3874,19 +3852,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("discard requires --yes")
         discard_workflow(args.repo, args.branch, args.workflow_id, args.revision, True, args.state_home)
         return emit(envelope(
-            args.command, workflow_id=args.workflow_id,
-            previous_revision=args.revision, current_revision=args.revision,
-            before_state=before["lifecycle"]["derived_state"], after_state="absent",
-            before_graph=before, after_graph=None, head_commit=context.head,
+            workflow_id=args.workflow_id, revision=args.revision,
+            state="absent", head_commit=context.head,
         ))
     graph = load_workflow(args.repo, args.branch, args.state_home)
     return emit(envelope(
-        args.command, workflow_id=receipt.workflow_id,
-        previous_revision=receipt.previous_revision or 0,
-        current_revision=receipt.revision,
-        before_state=before["lifecycle"]["derived_state"],
-        after_state=graph["lifecycle"]["derived_state"], before_graph=before,
-        after_graph=graph, head_commit=context.head,
+        workflow_id=receipt.workflow_id, revision=receipt.revision,
+        state=graph["lifecycle"]["derived_state"], head_commit=context.head,
     ))
 
 

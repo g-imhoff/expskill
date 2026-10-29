@@ -20,6 +20,7 @@ same guarantee with no new state to keep in sync.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -220,24 +221,37 @@ def requirements_text() -> str:
     return "\n".join(lines) + "\n"
 
 
-def _cli() -> int:
-    if len(sys.argv) == 2 and sys.argv[1] in ("--help", "contract"):
+def _cli(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="design_plan_handoff.py",
+        description="Validate Design delivery receipts against the shared Design to Plan handoff contract.",
+    )
+    subs = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    subs.add_parser(
+        "contract",
+        help="print the handoff contract requirements",
+        description=requirements_text(),
+    )
+    subs.add_parser(
+        "check",
+        help="check a delivery receipt from stdin",
+        description="Read a Design delivery receipt as JSON on stdin and report eligible plus problems. Exit 0 when eligible, 1 when not.",
+    )
+    args = parser.parse_args(argv)
+    if args.command == "contract":
         sys.stdout.write(requirements_text())
         return 0
-    if len(sys.argv) == 2 and sys.argv[1] == "check":
-        try:
-            raw = sys.stdin.read(1024 * 1024 + 1)
-            if len(raw) > 1024 * 1024:
-                raise ValueError("receipt exceeds size limit")
-            receipt = json.loads(raw)
-        except Exception as exc:
-            sys.stderr.write(f"invalid receipt JSON: {exc}\n")
-            return 1
-        problems = validate_delivery_receipt_shape(receipt)
-        sys.stdout.write(json.dumps({"eligible": not problems, "problems": problems}))
-        return 0 if not problems else 1
-    sys.stderr.write("usage: design_plan_handoff.py [contract|check]\n")
-    return 2
+    try:
+        raw = sys.stdin.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("receipt exceeds size limit")
+        receipt = json.loads(raw)
+    except Exception as exc:
+        sys.stderr.write(f"invalid receipt JSON: {exc}\n")
+        return 1
+    problems = validate_delivery_receipt_shape(receipt)
+    sys.stdout.write(json.dumps({"eligible": not problems, "problems": problems}))
+    return 0 if not problems else 1
 
 
 if __name__ == "__main__":

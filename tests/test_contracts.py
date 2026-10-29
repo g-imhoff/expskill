@@ -27,6 +27,7 @@ PHASE_ROOTS = {
     for name in (
         "brainstorm",
         "design",
+        "file-pr",
         "grill-me",
         "setup-design",
         "setup-test",
@@ -60,6 +61,7 @@ EXPECTED_SKILLS = {
     "use-expskill",
     "brainstorm",
     "design",
+    "file-pr",
     "grill-me",
     "setup-design",
     "setup-test",
@@ -512,7 +514,7 @@ class ContractTests(unittest.TestCase):
         description = manifest.get("description")
         self.assertIsInstance(description, str)
         self.assertLessEqual(len(str(description)), 120)
-        for phrase in ("sixteen", "independent", "skills", "optional", "lifecycle router"):
+        for phrase in ("seventeen", "independent", "skills", "optional", "lifecycle router"):
             self.assertIn(phrase, str(description).lower())
         self.assertNotRegex(str(description), PUBLIC_METADATA_JARGON)
         self.assertEqual(manifest.get("author"), {"name": "g-imhoff"})

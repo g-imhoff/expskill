@@ -117,7 +117,7 @@ class PlanContractTests(unittest.TestCase):
     def test_plan_defines_the_private_canonical_graph_helper_path(self) -> None:
         self.assertTrue(HELPER_PATH.is_file(), HELPER_PATH)
         self.assertIn("plugins/expskill/content/scripts/plan_graph.py", self.body)
-        self.assertIn("../../scripts/plan_graph.py", self.body)
+        self.assertIn("{expskill_folder}/scripts/plan_graph.py", self.body)
 
     def test_plan_names_the_graph_state_and_concurrency_values(self) -> None:
         for value in (
@@ -136,7 +136,7 @@ class PlanContractTests(unittest.TestCase):
             with self.subTest(skill=name):
                 body = (root / "SKILL.md").read_text(encoding="utf-8")
                 self.assertIn("plugins/expskill/content/scripts/plan_graph.py", body)
-                self.assertIn("../../scripts/plan_graph.py", body)
+                self.assertIn("{expskill_folder}/scripts/plan_graph.py", body)
 
 
 if __name__ == "__main__":

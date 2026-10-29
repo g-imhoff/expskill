@@ -6,6 +6,7 @@
     "correct": false,
     "deep-research": false,
     "design": false,
+    "file-pr": false,
     "grill-me": false,
     "implement": false,
     "plan": false,

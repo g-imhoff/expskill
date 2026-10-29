@@ -14600,7 +14600,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         )
         candidate_manifest["files"] = [
             {
-                "path": "../../production/SKILL.md",
+                "path": "{expskill_folder}/production/SKILL.md",
                 "media_kind": "",
                 "byte_count": -1,
                 "digest": "c" * 64,
@@ -14621,7 +14621,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
             for event in terminal_trace
             if event.get("artifact_type") == "terminal-manifest"
         )
-        terminal["files"][0]["path"] = "../../outside/forged.json"
+        terminal["files"][0]["path"] = "{expskill_folder}/outside/forged.json"
         terminal_trace = reseal_declared_trace(terminal_trace)
         terminal_codes = {
             failure.code
@@ -14737,7 +14737,7 @@ class SkillBuilderTraceOracleTests(unittest.TestCase):
         hostile_paths = {
             "missing": None,
             "absolute": "/production/fixture-terse-summary/SKILL.md",
-            "traversal": "candidate/../../production/SKILL.md",
+            "traversal": "candidate/{expskill_folder}/production/SKILL.md",
             "out-of-scope": "production/fixture-terse-summary/SKILL.md",
         }
         for name, path in hostile_paths.items():

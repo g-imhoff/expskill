@@ -99,7 +99,7 @@ class DesignStateAdversarialTests(unittest.TestCase):
             root = Path(temporary)
             receipt, _, state_home, workflow_id = _start(module, root)
             self.assertRegex(workflow_id, r"^[0-9a-f]{32}$")
-            for invalid in ("../escape", "../../escape", "a/b", "a b", "A" * 32, "a" * 31):
+            for invalid in ("../escape", "{expskill_folder}/escape", "a/b", "a b", "A" * 32, "a" * 31):
                 with self.subTest(invalid=invalid), self.assertRaises(Exception):
                     module.load_workflow(workflow_id=invalid, state_home=state_home)
             outside = root / "escape"

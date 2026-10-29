@@ -402,7 +402,7 @@ class ResearchRecordTests(unittest.TestCase):
         report = self.status(run)
         self.assertEqual((report["streak"], report["saturation_allowed"], report["reasons"]), (3, True, []))
         result = self.cli("finish", str(run), "--status", "saturated", "--reason", "Three quiet phases.")
-        self.assertEqual(result["summary"]["status"], "saturated")
+        self.assertEqual(result["status"], "saturated")
 
     def test_novelty_resets_streak(self) -> None:
         run = self.covered_run()
@@ -597,8 +597,6 @@ class ResearchRecordTests(unittest.TestCase):
         result = self.capture(run, "A1", reply)
         self.assertEqual(result["return_id"], "R1")
         self.assertEqual(result["file"], "returns/R1.txt")
-        self.assertEqual(result["sha256"], hashlib.sha256(reply).hexdigest())
-        self.assertEqual(result["bytes"], len(reply))
         stored = run / "returns" / "R1.txt"
         self.assertEqual(stored.read_bytes(), reply)
         self.assertEqual(stat.S_IMODE(stored.lstat().st_mode), 0o600)
@@ -1758,7 +1756,7 @@ class ResearchRecordTests(unittest.TestCase):
         self.assertEqual((report["streak"], report["saturation_allowed"], report["reasons"]), (2, True, []))
         self.assertEqual(report["counts"]["claims_accepted"], 4)
         result = self.cli("finish", str(run), "--status", "saturated", "--reason", "Two quiet phases ending in challenge.")
-        self.assertEqual((result["status"], result["summary"]["status"]), ("saturated", "saturated"))
+        self.assertEqual(result["status"], "saturated")
         verified = self.cli("verify", str(run))
         self.assertEqual((verified["problems"], verified["warnings"]), ([], []))
         self.assertEqual(verified["sequence"], result["sequence"])

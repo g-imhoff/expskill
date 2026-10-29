@@ -442,8 +442,6 @@ def test_finalize_keeps_the_contract_outside_the_run_through_cleanup(
     state_root, next_id, sequence = build_run_to_contract(helper, tmp_path, "improve")
     reused = reuse(helper, state_root, next_id, sequence)
     assert reused["stage"] == "confirmed"
-    assert reused["kept_contract_digest"] == record["record_digest"]
-    assert reused["kept_contract_source"] == workflow_id
 
 
 def test_report_keeps_the_evaluated_contract_through_cleanup(tmp_path: Path) -> None:
@@ -513,7 +511,6 @@ def test_evaluate_and_improve_reuse_a_kept_contract_on_unchanged_files(
     )
     _, third_id, sequence = build_run_to_contract(helper, tmp_path, "improve")
     reused = reuse(helper, state_root, third_id, sequence)
-    assert reused["kept_contract_source"] == first_id
     current = helper.load_run(workflow_id=third_id, state_root=state_root)
     assert current["stage"] == "confirmed"
 

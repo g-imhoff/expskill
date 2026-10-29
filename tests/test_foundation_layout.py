@@ -388,6 +388,7 @@ class FoundationLayoutTests(unittest.TestCase):
                         "correct",
                         "deep-research",
                         "design",
+                        "file-pr",
                         "grill-me",
                         "implement",
                         "plan",

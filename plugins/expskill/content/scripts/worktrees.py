@@ -548,15 +548,26 @@ def finish_worktree(repo: Path, path: Path, branch: str, integrated_ref: str) ->
 
 
 def _default_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="worktrees.py")
-    commands = parser.add_subparsers(dest="command", required=True)
-    create = commands.add_parser("create")
-    create.add_argument("--repo", required=True)
-    create.add_argument("--base", required=True)
+    parser = argparse.ArgumentParser(
+        prog="worktrees.py",
+        description="Create and finish isolated Git worktrees for concurrent lanes.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    create = commands.add_parser(
+        "create",
+        help="create an isolated worktree from a base commit",
+        description="Create an isolated worktree from a base commit and print its path and branch.",
+    )
+    create.add_argument("--repo", required=False, default=None, help=argparse.SUPPRESS)
+    create.add_argument("--base", required=True, help="Base commit the isolated worktree starts from.")
     create.add_argument("--run-id", required=True)
     create.add_argument("--task", required=True)
-    finish = commands.add_parser("finish")
-    finish.add_argument("--repo", required=True)
+    finish = commands.add_parser(
+        "finish",
+        help="remove a worktree after its commit is integrated",
+        description="Remove a worktree only after its commit is on the target and checks pass.",
+    )
+    finish.add_argument("--repo", required=False, default=None, help=argparse.SUPPRESS)
     finish.add_argument("--path", required=True)
     finish.add_argument("--branch", required=True)
     finish.add_argument("--integrated-ref", required=True)
@@ -569,7 +580,7 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         if options.command == "create":
             record = create_worktree(
-                Path(options.repo),
+                Path(options.repo) if options.repo is not None else Path.cwd(),
                 options.base,
                 options.run_id,
                 options.task,
@@ -578,7 +589,8 @@ def main(arguments: list[str] | None = None) -> int:
             print(f"path={record.path}")
             print(f"branch={record.branch}")
         else:
-            finish_worktree(Path(options.repo), Path(options.path), options.branch, options.integrated_ref)
+            repo = Path(options.repo) if options.repo is not None else Path(options.path)
+            finish_worktree(repo, Path(options.path), options.branch, options.integrated_ref)
     except (ValueError, WorktreeError) as error:
         print(str(error), file=sys.stderr)
         return 1

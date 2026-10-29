@@ -3142,7 +3142,7 @@ def test_initialize_non_git_create_run_is_private_and_bound_to_absence(tmp_path:
     )
 
     assert receipt["sequence"] == 0
-    assert receipt["stage"] == "resolved"
+    assert loaded["stage"] == "resolved"
     assert loaded["target_identity"] == target_identity(target)
     assert loaded["mode"]["name"] == "create"
     assert loaded["target_snapshot"]["exists"] is False
@@ -4260,7 +4260,7 @@ def test_cli_help_strict_json_home_default_and_success_receipts(tmp_path: Path) 
     )
     assert initialized.returncode == 0, initialized.stderr
     receipt = json.loads(initialized.stdout)
-    assert receipt["operation"] == "initialize"
+    assert set(receipt) == {"workflow_id", "sequence", "target_snapshot_digest"}
     assert receipt["sequence"] == 0
     default_root = tmp_path / "home" / ".expskill" / "skill-builder"
     assert (default_root / "live" / receipt["workflow_id"]).is_dir()
@@ -4293,7 +4293,16 @@ def test_cli_help_strict_json_home_default_and_success_receipts(tmp_path: Path) 
         env=env,
     )
     assert loaded.returncode == 0, loaded.stderr
-    assert json.loads(loaded.stdout)["head_transition_digest"] == receipt["receipt_digest"]
+    loaded_head = json.loads(loaded.stdout)["head_transition_digest"]
+    reloaded = subprocess.run(
+        [sys.executable, str(HELPER), "load"],
+        input=json.dumps({"workflow_id": receipt["workflow_id"]}),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert reloaded.returncode == 0, reloaded.stderr
+    assert json.loads(reloaded.stdout)["head_transition_digest"] == loaded_head
     bad_argument = subprocess.run(
         [sys.executable, str(HELPER), "initialize", "--unknown"],
         input="{}",
@@ -5229,7 +5238,7 @@ def test_public_entrypoints_remove_uncommitted_genesis_residue(
         state_root=state_root,
     )
 
-    assert started["stage"] == "resolved"
+    assert helper.load_run(workflow_id=started["workflow_id"], state_root=state_root)["stage"] == "resolved"
     assert list((state_root / "initializing").iterdir()) == []
     assert [entry.name for entry in (state_root / "live").iterdir()] == [
         started["workflow_id"]
@@ -6737,7 +6746,7 @@ def test_recovery_reapplies_live_baseline_semantics_to_rehashed_receipt(
         "workflow_id": started["workflow_id"],
         "target_identity": current["target_identity"]["canonical"],
         "sequence": retained["sequence"] + 1,
-        "prior_receipt_digest": retained["receipt_digest"],
+        "prior_receipt_digest": current["head_transition_digest"],
         "event": "capture-baseline",
         "source_stage": "resolved",
         "destination_stage": "baseline",

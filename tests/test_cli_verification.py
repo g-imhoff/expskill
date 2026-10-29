@@ -173,7 +173,7 @@ class CliVerificationTests(unittest.TestCase):
             "",
             ".",
             "..",
-            "old/../../victim",
+            "old/{expskill_folder}/victim",
             r"old\..\victim",
             "/absolute",
             r"C:\victim",
@@ -274,7 +274,7 @@ class CliVerificationTests(unittest.TestCase):
 
     def test_malformed_version_fails_before_unsupported_optional_platform_skip(self) -> None:
         manifest = copy.deepcopy(CLI_RELEASE_MANIFEST)
-        manifest["clis"]["codex"]["version"] = "old/../../victim"
+        manifest["clis"]["codex"]["version"] = "old/{expskill_folder}/victim"
         with tempfile.TemporaryDirectory() as temporary:
             cache_root = Path(temporary)
             sentinel = cache_root / "sentinel"
@@ -301,7 +301,7 @@ class CliVerificationTests(unittest.TestCase):
         archive_name = "fixture-codex.tar.gz"
         archive_bytes = _archive("fixture-codex", b"trusted binary")
         manifest = _patched_manifest("codex", archive_name, "fixture-codex", archive_bytes)
-        manifest["clis"]["codex"]["version"] = "old/../../victim"
+        manifest["clis"]["codex"]["version"] = "old/{expskill_folder}/victim"
         for mode in ("required", "optional"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 sandbox = Path(temporary)
@@ -339,7 +339,7 @@ class CliVerificationTests(unittest.TestCase):
         archive_bytes = _archive("fixture-codex", b"trusted binary")
         malicious_asset = cli_verification.CliAsset(
             kind="codex",
-            version="old/../../victim",
+            version="old/{expskill_folder}/victim",
             archive=archive_name,
             binary_name="fixture-codex",
             sha256=hashlib.sha256(archive_bytes).hexdigest(),

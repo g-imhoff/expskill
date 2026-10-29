@@ -7,7 +7,7 @@ description: Score a change with adversarial category reviewers and report each 
 
 ## Pin the scope
 
-Pin the diff and uncommitted work per `../../rules/pin-scope.md`. Handle drift per `../../rules/pin-scope.md`. Rebind only on explicit direction and disclose mixed revisions per `../../rules/pin-scope.md`.
+Pin the diff and uncommitted work per `{expskill_folder}/rules/pin-scope.md`. Handle drift per `{expskill_folder}/rules/pin-scope.md`. Rebind only on explicit direction and disclose mixed revisions per `{expskill_folder}/rules/pin-scope.md`.
 
 ## Derive categories from the diff
 
@@ -29,4 +29,4 @@ Write a short report with categories and weights, scores in a table, top issues 
 
 ## Report storage
 
-Save passes to home-state run folders, one fresh folder per head, per `../../rules/evidence-report.md`. Keep the chat report as the primary verdict and point at the saved file path.
+Save passes to home-state run folders, one fresh folder per head, per `{expskill_folder}/rules/evidence-report.md`. Keep the chat report as the primary verdict and point at the saved file path.

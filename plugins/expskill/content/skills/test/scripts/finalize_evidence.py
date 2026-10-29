@@ -3097,10 +3097,17 @@ class _ArgumentParser(argparse.ArgumentParser):
 def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = _ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--charter", required=True, type=Path)
-    parser.add_argument("--ledger", required=True, type=Path)
-    parser.add_argument("--draft", required=True, type=Path)
-    return parser.parse_args(argv)
+    parser.add_argument("--charter", required=False, default=None, type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--ledger", required=False, default=None, type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--draft", required=False, default=None, type=Path, help=argparse.SUPPRESS)
+    parsed = parser.parse_args(argv)
+    if parsed.charter is None:
+        parsed.charter = parsed.root / "charter.json"
+    if parsed.ledger is None:
+        parsed.ledger = parsed.root / "ledger.json"
+    if parsed.draft is None:
+        parsed.draft = parsed.root / "draft.json"
+    return parsed
 
 
 def _parse_compose_arguments(argv: Sequence[str]) -> argparse.Namespace:
@@ -3108,9 +3115,14 @@ def _parse_compose_arguments(argv: Sequence[str]) -> argparse.Namespace:
         description="Mechanically compose a final draft from frozen preparation and delta"
     )
     parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--preparation", required=True, type=Path)
-    parser.add_argument("--delta", required=True, type=Path)
-    return parser.parse_args(argv)
+    parser.add_argument("--preparation", required=False, default=None, type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--delta", required=False, default=None, type=Path, help=argparse.SUPPRESS)
+    parsed = parser.parse_args(argv)
+    if parsed.preparation is None:
+        parsed.preparation = parsed.root / PREPARATION_FILENAME
+    if parsed.delta is None:
+        parsed.delta = parsed.root / DELTA_FILENAME
+    return parsed
 
 
 def _write_error(error: FinalizerError) -> None:
@@ -3178,12 +3190,7 @@ def _compose_draft_main(argv: Sequence[str]) -> int:
             charter_binding,
             ledger_binding,
         )
-        payload = {"draft_path": str(root / DRAFT_FILENAME)}
-        sys.stdout.write(
-            "draft_composition=PASS\n"
-            + canonical_json(payload).decode("utf-8")
-            + "\n"
-        )
+        sys.stdout.write("draft_composition=PASS\n")
         return 0
     except FinalizerError as error:
         _write_error(error)

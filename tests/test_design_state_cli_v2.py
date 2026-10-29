@@ -15,8 +15,14 @@ from tests.design_state_test_support import passing_technical
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "plugins" / "expskill" / "content" / "scripts" / "design_state.py"
 DIGEST = "a" * 64
-BASE_RECEIPT_KEYS = {"schema_version", "operation", "workflow_id", "revision", "lifecycle", "identity", "state_digest"}
-DELIVERY_RECEIPT_KEYS = BASE_RECEIPT_KEYS | {"candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest"}
+BASE_RECEIPT_KEYS = {"revision"}
+INIT_KEYS = {"workflow_id", "revision"}
+DISCOVER_KEYS = {"workflow_id", "revision", "lifecycle"}
+LOAD_KEYS = {"revision", "lifecycle"}
+RECOVER_KEYS = {"revision", "lifecycle"}
+DISCARD_KEYS: set[str] = set()
+DELIVERY_RECEIPT_KEYS = {"schema_version", "operation", "workflow_id", "revision", "lifecycle", "identity", "state_digest", "candidate_digest", "candidate_inventory_digest", "review_evidence_digest", "manifest_digest", "evidence_digest", "approval_digest", "dependency_digest", "brief_digest", "candidate_commit"}
+DELIVERY_UNBRIEFED_KEYS = DELIVERY_RECEIPT_KEYS - {"brief_digest", "candidate_commit"}
 
 
 def _repo(root: Path) -> tuple[Path, str]:
@@ -55,13 +61,50 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
     def _repo_snapshot(self, repo: Path) -> str:
         return subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain=v1", "--untracked-files=all"], text=True)
 
+    _SCALAR_COMMANDS = ("load", "pause", "resume", "recover", "discard", "preflight")
+
     def _run(self, command: str, payload: object | None, env: dict[str, str], *flags: str, raw: str | None = None) -> subprocess.CompletedProcess[str]:
+        argv: list[str] = [command]
+        body: str | None = None
+        if raw is not None:
+            body = raw
+        elif isinstance(payload, dict) and command == "initialize":
+            ui_contract = payload.get("ui_contract", {})
+            scope = payload.get("scope", {})
+            argv += ["--contract-digest", str(ui_contract.get("digest")),
+                     "--contract-outcome", str(ui_contract.get("outcome", ""))]
+            argv += ["--components", *[str(item) for item in scope.get("components", [])]]
+            argv += ["--exclusions", *[str(item) for item in scope.get("exclusions", [])]]
+            for key in payload:
+                if key not in ("ui_contract", "scope", "invocation_mode", "state_home",
+                               "repository", "branch", "worktree", "baseline", "dirty_fingerprint"):
+                    argv.append(f"--{key}")
+            if payload.get("invocation_mode") == "routed":
+                argv.append("--routed")
+        elif isinstance(payload, dict) and command in self._SCALAR_COMMANDS:
+            if command == "preflight":
+                argv.append(str(payload["workflow_id"]))
+                if payload.get("plan_baseline") is not None:
+                    argv += ["--plan-baseline", str(payload["plan_baseline"])]
+                if payload.get("plan_target_branch") is not None:
+                    argv += ["--plan-target-branch", str(payload["plan_target_branch"])]
+            elif command == "discard":
+                argv += [str(payload["workflow_id"]), str(payload["expected_revision"])]
+                if payload.get("confirmed"):
+                    argv.append("--confirmed")
+            elif command in ("pause", "resume"):
+                argv += [str(payload["workflow_id"]), str(payload["expected_revision"])]
+            else:
+                argv.append(str(payload["workflow_id"]))
+        elif payload is not None:
+            body = json.dumps(payload)
         result = subprocess.run(
-            [sys.executable, str(CLI), command, *flags],
-            input=raw if raw is not None else (None if payload is None else json.dumps(payload)),
+            [sys.executable, str(CLI), *argv, *flags],
+            input=body,
             text=True,
             capture_output=True,
             env=env,
+            cwd=(payload.get("repository") if isinstance(payload, dict) and command == "initialize" and payload.get("repository") else None),
         )
         decoy = env.get("XDG_STATE_HOME")
         if decoy:
@@ -111,7 +154,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
     def _initialize(self, env: dict[str, str], repo: Path, head: str, *flags: str) -> dict:
         result = self._run("initialize", self._payload(repo, head), env, *flags)
         self.assertEqual(result.returncode, 0, result.stderr)
-        receipt = self._receipt(result, "initialize")
+        receipt = self._receipt(result, "initialize", INIT_KEYS)
         return receipt
 
     def test_cli_is_present_closed_and_exposes_every_lifecycle_operation(self) -> None:
@@ -154,7 +197,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             payload = self._payload(repo, head)
             result = self._run("initialize", payload, env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            receipt = self._receipt(result, "initialize")
+            receipt = self._receipt(result, "initialize", INIT_KEYS)
             self.assertRegex(receipt["workflow_id"], r"^[0-9a-f]{32}$")
             self.assertTrue((state_root / "design").is_dir())
             unknown = dict(payload)
@@ -178,19 +221,19 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             workflow = receipt["workflow_id"]
             discovered = self._run("discover", {"repository": str(repo), "branch": "feature/design"}, env)
             self.assertEqual(discovered.returncode, 0, discovered.stderr)
-            self._receipt(discovered, "discover")
+            self._receipt(discovered, "discover", DISCOVER_KEYS)
             loaded = self._run("load", {"workflow_id": workflow}, env)
             self.assertEqual(loaded.returncode, 0, loaded.stderr)
-            self._receipt(loaded, "load")
+            self._receipt(loaded, "load", LOAD_KEYS)
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": receipt["revision"], "updates": self._records()}, env)
             self.assertEqual(applied.returncode, 0, applied.stderr)
-            applied_receipt = self._receipt(applied, "apply")
+            applied_receipt = self._receipt(applied, "apply", BASE_RECEIPT_KEYS)
             paused = self._run("pause", {"workflow_id": workflow, "expected_revision": applied_receipt["revision"]}, env)
             self.assertEqual(paused.returncode, 0, paused.stderr)
-            paused_receipt = self._receipt(paused, "pause")
+            paused_receipt = self._receipt(paused, "pause", BASE_RECEIPT_KEYS)
             resumed = self._run("resume", {"workflow_id": workflow, "expected_revision": paused_receipt["revision"]}, env)
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
-            self._receipt(resumed, "resume")
+            self._receipt(resumed, "resume", BASE_RECEIPT_KEYS)
 
     def test_cli_confirmed_discard_is_separate_and_durable(self) -> None:
         """Regression: discard must require explicit authority and return a durable terminal receipt."""
@@ -203,7 +246,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             discarded = self._run("discard", {"workflow_id": receipt["workflow_id"], "expected_revision": receipt["revision"], "confirmed": True}, env)
             self.assertEqual(discarded.returncode, 0, discarded.stderr)
-            self._receipt(discarded, "discard")
+            self._receipt(discarded, "discard", DISCARD_KEYS)
 
     def test_cli_recovery_after_current_fault_and_full_delivery_are_successful(self) -> None:
         """Regression: recovery and delivery must be real closed operations, not labels in prose."""
@@ -215,12 +258,12 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             workflow = receipt["workflow_id"]
             applied = self._run("apply", {"workflow_id": workflow, "expected_revision": receipt["revision"], "updates": {"scope": {"components": ["CheckoutForm"]}}}, env)
             self.assertEqual(applied.returncode, 0, applied.stderr)
-            applied_receipt = self._receipt(applied, "apply")
+            applied_receipt = self._receipt(applied, "apply", BASE_RECEIPT_KEYS)
             current = Path(env["HOME"]) / ".expskill" / "design" / workflow
             current.write_text("{torn", encoding="utf-8")
             recovered = self._run("recover", {"workflow_id": workflow}, env)
             self.assertEqual(recovered.returncode, 0, recovered.stderr)
-            self._receipt(recovered, "recover")
+            self._receipt(recovered, "recover", RECOVER_KEYS)
 
             delivery_repo, delivery_head = _repo(root / "delivery-repo")
             delivery_env = os.environ.copy(); delivery_env["HOME"] = str(root / "delivery-home"); delivery_env["XDG_STATE_HOME"] = str(Path(env["HOME"]).parent / "xdg-decoy")
@@ -232,7 +275,7 @@ class DesignStateCliContractV2Tests(unittest.TestCase):
             candidate, review, manifest = self._layers()
             delivered = self._run("deliver", {"workflow_id": workflow, "expected_revision": applied_receipt["revision"], "candidate_payload": candidate, "review_evidence": review, "manifest": manifest}, delivery_env)
             self.assertEqual(delivered.returncode, 0, delivered.stderr)
-            result = self._receipt(delivered, "deliver", DELIVERY_RECEIPT_KEYS)
+            result = self._receipt(delivered, "deliver", DELIVERY_UNBRIEFED_KEYS)
             self.assertEqual(result["lifecycle"], "delivered")
 
 

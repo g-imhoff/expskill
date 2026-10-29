@@ -1,0 +1,137 @@
+{
+  "method": "chars/4 estimate, stdlib only, no tokenizer dependency",
+  "commands": {
+    "design_state.initialize": {
+      "bytes": 138,
+      "lines": 1,
+      "tokens_est": 34
+    },
+    "design_state.discover": {
+      "bytes": 136,
+      "lines": 1,
+      "tokens_est": 34
+    },
+    "design_state.load": {
+      "bytes": 132,
+      "lines": 1,
+      "tokens_est": 33
+    },
+    "design_state.confirm-brief": {
+      "bytes": 141,
+      "lines": 1,
+      "tokens_est": 35
+    },
+    "design_state.checkpoint-candidate": {
+      "bytes": 148,
+      "lines": 1,
+      "tokens_est": 37
+    },
+    "design_state.apply": {
+      "bytes": 133,
+      "lines": 1,
+      "tokens_est": 33
+    },
+    "design_state.pause": {
+      "bytes": 133,
+      "lines": 1,
+      "tokens_est": 33
+    },
+    "design_state.resume": {
+      "bytes": 134,
+      "lines": 1,
+      "tokens_est": 33
+    },
+    "design_state.preflight": {
+      "bytes": 221,
+      "lines": 1,
+      "tokens_est": 55
+    },
+    "design_state.deliver": {
+      "bytes": 1438,
+      "lines": 1,
+      "tokens_est": 359
+    },
+    "plan_graph.initialize": {
+      "bytes": 556,
+      "lines": 1,
+      "tokens_est": 139
+    },
+    "plan_graph.discover": {
+      "bytes": 554,
+      "lines": 1,
+      "tokens_est": 138
+    },
+    "plan_graph.load": {
+      "bytes": 550,
+      "lines": 1,
+      "tokens_est": 137
+    },
+    "plan_graph.state": {
+      "bytes": 551,
+      "lines": 1,
+      "tokens_est": 137
+    },
+    "plan_graph.pause": {
+      "bytes": 553,
+      "lines": 1,
+      "tokens_est": 138
+    },
+    "worktrees.create": {
+      "bytes": 159,
+      "lines": 2,
+      "tokens_est": 39
+    },
+    "research_record.init": {
+      "bytes": 312,
+      "lines": 1,
+      "tokens_est": 78
+    },
+    "research_record.apply": {
+      "bytes": 256,
+      "lines": 1,
+      "tokens_est": 64
+    },
+    "research_record.status": {
+      "bytes": 1718,
+      "lines": 1,
+      "tokens_est": 429
+    },
+    "research_record.worker-brief-json": {
+      "bytes": 2880,
+      "lines": 1,
+      "tokens_est": 720
+    },
+    "research_record.worker-brief-text": {
+      "bytes": 1754,
+      "lines": 49,
+      "tokens_est": 438
+    },
+    "research_record.schema": {
+      "bytes": 7361,
+      "lines": 1,
+      "tokens_est": 1840
+    },
+    "run_state.initialize": {
+      "bytes": 330,
+      "lines": 1,
+      "tokens_est": 82
+    },
+    "run_state.discover": {
+      "bytes": 328,
+      "lines": 1,
+      "tokens_est": 82
+    },
+    "run_state.load": {
+      "bytes": 2176,
+      "lines": 1,
+      "tokens_est": 544
+    },
+    "bootstrap_run": {
+      "bytes": 2372,
+      "lines": 107,
+      "tokens_est": 593
+    }
+  },
+  "total_tokens_est": 6284,
+  "total_bytes": 25164
+}

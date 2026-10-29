@@ -7,7 +7,7 @@ used below mirror that contract and
 ``tests/test_design_plan_handoff_contract.py`` fails on drift.
 """
 from __future__ import annotations
-import fcntl, hashlib, json, os, re, secrets, subprocess, sys, threading
+import argparse, fcntl, hashlib, json, os, re, secrets, subprocess, sys, threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -62,6 +62,31 @@ def _git(path: Path, *args: str) -> str:
 def _dirty(path: Path) -> str:
     raw = _git(path, "status", "--porcelain=v1", "--untracked-files=all").encode()
     return hashlib.sha256(raw).hexdigest()
+
+def _shared():
+    """Load the sibling git_common module by path (no sys.path assumption)."""
+    global _SHARED_COMMON
+    try:
+        return _SHARED_COMMON
+    except NameError:
+        pass
+    import importlib.util
+    path = Path(__file__).resolve().with_name("git_common.py")
+    spec = importlib.util.spec_from_file_location("expskill_git_common", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("shared git helpers are unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _SHARED_COMMON = module
+    return module
+
+
+def _default_home(value=None) -> Path:
+    return _shared().default_home(value)
+
+def _auto_git_identity(worktree_hint=None) -> dict:
+    return _shared().auto_identity(worktree_hint)
 
 def canonical_digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
@@ -285,16 +310,22 @@ def _durable_write(root: Path, workflow: str, state: dict) -> None:
     with target.open("rb") as fh: os.fsync(fh.fileno())
     dfd = os.open(root, os.O_RDONLY); os.fsync(dfd); os.close(dfd)
 
-def initialize_workflow(*, repository, branch, worktree, baseline, dirty_fingerprint, ui_contract, scope, state_home, invocation_mode="direct"):
+def initialize_workflow(*, repository=None, branch=None, worktree=None, baseline=None, dirty_fingerprint=None, ui_contract, scope, state_home=None, invocation_mode="direct"):
     if invocation_mode not in {"direct", "routed"}: raise ValueError("invalid invocation mode")
+    auto = _auto_git_identity(worktree)
+    repository = repository if repository is not None else auto["repository"]
+    branch = branch if branch is not None else auto["branch"]
+    worktree = worktree if worktree is not None else auto["worktree"]
+    baseline = baseline if baseline is not None else auto["baseline"]
+    dirty_fingerprint = dirty_fingerprint if dirty_fingerprint is not None else auto["dirty_fingerprint"]
     identity = _identity(repository, branch, worktree, baseline, dirty_fingerprint, ui_contract)
-    with _locked(Path(state_home)) as root:
+    with _locked(_default_home(state_home)) as root:
         for p in root.iterdir():
             if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
             if p.is_file():
                 try:
                     old = _load(root, p.name)
-                    if old["identity"]["repository"] == identity["repository"] and old["identity"]["branch"] == branch: raise ValueError("active workflow exists")
+                    if old["identity"]["repository"] == identity["repository"] and old["identity"]["branch"] == identity["branch"]: raise ValueError("active workflow exists")
                 except ValueError as exc:
                     if "active workflow" in str(exc): raise
                     raise ValueError("ambiguous state") from exc
@@ -302,10 +333,10 @@ def initialize_workflow(*, repository, branch, worktree, baseline, dirty_fingerp
         state = {"schema_version":1,"workflow_id":workflow,"revision":0,"lifecycle":"active","identity":identity,"ui_contract":ui_contract,"scope":scope,"selected_rules":{},"seed_permission":{},"questions":{},"delivery":{"classifications":{"candidate":"component","review":"review","manifest":"manifest"},"candidate":None,"review":None,"manifest":None},"components":{},"dependencies":{},"evidence":{},"approvals":{},"invalidations":{},"candidate_payload":None,"review_evidence":None,"manifest":None,"brief":{"objective":"","requirements":[],"responsive_expectations":{},"non_goals":[],"source":None,"confirmed":False,"digest":None},"candidate":None,"invocation_mode":invocation_mode}
         _validate_domains(state)
         _durable_write(root, workflow, state)
-        return {"workflow_id":workflow,"revision":0,"baseline":baseline,"identity":identity}
+        return {"workflow_id":workflow,"revision":0,"baseline":identity["baseline"],"identity":identity}
 
-def load_workflow(*, workflow_id, state_home, repository=None, branch=None, worktree=None, baseline=None, dirty_fingerprint=None, ui_contract=None):
-    with _locked(Path(state_home)) as root:
+def load_workflow(*, workflow_id, state_home=None, repository=None, branch=None, worktree=None, baseline=None, dirty_fingerprint=None, ui_contract=None):
+    with _locked(_default_home(state_home)) as root:
         raw = json.loads((root / workflow_id).read_text(encoding="utf-8"))
         if (not isinstance(raw.get("delivery"), dict) or set(raw["delivery"]) != {"classifications", "candidate", "review", "manifest"} or raw["delivery"].get("classifications") != {"candidate":"component","review":"review","manifest":"manifest"}): raise ValueError("legacy delivery shape")
         state = _load(root, workflow_id); _revalidate(state)
@@ -319,7 +350,7 @@ def _revalidate(state: dict) -> None:
     actual = _identity(i["repository"], i["branch"], i["worktree"], i["baseline"], i["dirty_fingerprint"], {"digest": state["identity"]["ui_contract_digest"]}, head=i["head"])
     if actual != i: raise ValueError("external workspace change")
 
-def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_home):
+def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_home=None):
     if confirmed is not True: raise PermissionError("explicit design brief confirmation required")
     if not isinstance(brief, dict) or set(brief) != {"objective", "requirements", "responsive_expectations", "non_goals", "source"}:
         raise ValueError("invalid design brief")
@@ -327,7 +358,7 @@ def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_hom
     candidate["confirmed"] = True
     candidate["digest"] = canonical_digest(candidate)
     _validate_brief(candidate)
-    with _locked(Path(state_home)) as root:
+    with _locked(_default_home(state_home)) as root:
         state = _load(root, workflow_id)
         _revalidate(state)
         if state["lifecycle"] == "delivered" or state["revision"] != expected_revision: raise ValueError("immutable or stale workflow")
@@ -354,8 +385,8 @@ def confirm_brief(*, workflow_id, expected_revision, brief, confirmed, state_hom
         _durable_write(root, workflow_id, state)
         return {"workflow_id":workflow_id,"revision":state["revision"],"brief_digest":candidate["digest"]}
 
-def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, state_home):
-    with _locked(Path(state_home)) as root:
+def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, state_home=None):
+    with _locked(_default_home(state_home)) as root:
         state = _load(root, workflow_id)
         if state["lifecycle"] == "delivered" or state["revision"] != expected_revision: raise ValueError("immutable or stale workflow")
         if state["invocation_mode"] != "routed": raise PermissionError("candidate checkpoint requires routed Design invocation")
@@ -389,8 +420,20 @@ def checkpoint_candidate(*, workflow_id, expected_revision, candidate_commit, st
         _durable_write(root, workflow_id, state)
         return {"workflow_id":workflow_id,"revision":state["revision"],"candidate_commit":candidate_commit,"brief_digest":state["brief"]["digest"]}
 
-def discover_workflow(*, repository, branch, state_home):
-    with _locked(Path(state_home)) as root:
+def discover_workflow(*, repository=None, branch=None, state_home=None):
+    auto = None
+    if repository is None or branch is None:
+        try:
+            auto = _auto_git_identity()
+        except ValueError:
+            auto = None
+    if repository is None:
+        if auto is None: raise ValueError("cannot derive repository: pass it explicitly")
+        repository = auto["repository"]
+    if branch is None:
+        if auto is None: raise ValueError("cannot derive branch: pass it explicitly")
+        branch = auto["branch"]
+    with _locked(_default_home(state_home)) as root:
         matches=[]
         for p in root.iterdir():
             if p.name in {".lock"} or p.name.endswith((".previous",".tmp",".backup")): continue
@@ -400,8 +443,8 @@ def discover_workflow(*, repository, branch, state_home):
         if len(matches)!=1: raise ValueError("ambiguous workflow")
         s=matches[0]; return {"workflow_id":s["workflow_id"],"revision":s["revision"],"lifecycle":s["lifecycle"]}
 
-def apply_updates(*, workflow_id, expected_revision, updates, state_home):
-    with _locked(Path(state_home)) as root:
+def apply_updates(*, workflow_id, expected_revision, updates, state_home=None):
+    with _locked(_default_home(state_home)) as root:
         s=_load(root,workflow_id)
         _revalidate(s)
         if s["lifecycle"]=="delivered" or s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
@@ -452,25 +495,25 @@ def apply_updates(*, workflow_id, expected_revision, updates, state_home):
         _validate_domains(s)
         s["revision"]+=1; _durable_write(root,workflow_id,s); return {"workflow_id":workflow_id,"revision":s["revision"]}
 
-def _transition(*,workflow_id,expected_revision,state_home,lifecycle):
-    with _locked(Path(state_home)) as root:
+def _transition(*,workflow_id,expected_revision,state_home=None,lifecycle):
+    with _locked(_default_home(state_home)) as root:
         s=_load(root,workflow_id)
         _revalidate(s)
         if s["lifecycle"]=="delivered" or s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
         s["lifecycle"]=lifecycle; s["revision"]+=1; _durable_write(root,workflow_id,s); return {"workflow_id":workflow_id,"revision":s["revision"],"lifecycle":lifecycle}
-def pause_workflow(*,workflow_id,expected_revision,state_home): return _transition(workflow_id=workflow_id,expected_revision=expected_revision,state_home=state_home,lifecycle="paused")
-def resume_workflow(*,workflow_id,expected_revision,state_home): return _transition(workflow_id=workflow_id,expected_revision=expected_revision,state_home=state_home,lifecycle="active")
+def pause_workflow(*,workflow_id,expected_revision,state_home=None): return _transition(workflow_id=workflow_id,expected_revision=expected_revision,state_home=state_home,lifecycle="paused")
+def resume_workflow(*,workflow_id,expected_revision,state_home=None): return _transition(workflow_id=workflow_id,expected_revision=expected_revision,state_home=state_home,lifecycle="active")
 
-def discard_workflow(*,workflow_id,expected_revision,confirmed,state_home):
+def discard_workflow(*,workflow_id,expected_revision,confirmed,state_home=None):
     if not confirmed: raise PermissionError("explicit discard confirmation required")
-    with _locked(Path(state_home)) as root:
+    with _locked(_default_home(state_home)) as root:
         s=_load(root,workflow_id)
         _revalidate(s)
         if s["lifecycle"]=="delivered" or s["revision"]!=expected_revision: raise ValueError("immutable or stale workflow")
         (root/workflow_id).unlink(); (root/(workflow_id+".previous")).unlink(missing_ok=True); return {"workflow_id":workflow_id,"revision":expected_revision+1,"lifecycle":"discarded"}
 
-def recover_workflow(*,workflow_id,state_home):
-    with _locked(Path(state_home)) as root:
+def recover_workflow(*,workflow_id,state_home=None):
+    with _locked(_default_home(state_home)) as root:
         target=root/workflow_id
         if target.is_symlink() or target.is_dir() or (target.exists() and target.stat().st_mode & 0o077):
             raise ValueError("unsafe current generation")
@@ -512,8 +555,8 @@ def _delivery_result(s):
             result["candidate_commit"]=s["candidate"]["commit"]
     return result
 
-def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_evidence,manifest,state_home):
-    with _locked(Path(state_home)) as root:
+def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_evidence,manifest,state_home=None):
+    with _locked(_default_home(state_home)) as root:
         s=_load(root,workflow_id)
         _revalidate(s)
         if s["lifecycle"]=="delivered":
@@ -554,7 +597,7 @@ def deliver_workflow(*,workflow_id,expected_revision,candidate_payload,review_ev
         s["lifecycle"]="delivered"; s["revision"]+=1; _durable_write(root,workflow_id,s)
         return _delivery_result(s)
 
-def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_target_branch=None):
+def preflight_plan_join(*, workflow_id, state_home=None, plan_baseline=None, plan_target_branch=None):
     """Read-only check of what the Plan typed Design join will demand.
 
     Returns ``{"workflow_id", "revision", "eligible", "problems"}`` without
@@ -567,7 +610,7 @@ def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_tar
     After delivery, require status 0 and ``eligible`` true with no problems.
     Only the delivered CLI receipt is ready for the Plan join shape checks.
     """
-    with _locked(Path(state_home)) as root:
+    with _locked(_default_home(state_home)) as root:
         s = _load(root, workflow_id)
         _revalidate(s)
         problems = []
@@ -593,37 +636,147 @@ def preflight_plan_join(*, workflow_id, state_home, plan_baseline=None, plan_tar
             problems.append(f"branch {identity['branch']!r} must stay isolated from the Plan target branch")
         return {"workflow_id": workflow_id, "revision": s["revision"], "eligible": not problems, "problems": problems}
 
-def _cli():
-    if len(sys.argv)>1 and sys.argv[1] == "--help":
-        print("initialize discover load confirm-brief checkpoint-candidate apply pause resume recover discard deliver preflight")
-        return 0
-    if len(sys.argv)<2 or len(sys.argv)>4 or (len(sys.argv)>2 and sys.argv[2] != "--state-home"): return 2
-    command=sys.argv[1]
+_COMMAND_HELP = {
+    "initialize": "initialize: create a new Design workflow.\nGit identity is read from the current checkout and pinned in the receipt.\nReturns the new workflow_id and revision 0.\nFails when another workflow already uses the same repository plus branch.",
+    "discover": "discover: find the workflow for the current checkout.\nReturns receipt: workflow_id, revision, lifecycle.\nFails when zero or more than one workflow matches.",
+    "load": "load: read a workflow and revalidate the workspace.\nReturns revision and lifecycle. Import the module to get the full state.\nFails on identity mismatch or external workspace change.",
+    "confirm-brief": "confirm-brief: lock the design brief.\nReads JSON: workflow_id, expected_revision, brief{objective, requirements, responsive_expectations, non_goals, source}, confirmed true.\nChecks the brief digest, and the spec file digest when source.kind is specification. Clears components and evidence when the digest changes.\nReturns revision and the locked brief_digest.\nFails without confirmed true, on stale revision, or after a candidate checkpoint.",
+    "checkpoint-candidate": "checkpoint-candidate: pin the candidate commit. Routed mode only.\nChecks HEAD equals candidate_commit, worktree clean, and the commit is exactly one commit above baseline.\nReturns revision and the bound brief_digest. Clears components and evidence when the commit changes.\nFails in direct mode, without a confirmed brief, or on dirty or non-atomic history.",
+    "apply": "apply: update components, dependencies, evidence, approvals, scope, ui_contract, selected_rules, seed_permission, questions, delivery.\nReads JSON: workflow_id, expected_revision, updates{...}.\nChecks closed key set, digest formats, evidence bindings, and marks causal invalidations.\nReturns workflow_id, revision.\nFails on stale revision, unknown keys, or missing evidence bindings.",
+    "pause": "pause: mark a workflow paused.\nReturns revision.\nFails on stale revision or after delivery.",
+    "resume": "resume: mark a paused workflow active.\nReturns revision.\nFails on stale revision or after delivery.",
+    "recover": "recover: restore the .previous generation after a torn write.\nReturns workflow_id, revision, lifecycle.\nFails when current generation is valid or no predecessor exists.",
+    "discard": "discard: delete a workflow. Needs explicit authority.\nPrints an empty receipt, exit 0 is the signal.\nFails without --confirmed, on stale revision, or after delivery.",
+    "deliver": "deliver: close the workflow and return the Plan join receipt.\nReads JSON: workflow_id, expected_revision, candidate_payload{files}, review_evidence{files}, manifest{files}.\nChecks every component is approved and current, evidence covers compact plus intermediate plus wide with passing technical gates, and inventories match.\nReturns full receipt plus candidate_digest, inventory digests, evidence_digest, approval_digest, dependency_digest, brief_digest, candidate_commit. Identical retry on a delivered workflow succeeds.\nFails on stale approval, incomplete evidence, or routed delivery without a candidate checkpoint.",
+    "preflight": "preflight: read-only check of what the Plan join will demand.\nReturns eligible and problems. Exit 0 when eligible, 1 when pending.\nBefore delivery an active lifecycle is the only expected problem. After delivery require eligible true with no problems.",
+}
+
+def _cli(argv=None):
     allowed={"initialize","discover","load","confirm-brief","checkpoint-candidate","apply","pause","resume","recover","discard","deliver","preflight"}
-    if command not in allowed: return 2
-    raw=sys.stdin.read(1024*1024+1)
-    if len(raw)>1024*1024: return 2
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if len(raw) == 2 and raw[0] == "--help" and raw[1] in allowed:
+        print(_COMMAND_HELP[raw[1]])
+        return 0
+    parser = argparse.ArgumentParser(
+        prog="design_state.py",
+        description="Operate private Design workflow state. Object commands read JSON on stdin, all commands print a JSON receipt on stdout.",
+    )
+    subs = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    for name in ("initialize", "discover", "load", "confirm-brief", "checkpoint-candidate", "apply", "pause", "resume", "recover", "discard", "deliver", "preflight"):
+        first = _COMMAND_HELP[name].splitlines()[0]
+        sub = subs.add_parser(name, help=first, description=_COMMAND_HELP[name])
+        sub.add_argument("--state-home", type=Path, default=None, help="State root. Defaults to ~/.expskill.")
+        if name in ("load", "recover"):
+            sub.add_argument("workflow_id", help="workflow to act on")
+        elif name == "initialize":
+            sub.add_argument("--contract-digest", required=True, help="UI contract digest to bind")
+            sub.add_argument("--contract-outcome", required=True, help="UI contract outcome text")
+            sub.add_argument("--components", nargs="*", default=[], help="scope components")
+            sub.add_argument("--exclusions", nargs="*", default=[], help="scope exclusions")
+            sub.add_argument("--routed", action="store_true", help="isolated routed invocation")
+        elif name in ("pause", "resume"):
+            sub.add_argument("workflow_id", help="workflow to act on")
+            sub.add_argument("expected_revision", type=int, help="base revision the caller validated")
+        elif name == "discard":
+            sub.add_argument("workflow_id", help="workflow to act on")
+            sub.add_argument("expected_revision", type=int, help="base revision the caller validated")
+            sub.add_argument("--confirmed", action="store_true", help="explicit discard authority")
+        elif name == "checkpoint-candidate":
+            sub.add_argument("workflow_id", help="workflow to act on")
+            sub.add_argument("expected_revision", type=int, help="base revision the caller validated")
+            sub.add_argument("candidate_commit", help="exact commit HEAD must equal")
+        elif name == "preflight":
+            sub.add_argument("workflow_id", help="workflow to check")
+            sub.add_argument("--plan-baseline", default=None, help="Plan baseline to compare against")
+            sub.add_argument("--plan-target-branch", default=None, help="Plan target branch the Design branch must stay isolated from")
+    args = parser.parse_args(argv)
+    command = args.command
+    if command == "discard" and not args.confirmed:
+        print("explicit discard confirmation required", file=sys.stderr)
+        return 1
+    if command == "initialize":
+        try:
+            default_home = Path.home().expanduser().resolve() / ".expskill"
+            home = Path(args.state_home) if args.state_home is not None else default_home
+            result = initialize_workflow(
+                state_home=home,
+                ui_contract={"digest": args.contract_digest, "outcome": args.contract_outcome},
+                scope={"components": list(args.components), "exclusions": list(args.exclusions)},
+                invocation_mode="routed" if args.routed else "direct",
+            )
+            base = {"workflow_id": result.get("workflow_id"), "revision": result.get("revision", 0)}
+            print(json.dumps(base, sort_keys=True))
+            return 0
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    if command in ("load", "pause", "resume", "recover", "discard", "checkpoint-candidate", "preflight"):
+        try:
+            default_home = Path.home().expanduser().resolve() / ".expskill"
+            home = Path(args.state_home) if args.state_home is not None else default_home
+            if command == "preflight":
+                result = preflight_plan_join(
+                    state_home=home,
+                    workflow_id=args.workflow_id,
+                    plan_baseline=args.plan_baseline,
+                    plan_target_branch=args.plan_target_branch,
+                )
+                print(json.dumps({"eligible": result["eligible"], "problems": result["problems"]}, sort_keys=True))
+                return 0 if result["eligible"] else 1
+            payload = {"workflow_id": args.workflow_id}
+            if command in ("pause", "resume", "discard", "checkpoint-candidate"):
+                payload["expected_revision"] = args.expected_revision
+            if command == "discard":
+                payload["confirmed"] = True
+            elif command == "checkpoint-candidate":
+                payload["candidate_commit"] = args.candidate_commit
+            funcs = {"load": load_workflow, "pause": pause_workflow, "resume": resume_workflow, "recover": recover_workflow, "discard": discard_workflow, "checkpoint-candidate": checkpoint_candidate}
+            result = funcs[command](state_home=home, **payload)
+            if command == "discard":
+                print(json.dumps({}, sort_keys=True))
+                return 0
+            base = {"revision": result.get("revision", 0)}
+            if command in ("load", "recover"):
+                base["lifecycle"] = result.get("lifecycle", "active")
+            elif command == "checkpoint-candidate":
+                base["brief_digest"] = result.get("brief_digest")
+            print(json.dumps(base, sort_keys=True))
+            return 0
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    raw_stdin=sys.stdin.read(1024*1024+1)
+    if len(raw_stdin)>1024*1024:
+        print("stdin exceeds 1MB limit", file=sys.stderr)
+        return 2
     try:
-        payload=json.loads(raw); 
-        if not isinstance(payload,dict): raise ValueError()
-        home=Path(sys.argv[3]) if len(sys.argv)==4 else Path.home().expanduser().resolve() / ".expskill"
-        if len(sys.argv)==4: payload.pop("state_home",None)
+        if command == "discover" and not raw_stdin.strip():
+            payload = {}
+        else:
+            payload=json.loads(raw_stdin)
+            if not isinstance(payload,dict): raise ValueError("payload must be a JSON object")
+        default_home = Path.home().expanduser().resolve() / ".expskill"
+        if args.state_home is not None:
+            payload.pop("state_home",None)
+            home=Path(args.state_home)
+        else:
+            home=Path(payload.pop("state_home", default_home))
         if command=="preflight":
-            result=preflight_plan_join(state_home=home,**payload)
-            print(json.dumps({"schema_version":1,"operation":command,**result},sort_keys=True)); return 0 if result["eligible"] else 1
-        if command=="initialize": result=initialize_workflow(state_home=home,**payload)
-        elif command=="discover": result=discover_workflow(state_home=home,**payload)
-        elif command=="load": result=load_workflow(state_home=home,**payload)
-        elif command=="confirm-brief": result=confirm_brief(state_home=home,**payload)
-        elif command=="checkpoint-candidate": result=checkpoint_candidate(state_home=home,**payload)
-        elif command=="apply": result=apply_updates(state_home=home,**payload)
-        elif command=="pause": result=pause_workflow(state_home=home,**payload)
-        elif command=="resume": result=resume_workflow(state_home=home,**payload)
-        elif command=="recover": result=recover_workflow(state_home=home,**payload)
-        elif command=="discard": result=discard_workflow(state_home=home,**payload)
-        else: result=deliver_workflow(state_home=home,**payload)
+            raise ValueError("preflight takes workflow_id as a positional argument")
+        funcs={"initialize":initialize_workflow,"discover":discover_workflow,"load":load_workflow,"confirm-brief":confirm_brief,"apply":apply_updates,"deliver":deliver_workflow}
+        result=funcs[command](state_home=home,**payload)
         digest=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
-        base={"schema_version":1,"operation":command,"workflow_id":result.get("workflow_id"),"revision":result.get("revision",0),"lifecycle":result.get("lifecycle","active"),"identity":result.get("identity",{}),"state_digest":digest}
+        if command=="discover":
+            base={"workflow_id":result.get("workflow_id"),"revision":result.get("revision",0),"lifecycle":result.get("lifecycle","active")}
+        elif command=="confirm-brief":
+            base={"revision":result.get("revision",0),"brief_digest":result.get("brief_digest")}
+        elif command=="apply":
+            base={"revision":result.get("revision",0)}
+        else:
+            base={"schema_version":1,"operation":command,"workflow_id":result.get("workflow_id"),"revision":result.get("revision",0),"lifecycle":result.get("lifecycle","active")}
+        if command=="deliver":
+            base["identity"]=result.get("identity",{})
+            base["state_digest"]=digest
         if command=="deliver":
             for key in ("candidate_digest","candidate_inventory_digest","review_evidence_digest","manifest_digest","evidence_digest","approval_digest","dependency_digest","brief_digest","candidate_commit"):
                 if key in result: base[key]=result[key]

@@ -22,6 +22,7 @@ EXPECTED_PUBLIC_SKILLS = {
     "brainstorm",
     "deep-research",
     "design",
+    "file-pr",
     "grill-me",
     "implement",
     "correct",

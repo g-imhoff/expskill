@@ -1,38 +1,3 @@
-# Source: https://github.com/bmad-code-org/BMAD-METHOD/blob/890fcda760bade4d6080f5fa09aa8f658bc4a4a5/web-bundles/brainstorming-coach/brain-methods.csv
-# Source-Revision: 890fcda760bade4d6080f5fa09aa8f658bc4a4a5
-# Upstream-SHA256: 0ab5878b1dbc9e3fa98cb72abfc3920a586b9e2b42609211bb0516eefd542039
-#
-# MIT License
-#
-# Copyright (c) 2025 BMad Code, LLC
-#
-# This project incorporates contributions from the open source community.
-# See [CONTRIBUTORS.md](CONTRIBUTORS.md) for contributor attribution.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-# TRADEMARK NOTICE:
-# BMad™, BMad Method™, and BMad Core™ are trademarks of BMad Code, LLC, covering all
-# casings and variations (including BMAD, bmad, BMadMethod, BMAD-METHOD, etc.). The use of
-# these trademarks in this software does not grant any rights to use the trademarks
-# for any other purpose. See [TRADEMARK.md](TRADEMARK.md) for detailed guidelines.
-#
 category,technique_name,description
 collaborative,Yes And Building,"Build momentum through positive additions where each idea becomes a launching pad - use prompts like 'Yes and we could also...' or 'Building on that idea...' to create energetic collaborative flow that builds upon previous contributions"
 collaborative,Brain Writing Round Robin,"Silent idea generation followed by building on others' written concepts - gives quieter voices equal contribution while maintaining documentation through the sequence of writing silently, passing ideas, and building on received concepts"

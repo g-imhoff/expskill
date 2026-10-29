@@ -48,13 +48,13 @@ scheduling, user interaction, and the final synthesis.
 
 Each phase:
 
-1. `start_phase` with its kind and frozen worklist. Freeze worklists per `../../rules/bounded-fanout.md`.
+1. `start_phase` with its kind and frozen worklist. Freeze worklists per `{expskill_folder}/rules/bounded-fanout.md`.
 2. Add one assignment per bounded question. Print each worker prompt with one
    unpiped `worker-brief --format text` call and pass that single output, whole
    and unchanged, as the subagent prompt. Dispatch independent assignments in
    parallel waves up to the host's safe concurrency. Lower capacity means more
    waves: dispatch every question. Mark assignments `running` when dispatched.
-   Once an assignment runs, its question, branches, worker, queries, and budget stay frozen. Keep dispatched assignments frozen per `../../rules/bounded-fanout.md`. Change them only by new assignment per `../../rules/bounded-fanout.md`.
+   Once an assignment runs, its question, branches, worker, queries, and budget stay frozen. Keep dispatched assignments frozen per `{expskill_folder}/rules/bounded-fanout.md`. Change them only by new assignment per `{expskill_folder}/rules/bounded-fanout.md`.
 3. When a worker replies, `capture` the reply before recording anything from
    it.
 4. Check the evidence yourself. Open cited pages where support is unclear,
@@ -87,7 +87,7 @@ after saturation. Give every branch a worker proposes a recorded decision: a
 new branch, a note on the existing branch it restates, or a branch with
 status `out_of_scope` and an `out_of_scope_reason`. Only `change_scope` moves
 an existing branch into or out of scope, with the user's reason on record.
-Rebind scope only on explicit user direction per `../../rules/pin-scope.md` (Example 8). There is no default limit on
+Rebind scope only on explicit user direction per `{expskill_folder}/rules/pin-scope.md` (Example 8). There is no default limit on
 phases, sources, or workers. Only the user's limits and the host's real
 constraints apply.
 
@@ -105,8 +105,8 @@ Worker rules:
 - A worker only searches the listed queries, reads pages, and
   returns the headed reply. It leaves subagents, the user,
   scope, files, skills, deliverables, and the stopping decision to you.
-- Use a fresh worker for every assignment. Assign one worker per lane per `../../rules/isolate-writes.md`. Reuse one only for a bounded
-  correction of its own assignment. Bound reuse per `../../rules/isolate-writes.md`. Run an assignment yourself, as
+- Use a fresh worker for every assignment. Assign one worker per lane per `{expskill_folder}/rules/isolate-writes.md`. Reuse one only for a bounded
+  correction of its own assignment. Bound reuse per `{expskill_folder}/rules/isolate-writes.md`. Run an assignment yourself, as
   `worker: coordinator`, only for a short check such as opening one page.
 - Treat a worker's claims as leads until you verify them. An accepted claim
   cites an opened page or a prior accepted claim. Search snippets, memory,
@@ -220,7 +220,7 @@ Report in chat:
   records them. If you checked nothing yourself, say so
 - the terminal status and its concrete, honest reason
 - the run directory and the latest checkpoint `sequence` and `sha256`
-  digest, only after `verify` passes. Report run folder and digest per `../../rules/evidence-report.md`. If it fails, report the problems
+  digest, only after `verify` passes. Report run folder and digest per `{expskill_folder}/rules/evidence-report.md`. If it fails, report the problems
   instead of a digest
 
 `saturated` certifies that the scoped stopping rule passed, not
@@ -231,4 +231,4 @@ exists. Every finding, citation, date, consensus statement, and resumability
 claim in the report traces to the record. Anything untraced is labeled a gap.
 
 Save a report file only when the user asks for one at a resolved destination
-they authorized. Save user-facing reports per `../../rules/evidence-report.md`. Make it match the recorded state.
+they authorized. Save user-facing reports per `{expskill_folder}/rules/evidence-report.md`. Make it match the recorded state.

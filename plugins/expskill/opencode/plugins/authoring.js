@@ -7,7 +7,7 @@ export async function authoringBlock() {
   const candidates = process.env.EXPSKILL_HOME
     ? [path.resolve(process.env.EXPSKILL_HOME, "plugins/expskill/content/policies/authoring-runtime.json")]
     : [path.resolve(base, "../assets/authoring-runtime.json"),
-       path.resolve(base, "../../content/policies/authoring-runtime.json")];
+       path.resolve(base, "{expskill_folder}/content/policies/authoring-runtime.json")];
   let contents;
   for (const candidate of candidates) {
     try {

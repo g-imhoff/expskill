@@ -192,6 +192,7 @@ PUBLIC_SKILL_TOKENS = {
     "$test",
     "$use-expskill",
     "$design",
+    "$file-pr",
     "$grill-me",
     "$setup-design",
     "$setup-test",
@@ -202,7 +203,7 @@ PUBLIC_SKILL_TOKENS = {
     "$roast-loop",
     "$deep-research",
 }
-PUBLIC_SKILL_COUNT_TEXT = "sixteen independent skills and one optional lifecycle router"
+PUBLIC_SKILL_COUNT_TEXT = "seventeen independent skills and one optional lifecycle router"
 SKILL_BUILDER_TOKEN = "$skill-builder"
 SKILL_BUILDER_STAGE_FILES = (
     "references/create.md",
@@ -237,6 +238,7 @@ PUBLIC_METADATA_JARGON = re.compile(
 EXPECTED_SKILLS = {
     "use-expskill",
     "design",
+    "file-pr",
     "brainstorm",
     "plan",
     "implement",
@@ -1235,7 +1237,7 @@ def _validate_plugin_manifest(
         normalized_description = description.lower()
         if PUBLIC_SKILL_COUNT_TEXT not in normalized_description:
             errors.append(
-                "plugin description must advertise sixteen independent skills and one optional "
+                "plugin description must advertise seventeen independent skills and one optional "
                 "lifecycle router"
             )
         if PUBLIC_METADATA_JARGON.search(description):
