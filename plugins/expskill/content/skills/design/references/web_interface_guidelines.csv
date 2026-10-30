@@ -1,0 +1,37 @@
+rule,description,weight
+fix failing contrast by adjusting L only,Move foreground L away from its rendered background while keeping C and H unchanged then verify with APCA or WCAG,CRITICAL
+inputs expose persistent visible labels,Pair every input with a label or aria-label that survives entry and keep placeholder as supplement only,HIGH
+actions use button navigation uses a Link,Use button for actions and a or Link for navigation never div onClick to preserve keyboard Cmd-click and middle-click,CRITICAL
+icon-only buttons carry aria-label,Expose aria-label on every icon-only button. Text-labeled buttons exempted,CRITICAL
+never strip outline without focus-visible replacement,Flag outline-none unless replaced by a visible focus-visible ring with contrast. Non-interactive text exempted,HIGH
+set min-width 0 on flexible children,Add min-width 0 to flex and grid items containing text media or truncation so intrinsic content cannot force overflow,CRITICAL
+responsive images carry width height plus srcset,Define explicit width and height to prevent CLS and add sizes and srcset when fluid. Fixed-size raster exempted from srcset,HIGH
+ALWAYS author new colors in oklch(),Write every new interface color as oklch() and do not add new hex rgb hsl values. currentColor inherit transparent and vendor-owned hex stay untouched,CRITICAL
+clamp out-of-gamut colors by reducing chroma,Keep L and H fixed and lower C to the sRGB maximum for that L hue with vivid P3 value only inside color-gamut p3,CRITICAL
+components use semantic tokens never primitives,Style components with purpose aliases like card or primary-foreground and keep raw scales purpose-free in root,CRITICAL
+use stable unique keys for list items,Set keys from stable ids with key set to item id. Index keys only for static never-reordered lists,CRITICAL
+dialogs trap focus escape and restore,Confine Tab inside modals and close on Escape with focus returned to the trigger. Non-modal popovers allowing outside interaction excepted,CRITICAL
+use logical properties for direction,Write spacing and positioning with margin-inline padding-inline inset and text-align start or end so RTL layouts work with no overrides,HIGH
+prefer container queries for component scope,Set component breakpoints with container queries on parent width and reserve media queries for page-level breakpoints only,HIGH
+build palettes with fixed lightness steps,Use even lightness steps with constant hue per ramp rebuilt when hue drifts past 10 degrees and clamped from 0.05 to 0.95 so ends keep gradation,HIGH
+enforce state precedence disabled loading active focus hover,Let higher states fully suppress lower state visuals with hover never shown on disabled or loading controls,HIGH
+announce async updates via aria-live,Expose toasts validation and list updates through polite or assertive live regions with focus left in place. Decorative silent updates exempted,HIGH
+type UI component props strictly with no any,Declare UI component props events and returns with precise readonly types and strict null checks with isolated third party adapters as the only exception,CRITICAL
+provide skip-to-content link,Make the first focusable element a skip link targeting main content and visible on focus. Single-screen widgets without a main landmark excepted,HIGH
+virtualize lists past 50 items,Virtualize or paginate lists past 50 items and contain overlays with overscroll behavior. Small static lists exempted,MEDIUM
+never measure layout during render,Keep bounding-rect and offset reads out of render and batch reads with writes with flex and grid preferred over JS measurement,HIGH
+memoize expensive subtrees,Wrap pure heavy lists and charts in memo with shallow-equal props. Cheap leaf text exempted,MEDIUM
+pair Suspense regions with error boundaries,Give every lazy boundary an error boundary showing retry and support action. Fatal boot errors may bubble to the app shell,HIGH
+size fluid type with clamp,Define headings and body with clamp spanning mobile to desktop so text scales with no extra breakpoints,HIGH
+balance-wrap short text,Apply text-wrap balance to headings captions and cards under four lines to avoid orphan words and ragged breaks,MEDIUM
+offset anchored headings below sticky chrome,Give jump targets scroll-margin-top around 80px so sticky headers never cover the target,MEDIUM
+keep hover disclosures hoverable and keyboard-dismissable,Show triggered tooltips and popups on focus as well as hover and let pointer rest on them with Escape to dismiss and persistence until dismissal or invalidation,HIGH
+group related choices with fieldset and legend,Wrap radio and multi-part groups in fieldset with legend exposing the group relationship natively. Genuinely independent controls excepted,HIGH
+declare autocomplete purpose on personal inputs,Add autocomplete tokens like name email tel to personal inputs while product wording stays. Inputs outside the recognized list excepted,MEDIUM
+tag page and passage language with lang,Mark the default language with lang and tag every language change so assistive tech pronounces correctly. Proper names technical terms and indeterminate passages stay exempt,HIGH
+keep console free of errors and warnings,Ship production builds with zero console errors and no failed requests. Logged warnings with tracked fallback and user-safe degradation excepted,HIGH
+stabilize callbacks sent to memoized children,Wrap callbacks passed to memo components with useCallback and minimal deps. Inline handlers fine for non-memoized leaves,MEDIUM
+hoist static objects out of render props,Hoist style objects options and column defs out of render or memoize them. Inline literals fine for unmemoized static UI,MEDIUM
+scope context providers to consuming subtrees,Wrap only the subtree consuming the value and split state and dispatch contexts. Global theme and auth stay at root,MEDIUM
+wrap long strings safely,Apply overflow-wrap anywhere with hyphens where appropriate and break-word only for URLs code or unspaced tokens so long strings never cause horizontal scroll,CRITICAL
+preserve media ratio with aspect-ratio,Set aspect-ratio such as 16 to 9 on video hero and skeleton slots with object-fit cover so late-loading media never shifts layout,MEDIUM

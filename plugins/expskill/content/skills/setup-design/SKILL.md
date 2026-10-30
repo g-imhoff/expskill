@@ -3,7 +3,10 @@ name: setup-design
 description: Set up, repair or update a configuration specific to a repository inside of `./expskill/design` helping to sketch and follow project design guidelines.
 ---
 
+//TODO : consider integrating as setup-level convention — group related items by proximity with 4px to 8px label pairs and 16px to 24px group gaps (moved out of generalist_guidelines, enforced by brand spacing setup)
+//TODO : consider integrating as setup-level convention — enforce 4px spacing scale and single-edge alignment globally (moved out of generalist_guidelines, too setup-wide for per-component rules)
 //TODO : steal font form ui-ux pro max ? actually would certainly fit better inside of setup-design
+//TODO : would be interesting to not make docs with spacing and stuff defined but rather have a central place in the code were everything is defined and point at it
 ## Precondition
 
 - Run this in an existing project or when starting a new one.

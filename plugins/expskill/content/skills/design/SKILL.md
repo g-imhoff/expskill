@@ -1,3 +1,5 @@
+// TODO : let's rethink about possibly making folder like web_guidelines/{accessibility.md, data-display.md} and more
+
 ---
 name: design
 description: Build production-intended UI components following project guidelines and share them. Only the user or another ExpSkill skill can load $design.
@@ -5,35 +7,33 @@ description: Build production-intended UI components following project guideline
 
 ## Precondition
 
-- This skill requires to have `cat ./expskill/design/setup.md` with done == true.
+- This skill requires to have `cat {working_folder}/.expskill/design/expskill/design/setup.md` with done == true.
 - You should have an completed Concept Brief coming from `$brainstorm` skill or another sufficiently concrete direction. If not redirect the user to `$brainstorm`. 
-- The steps Build, Animate, Break and Review should be done sequencially
 - Create sketchs using `{working_folder}/.expskill/design/references/sketch-preview.md` and follow `{working_folder}/.expskill/design/references/design-guidelines.md`.
 
-## Choose
+## Behavior
 
 When evidence implies one structure, build it directly using one single frontend subagent. If consequential structural ambiguity remains, render two or three different proposition using frontend subagent following `{expskill_folder}/rules/subagent-usage.md` and let the user select or correct the direction, ask the user confirmation using `{expskill_folder}/rules/explicit-confirmation.md`.
 
+- The steps Build, Animate, Break and Review should be done sequencially and delegated to a frontend subagent. You only orchestrate and verify the work made by the subagents.
+
 ## Build
 
-//TODO : interesting to add that somewhere https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/main/command.md, this should be updated when html update and stuff, let's track that, ux guidelines of ui-ux promax can look quite good too actually ?
-//TODO : https://www.skills.sh/jakubkrehel/oklch-skill/oklch-skill rules seems quite good and interesting to add actually
-Follow `{expskill_folder}/skills/design/references/build_ui.md` to make production grade ui.
+Delegate `{expskill_folder}/skills/design/references/build_ui.md` to make production grade ui.
 
 ## Animate
 
-//TODO : animate and review-animate looks REALLY good
-Follow `{expskill_folder}/skills/design/references/animate_ui.md` to make production grade animation.
+Delegate `{expskill_folder}/skills/design/references/animate_ui.md` to make production grade animation.
 
 ## Break
 
-//TODO : add a breaking test like break-me
-Follow `{expskill_folder}/skills/design/references/break_ui.md` to find stress test your ui.
+Delegate `{expskill_folder}/skills/design/references/break_ui.md` to find stress test your ui.
 
 ## Review
 
-// TODO : use roast-loop
-Follow `{expskill_folder}/skills/design/references/review_ui.md` to make sure the previous steps were followed carefully.
+Delegate `{expskill_folder}/skills/design/references/review_ui.md` to make sure the previous steps were followed carefully.
+
+== NOT REVIEWED ==
 
 Maintain one stable isolated component surface. Render the same variant, state, representative synthetic content, theme, and data at actual compact, intermediate, and wide widths. Show applicable responsive, overflow, interaction, focus, loading, empty, error, partial, success, disabled, read-only, destructive, localization, long-content, input, motion, and permission pressure. Interactive panes remain live but only the selected pane is keyboard/accessibility-tree active. Announce width switches and reset the declared start state. Show directly dependent component families together.
 

@@ -1,0 +1,17 @@
+rule,description,weight
+keep every function keyboard-operable,Complete open select edit submit cancel recover and close by keyboard alone with no timing-specific keystrokes. Movement-path gestures excepted,CRITICAL
+keep focus visible and unobscured,Show a visible focus indicator in light dark high-contrast zoomed and overlay states and keep the focused element partly unobscured,CRITICAL
+render loading error empty and success as explicit states,Give loading error empty and success each an explicit UI with loading inside 300ms in a reserved slot and errors named in text with cause and recovery and input preserved and empty titled with one action,CRITICAL
+meet contrast thresholds for text and controls,Hold body text to at least 4.5 to 1 and large text and essential visuals to at least 3 to 1. Inactive and decorative exempted,CRITICAL
+preserve reflow without two-dimensional scrolling,Retain information and function at 320px vertical width without scrolling in two directions. Genuine maps diagrams media games tables excepted,CRITICAL
+keep truncated meaning reachable,Wrap or adapt essential text where possible with truncation allowed only if the full value stays discoverable through an accessible input-compatible mechanism,CRITICAL
+support 200 percent text scaling,Keep content and function intact at 200 percent text scaling and common text-spacing overrides. Short labels and code excepted per active rules,CRITICAL
+preserve focus order across responsive reorder,Keep sequential focus aligned with meaningful visual order at every responsive state. Regions with no meaningful order excepted,HIGH
+reuse existing components and tokens first,Survey project components patterns and tokens before adding new UI and let project convention win over heuristics with only evidence backed gaps as exception,CRITICAL
+limit line length for body copy,Wrap body copy to 45 to 75 characters per line with at least 1.5 line height. Captions and table cells may run narrower,MEDIUM
+acknowledge input within 100ms,Show a visible state change within 100ms for every tap even if work continues in background. Background sync with no user trigger excepted,HIGH
+preserve navigation context on return,Keep filters and scroll position when returning from detail and confirm before discarding unsaved edits. Explicit refresh or logout may reset,MEDIUM
+expose name role state and value,Make name and role programmatically determinable and expose settable states with the visible label contained in the accessible name,CRITICAL
+outer radius = inner radius + padding, Where nested surfaces share a visible, even inset, the outer radius is the inner radius plus the padding plus any border width. Past 24px of padding, or where the padding is deliberately asymmetric, treat the layers as separate surfaces and keep each one's radius token,CRITICAL
+complete activation on pointer release,Trigger on release with a way to abort by moving off target or to undo and reserve press-down activation for genuinely essential cases only,MEDIUM
+preserve table header relationships in overflow,Keep header to data association intact and allow keyboard-reachable scrolling without clipping values. Responsive re-layout may replace the table only if all meaning and function survive,HIGH

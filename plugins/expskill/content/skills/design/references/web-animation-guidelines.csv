@@ -1,0 +1,2 @@
+//TODO : animation implementation rules live here (transform-opacity only, durations, reduced-motion guards, CSS containment) — split out of web_interface_guidelines.csv, owned by the design skill animation section.
+rule,description,weight

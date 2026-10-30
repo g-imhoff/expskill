@@ -1,0 +1,2 @@
+//TODO : animation-specific generalist rules live here (motion purpose, flashing cap, reduced-motion, interruption handling) — split out of generalist_guidelines.csv, owned by the design skill animation section.
+rule,description,weight
