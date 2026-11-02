@@ -4,8 +4,7 @@ description: Set up, repair or update a configuration specific to a repository i
 ---
 
 //TODO : consider integrating as setup-level convention — group related items by proximity with 4px to 8px label pairs and 16px to 24px group gaps (moved out of generalist_guidelines, enforced by brand spacing setup)
-//TODO : consider integrating as setup-level convention — enforce 4px spacing scale and single-edge alignment globally (moved out of generalist_guidelines, too setup-wide for per-component rules)
-//TODO : steal font form ui-ux pro max ? actually would certainly fit better inside of setup-design
+//TODO : steal font form ui-ux pro max ? 
 //TODO : would be interesting to not make docs with spacing and stuff defined but rather have a central place in the code were everything is defined and point at it
 ## Precondition
 
@@ -33,13 +32,20 @@ Write the chosen solution to `./expskill/design/references/sketch-preview.md` in
 
 ## Project guidelines
 
-(ONLY if inside of an existing project) Following `{expskill_folder}/rules/subagent-usage.md` launch 3 to 5 (depending on the existing project size) low-cost subagent that will gather the existing conventions inside of the project.
+Load `{expskill_foder}/skills/setup-design/references/build-brand-identity.md`.
 
-After that, offer the user a choice: write `./expskill/design/references/design-guidelines.md` following the result section from what you found, or load `$brainstorm` when the project is thin or inconsistent and needs real design work.
+(ONLY if inside of an existing project) Following `{expskill_folder}/rules/subagent-usage.md` launch 3 to 5 (depending on the existing project size) low-cost subagent that will gather the existing conventions inside of the project to try to get all the response from the question inside of `build-brand-identity.md`. 
+
+After that, offer the user a choice: 
+
+- If using the research phase, you can respond to all of the question of the `build-brand-identity.md` give a summarized description to the user and write the `design-guideline.md` file.
+- Otherwise, following `build-brand-identity.md` steps, create the brand identity with user.
+
+Final file path : `{working_directory}/.expskill/design/references/design-guidelines.md`
 
 ### Result
 
-Write the chosen project design guidelines to `./expskill/design/references/design-guidelines.md` in the repo with : 
+Write the chosen project design guidelines to `{working_directory}/.expskill/design/references/design-guidelines.md` in the repo with : 
 
 - Source files or links.
 - Colors, type, fonts, spacing, assets.
@@ -50,7 +56,7 @@ Write the chosen project design guidelines to `./expskill/design/references/desi
 
 ## Finish
 
-Create an file inside of `./expskill/design/setup.md` and put inside of it :
+Create an file inside of `{working_directory}/.expskill/design/setup.md` and put inside of it :
 
 ```markdown
 ---
