@@ -1,0 +1,7 @@
+interface:
+  display_name: "Test"
+  short_description: "Exercise implemented behavior through real product paths"
+  default_prompt: "Use $test to exercise this implemented change through realistic product behavior."
+
+policy:
+  allow_implicit_invocation: false

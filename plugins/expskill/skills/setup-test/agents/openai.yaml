@@ -1,0 +1,7 @@
+interface:
+  display_name: "Setup Test"
+  short_description: "Establish the project test-method matrix and routine path"
+  default_prompt: "Use $setup-test to establish this project's test-method matrix and routine path."
+
+policy:
+  allow_implicit_invocation: false

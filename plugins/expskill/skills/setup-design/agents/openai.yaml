@@ -1,0 +1,7 @@
+interface:
+  display_name: "Setup Design"
+  short_description: "Establish the project-native isolated design-sketch method"
+  default_prompt: "Use $setup-design to establish this project's reusable isolated design-sketch method."
+
+policy:
+  allow_implicit_invocation: false

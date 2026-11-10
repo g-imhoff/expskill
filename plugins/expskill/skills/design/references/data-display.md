@@ -1,0 +1,91 @@
+# Data-display rules
+
+### DATA-01: Choose a display by the analytical relationship
+- Scope: charts and data summaries with a known question/audience. Exploratory products may add views while keeping the initial view interpretable. Choose a representation free of material distortion.
+- Rule: use the simplest familiar display expressing correlation, deviation, distribution, geography, magnitude, parts-to-whole, ranking, or time. Split competing messages when one view obscures them.
+- Check: deterministic fixtures plus explicitly stating the communicated relationship.
+- Sources: [ONS choosing a chart](https://service-manual.ons.gov.uk/data-visualisation/chart-types/choosing-a-chart-type).
+
+### DATA-02: Use honest baselines
+- Scope: quantitative charts. Encodings independent of length from zero excepted. Deviation needs documented analytical rationale and exaggerates no difference.
+- Rule: start bar and filled-area axes at zero because length/area encodes magnitude. Line/scatter axes may be cropped when clearly communicated and analytically justified.
+- Check: assert axis domain from configuration/data, review cropped alternatives.
+- Sources: [ONS axes and gridlines](https://service-manual.ons.gov.uk/data-visualisation/guidance/axes-and-gridlines).
+
+### DATA-03: Keep comparisons visually comparable
+- Scope: small multiples, dashboard cards, repeated charts comparing the same measure. Independent units/panels or documented necessity with explicit labels excepted, keep the comparison honest and conspicuous.
+- Rule: use consistent scales and interval semantics. Default to one value axis.
+- Check: compare axis domains/configuration across panels, render the no-dual-axis alternative.
+- Sources: [ONS axes and gridlines](https://service-manual.ons.gov.uk/data-visualisation/guidance/axes-and-gridlines).
+
+### DATA-04: Order categories by meaning
+- Scope: categorical axes, legends, stacks, repeated panels. Domain/user-task order overrides rank, the project/domain decides meaning.
+- Rule: use a stable domain order, logical natural order, or task-relevant value order. Keep corresponding legend/stack/panel order compatible.
+- Check: fixtures with ties, totals, other/unknown, natural ordering, assert visual and accessible order.
+- Sources: [ONS ordering in charts](https://service-manual.ons.gov.uk/data-visualisation/guidance/ordering-in-charts).
+
+### DATA-05: State scope, measure, time, and units clearly
+- Scope: charts, tables, dashboard metrics. An unambiguously associated host heading/panel may supply context. Voice/layout may vary. Interpretation rests on stated scope, measure, time, and units.
+- Rule: make purpose, statistical measure, relevant geography/domain, period/as-of time, and units unambiguous without needless repetition.
+- Check: read the component without surrounding prose, verify scope. Test narrow labels.
+- Sources: [ONS chart text](https://service-manual.ons.gov.uk/data-visualisation/guidance/chart-text).
+
+### DATA-06: Identify series and categories without forcing per-mark labels
+- Scope: multi-series and categorical charts. Dense displays may lean on accessible alternatives and focused detail, provided visual and nonvisual mapping stays unambiguous.
+- Rule: map unambiguously through direct labels, a legend, accessible description, text, or interaction. Visible labels on every bar, point, or sector are optional when harming clarity.
+- Check: map every series/category to values visually and in the accessibility representation.
+- Sources: [ONS chart elements](https://service-manual.ons.gov.uk/data-visualisation/build-specifications/chart-elements).
+
+### DATA-07: Provide equivalent information for charts
+- Scope: charts, diagrams, maps, canvas/SVG visualizations, informative graphics, purely decorative graphics ignored by assistive technology excepted. Technique may vary. Keep active equivalent information.
+- Rule: provide a text alternative serving equivalent purpose and essential values/trends/relationships. A short-plus-long description or data table is one option for a chart.
+- Check: compare known fixture values and trends with the accessible alternative.
+- Sources: [WAI Complex Images](https://www.w3.org/WAI/tutorials/images/complex/).
+
+### DATA-08: Match the palette to data semantics and add non-color cues
+- Scope: categorical, sequential, diverging encodings. Decorative color and single-series emphasis not encoding distinct meaning excepted. Palette/counts follow the project, active accessibility outcomes remain.
+- Rule: use the project's data palette matching the data relationship. Pair color with labels, shape, pattern, line style, or position when color carries meaning.
+- Check: grayscale/color-vision simulation, contrast, theme matrix, category mapping.
+- Sources: [ONS chart colors](https://service-manual.ons.gov.uk/data-visualisation/colours/using-colours-in-charts).
+
+### DATA-09: Keep provenance attached to the display
+- Scope: external, computed, or versioned data. A shared product-level provenance view suffices when association stays clear. Presentation may vary, traceability remains.
+- Rule: make source, organisation/publication, relevant as-of/version, and essential methodology traceable and unambiguously associated with the display.
+- Check: visible source/as-of fixture, direct link or provenance action, long-source-name layout.
+- Sources: [ONS chart text](https://service-manual.ons.gov.uk/data-visualisation/guidance/chart-text).
+
+### DATA-10: Show the main message in the initial view
+- Scope: filters, hover detail, tabs, zoom, selectable dashboards. Genuine high-dimensional exploration or personalization excepted with user-need evidence.
+- Rule: make the initial view communicate the primary message or clearly explain how to explore. Use interaction only when it adds necessary value and keep it keyboard/input accessible.
+- Check: untouched initial state, keyboard path, no-hover alternative.
+- Sources: [GOV.UK charts](https://brand.design-system.service.gov.uk/data/charts/).
+
+### DATA-11: Preserve table relationships and controlled overflow
+- Scope: two-dimensional tabular data. An equivalent responsive representation preserving all meaning and function may replace the table. Implementation may vary. Keep relationships and content intact.
+- Rule: expose header/data relationships programmatically. When 2D layout is necessary, provide deliberate keyboard-reachable overflow without clipping values.
+- Check: accessibility-tree header associations, narrow viewport, scroll reachability, complex-header fixture.
+- Sources: [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/).
+
+### DATA-12: Model risk-relevant data states distinctly
+- Scope: loading, loaded, empty, no-results, error, permission, disabled/read-only, offline, stale, partial states the component can actually reach. Impossible states may be omitted with grounded reason. The project supplies the state model.
+- Rule: give materially different states distinct meaning, copy, semantics, and recovery.
+- Check: deterministic state fixtures from actual contracts and user risk.
+- Sources: [Carbon empty states](https://carbondesignsystem.com/patterns/empty-states-pattern/).
+
+### DATA-13: Keep independent failures local and stale data honest
+- Scope: dashboards or composites with independent sources, offline/cached data, partial failures. Genuinely dependent regions may share a failure state.
+- Rule: keep successful independent regions usable when one fails. Identify permission/offline/stale conditions accurately and pair cached data shown as current with an as-of cue.
+- Check: mixed success/failure, offline, 403, stale cache, recovery fixtures.
+- Sources: [Material offline states](https://m1.material.io/patterns/offline-states.html).
+
+### DATA-14: Format and stress data for supported locales
+- Scope: numbers, dates, currencies, units, labels, sources, RTL for supported locales. Explicitly labeled interchange formats may stay fixed. The project selects locales and precision, formatting for those locales stays correct.
+- Rule: use authoritative locale data for punctuation and ordering. Test large, small, negative, zero, null, long-label, and RTL cases.
+- Check: realistic locale fixtures and boundary viewport screenshots plus accessible text.
+- Sources: [Unicode CLDR](https://cldr.unicode.org/).
+
+### DATA-15: Scale isolated evidence by risk
+- Scope: data states, viewports, themes, locale, density, interactions. Low-risk variants may share evidence, omissions stay explainable. Use the project's isolation and test tooling.
+- Rule: create discrete isolated fixtures for risk-relevant combinations rather than a fixed story list or full Cartesian matrix, and combine visual, semantic, and value assertions.
+- Check: inventory covered/uncovered risks, deterministic mocks, values/labels assertions, accessibility structure, reviewed visual diffs.
+- Sources: [Playwright ARIA snapshots](https://playwright.dev/docs/aria-snapshots).
