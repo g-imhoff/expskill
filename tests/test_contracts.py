@@ -496,7 +496,7 @@ class ContractTests(unittest.TestCase):
         manifest = self.load_manifest(ROOT)
         marketplace = self.load_marketplace(ROOT)
         self.assertEqual(manifest["name"], "expskill")
-        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.12")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.13")
         self.assertEqual(manifest["repository"], "https://github.com/g-imhoff/expskill")
         self.assertEqual(manifest["skills"], "./content/skills/")
         self.assertEqual(manifest["interface"]["category"], "Developer Tools")
@@ -739,7 +739,7 @@ class ContractTests(unittest.TestCase):
         self.assertIn("parallel-plan-design", router)
 
     def test_codex_cachebuster_versions_are_valid(self) -> None:
-        for version in ("0.1.12", "0.1.12+codex.cache-1", "0.1.12+codex.a.b-2"):
+        for version in ("0.1.13", "0.1.13+codex.cache-1", "0.1.13+codex.a.b-2"):
             with self.subTest(version=version):
                 root = self.copy_repository()
                 manifest_path = root / "plugins" / "expskill" / ".codex-plugin" / "plugin.json"
@@ -751,12 +751,12 @@ class ContractTests(unittest.TestCase):
     def test_invalid_codex_cachebuster_versions_are_rejected(self) -> None:
         invalid_versions = (
             "0.1.3",
-            "0.1.12+other.cache",
-            "0.1.12+codex.",
-            "0.1.12+codex.a..b",
-            "0.1.12+codex.a b",
-            "0.1.12+codex.a/b",
-            "0.1.12+codex.a_b",
+            "0.1.13+other.cache",
+            "0.1.13+codex.",
+            "0.1.13+codex.a..b",
+            "0.1.13+codex.a b",
+            "0.1.13+codex.a/b",
+            "0.1.13+codex.a_b",
         )
         for version in invalid_versions:
             with self.subTest(version=version):
