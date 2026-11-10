@@ -1,0 +1,119 @@
+{
+  "policy_version": "execution-budget-policy.v1",
+  "profiles": {
+    "explorer": {
+      "agent_type": "explorer",
+      "role": "explorer",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "sandbox_mode": "read-only",
+      "escalation": null
+    },
+    "test-engineer": {
+      "agent_type": "test-engineer",
+      "role": "test-engineer",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "sandbox_mode": "read-only",
+      "escalation": null
+    },
+    "implementer": {
+      "agent_type": "implementer",
+      "role": "implementer",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "sandbox_mode": "workspace-write",
+      "escalation": null
+    },
+    "planner": {
+      "agent_type": "planner",
+      "role": "planner",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "sandbox_mode": "workspace-write",
+      "escalation": null
+    },
+    "designer": {
+      "agent_type": "designer",
+      "role": "designer",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "sandbox_mode": "workspace-write",
+      "escalation": null
+    },
+    "review": {
+      "agent_type": "review",
+      "role": "review",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "sandbox_mode": "read-only",
+      "escalation": null
+    },
+    "spec": {
+      "agent_type": "spec",
+      "role": "spec",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "sandbox_mode": "read-only",
+      "escalation": null
+    }
+  },
+  "routes": {
+    "use-expskill": {
+      "parallel-plan-design": {
+        "allowed_profiles": [
+          "planner",
+          "designer"
+        ],
+        "selected": [
+          {
+            "role": "planner",
+            "profile": "planner",
+            "agent_type": "planner"
+          },
+          {
+            "role": "designer",
+            "profile": "designer",
+            "agent_type": "designer"
+          }
+        ],
+        "max_agent_calls": 2,
+        "max_concurrency": 2,
+        "max_depth": 1,
+        "max_retries": 0,
+        "max_elapsed_ms": 7200000
+      }
+    },
+    "implement": {
+      "standard": {
+        "allowed_profiles": [
+          "implementer",
+          "review",
+          "spec"
+        ],
+        "selected": [
+          {
+            "role": "implementer",
+            "profile": "implementer",
+            "agent_type": "implementer"
+          },
+          {
+            "role": "review",
+            "profile": "review",
+            "agent_type": "review"
+          },
+          {
+            "role": "spec",
+            "profile": "spec",
+            "agent_type": "spec"
+          }
+        ],
+        "max_agent_calls": 30,
+        "max_concurrency": 6,
+        "max_depth": 1,
+        "max_retries": 3,
+        "max_elapsed_ms": 7200000
+      }
+    }
+  }
+}

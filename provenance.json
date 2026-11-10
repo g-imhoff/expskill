@@ -1,0 +1,297 @@
+{
+  "inputs": [
+    {
+      "path": "plugins/expskill/content/agents.json",
+      "sha256": "0e1139371ce4b4e027561338adb32734228426b3ae0e6f572aab7cefd8b7e6ac"
+    },
+    {
+      "path": "plugins/expskill/content/agents/designer.md",
+      "sha256": "c4508c6daa2dd558a2cfff5d45a875b3c27dee32fae7453929439f898a3faf9c"
+    },
+    {
+      "path": "plugins/expskill/content/agents/explorer.md",
+      "sha256": "f70f50117edafdb664de83e7eb39bc4f2e839815bdae569c8f48a6fd8225f3f6"
+    },
+    {
+      "path": "plugins/expskill/content/agents/implementer.md",
+      "sha256": "e46447b6e4c36f1de9e357479b322422b13ad6574fc2053ba9a161ef7b92b2fa"
+    },
+    {
+      "path": "plugins/expskill/content/agents/planner.md",
+      "sha256": "e1f6a932a9b236cac040d97f2b9dd296573630bf5c55d8909cf25a4865ef13f6"
+    },
+    {
+      "path": "plugins/expskill/content/agents/review.md",
+      "sha256": "69ea1ffa41cd391190473683104b2bdc3cadabb79567a0a4b9432c5b900c0893"
+    },
+    {
+      "path": "plugins/expskill/content/agents/spec.md",
+      "sha256": "205fcef3a7338651c6bf70c93f482729b5be6cb22dd6caa774970eb368f69852"
+    },
+    {
+      "path": "plugins/expskill/content/agents/test-engineer.md",
+      "sha256": "55fd1b96bb95e70dcffae956ad290afa8df6953d4cc80ba2af36e84850c90edb"
+    },
+    {
+      "path": "plugins/expskill/content/policies/authoring-runtime.json",
+      "sha256": "2a76131ffaaeeb17994a039e3eb2f9e57f37b7d1b746fc8fded810a887b8aff2"
+    },
+    {
+      "path": "plugins/expskill/content/policies/execution-policy.json",
+      "sha256": "aef6c4d609842eca54066b855b047a23d9dffe098162a8f1c28109e942ca8c69"
+    },
+    {
+      "path": "plugins/expskill/content/policies/skills.json",
+      "sha256": "a834caa9471bb83c6f56879173c5404284bbe1a6c65f4d6a7f93650372203761"
+    },
+    {
+      "path": "plugins/expskill/content/policies/unslop-runtime.json",
+      "sha256": "feb9179d433386257c024e26dff2dfc14c7e872594b156c03e2c2fedb8b40aeb"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/design_plan_handoff.py",
+      "sha256": "c688d5db6728a12a7a62de4fc26698841d2e970d09e68d5d83e53434947c14de"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/design_state.py",
+      "sha256": "34192884d6ad007e5d39b3c89d9e99bbd0de24d67f9faff9cf4e902f27d762c1"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/hermes_unslop.py",
+      "sha256": "2965243cacab8f0b25a91429961958d93be3723b9d77ba4e200c775d0132dc03"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/plan_graph.py",
+      "sha256": "0a22a4dd26a49d2f85a6c787efbf796cf10a9e2bf95532a9fa9e4c5437dfe277"
+    },
+    {
+      "path": "plugins/expskill/content/scripts/worktrees.py",
+      "sha256": "958db5d1573e5b6b0913c5ffa0b92cea7c7bda7ca55de672845a7d392d54e296"
+    },
+    {
+      "path": "plugins/expskill/content/skills/autonomous-run/SKILL.md",
+      "sha256": "7e17f81c28aa8e0f7ecf438ccec3c17ed9568067750bc94ae71e9883e2c448f3"
+    },
+    {
+      "path": "plugins/expskill/content/skills/brainstorm/SKILL.md",
+      "sha256": "829a8e9dd06c36573201ed979fa8ea33193a2cacbca6f457b385365f7c166c9e"
+    },
+    {
+      "path": "plugins/expskill/content/skills/brainstorm/references/brainstorm-techniques.csv",
+      "sha256": "d007f32f53572a128d5c9cb97b14f120f7b7cf610612aef35bdf4b8af2fabef1"
+    },
+    {
+      "path": "plugins/expskill/content/skills/correct/SKILL.md",
+      "sha256": "8b53b95871f62d92bd5b6a8dfd5526a2885ef95ed4593d0510bc01a24ede5e32"
+    },
+    {
+      "path": "plugins/expskill/content/skills/deep-research/SKILL.md",
+      "sha256": "a67ea37e47ce413e5703205256fdee4ee4e617afcd3ec2f26fb44abfb175431a"
+    },
+    {
+      "path": "plugins/expskill/content/skills/deep-research/references/research-record.md",
+      "sha256": "7ebf72a2e43b082debfbabdf2a2581e641af38fd8105835bc31855c5ecb46aa1"
+    },
+    {
+      "path": "plugins/expskill/content/skills/deep-research/scripts/research_record.py",
+      "sha256": "bf960cccdbd5089bf8bc544cb1166b794349336e6b162292221f2b1a586eee5b"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/SKILL.md",
+      "sha256": "73f246dae03325f41b09216b312011e694e2d26c9452b79ab3c63f84f353c9cb"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/accessibility.md",
+      "sha256": "529f0560d422cb71396a6879cfe474b7a6ee84716459dd348d61b2b76a686aa3"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/data-display.md",
+      "sha256": "87ab6b33296ec4b650df8622ffd27e55da5a1fc5283a157da1f7f75ff951cfa3"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/forms.md",
+      "sha256": "506c28108a0f053a01450c0ea9e44564556abbca6f941da8aa146e2ec99ad586"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/geometry.md",
+      "sha256": "6af67fe336346b32fa4ac617472053fa1d113c204aa34a49b3cbb834504c9c7e"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/interaction.md",
+      "sha256": "2e856340e988b31c3a26fd3e1cec147e9bc880b19ff5fab520466c8d02d38be8"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/motion.md",
+      "sha256": "a6ab163f3202e00815cd6e2401a3f8b589f02850aff89419b30568a3dd2df8fc"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/responsive.md",
+      "sha256": "dcabb35b61b9b089818dd1fb65b518cb0ddc2984ae3e01de574bd5c84dbf0be0"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/rules-index.md",
+      "sha256": "2d952de1822ce1c37b1a05f657d1b5a045de7957a202762c925c03df5cbbeede"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/typography.md",
+      "sha256": "5a82fb148413de417c5b1052d3b58a0258d1bfa90c414ff9f8908c917628ca79"
+    },
+    {
+      "path": "plugins/expskill/content/skills/design/references/yodea-preview.md",
+      "sha256": "90dd4590410b61d95fb16b36a1999ad767cd3f05fd6bde5e6b700b32ea9a3c07"
+    },
+    {
+      "path": "plugins/expskill/content/skills/grill-me/SKILL.md",
+      "sha256": "2c889e4a256f121906c5f0362e90c45606a620da2a6e562b74e947eea37d4bc2"
+    },
+    {
+      "path": "plugins/expskill/content/skills/implement/SKILL.md",
+      "sha256": "2b7d5ad6f978ce158c839ae3b8a3295622cf8ff659084b95f22a78c7a197c723"
+    },
+    {
+      "path": "plugins/expskill/content/skills/plan/SKILL.md",
+      "sha256": "945c2cf9a630b9e837ee25f5cf8d2fbce5a9b6eeaf759c9b70e1b7feeb1b8863"
+    },
+    {
+      "path": "plugins/expskill/content/skills/review/SKILL.md",
+      "sha256": "c8696b2e9ac55742f5af082a2b27978328eeb403ae4f2ffeb562b3bf1f0cd22d"
+    },
+    {
+      "path": "plugins/expskill/content/skills/roast-loop/SKILL.md",
+      "sha256": "ebf505dbc9c800827aabb4e4cdc76feda059bd255dd8a062ddc9ac957eaa4889"
+    },
+    {
+      "path": "plugins/expskill/content/skills/roast/SKILL.md",
+      "sha256": "33c8cb09aa2178724efddb936afca50f52ae5603dfc7c4d686edf171c3befe23"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-design/SKILL.md",
+      "sha256": "1531c713da1bf54f62e7738309fc0898a170c4ab9ba80c9353ba463237957cac"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-design/references/record-format.md",
+      "sha256": "eedfe813336b379e8fdea008ea35caa704e2e87aff599dd2ac9d77290930d6ec"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-test/SKILL.md",
+      "sha256": "f3d1f94478524db8e7701f5918d03d425675c19396870bd6a94493ce750a8327"
+    },
+    {
+      "path": "plugins/expskill/content/skills/setup-test/references/record-format.md",
+      "sha256": "a96ea68abce3f45a01c4951c87b6f20eb82d21ac5216bf78fbe8c156b1a1f96c"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/SKILL.md",
+      "sha256": "2757859c5aad8f9f339eedf8d408e9ee4a3911fa669c79323579e5ae6b1c0b0d"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/artifact-contracts.md",
+      "sha256": "8d4276d834597e4a796cfb1acb255c73883c2cddeb05763fbda54cdcb74eb762"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/create.md",
+      "sha256": "af78aeadad0b8cf3d7485bf0d6f9ee00f2f2a2141443c2cd44c0914fdefd8900"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/evaluate.md",
+      "sha256": "cc628d68d9ecbacde6c12f27bd53676893a4c99608958c9581b27d888153191c"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/evaluation-rubric.md",
+      "sha256": "0c26d88f79320b87cacd9e0f2bbc5c42bdb2aa297fa22274952e5dbf89da9fdc"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/improve.md",
+      "sha256": "1bc80d1d0ea373dcfe45948b5ab2aa6afacf3105a737275d273589bb7d0f54c8"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/modify.md",
+      "sha256": "1d5ddb5ef7f810b3cee9b04e30c22637fea36b6bbceb5ea7418f8b8d5a89f896"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/references/shared-stages.md",
+      "sha256": "3610e81f27a751663af580ba979e376f8a54a7e5d75496aa9dc86d9c37487977"
+    },
+    {
+      "path": "plugins/expskill/content/skills/skill-builder/scripts/run_state.py",
+      "sha256": "9bf2b0a8daa1d29f7f901744eb9dc4b14cf8b53f04db247ec27f8bbd5a08e9fa"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/SKILL.md",
+      "sha256": "4ad3a0331b82a6da7b7ae8b0ec4e0596b26656e6fab4628e927b225c85cc6c1b"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/references/evidence-contract.json",
+      "sha256": "00a0e16d98e05efef2d58a3892806c5602f50a9071f77b6c47d13bb801493097"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/references/quality-rules.json",
+      "sha256": "c90f2d5019d7c5fea6c0e9597f10aa373aca2d6379a0642039fd1d498125e359"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/append_ledger.py",
+      "sha256": "d98a80642cd1c3feeaf8a0ca42e960147c03af6291ef3937e58b2bec6b0bb986"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/bootstrap_run.py",
+      "sha256": "dfdb88e4aa4b70e9d96c8a434003eee3db8d3781a38b3128e43cab152e1019da"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/finalize_evidence.py",
+      "sha256": "237d55ca1dfb3f69cff632b621030f0f55cd6082b7f494823a44b01201bdc614"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/freeze_charter.py",
+      "sha256": "6ead1c340c933ae7e82747a0a00f1eff7f8f2eb00a73df4047c61402e72e3104"
+    },
+    {
+      "path": "plugins/expskill/content/skills/test/scripts/record_final_action.py",
+      "sha256": "d7d6d92902b2168c4d60bd13cc701a7b941ba3bd61937a5abdbc1e1fc1d0b220"
+    },
+    {
+      "path": "plugins/expskill/content/skills/unslop/SKILL.md",
+      "sha256": "3245fa6b1023c46e87dc84fa675ddaa93150a55c34310074144244346a6b199d"
+    },
+    {
+      "path": "plugins/expskill/content/skills/use-expskill/SKILL.md",
+      "sha256": "5e6dee6e944031317971239a16f2535c342e1c272d988893292fcfec5f176df1"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/licenses/mattpocock-skills-MIT.txt",
+      "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+    },
+    {
+      "path": "plugins/expskill/content/third-party/licenses/pstack-MIT.txt",
+      "sha256": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e"
+    },
+    {
+      "path": "plugins/expskill/hermes/__init__.py",
+      "sha256": "32ccde0f24b046d0c97accbe6608e4fd718f6e3c53d6b23b4b675dc6cc83866f"
+    },
+    {
+      "path": "plugins/expskill/hermes/agents.json",
+      "sha256": "912961273a2e98e2e9174573bdbe1ca2da2cca36ea6abd22ba285c2ac2124b62"
+    },
+    {
+      "path": "plugins/expskill/hermes/plugin.json",
+      "sha256": "db1fdd82d6191c6efc4a53e4cb6ef510c4dc83cab3159e233e57081769abc1e9"
+    },
+    {
+      "path": "plugins/expskill/hermes/plugin.yaml",
+      "sha256": "3dd22ae2ca619dfc35d38f99af37b4d523fdf42a6a627f6984b36887aa3978b0"
+    },
+    {
+      "path": "scripts/artifact_contract.py",
+      "sha256": "5e107f1304e491a6625d648aa3803c610a044a8da34f9a4bc8b714b0d4cc6ef6"
+    },
+    {
+      "path": "scripts/build_hermes_package.py",
+      "sha256": "9e200e50c90ca43cbf9287b99342674f0b647649a58538ebe00321e61d566298"
+    },
+    {
+      "path": "scripts/render_hermes.py",
+      "sha256": "24c2eeefae8a573bd0b417ba4aee8b5d27a86df034d91b4947f98209879f072d"
+    }
+  ],
+  "schema_version": "hermes-provenance.v1"
+}
